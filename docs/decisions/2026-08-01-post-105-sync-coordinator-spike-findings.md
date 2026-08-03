@@ -9,7 +9,7 @@ disposition: PIVOT
 feature: "109-F"
 shipment: "104-S"
 evidence_commit: "b5d5802e930bb0f88b79dbe03f910e326ea7f604"
-tags: ["concurrency", "pending-sync", "compatibility", "single-authority", "pivot"]
+tags: ["concurrency", "pending-sync", "compatibility", "single-authority", "pivot", "raii", "cancellation-safety"]
 ---
 
 ## Executive disposition
@@ -56,6 +56,7 @@ The controlling execution record is [106-S single-authority sync coordinator spi
 | A2 | The Phase 5C caller inventory is exhaustive for the examined source. | High: targeted recursive inspection covered all `.rs` files under `src/` and `tests/`. Ship repeats the zero-legacy-caller inventory before visibility reduction. |
 | A3 | One coalesced successor may execute queued routine/revalidate/backfill work regardless of which producer requested it. | High: current queued CLI/MCP semantics promise coalescing, not producer-specific execution. The successor permit is normalized to `OwnerKind::Sync`. |
 | A4 | No schema or persisted-data migration is required. | High: the authority is in-memory process state. Any discovered persistence change is a stop condition and requires a new hardened plan. |
+| A5 | Rust `Drop` runs for task cancellation and unwind, but not process abort. | Certain language/runtime boundary. In-process cleanup is RAII; process death is recovered by restart/bind hydration and offline-change reconciliation, while non-durable revalidate/backfill intent must be reissued. No exactly-once claim crosses process death. |
 
 The decision is not open: the current facts select strategy A. The fail-closed clauses address changed evidence, not unresolved current ambiguity.
 
@@ -66,53 +67,81 @@ The decision is not open: the current facts select strategy A. The fail-closed c
 | Surface | Current callers | Decision |
 |---|---|---|
 | Observe indexing | `write.rs:32` | Keep a read-only observer, reduce to crate-private unless a stable public behavior requires it. |
-| Claim/complete index or sync | `write.rs:160,268,470` | Migrate to a non-cloneable `OwnerPermit`; remove tokenless completion. |
+| Claim/complete index or sync | `write.rs:160,268,470` | Migrate to an RAII `OwnerPermit`; explicit completion disarms, while cancellation/panic Drop recovers exact ownership. Remove tokenless completion. |
 | Queue/reacquire | `write.rs:297-304` | Replace with one request; preserve exact queued JSON; remove producer reacquire. |
 | Generation install | `lifecycle.rs:187` | Install coherent binding/cancellation/floor and return opaque `GenerationToken`. |
-| Hydration | `lifecycle.rs:250-402` | Cancellation-aware permit wait before DB/file I/O; complete the exact permit on every exit. |
+| Hydration | `lifecycle.rs:250-402` | Cancellation-aware wait before DB/file I/O; pre-acquisition cancellation exits without a permit, normal/handled post-acquisition exits complete/disarm, and cancellation/panic uses Drop. |
 | Drain | `lifecycle.rs:420-494` | Consume only a transferred full mask; remove split takes, re-arm, bounded loop, and double drain. |
-| Watchers | `ipc_server.rs:684,1135` | Use typed watcher permits and exact completion. |
-| Startup | `ipc_server.rs:1210-1224` | Replace try-then-set with one token-qualified request and one completion outcome. |
+| Watchers | `ipc_server.rs:684,1135` | Use typed RAII watcher permits; exact completion disarms and cancellation/panic Drop recovers. |
+| Startup | `ipc_server.rs:1210-1224` | Replace try-then-set with one token-qualified guarded request and one completion-or-Drop terminal transition. |
 | Health timestamp | `doctor.rs:115-135` | Preserve observer behavior; only current-permit completion updates it. |
 
 ### Repository-test migration
 
 `tests/contract/read_test.rs`, `tests/contract/write_test.rs`, and `tests/integration/indexing_resilience_test.rs` directly call tokenless methods today. They are repository tests, not evidence of a published library contract. Migrate observable assertions to public tool behavior. Move authority invariants to co-located private tests in `state.rs`, `lifecycle.rs`, and `ipc_server.rs`. No `pub`, feature-gated public, or test-only public ownership seam is permitted.
 
+## PR #316 P1 remediation decision
+
+The exact unresolved Copilot comments at PR head `897406cc79896eef90d3a44645804d691c3aff96` are accepted as valid P1 findings:
+
+1. `discussion_r3700752674`: generation install could stale an active permit while leaving its owner record able to block the new generation.
+2. `discussion_r3700752695`: a merely non-cloneable permit is not cancellation-safe because task cancellation or panic can drop it before explicit completion.
+
+The selected remediation keeps strategy A and strengthens it with an evidence-backed RAII permit. `AppState` is already shared as `Arc<AppState>` across spawned work, `state.rs` already uses recoverable synchronous mutex critical sections, and `tokio::sync::Notify::notify_one` is synchronous. `AppState` therefore owns an `Arc<CoordinatorCell>` and each `OwnerPermit` owns a clone of that cell. `Drop` can perform the abandonment transition without awaiting, spawning, or caller cleanup. No public type or test seam is introduced.
+
+The exactness claim is scoped to in-process coordinator ownership: every `WorkMask` bit is in exactly one of current owner or pending, and only one current-generation permit may launch a driver. An old driver retains its immutable old binding snapshot and is cancelled on rebind; it cannot reread or operate against the new binding. A partially completed idempotent old-binding scan may finish or be retried on the new binding, but it cannot complete, clear, or launch work in the new generation. The design does not claim exactly-once external side effects or RAII execution after process abort.
+
 ## Selected API strategy: A
 
-Use one private `std::sync::Mutex<SyncCoordinator>` and one private `tokio::sync::Notify`. The notify is only a wake mechanism, never a queue. All identity-bearing types and mutators are `pub(crate)` at most, with private fields:
+Use one crate-private, `Arc`-owned coordinator cell. All fields remain private:
 
 ```text
+CoordinatorCell { state: Mutex<SyncCoordinator>, notify: Notify }
+SyncCoordinator { floor, binding_identity, next_sequence, owner, pending, last_indexed_at }
 GenerationToken(u64)
 WorkMask { routine, revalidate, backfill_python }
-OwnerKind { Index, Sync, Hydration, Startup, Watcher }
-OwnerPermit { generation, sequence, kind, work_mask }  // non-Clone
-
-request(token, work_mask, owner_kind)
-  -> Acquired(OwnerPermit) | Queued | Stale
-
-complete(owner_permit)
-  -> Transferred(OwnerPermit) | Released | Stale
+OwnerIdentity { generation, sequence, kind }
+OwnerPermit { cell, identity, work_mask, cleanup_armed }  // non-Clone, RAII
 ```
 
-`SyncCoordinator` owns the generation floor, monotonically increasing owner sequence, current owner, and zero-or-one complete pending `WorkMask`. Busy sync/startup/watcher producers merge into that one mask. Hydration registers `Notified` before retrying but does not create queued work. On exact completion with pending work, the completing driver receives exactly one new `OwnerKind::Sync` permit containing the full mask; pending becomes empty in the same critical section. With no pending work, completion releases and notifies waiters. Requests arriving after release acquire directly. Stale or mismatched permits make no mutation.
+`request(token, work_mask, owner_kind)` still returns `Acquired(OwnerPermit) | Queued | Stale`; `complete(owner_permit)` still returns `Transferred(OwnerPermit) | Released | Stale`. `Notify` remains only a wake mechanism. A busy producer ORs one complete mask into the single pending slot. With no owner, a non-empty request atomically takes `pending OR requested` into one `Sync` permit. An empty-mask Index/Hydration request may acquire while pending remains, and its completion transfers pending. Mutex serialization prevents two requesters taking the mask.
 
-`complete` consumes a non-cloneable permit, validates and transitions under the coordinator mutex, drops that guard, then records `last_indexed_at` exactly once through a non-awaiting private timestamp lock before returning a successful outcome. A stale/mismatched completion never changes the timestamp. No standard mutex guard crosses `.await`.
+### Atomic generation/binding advance
+
+Prepare and capacity-check the complete new binding/cancellation tuple before mutation. Acquire existing binding write guards in documented order, then take the coordinator lock; perform no await after that. One coordinator-locked publication:
+
+1. captures and invalidates the prior `OwnerIdentity`;
+2. computes `promoted = prior_owner.work_mask OR prior_pending` from the authoritative owner record;
+3. removes the old owner and publishes non-empty `promoted` as the new generation's one pending mask;
+4. swaps workspace/config/cancellation ownership behind the held guards;
+5. advances binding identity and generation floor together and resets hydration readiness; and
+6. synchronously signals old cancellation.
+
+It leaves no inaccessible successor owner record. After all guards release, it calls `notify_one` at most once when retirement made progress possible, then returns the new token. The rule is **promote all three set bits to the newest coherent binding**. Empty masks invent no work; obsolete non-coalescible old-binding operations are cancelled. The old permit retains only its old binding identity. Later finish returns `Stale`; later Drop finds no exact identity. Both mutate nothing.
+
+### Explicit completion and RAII abandonment
+
+`complete(mut permit)` validates generation/sequence/kind under the mutex. Exact completion performs one transfer-or-release transition, writes `last_indexed_at` once inside that successful transition, and disarms the old permit before destruction. Pending transfer returns one armed successor; release wakes at most one after unlock. Stale explicit completion disarms only the local guard and returns `Stale` without coordinator mutation.
+
+`OwnerPermit::drop` is mandatory cleanup. If armed and identity still exactly matches, Drop atomically computes `owner.work_mask OR pending`, republishes the non-empty union, clears owner once, unlocks, and calls `notify_one` once. It never allocates a sequence, awaits, spawns, updates the timestamp, or panics; poison recovery uses the existing `PoisonError::into_inner` pattern. Identity mismatch, including after generation advance or replacement acquisition, is a strict no-op. The next current request is the sole possible successor and takes the union once.
+
+Task cancellation and panic unwind therefore release live ownership automatically. Process abort does not run Drop: restart reconstructs the coordinator, bind/hydration plus offline-change detection reconciles durable state, and non-durable revalidate/backfill intent is reissued. Full release-unit rollback/restart remains the runtime-invariant response.
 
 ## Protected invariants
 
-1. One coordinator is the only authority for generation floor, owner identity/permit, complete pending mask, and hydration/drain handoff.
-2. A stale token cannot acquire, queue, replace, clear, or relabel current work.
-3. A stale, duplicated, wrong-kind, wrong-generation, or wrong-sequence permit cannot mutate owner, mask, notification, or timestamp state.
-4. A non-empty pending mask is one complete `WorkMask`; companion-only state is impossible.
-5. Exact completion transfers the full mask to exactly one successor or releases; never both and never neither.
-6. Hydration performs zero DB or file I/O until it holds its permit.
-7. Startup/release arbitration selects exactly one executor.
-8. Every successful current-permit completion records `last_indexed_at` exactly once; rejected completion records it zero times.
-9. No mutex guard crosses `.await`.
-10. No second queue, split drain, double drain, producer reacquire, timing sleep, unsafe code, or public test-only seam is introduced.
-11. CLI/MCP methods, wire/schema/persistence formats, and the exact queued sync JSON remain unchanged.
+1. One coordinator cell is the only authority for generation/binding identity, owner identity, complete pending mask, handoff, and completion timestamp.
+2. During a live process, each set `WorkMask` bit is in exactly one authoritative location: owner or pending.
+3. Generation advance moves `old owner mask OR old pending` to the new pending slot while retiring old identity in the same lock transition.
+4. No generation/Drop transition installs an inaccessible owner; each wakes at most one after unlocking.
+5. Stale token and stale finish/Drop paths cannot mutate current owner, mask, floor, binding, notify, or timestamp.
+6. Exact completion disarms Drop, transfers/releases once, and updates `last_indexed_at` once; stale completion and abandonment update it zero times.
+7. Exact Drop republishes the authoritative owned mask plus pending and clears owner once; one later request can take that union once.
+8. Hydration does zero DB/file I/O until ownership; pre-acquisition cancellation has no permit and no coordinator mutation.
+9. Every owner uses its immutable binding snapshot; old permits cannot authorize new-binding work.
+10. No mutex crosses `.await`; Drop never awaits, spawns, or panics.
+11. No second queue, split/double drain, producer reacquire, sleep, unsafe, or public test seam.
+12. CLI/MCP, wire/schema/persistence/config formats, and exact queued JSON remain unchanged.
+13. RAII and logical exactly-once ownership are not claimed across process abort; reconciliation, reissue, and rollback are explicit.
 
 ## Compatibility and semver disposition
 
@@ -122,6 +151,6 @@ Strategy B is rejected because it would create and support a public permit-beari
 
 ## Replacement-plan input and disposition
 
-The old residual plan and tasks assume signature preservation, `Reacquired`, split claims, and bounded double-drain behavior. Those scopes are not accurate and must be superseded, not reused. The replacement plan must pair RED before GREEN, keep every task at `<=110 minutes`, `<=2` production files, `<5` production functions, and `<=4` scenarios, and decompose `state.rs`, `lifecycle.rs`, `write.rs`, and `ipc_server.rs` in a strict dependency chain.
+The old residual plan and tasks assume signature preservation, `Reacquired`, split claims, and bounded double-drain behavior. Those scopes are not accurate and must be superseded, not reused. The replacement plan must pair RED before GREEN, keep every task at `<=110 minutes`, `<=2` production files, `<5` production functions, and `<=4` scenarios, and decompose `state.rs`, `lifecycle.rs`, `write.rs`, and `ipc_server.rs` in a strict dependency chain. Core RED/GREEN proves mandatory RAII abandonment and successful-completion disarm; binding RED/GREEN proves active-owner-plus-pending promotion and stale finish/Drop isolation. Pre-acquisition cancellation remains a zero-permit path.
 
 Final disposition: **PIVOT to strategy A with high confidence.** Implementation remains blocked until Ship closes `106-S`, Stage performs the documented fail-closed requeue transaction, and the fresh plan has a zero-P0/P1 PASS.

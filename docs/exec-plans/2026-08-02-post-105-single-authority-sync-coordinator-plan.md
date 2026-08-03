@@ -7,7 +7,7 @@ status: blocked
 source: "docs/decisions/2026-08-01-post-105-sync-coordinator-spike-findings.md"
 feature: "109-F"
 shipment: "104-S"
-tags: ["concurrency", "pending-sync", "permit", "internal-api", "ready-after-106-closure"]
+tags: ["concurrency", "pending-sync", "permit", "internal-api", "raii", "cancellation-safety", "ready-after-106-closure"]
 ---
 
 ## Pipeline gate
@@ -27,7 +27,7 @@ The replacement is strategy A from the findings: one private `SyncCoordinator` o
 - Source basis: HEAD `feb5f7c84dc189dfebce840a7811aec3acfe4b53`; current source equals main after temporary spike edits were removed.
 - Evidence basis: `docs/research/2026-08-02-106-sync-coordinator-spike-execution-evidence.md`, reviewed evidence commit `b5d5802e`.
 - Package contract: `Cargo.toml` has `publish = false`; Engram ships a binary. No public Rust permit API is added.
-- API decision: opaque `GenerationToken`, `OwnerPermit`, `OwnerKind`, and `WorkMask` are `pub(crate)` at most, with private fields. The permit is non-`Clone`.
+- API decision: opaque `GenerationToken`, `OwnerPermit`, `OwnerKind`, and `WorkMask` are `pub(crate)` at most, with private fields. The permit is non-`Clone`, owns an `Arc<CoordinatorCell>`, and has mandatory non-awaiting RAII abandonment cleanup.
 - Semver: no major bump or deprecation bridge. This is an internal source migration. A supported downstream Rust API discovered before source mutation is a hard stop requiring strategy B and a new decision; tokenless adapters are never accepted as a fallback.
 - Repository tests: migrate direct owner setup to public tool behavior or co-located private tests. No public test-only seam.
 
@@ -35,55 +35,90 @@ The replacement is strategy A from the findings: one private `SyncCoordinator` o
 
 | Requirement | Implementation action | Verification units |
 |---|---|---|
-| One authority | Replace owner flag, generation, mask, and lifecycle handoff with one coordinator | `109.014-T` -> `109.015-T` |
-| Stale/mismatched no mutation | Sequence-qualified non-cloneable permit and exact transition checks | `109.014-T` / `109.015-T` |
-| Coherent generation install | Publish binding, cancellation, and floor at one no-await point | `109.016-T` -> `109.017-T` |
-| Hydration owns before I/O | Cancellation-aware notify/retry; no DB/file boundary before permit | `109.018-T` -> `109.019-T` |
-| Full-mask single successor | Completion transfers one whole mask to one `Sync` permit | `109.020-T` -> `109.021-T` |
-| Write migration | Index/sync use permits; queued JSON unchanged; no producer reacquire | `109.022-T` -> `109.023-T` |
-| Startup/watcher arbitration | Typed permits and one request linearization | `109.024-T` -> `109.025-T` |
-| Compatibility tests | Replace direct tokenless setup with behavior/private harnesses | `109.026-T`, `109.027-T` |
+| One authority | Replace owner flag, generation, mask, timestamp, and handoff with one `Arc<CoordinatorCell>` | `109.014-T` -> `109.015-T` |
+| Drop/cancellation safety | Armed RAII permit republishes authoritative owned mask OR pending, clears exact owner, and wakes one | `109.014-T` / `109.015-T` |
+| Successful finish disarms cleanup | Exact completion disarms old permit before Drop and writes timestamp once | `109.014-T` / `109.015-T` |
+| Atomic generation retirement | One lock transition retires old identity, promotes owner mask OR pending, and publishes binding/cancel/floor | `109.016-T` -> `109.017-T` |
+| Stale finish/Drop isolation | Old permit after rebind/replacement returns stale/no-op and cannot mutate current generation | `109.016-T` / `109.017-T` |
+| Hydration owns before I/O | Pre-acquisition cancel is zero-permit; post-acquisition cancel relies on RAII | `109.018-T` -> `109.019-T` |
+| Full-mask single successor | Completion or abandonment exposes one whole mask to one successor | `109.020-T` -> `109.021-T` |
+| Write migration | Index/sync use guarded permits; exact queued JSON; no producer reacquire | `109.022-T` -> `109.023-T` |
+| Startup/watcher arbitration | Typed guarded permits and one request linearization | `109.024-T` -> `109.025-T` |
+| Compatibility tests | Replace tokenless setup with behavior/private harnesses | `109.026-T`, `109.027-T` |
 | Visibility reduction | Retire tokenless owner, split pending, and companion mutators | `109.028-T` -> `109.030-T` |
-| Timestamp exactly once | Successful current-permit completion records once; stale records zero | `109.014-T` / `109.015-T` |
-| Windows/runtime/release closure | Deterministic suite plus disposable Windows daemon validation and observation | `109.031-T` |
+| Process-abort boundary | No Drop claim on abort; startup reconciliation, intent reissue, full rollback | `109.031-T` |
+| Runtime/release closure | Deterministic suite plus disposable Windows daemon validation | `109.031-T` |
 
 ## Authoritative design
 
-### State
+### State and RAII ownership
 
 ```text
+CoordinatorCell { state: std::sync::Mutex<SyncCoordinator>, notify: Notify }
 SyncCoordinator {
-  floor: u64,
-  next_sequence: u64,
-  owner: Option<OwnerRecord>,
-  pending: Option<WorkMask>
+  floor, binding_identity, next_sequence,
+  owner: Option<OwnerRecord>, pending: Option<WorkMask>, last_indexed_at
 }
-
 GenerationToken(u64)
 WorkMask { routine, revalidate, backfill_python }
 OwnerKind { Index, Sync, Hydration, Startup, Watcher }
-OwnerPermit { generation, sequence, kind, work_mask }
+OwnerIdentity { generation, sequence, kind }
+OwnerPermit { cell: Arc<CoordinatorCell>, identity, work_mask, cleanup_armed }
 ```
 
-`AppState` holds one private `std::sync::Mutex<SyncCoordinator>` and one private `tokio::sync::Notify`. `Notify` is a wakeup only. It stores neither work nor owner identity.
+`AppState` owns one private `Arc<CoordinatorCell>`. Permits clone the cell, remain non-`Clone`, and expose no public fields. `Notify` stores neither work nor identity. The coordinator owner record, not the permit copy, is authoritative for the owned mask.
 
 ### Request transition
 
-`request(token, mask, kind) -> Result<RequestOutcome, EngramError>` validates the token under the coordinator lock; `RequestOutcome` is `Acquired(permit) | Queued | Stale`. A current request with no owner allocates one sequence and permit. A busy producer with a non-empty sync mask merges one complete mask into the single pending slot and returns `Queued`. A busy `Index` or hydration request uses an empty coalesced mask, returns `Queued` without publishing work, and maps respectively to the existing in-progress error or notify/cancel wait. Sequence exhaustion returns an existing typed system error before mutation. Stale requests mutate nothing.
+`request(token, mask, kind)` returns fallible `Acquired(permit) | Queued | Stale` after validating under the coordinator lock.
 
-### Completion transition
+- Busy current producers OR a complete mask into the one pending slot; empty-mask waiters publish nothing.
+- Stale requests mutate nothing.
+- With no owner, a non-empty request atomically takes `pending OR requested` into one `Sync` permit; concurrent requesters cannot take it twice.
+- With no owner, empty-mask Index/Hydration may acquire while pending remains, then transfer pending on exact completion. This preserves hydration-before-DB ordering on a fresh binding.
+- Sequence exhaustion fails before mutation. No Drop/rebind path preallocates an owner whose permit has no recipient.
 
-`complete(permit) -> Result<CompletionOutcome, EngramError>` consumes the non-cloneable permit; `CompletionOutcome` is `Transferred(permit) | Released | Stale`. Wrong generation, sequence, or kind is stale and mutates nothing. Exact completion with pending work clears pending and creates exactly one new `OwnerKind::Sync` permit carrying the full mask for the completing driver. Exact completion without pending work releases and notifies waiters. A request that linearizes after release acquires directly, which closes startup/release as exactly one executor.
+### Explicit completion transition
 
-A valid completion updates `last_indexed_at` once before returning its successful outcome. Validation/transition occurs under the coordinator mutex; the guard is dropped before the non-awaiting timestamp lock is taken. A rejected completion updates zero times. No mutex guard crosses `.await`.
+`complete(mut permit)` consumes the permit and compares generation, sequence, and kind under the mutex.
 
-### Binding and hydration
+- Exact completion with pending clears pending and installs one armed `Sync` successor returned as `Transferred`.
+- Exact completion without pending releases and returns `Released`; one waiter is notified after unlock.
+- Both exact outcomes write `last_indexed_at` once in the same current-permit transition and set `cleanup_armed = false` before old-permit destruction.
+- Stale completion disarms only the local permit and returns `Stale`; coordinator state, notification, and timestamp stay unchanged.
 
-The binding install validates checked generation/sequence capacity before mutation. Workspace, config, cancellation ownership, and floor are published coherently in documented lock order; the coordinator critical section contains no await. Hydration registers notification before the final request check and selects notification versus cancellation without holding a standard mutex. DB connect, query, hydration, file scan, and progress work begin only after `Acquired(Hydration)`.
+No standard mutex crosses `.await`. Keeping timestamp in coordinator state removes the prior transition-to-timestamp cancellation gap.
+
+### Mandatory Drop transition
+
+`OwnerPermit::drop` is the cancellation guard. If armed, it locks synchronously with poison recovery. Only exact owner identity may act. Exact Drop computes `recovery = owner.work_mask OR pending`, clears owner, stores non-empty recovery in the one pending slot, unlocks, and calls `notify_one` once. It never allocates sequence, awaits, spawns, updates timestamp, or panics. Stale Drop is a strict no-op and cannot clear or republish over a replacement.
+
+The next current request is the sole possible successor. A sync-capable request takes recovery once; an empty-mask owner may run first and transfers recovery on completion. Cancellation cannot strand ownership and no caller-optional cleanup exists.
+
+### One atomic generation/binding advance
+
+Prepare the new workspace/config/cancellation tuple and validate capacity before mutation. Acquire binding write guards in documented order, then coordinator mutex; do not await afterward. One coordinator-locked publication:
+
+1. removes and invalidates prior owner identity;
+2. computes `promoted = prior_owner.work_mask OR prior_pending` from authoritative state;
+3. publishes non-empty `promoted` as the new generation's one pending mask;
+4. swaps workspace, config, and cancellation ownership behind held guards;
+5. advances binding identity and floor together and resets hydration readiness; and
+6. synchronously signals old cancellation.
+
+It deliberately leaves `owner = None`; a successor without a recipient would strand ownership. After all guards drop, invoke `notify_one` at most once if retirement made progress possible, then return the new opaque token. Every set bit is promoted to the newest binding. Empty masks do not invent work; obsolete non-coalescible old-binding operations are cancelled.
+
+Old owners retain an immutable old binding snapshot/cancellation receiver and cannot reread or operate against the new binding. Later finish returns `Stale`; later Drop sees no match. A partially completed old-binding operation may be reconciled on the new binding, but cannot mutate or launch current-generation work. Exactness means one owner/pending location and one driver launch per generation/binding, not exactly-once external side effects.
+
+### Hydration and process-abort boundary
+
+Hydration registers `Notified` before final request check and selects notification versus cancellation without a standard mutex. Cancellation before acquisition exits with no permit/mutation. After acquisition, normal/handled failure explicitly completes and disarms; task cancellation or panic relies on Drop. DB/file work begins only after `Acquired(Hydration)`.
+
+Rust Drop is not claimed for process abort. Restart reconstructs in-memory authority; bind/hydration and offline-change detection reconcile durable files. Non-durable revalidate/backfill intent must be reissued. Runtime invariant failure uses full release-unit revert and daemon restart.
 
 ### Compatibility boundary
 
-Safe observers may remain stable. Request-only publication may exist only as crate-private delegation to `request`; it cannot stage companion-only state. Tokenless claim, completion, generation clear, producer reacquire, split takes, and companion-only setters are retired. The exact queued result remains:
+Safe observers may remain stable. Request-only publication may only be crate-private delegation to `request`; it cannot stage companion-only state. Tokenless claim/completion/generation-clear/producer-reacquire/split-take/companion setters retire. The exact queued result remains:
 
 ```json
 {"status":"queued","message":"Sync queued; will run after current indexing completes"}
@@ -91,153 +126,143 @@ Safe observers may remain stable. Request-only publication may exist only as cra
 
 ## Protected invariants
 
-1. The coordinator is the sole authority for generation floor, owner permit, full mask, and handoff.
-2. Stale token or mismatched permit changes no owner, mask, floor, notify, or timestamp state.
-3. Every pending mask is complete; companion-only state is unrepresentable.
-4. Completion transfers the full mask to exactly one successor or releases.
-5. Hydration performs zero DB/file I/O before ownership.
-6. Startup/release selects exactly one executor.
-7. `last_indexed_at` changes exactly once for successful current-permit completion and zero times for stale completion.
-8. No standard mutex guard crosses await.
-9. No second queue, double drain, split consumption, producer reacquire, sleeps, unsafe code, or public test seam.
-10. No CLI/MCP/wire/schema/persistence/queued-response regression.
+1. The coordinator cell is sole authority for binding floor, owner identity, full mask, handoff, and completion timestamp.
+2. In-process, each `WorkMask` bit exists in exactly one location: owner or pending.
+3. Rebind atomically retires old identity and promotes `owner mask OR pending` to the new binding.
+4. Exact Drop republishes the same union, clears owner once, and wakes at most one; stale Drop changes nothing.
+5. Exact completion disarms Drop and updates `last_indexed_at` once; stale completion/Drop update zero times.
+6. No transition installs owner without returning its permit.
+7. Hydration does zero DB/file I/O before ownership; pre-acquisition cancel has no permit to complete.
+8. Old owners use immutable old binding snapshots and cannot mutate/launch new-generation work.
+9. No mutex crosses await; Drop never awaits, spawns, or panics.
+10. No second queue, double drain, split consumption, producer reacquire, sleeps, unsafe, or public test seam.
+11. No CLI/MCP/wire/schema/persistence/config/queued-response regression.
+12. No exactly-once or RAII claim crosses process abort; reconciliation, reissue, and full rollback are explicit.
 
 ## Implementation units
 
-Every unit is `<=110 minutes`, touches `<=2` production files, changes fewer than five production functions, and has `<=4` deterministic scenarios. RED harness tasks make release-mode behavior changes: zero. GREEN does not start until its direct RED predecessor compiles and fails only intended assertions. No task-level partial migration may be merged, released, or runtime-validated; rollback and release operate on the complete coordinator release unit.
+Every unit is `<=110 minutes`, touches `<=2` production files, changes fewer than five production functions, and has `<=4` deterministic scenarios. RED tasks change zero release behavior. GREEN starts only after its direct RED compiles and fails intended assertions. No partial migration is mergeable/releasable.
 
-### 1. `109.014-T` — RED: coordinator identity, mask, and timestamp
-
-- Files: `src/server/state.rs` only.
-- Posture: test-first, co-located private tests.
-- Scenarios (4): stale token cannot mutate newer mask; mismatched/stale permit cannot clear newer owner; exact completion transfers `0b111` to exactly one successor; valid completion increments a private timestamp-write counter once while stale completion increments zero.
-- Synchronization: direct private transitions, barriers, oneshots, or `Notify`; no sleeps.
-- Exit: narrow library compile succeeds, exact tests fail intended assertions against current behavior.
-- Dependency: `109.013-T` terminal, but task remains blocked until Stage requeue.
-
-### 2. `109.015-T` — GREEN: authoritative coordinator core
+### 1. `109.014-T` — RED: permit completion/Drop lifecycle
 
 - Files: `src/server/state.rs` only.
-- Functions: at most four production functions covering initialization, request, completion, and timestamp observer/update.
-- Implement opaque token/mask/kind/permit and one coordinator. Checked sequence overflow fails before mutation using an existing typed system error.
-- Make all `109.014-T` tests pass. No async guard crossing, second queue, or tokenless compatibility bridge.
+- Scenarios (4): current Drop republishes authoritative owned mask OR pending and clears owner once; one later requester takes that union once; exact completion disarms Drop and does not republish on destruction; exact transfer/release writes timestamp once while stale explicit completion writes zero.
+- Assert one notification for exact abandonment/release and zero for stale Drop with a private deterministic collaborator.
+- Dependency: `109.013-T` terminal, while status remains blocked until the existing Stage requeue gate.
+
+### 2. `109.015-T` — GREEN: authoritative RAII coordinator core
+
+- Files: `src/server/state.rs` only.
+- At most four production functions cover cell initialization/request, explicit completion, Drop abandonment, and observer/update behavior.
+- Implement authoritative owner mask, completion disarm, synchronous poison-safe Drop, and timestamp-in-transition. No caller-optional cleanup, async Drop work, second queue, or tokenless bridge.
 - Dependency: `109.014-T`.
 
-### 3. `109.016-T` — RED: coherent binding and generation floor
+### 3. `109.016-T` — RED: coherent binding retirement and stale isolation
 
 - Files: `src/server/state.rs`, `src/tools/lifecycle.rs`.
-- Scenarios (3): observers see complete old or complete new binding/token/cancel/floor tuple; `u64::MAX` fails before mutation; old token after rebind is stale and cannot enqueue/acquire.
-- No release-mode behavior change or public pause seam.
+- Scenarios (4): complete old/new binding-token-cancel-floor tuple; `u64::MAX` no mutation; advance with active owner `0b101` plus pending `0b010` retires old identity and exposes one new-generation `0b111` pending mask with at most one wake; after successor acquisition a two-fixture matrix proves stale old explicit finish and independently stale old Drop leave successor/mask/floor/timestamp unchanged.
 - Dependency: `109.015-T`.
 
-### 4. `109.017-T` — GREEN: binding install and cancellation ownership
+### 4. `109.017-T` — GREEN: atomic binding advance and owner retirement
 
 - Files: `src/server/state.rs`, `src/tools/lifecycle.rs`.
-- Functions: at most four, including coherent install, retirement of separate begin-generation, and lifecycle binding call.
-- Preserve documented async lock order; acquire coordinator only for final no-await publication.
-- Make `109.016-T` green without changing `DispatchSnapshot`, wire, schema, or persistence.
+- At most four functions cover prepared install, one coordinator publication, retirement/promotion, and lifecycle call.
+- Acquire async binding guards before coordinator; no await under standard mutex. Signal old cancellation synchronously, return token after publication, notify at most one after unlock.
+- Preserve `DispatchSnapshot`, wire, schema, config format, and persistence.
 - Dependency: `109.016-T`.
 
-### 5. `109.018-T` — RED: hydration admission and exact exits
+### 5. `109.018-T` — RED: hydration admission and exact exit classes
 
 - Files: `src/server/state.rs`, `src/tools/lifecycle.rs`.
-- Scenarios (3): held owner prevents the private pre-DB signal; cancellation before acquisition exits without signal/mutation; acquired DB-connect failure completes only its exact permit and preserves transferred newer mask.
-- Bind S3 to a private production admission helper/collaborator; no reference-only test transition.
+- Scenarios (3): held owner prevents pre-DB signal; pre-acquisition cancel exits with no permit/completion/Drop mutation/signal; acquired DB-connect failure explicitly completes its exact permit, disarms cleanup, and preserves transferred newer mask.
+- Bind S3 to a private production collaborator, not a reference-only transition.
 - Dependency: `109.017-T`.
 
-### 6. `109.019-T` — GREEN: cancellation-aware hydration permit
+### 6. `109.019-T` — GREEN: cancellation-aware hydration guard
 
 - Files: `src/server/state.rs`, `src/tools/lifecycle.rs`.
-- Functions: at most four covering private notify/retry admission, hydration body, and exact-exit finalization.
-- Register `Notified` before request retry; wait on notify/cancel with no mutex guard. No DB/file work before permit.
-- All normal, cancelled, and DB-failure exits consume exactly one permit and honor transfer/release outcome.
+- At most four functions cover notify/retry admission, hydration body, and exact-exit finalization.
+- Register `Notified` before recheck. Pre-acquisition cancellation exits without completion. After acquisition, normal/handled failure explicitly complete/disarm; cancellation/panic is recovered only by mandatory Drop.
+- No DB/file work before permit and no cleanup convention left to callers.
 - Dependency: `109.018-T`.
 
 ### 7. `109.020-T` — RED: transferred-mask lifecycle driver
 
 - Files: `src/server/state.rs`, `src/tools/lifecycle.rs`.
-- Scenarios (3): full `0b111` mask executes once under one successor; request at either side of release yields exactly one executor; cancellation/failure cannot launch a second drain or strand a transferred mask.
-- No bounded-loop/yield or timing assertion.
+- Scenarios (3): full `0b111` executes once under one successor; request on either side of release yields one executor; dropping/cancelling a transferred successor republishes full mask, clears owner, and lets one later requester take it without a second drain.
+- No bounded loop/yield, timing assertion, or optional cleanup call.
 - Dependency: `109.019-T`.
 
-### 8. `109.021-T` — GREEN: single completion/handoff driver
+### 8. `109.021-T` — GREEN: single completion/RAII handoff driver
 
 - Files: `src/server/state.rs`, `src/tools/lifecycle.rs`.
-- Functions: at most four. Replace split takes, re-arm, `drain_pending_sync`, and bounded `drain_pending_sync_to_completion` with one transferred-mask driver.
-- The completing driver either executes its returned successor permit or releases; no recursive/double drain.
+- At most four functions replace split takes, re-arm, `drain_pending_sync`, and bounded drain-to-completion with one transferred-mask driver.
+- Explicit success consumes/disarms; cancellation/panic relies on Drop. The next current request is the only recovery successor. No recursive/double drain.
 - Dependency: `109.020-T`.
 
 ### 9. `109.022-T` — RED: write ownership and queued contract
 
 - Files: `src/server/state.rs`, `src/tools/write.rs`.
-- Scenarios (3): full index uses one exact permit; busy sync returns exact queued JSON and queues full mask without reacquire; stale qualified snapshot performs no index/sync work.
-- Preserve scan-progress outcome shape; no public test seam.
+- Scenarios (3): full index exact guarded permit; busy sync exact queued JSON/full mask/no reacquire; stale qualified snapshot no execution.
+- Preserve scan-progress shape; no public seam.
 - Dependency: `109.021-T`.
 
 ### 10. `109.023-T` — GREEN: write caller migration
 
 - Files: `src/server/state.rs`, `src/tools/write.rs`.
-- Functions: at most four: index entry, sync entry, finalizer, and one private helper if needed.
-- Migrate index/sync to permits. Delete producer reacquire and separate finish/drain calls. Handle transferred permit exactly once.
-- Exact queued status/message and MCP/CLI errors remain unchanged.
+- At most four functions migrate index/sync/finalization to guarded permits. Explicit returns disarm; cancellation/panic cannot strand ownership.
+- Delete producer reacquire and separate finish/drain. Preserve exact queued JSON and MCP/CLI errors.
 - Dependency: `109.022-T`.
 
 ### 11. `109.024-T` — RED: startup and watcher arbitration
 
 - Files: `src/server/state.rs`, `src/daemon/ipc_server.rs`.
-- Scenarios (4): startup request just before release transfers once; startup just after release acquires once; each watcher path completes only its own permit; stale watcher token cannot execute or clear current owner.
-- Co-located private harness; barriers/oneshots only.
+- Scenarios (4): startup just before release transfers once; startup just after release acquires once; each watcher completes/disarms its permit; stale watcher finish/Drop cannot execute or clear current owner.
+- Barriers/oneshots only.
 - Dependency: `109.023-T`.
 
-### 12. `109.025-T` — GREEN: startup and watcher permit migration
+### 12. `109.025-T` — GREEN: startup and watcher guarded-permit migration
 
 - Files: `src/server/state.rs`, `src/daemon/ipc_server.rs`.
-- Functions: at most four covering the two watcher paths, startup request helper, and completion helper.
-- Remove try-then-set and finish-then-drain. Preserve startup, debounce, flush, ingestion, backfill, and response behavior.
+- At most four functions cover watcher paths, startup request, and completion. Remove try-then-set and finish-then-drain. RAII protects every permit until explicit disarm.
 - Dependency: `109.024-T`.
 
 ### 13. `109.026-T` — compatibility migration: contract tests
 
 - Files: `tests/contract/read_test.rs`, `tests/contract/write_test.rs`; production files: zero.
-- Scenarios (4 maximum): read rejection while indexing through public tool behavior; queued sync exact response; queued complete-mask semantics through observable behavior; normal idle control.
-- Remove direct tokenless owner/take setup. Do not add a public fixture API.
+- At most four scenarios: read rejection via public behavior; queued exact response; queued complete-mask observable behavior; idle control.
+- Remove tokenless setup; add no public fixture API.
 - Dependency: `109.025-T`.
 
 ### 14. `109.027-T` — compatibility migration: resilience tests
 
-- Files: `src/server/state.rs`, `tests/integration/indexing_resilience_test.rs`.
-- Production files: one, test-only co-located assertions in `state.rs`; release behavior changes: zero.
-- Scenarios (4 maximum): stale completion rejection, exactly-once transfer, current completion timestamp once, normal release control.
-- Move private authority assertions co-located; retain integration assertions only for public tool/runtime behavior.
+- Files: `src/server/state.rs`, `tests/integration/indexing_resilience_test.rs`; one production file with test-only private assertions.
+- At most four scenarios: stale finish/Drop rejection; dropped-owner successor recovery; current completion disarm/timestamp once; release control.
 - Dependency: `109.026-T`.
 
 ### 15. `109.028-T` — retire tokenless ownership mutators
 
-- Files: `src/server/state.rs` only.
-- Functions (4 maximum): retire/reduce `try_start_indexing`, `finish_indexing`, `publish_pending_sync_and_try_reacquire`, and `clear_pending_sync_for_generation`.
-- Structural proof: zero production/test call sites; no public or test-only permit export.
+- Files: `src/server/state.rs` only; at most four functions: retire/reduce `try_start_indexing`, `finish_indexing`, producer reacquire, and generation clear.
+- Prove zero callers; no public/test-only permit export.
 - Dependency: `109.027-T`.
 
 ### 16. `109.029-T` — retire split pending API
 
-- Files: `src/server/state.rs` only.
-- Functions (4 maximum): retire/reduce `set_pending_sync`, `publish_pending_sync`, `take_pending_sync`, and `has_pending_sync` where no longer required as safe observers.
-- Structural proof: no split consumption or request-only wrapper can become a second authority.
+- Files: `src/server/state.rs` only; at most four functions: retire/reduce set/publish/take/observer where safe.
+- Prove no split consumption or second-authority wrapper.
 - Dependency: `109.028-T`.
 
 ### 17. `109.030-T` — retire companion-only API and final inventory
 
-- Files: `src/server/state.rs` only.
-- Functions (4): retire `set/take_pending_sync_revalidate` and `set/take_pending_sync_backfill_python`.
-- Verify zero tokenless owner, generation-clear, split-take, companion-only, producer-reacquire, bounded-drain, and double-drain callers across `src/` and `tests/`.
+- Files: `src/server/state.rs` only; four companion set/take functions.
+- Verify zero tokenless owner, generation-clear, split-take, companion-only, producer-reacquire, bounded/double-drain, and caller-optional cleanup paths across `src/` and `tests/`.
 - Dependency: `109.029-T`.
 
 ### 18. `109.031-T` — Windows/runtime/release validation
 
-- Production files: zero. Closure/checklist docs only if required.
-- Scenarios (4 maximum): normal bind/hydration/complete; queued sync with full mask and exact response; rebind cancellation plus forced DB failure; startup/watcher handoff on Windows named pipe runtime.
-- Run deterministic unit/contract/integration coverage first, then a disposable Windows workspace smoke. Runtime timing is observational only, never the race proof. No operator workspace.
-- Capture structured logs, owner sequence balance, timestamp evidence, queued response, and rollback readiness.
+- Production files: zero; closure/checklist docs only if needed.
+- At most four scenarios: normal bind/hydration/complete-disarm; queued sync plus dropped-owner full-mask recovery/exact response; rebind with active owner/pending plus stale finish/Drop and forced DB failure; startup/watcher Windows named-pipe handoff.
+- Deterministic fixtures prove races. Smoke is observational. Verify restart reconciliation and record non-durable intent reissue; never claim Drop on process abort.
 - Dependency: `109.030-T`.
 
 ## Dependency graph
@@ -259,18 +284,21 @@ This chain is intentionally narrow. The four production modules migrate by respo
 
 ## Deterministic test strategy
 
-- Co-located private harnesses access private coordinator and admission seams.
-- Every RED first passes narrow `cargo test --lib --no-run <target>` compilation, then fails only its named assertion. Missing symbols or visibility failures are not RED.
-- Ordering uses direct transition steps, `Barrier`, oneshot, or `Notify`; no sleeps, `yield_now` correctness, permission races, live-daemon race proof, or wall-clock assertions.
-- GREEN runs the exact RED first, then affected contract/integration targets, then the full release-unit suite after visibility cleanup.
-- Static inventory confirms no forbidden legacy symbols/callers.
-- Windows runtime validation is a final smoke over a disposable workspace and cannot replace deterministic tests.
+- Private co-located harnesses access coordinator, Drop, notification, and admission seams; no public seam.
+- Every RED first passes narrow `cargo test --lib --no-run <target>`, then fails only its named assertion. Missing symbols/visibility are not RED.
+- Use direct transitions, `Barrier`, oneshot, or `Notify`, with private notification counters. No sleeps, yields, permission races, live-daemon race proof, or wall-clock assertions.
+- Required proofs: `0b101 OR 0b010 == 0b111` promotion during active-owner rebind; stale old finish and Drop leave replacement byte-for-byte unchanged; current Drop clears owner/republishes once; one successor takes recovery once; explicit completion disarms Drop; timestamp writes once only for exact explicit completion.
+- Hydration distinguishes pre-acquisition cancellation (zero permit/mutation) from post-acquisition RAII cleanup. Handled DB failure explicitly completes/disarms.
+- Static inventory confirms no legacy symbols, caller-optional cleanup, or direct tokenless setup.
+- Process abort is restart reconciliation/intent reissue, never a Drop path. Windows smoke checks liveness only.
 
 ## Migration and atomicity
 
-The source migration may use intermediate branch commits for executor checkpointing, but no intermediate commit is mergeable, releasable, or runtime-valid. There is no compatibility deployment window and no partial rollout. The final PR must contain every caller migration and visibility cleanup. Any need to retain tokenless completion, a split-mask cache, or a second active authority stops the release unit.
+Intermediate branch commits may checkpoint execution, but none is mergeable/releasable/runtime-valid. The final PR must contain coordinator cell, RAII Drop, binding retirement, every caller migration, and visibility cleanup. Tokenless completion, split-mask cache, second authority, or caller-optional cancellation cleanup stops the unit.
 
-No storage, schema, config, or wire migration exists. The only compatibility work is repository-test migration and internal visibility reduction. The exact CLI/MCP queued response and current public tool schemas are frozen.
+Binding transition is one logical publication: prepare/check first; acquire async binding guards in fixed order; then one no-await coordinator transition retires identity, unions/promotes masks, publishes binding/cancel/floor, and records whether one post-unlock wake is needed. Old and returned-new token are never current together. Stale finish/Drop cannot mutate replacement.
+
+No storage, schema, config-format, or wire migration exists. Process death is outside Rust Drop: restart hydration/offline reconciliation covers durable files, non-durable companion intent is reissued, and invariant failure rolls back the complete unit then restarts. No exactly-once side-effect claim crosses process death or binding identity.
 
 ## Exact Stage requeue transaction after Ship closes 106
 
@@ -293,12 +321,12 @@ Ship owns implementation and closure. Required proof before merge:
 - zero legacy caller inventory;
 - exact queued JSON and MCP/CLI schema snapshots unchanged;
 - no DB/file boundary before hydration permit;
-- every acquired owner sequence has exactly one valid completion in fixture logs;
+- every acquired owner sequence has exactly one exact terminal transition in fixture logs: explicit completion or RAII abandonment;
 - pending masks transfer whole and only once;
 - no bounded-drain warning path remains;
 - Windows named-pipe daemon bind, hydration, queued sync, cancellation, startup, and watcher smoke succeeds in a disposable workspace.
 
-Operational closure records a manual monitoring checklist if no metric sink exists, a pre-deploy audit, a 15-minute Windows post-startup observation window owned by Ship, and full-release-unit rollback evidence. Roll back on wrong-generation execution, duplicate/missing executor, orphaned/full-mask loss, pre-permit I/O, stuck owner, timestamp count violation, queued response change, or Windows daemon/IPC liveness regression.
+Operational closure records a manual monitoring checklist if no metric sink exists, a pre-deploy audit, a 15-minute Windows post-startup observation window owned by Ship, and full-release-unit rollback evidence. Roll back on wrong-generation execution, stale finish/Drop mutation, duplicate/missing executor, orphaned/full-mask loss, pre-permit I/O, stuck owner, timestamp count violation, queued response change, or Windows daemon/IPC liveness regression.
 
 Rollback is the complete coordinator release-unit revert followed by daemon restart. Partial rollback after permit caller migration is forbidden. There is no data/schema rollback.
 
@@ -318,10 +346,10 @@ Rollback is the complete coordinator release-unit revert followed by daemon rest
 |---|---|
 | Hidden downstream Rust consumer | `publish = false` evidence; stop before source mutation if a supported contract is produced. |
 | Partial migration exposes tokenless completion | No partial merge/release; final zero-caller inventory is gate-blocking. |
-| Completion/timestamp cancellation gap | Non-awaiting timestamp update after coordinator transition and before successful return; exact counter test. |
-| Hydration lost wake | Register `Notified` before request recheck; await only after guards drop. |
-| Successor duplication | Completion alone creates transferred permit; producer never reacquires. |
-| Mask loss or companion orphan | One `WorkMask` value, one pending slot, no split APIs. |
+| Completion/Drop/timestamp gap | Timestamp is written in the exact coordinator transition; old permit is disarmed before destruction; deterministic completion-versus-Drop counter proof. |
+| Hydration lost wake/cancellation | Register before recheck; pre-acquisition cancel is zero-permit; post-acquisition cancel is mandatory RAII Drop. |
+| Successor duplication | Completion returns one successor; Drop/rebind never preallocate inaccessible owner and notify at most one; no producer reacquire. |
+| Mask loss or companion orphan | Rebind/Drop use authoritative `owner mask OR pending` in one lock; one pending slot, no split APIs. |
 | Windows-only runtime behavior | Deterministic tests plus disposable Windows named-pipe validation. |
 | Review drift toward old design | Old tasks marked superseded; forbidden-symbol inventory and P0/P1 gate. |
 
@@ -368,7 +396,9 @@ Stop and return the release unit blocked if any implementation requires:
 7. a wire, schema, persistence, config, or queued-response change;
 8. a partial merge, deployment, or rollback of the caller migration;
 9. source mutation before exact visibility/caller reinspection confirms `publish = false` and no new supported Rust contract;
-10. failure to compile a RED before executing it.
+10. failure to compile a RED before executing it;
+11. caller-optional cleanup, async/spawn work in Drop, or stale Drop touching replacement owner;
+12. an exactly-once or RAII recovery claim across process abort.
 
 The source cutover is one release boundary. Width-safe tasks may checkpoint separately on the feature branch, but no checkpoint is eligible for PR merge or runtime use before `109.030-T` removes every legacy mutator and the aggregate source compiles. If the executor cannot stage the cutover without an unsafe compatibility bridge, it stops and returns the plan to Stage; it does not widen scope.
 
@@ -376,7 +406,7 @@ The source cutover is one release boundary. Width-safe tasks may checkpoint sepa
 
 **ProposedAction PA-1**
 
-- Summary: replace four independent synchronization authorities with one permit-bearing coordinator.
+- Summary: replace four independent synchronization authorities with one `Arc`-owned permit coordinator whose exact completion disarms mandatory RAII cleanup.
 - Targets: `src/server/state.rs`, then responsibility-isolated migrations in `lifecycle.rs`, `write.rs`, and `ipc_server.rs`.
 - Change kind: high-blast-radius shared runtime edit.
 - ActionRisk: high.
@@ -420,7 +450,7 @@ There is no required new metrics sink. Ship records a structured manual checklis
 
 | SLI / signal | Query or observation | Healthy baseline | Alert / rollback threshold | Owner |
 |---|---|---|---|---|
-| Owner sequence balance | Structured coordinator acquire/complete outcome logs in disposable run | Every acquired sequence has exactly one valid completion; stale rejects may occur but mutate nothing | Any missing/duplicate valid completion or completion of the wrong sequence | Ship |
+| Owner sequence balance | Structured acquire/complete/abandon logs | Every acquired sequence has one exact completion or abandonment; stale finish/Drop mutate nothing | Missing/duplicate terminal transition, wrong sequence, or stale mutation | Ship |
 | Full-mask handoff | Deterministic counters plus transfer log fields (`generation`, `sequence`, `mask`) | One `0b111` transfer to one successor; pending empty at transfer | Orphan companion, split mask, duplicate successor, or pending retained after transfer | Ship |
 | Hydration admission | Private pre-DB fixture counter and Windows hydration logs | Counter/log boundary remains zero before permit | Any DB/file boundary before `Acquired(Hydration)` | Ship |
 | Startup/release execution | S4 counters and startup structured logs | Exactly one executor | Zero or more than one executor | Ship |
@@ -434,7 +464,7 @@ Before merge, Ship records:
 
 - `publish = false` and no supported Rust-library contract introduced;
 - all 18 replacement tasks complete and old tasks remain superseded;
-- zero forbidden legacy callers and zero public permit/test seams;
+- zero forbidden legacy callers, zero public permit/test seams, and zero caller-optional cleanup paths;
 - no Cargo dependency, feature, schema, persistence, wire, or config delta;
 - exact queued response/schema snapshots unchanged;
 - deterministic suite and Windows disposable-runtime evidence attached;
@@ -456,38 +486,52 @@ Immediate rollback triggers are any wrong-generation execution, stale completion
 - Any unavailable index, ambiguous caller visibility, or non-terminal predecessor fails closed.
 
 
+### PR #316 P1 hardening delta
+
+- **Trigger:** owner lifecycle spans completion, cancellation/panic, generation replacement, and restart. `ActionRisk: high`.
+- **Guardrail:** `OwnerPermit` holds `Arc<CoordinatorCell>` and armed cleanup; exact Drop is synchronous, poison-safe, non-panicking, and notifies only after unlock.
+- **Atomicity:** generation install prepares/checks first, then one coordinator transition retires identity and publishes `old owner mask OR old pending` under new binding/floor. It never creates a successor without a recipient.
+- **Verification:** four core and four binding scenarios cover Drop republish, one-successor take, completion disarm/timestamp once, active-owner rebind union, and stale finish/Drop isolation.
+- **Abort boundary:** no Drop claim on process abort. Restart reconciliation handles durable state; non-durable flags are reissued; full-unit revert/restart is rollback.
+- **ActionResult:** applied to plan and blocked task scopes; implementation remains unapproved until the existing post-106 requeue gate.
+
+## Superseded Plan Review (pre-PR-P1 remediation)
+
+The earlier PASS at PR head `897406cc` is superseded because `discussion_r3700752674` and `discussion_r3700752695` exposed two valid P1 lifecycle gaps.
+
 ## Plan Review
 
-**Review cycle:** 0 (no remediation cycle required)  
-**Review model:** configured `.Stage` frontmatter — Anthropic `claude-opus-4.8`, Tier 3/high reasoning; no override  
-**Cross-model status:** unavailable in this execution surface; every required persona was applied with the caller model  
-**Gate: PASS**  
-**Open P0: 0. Open P1: 0. Open P2: 0. Open P3: 0.**  
-**Plan hardening:** required and satisfied.
+**Review cycle:** 1 (fresh review after accepted PR #316 P1 remediation)
+**Model routing verification:** `.github/agents/stage.agent.md` declares `.Stage`, Tier 3/high reasoning, provider `anthropic`, family `claude-opus-4.8`; no model override was supplied.
+**Cross-model status:** no subagent execution surface was available, so all required personas were applied in the caller review as permitted by the skill.
+**Gate: PASS**
+**Open P0: 0. Open P1: 0. Open P2: 0. Open P3: 0.**
+**Plan hardening:** required, rerun, and satisfied.
 
 ### Gate rationale
 
-The plan makes the compatibility decision rather than deferring it, represents all synchronization authority in one coordinator, and converts every unsafe owner/mask surface to an explicit migration or removal task. Five production changesets are preceded by compiling deterministic RED tasks. The four runtime modules are separated by responsibility with a strict acyclic chain; every unit is capped at two production files, fewer than five production functions, four scenarios, and 110 minutes. The release unit cannot be requeued before terminal 106 evidence and cannot be partially merged or rolled back.
+The two P1s are closed in design rather than delegated. Generation/binding advance has one no-await coordinator linearization point that retires prior identity, moves authoritative `owner WorkMask OR pending WorkMask` to the new generation, publishes binding/cancellation/floor coherently, and schedules at most one post-unlock wake without creating an inaccessible owner. Stale old finish returns `Stale`; stale Drop is identity-mismatched and cannot mutate replacement.
+
+Ownership is RAII. Exact completion disarms before destruction and writes timestamp once in the current-permit transition. Cancellation/panic Drop republishes authoritative union, clears exact owner once, and wakes one without await/spawn/panic. Pre-acquisition cancellation is a zero-permit path. Process abort is not misrepresented: startup reconciliation, non-durable intent reissue, and full-unit rollback/restart are named.
 
 ### Persona verdicts
 
-- **Constitution Reviewer — PASS (0 findings).** TDD ordering, Rust safety, width limits, role boundaries, and blocked shipment lifecycle are explicit. Stage performs no implementation, build, test, Git, or shipment claim/closure action.
-- **Rust Reviewer — PASS (0 findings).** The API is fallible on sequence exhaustion, permits are opaque/non-cloneable, stale outcomes are non-mutating, timestamp writes are valid-only, and no standard mutex guard crosses await. External-test visibility is handled by test migration rather than a public seam.
-- **Scope Boundary Auditor — PASS (0 findings).** State authority, lifecycle binding/hydration/handoff, write, IPC, test compatibility, and closure are isolated. No schema, persistence, config, dependency, operator-workspace, or unrelated backlog scope is admitted.
-- **Learnings Researcher — PASS (0 findings).** Whole-mask atomic publication, ownership-before-consume, complete release-site coverage, external-test visibility, and review-circuit-breaker learnings are incorporated. The plan explicitly supersedes the old re-arm/double-drain repair rather than combining both models.
-- **Architecture Strategist — PASS (0 findings).** Generation floor, sequenced owner, pending mask, and transfer are one authority. Completion alone creates the successor; `Notify` is not a queue; producer reacquire and split-mask caches are forbidden. The dependency graph is acyclic and the full release unit is the only rollout boundary.
-- **Agent-Native Parity Reviewer — PASS (0 findings).** CLI and MCP schemas, errors, commands, health meaning, startup behavior, and exact queued JSON are frozen and covered by contract/runtime verification.
-- **Security Lens Reviewer — PASS (0 findings).** Triggered conservatively by API/runtime surface changes. No auth, secret, trust-boundary, external-service, or sensitive-data expansion exists. Structured logs use generation/sequence/kind/mask only and must not include paths or workspace contents.
+- **Constitution Reviewer — PASS.** Stage changes only planning/docs/blocked backlog; TDD ordering, task width, role boundaries, and blocked shipment lifecycle remain explicit.
+- **Rust Reviewer — PASS.** `Arc<CoordinatorCell>` makes RAII feasible from `&AppState`; Drop uses a recoverable synchronous mutex and synchronous `notify_one`; no async destructor or mutex across await. Private exact identity prevents stale cleanup touching replacement.
+- **Scope Boundary Auditor — PASS.** No public API, wire/schema/config/persistence/Cargo change and no task over two files, four scenarios, or 110 minutes. Dependencies stay acyclic.
+- **Learnings Researcher — PASS.** Whole-mask atomicity, complete release-site coverage, no tokenless bridge, and private harness guidance remain; abandonment is an authoritative release site, not a second drain.
+- **Architecture Strategist — PASS.** Owner/pending union has one source/destination under one lock. Completion may return one successor; generation/Drop leave owner empty and wake at most one, preventing inaccessible permits and duplicate claims.
+- **Agent-Native Parity Reviewer — PASS.** Exact queued JSON, CLI/MCP schemas/errors, health meaning, and startup behavior are frozen and verified deterministically plus at runtime.
+- **Security Lens Reviewer — PASS.** No trust-boundary or sensitive-data expansion. Logs are limited to generation/sequence/kind/mask outcomes and exclude workspace contents.
 
-### Requirements and risk coverage
+### Internal consistency checks
 
-- Spike facts S1-S4 map to named deterministic units and final runtime checks.
-- Compatibility/semver, full caller migration, rollback, release observability, Windows named-pipe validation, and no-public-seam constraints are explicit.
-- Strict-safety `ProposedAction`, `ActionRisk`, approval, rollback, and `ActionResult` records are complete.
-- Monitoring names signals, observations, baselines, thresholds, owner, pre-deploy audit, and a 15-minute observation window.
-- The `ready_after_106_closure` marker is carried in supported body/tag/label surfaces while actual backlog and plan statuses remain blocked.
-- Exact positive terminal evidence for 102-S and 103-S is preserved and must be re-read before requeue.
+- `109.014/015` own four completion/Drop scenarios; `109.016/017` own four generation-retirement scenarios.
+- `109.018/019` distinguish pre-acquisition cancellation from post-acquisition RAII cleanup.
+- `109.020/021` prove a dropped transferred permit cannot strand work or start a second drain.
+- `109.031` treats process abort as restart reconciliation/reissue, not Drop.
+- Dependency chain remains `109.013 -> 109.014 -> ... -> 109.031`; statuses remain blocked.
 
 ### Review decision
 
-The plan is approved for harvest into **blocked** replacement tasks only. PASS does not authorize source work, closing `106-S`/`109.013-T`, requeueing `104-S`/`109-F`, claiming a shipment, or changing any unrelated artifact. Stage may create the replacement hierarchy, mark old tasks superseded, and record the post-106 transaction. Ship must first integrate the findings and close 106; a later Stage session performs the fail-closed requeue.
+The remediated plan has zero open P0/P1 and is approved only as blocked replacement scope. PASS does not authorize source/test/Cargo work, closing `106-S`/`109.013-T`, requeueing `104-S`/`109-F`, shipment claim/closure, Git/PR operations, or thread resolution. Ship must commit/push these planning changes and reply to both threads; the existing post-106 Stage transaction remains the sole requeue gate.
