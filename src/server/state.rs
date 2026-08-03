@@ -295,10 +295,24 @@ struct OwnerRecord {
 }
 
 #[allow(dead_code)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RetirementBarrier {
+    retired_identity: OwnerIdentity,
+    retired_binding: BindingIdentity,
+    /// Immutable old-generation intent retained only so a later retarget back
+    /// to the retired binding can reconstruct its same-binding replay.
+    retired_work_mask: WorkMask,
+    target_generation: u64,
+    target_binding: BindingIdentity,
+    deferred: WorkMask,
+}
+
+#[allow(dead_code)]
 #[derive(Debug)]
 enum CoordinatorPhase {
     Idle,
     Running(OwnerRecord),
+    Retiring(RetirementBarrier),
 }
 
 #[allow(dead_code)]
@@ -364,6 +378,7 @@ pub(crate) enum RequestOutcome {
 pub(crate) enum CompletionOutcome {
     Transferred(OwnerPermit),
     Released,
+    RetirementAcknowledged,
     SequenceExhausted(OwnerPermit),
     Stale,
 }
@@ -373,6 +388,8 @@ pub(crate) enum CompletionOutcome {
 pub(crate) enum CoordinatorError {
     #[error("coordinator owner sequence exhausted")]
     SequenceExhausted,
+    #[error("workspace limit reached (limit {limit})")]
+    WorkspaceLimit { limit: usize },
 }
 
 #[allow(dead_code)]
@@ -436,6 +453,7 @@ impl CoordinatorCell {
             },
             Waiting,
             Enqueued,
+            Stale,
         }
 
         let cell = Arc::clone(&admission.cell);
@@ -448,40 +466,50 @@ impl CoordinatorCell {
             return Ok(RequestOutcome::Stale);
         }
 
-        let decision = match &state.phase {
-            CoordinatorPhase::Idle => {
-                if state.next_sequence == u64::MAX {
-                    drop(state);
-                    return Err(CoordinatorError::SequenceExhausted);
-                }
-
-                state.next_sequence += 1;
-                let identity = OwnerIdentity {
-                    generation: state.floor,
-                    sequence: state.next_sequence,
-                    kind,
-                };
-                let selected_work = if work_mask.is_empty() {
-                    WorkMask::default()
-                } else {
-                    let selected = state.pending.union(work_mask);
-                    state.pending = WorkMask::default();
-                    selected
-                };
-                state.phase = CoordinatorPhase::Running(OwnerRecord {
-                    identity,
-                    binding_identity: state.binding_identity.clone(),
-                    work_mask: selected_work,
-                });
-                Decision::Acquired {
-                    identity,
-                    work_mask: selected_work,
-                }
+        let decision = if matches!(state.phase, CoordinatorPhase::Idle) {
+            if state.next_sequence == u64::MAX {
+                drop(state);
+                return Err(CoordinatorError::SequenceExhausted);
             }
-            CoordinatorPhase::Running(_) if work_mask.is_empty() => Decision::Waiting,
-            CoordinatorPhase::Running(_) => {
+
+            state.next_sequence += 1;
+            let identity = OwnerIdentity {
+                generation: state.floor,
+                sequence: state.next_sequence,
+                kind,
+            };
+            let selected_work = if work_mask.is_empty() {
+                WorkMask::default()
+            } else {
+                let selected = state.pending.union(work_mask);
+                state.pending = WorkMask::default();
+                selected
+            };
+            state.phase = CoordinatorPhase::Running(OwnerRecord {
+                identity,
+                binding_identity: state.binding_identity.clone(),
+                work_mask: selected_work,
+            });
+            Decision::Acquired {
+                identity,
+                work_mask: selected_work,
+            }
+        } else if matches!(state.phase, CoordinatorPhase::Running(_)) {
+            if work_mask.is_empty() {
+                Decision::Waiting
+            } else {
                 state.pending = state.pending.union(work_mask);
                 Decision::Enqueued
+            }
+        } else if work_mask.is_empty() {
+            Decision::Waiting
+        } else {
+            match &mut state.phase {
+                CoordinatorPhase::Retiring(barrier) => {
+                    barrier.deferred = barrier.deferred.union(work_mask);
+                    Decision::Enqueued
+                }
+                CoordinatorPhase::Idle | CoordinatorPhase::Running(_) => Decision::Stale,
             }
         };
         drop(state);
@@ -513,6 +541,7 @@ impl CoordinatorCell {
             }
             Decision::Waiting => Ok(RequestOutcome::Waiting(admission)),
             Decision::Enqueued => Ok(RequestOutcome::Enqueued),
+            Decision::Stale => Ok(RequestOutcome::Stale),
         }
     }
 
@@ -523,6 +552,32 @@ impl CoordinatorCell {
         };
         let cell = Arc::clone(&ownership.cell);
         let mut state = cell.lock();
+        let retiring_deferred = match &state.phase {
+            CoordinatorPhase::Retiring(barrier)
+                if barrier.retired_identity == permit.identity
+                    && barrier.retired_binding == ownership.binding_snapshot
+                    && ownership.token.floor == permit.identity.generation
+                    && ownership.token.binding_identity == barrier.retired_binding =>
+            {
+                Some(barrier.deferred)
+            }
+            CoordinatorPhase::Idle
+            | CoordinatorPhase::Running(_)
+            | CoordinatorPhase::Retiring(_) => None,
+        };
+        if let Some(deferred) = retiring_deferred {
+            state.pending = deferred;
+            state.phase = CoordinatorPhase::Idle;
+            drop(state);
+
+            permit.cleanup_armed = false;
+            let _ = permit.ownership.take();
+            #[cfg(test)]
+            cell.notification_calls.fetch_add(1, Ordering::SeqCst);
+            cell.notify.notify_one();
+            return CompletionOutcome::RetirementAcknowledged;
+        }
+
         let exact = matches!(
             &state.phase,
             CoordinatorPhase::Running(owner)
@@ -608,6 +663,30 @@ impl Drop for OwnerPermit {
         };
         let cell = Arc::clone(&ownership.cell);
         let mut state = cell.lock();
+        let retiring_deferred = match &state.phase {
+            CoordinatorPhase::Retiring(barrier)
+                if barrier.retired_identity == self.identity
+                    && barrier.retired_binding == ownership.binding_snapshot
+                    && ownership.token.floor == self.identity.generation
+                    && ownership.token.binding_identity == barrier.retired_binding =>
+            {
+                Some(barrier.deferred)
+            }
+            CoordinatorPhase::Idle
+            | CoordinatorPhase::Running(_)
+            | CoordinatorPhase::Retiring(_) => None,
+        };
+        if let Some(deferred) = retiring_deferred {
+            state.pending = deferred;
+            state.phase = CoordinatorPhase::Idle;
+            drop(state);
+            #[cfg(test)]
+            cell.notification_calls.fetch_add(1, Ordering::SeqCst);
+            cell.notify.notify_one();
+            self.cleanup_armed = false;
+            return;
+        }
+
         let owner_work = match &state.phase {
             CoordinatorPhase::Running(owner)
                 if owner.identity == self.identity
@@ -617,7 +696,9 @@ impl Drop for OwnerPermit {
             {
                 Some(owner.work_mask)
             }
-            CoordinatorPhase::Idle | CoordinatorPhase::Running(_) => None,
+            CoordinatorPhase::Idle
+            | CoordinatorPhase::Running(_)
+            | CoordinatorPhase::Retiring(_) => None,
         };
         let should_notify = if let Some(owner_work) = owner_work {
             state.pending = owner_work.union(state.pending);
@@ -667,11 +748,11 @@ pub struct AppState {
     /// the `set_workspace` cancel race window survives an older generation's
     /// clear (105.001-T / R1). See the `PENDING_SYNC_*_BIT` associated constants.
     pending_sync: Mutex<PendingSyncState>,
-    /// Monotonic sync-generation counter, incremented on each
-    /// [`AppState::begin_scan_generation`] (each `set_workspace` rebind). Reads
-    /// give the current generation a published request is tagged with; the value
-    /// returned to the hydration task lets its cancel / DB-fail clear identify
-    /// which generation it owns (105.001-T / R1).
+    /// Legacy pending-sync tag mirrored from the coordinator floor by
+    /// [`AppState::publish_workspace_generation`]. Reads give the generation a
+    /// published request is tagged with; the value returned to hydration lets
+    /// its cancel / DB-fail clear identify which generation it owns
+    /// (105.001-T / R1). Later migration tasks retire this mirror.
     sync_generation: AtomicU64,
     last_indexed_at: RwLock<Option<DateTime<Utc>>>,
     /// Rolling window of tool-call latencies (in microseconds, capped at 1 000 samples).
@@ -843,6 +924,97 @@ impl AppState {
         *workspace = Some(snapshot);
         *workspace_config = config;
         Ok(())
+    }
+
+    /// Publish a binding/config pair and begin its coordinator generation.
+    ///
+    /// Task 109.017-T replaces this compile-only RED bridge with one atomic
+    /// binding/coordinator publication.
+    pub(crate) async fn publish_workspace_generation(
+        &self,
+        snapshot: WorkspaceSnapshot,
+        config: Option<WorkspaceConfig>,
+    ) -> Result<(u64, watch::Receiver<bool>), CoordinatorError> {
+        let target_binding = BindingIdentity {
+            workspace_uuid: snapshot.workspace_uuid.clone(),
+            workspace_id: snapshot.workspace_id.clone(),
+        };
+        let (new_cancel, new_cancel_rx) = watch::channel(false);
+
+        // Fixed lock order: binding, config, then the synchronous coordinator.
+        // No await occurs after the coordinator mutex is acquired.
+        let mut workspace = self.active_workspace.write().await;
+        let mut workspace_config = self.workspace_config.write().await;
+        if let Some(active) = workspace.as_ref() {
+            if active.workspace_id != snapshot.workspace_id && self.max_workspaces <= 1 {
+                return Err(CoordinatorError::WorkspaceLimit {
+                    limit: self.max_workspaces,
+                });
+            }
+        }
+
+        let mut coordinator = self
+            .coordinator
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(target_generation) = coordinator.floor.checked_add(1) else {
+            return Err(CoordinatorError::SequenceExhausted);
+        };
+        let same_binding = coordinator.binding_identity == target_binding;
+        let old_cancel = std::mem::replace(&mut coordinator.generation_cancel, new_cancel);
+        let prior_phase = std::mem::replace(&mut coordinator.phase, CoordinatorPhase::Idle);
+        coordinator.phase = match prior_phase {
+            CoordinatorPhase::Idle => {
+                if !same_binding {
+                    coordinator.pending = WorkMask::default();
+                }
+                CoordinatorPhase::Idle
+            }
+            CoordinatorPhase::Running(owner) => {
+                let retired_work_mask = owner.work_mask.union(coordinator.pending);
+                let deferred = if same_binding {
+                    retired_work_mask
+                } else {
+                    WorkMask::default()
+                };
+                coordinator.pending = WorkMask::default();
+                CoordinatorPhase::Retiring(RetirementBarrier {
+                    retired_identity: owner.identity,
+                    retired_binding: owner.binding_identity,
+                    retired_work_mask,
+                    target_generation,
+                    target_binding: target_binding.clone(),
+                    deferred,
+                })
+            }
+            CoordinatorPhase::Retiring(mut barrier) => {
+                if barrier.target_binding != target_binding {
+                    barrier.deferred = if target_binding == barrier.retired_binding {
+                        barrier.retired_work_mask
+                    } else {
+                        WorkMask::default()
+                    };
+                }
+                barrier.target_generation = target_generation;
+                barrier.target_binding = target_binding.clone();
+                CoordinatorPhase::Retiring(barrier)
+            }
+        };
+        coordinator.floor = target_generation;
+        coordinator.binding_identity = target_binding;
+        self.sync_generation
+            .store(target_generation, Ordering::SeqCst);
+        self.hydration_ready.store(false, Ordering::Release);
+        *workspace = Some(snapshot);
+        *workspace_config = config;
+
+        // Make the visible binding readable before allowing new admission.
+        drop(workspace_config);
+        drop(workspace);
+        drop(coordinator);
+        let _ = old_cancel.send(true);
+        Ok((target_generation, new_cancel_rx))
     }
 
     pub fn increment_connections(&self) {
@@ -1303,6 +1475,33 @@ mod coordinator_tests {
         Arc::new(CoordinatorCell::new(binding(name)))
     }
 
+    fn workspace(name: &str, workspace_uuid: &str, workspace_id: &str) -> WorkspaceSnapshot {
+        WorkspaceSnapshot {
+            workspace_id: workspace_id.to_string(),
+            workspace_uuid: workspace_uuid.to_string(),
+            branch: "main".to_string(),
+            data_dir: PathBuf::from(format!("logs/phase6-group1/{name}")),
+            path: format!("C:/workspace/{name}"),
+            last_flush: None,
+            stale_files: false,
+            connection_count: 0,
+            file_mtimes: HashMap::new(),
+        }
+    }
+
+    async fn publish(
+        state: &AppState,
+        snapshot: WorkspaceSnapshot,
+    ) -> (u64, watch::Receiver<bool>) {
+        match state
+            .publish_workspace_generation(snapshot, Some(WorkspaceConfig::default()))
+            .await
+        {
+            Ok(publication) => publication,
+            Err(error) => panic!("unexpected publication error: {error}"),
+        }
+    }
+
     fn admission(cell: &Arc<CoordinatorCell>) -> AdmissionGuard {
         cell.admission()
     }
@@ -1447,6 +1646,9 @@ mod coordinator_tests {
             CompletionOutcome::SequenceExhausted(_) => {
                 panic!("unexpected sequence exhaustion")
             }
+            CompletionOutcome::RetirementAcknowledged => {
+                panic!("unexpected retirement acknowledgment")
+            }
             CompletionOutcome::Stale => panic!("expected current completion"),
         };
         assert_eq!(successor.work_mask.bits(), 0b010);
@@ -1517,6 +1719,9 @@ mod coordinator_tests {
             CompletionOutcome::SequenceExhausted(permit) => permit,
             CompletionOutcome::Transferred(_) => panic!("sequence exhaustion transferred"),
             CompletionOutcome::Released => panic!("sequence exhaustion released"),
+            CompletionOutcome::RetirementAcknowledged => {
+                panic!("sequence exhaustion acknowledged retirement")
+            }
             CompletionOutcome::Stale => panic!("sequence exhaustion reported stale"),
         };
         {
@@ -1575,5 +1780,337 @@ mod coordinator_tests {
             CompletionOutcome::Released
         ));
         assert_eq!(cell.notification_calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn binding_publication_is_coherent_and_overflow_safe() {
+        let state = AppState::new(1);
+        let old_waiter = admission(&state.coordinator);
+        let alpha = workspace("alpha", "uuid-alpha", "id-alpha");
+        let (generation, new_cancel_rx) = publish(&state, alpha.clone()).await;
+
+        assert_eq!(generation, 1);
+        assert_eq!(state.current_sync_generation(), 1);
+        assert!(*old_waiter.cancel_rx.borrow());
+        assert!(!*new_cancel_rx.borrow());
+        assert!(matches!(
+            request(old_waiter, WorkMask::default(), OwnerKind::Hydration),
+            RequestOutcome::Stale
+        ));
+        {
+            let coordinator = state.coordinator.lock();
+            assert_eq!(coordinator.floor, 1);
+            assert_eq!(
+                coordinator.binding_identity,
+                BindingIdentity {
+                    workspace_uuid: alpha.workspace_uuid.clone(),
+                    workspace_id: alpha.workspace_id.clone(),
+                }
+            );
+            assert!(matches!(coordinator.phase, CoordinatorPhase::Idle));
+            assert_eq!(
+                state.coordinator.notification_calls.load(Ordering::SeqCst),
+                0
+            );
+        }
+        let dispatch = match state.snapshot_dispatch_context().await {
+            Some(dispatch) => dispatch,
+            None => panic!("binding publication did not publish dispatch state"),
+        };
+        assert_eq!(dispatch.workspace.workspace_uuid, "uuid-alpha");
+        assert_eq!(dispatch.workspace.workspace_id, "id-alpha");
+
+        state.coordinator.lock().floor = u64::MAX;
+        let before = state.snapshot_workspace_and_config().await;
+        let result = state
+            .publish_workspace_generation(
+                workspace("beta", "uuid-beta", "id-beta"),
+                Some(WorkspaceConfig::default()),
+            )
+            .await;
+        assert!(result.is_err());
+        let after = state.snapshot_workspace_and_config().await;
+        assert_eq!(
+            before.as_ref().map(|(snapshot, _)| &snapshot.workspace_id),
+            after.as_ref().map(|(snapshot, _)| &snapshot.workspace_id)
+        );
+        let coordinator = state.coordinator.lock();
+        assert_eq!(coordinator.floor, u64::MAX);
+        assert_eq!(coordinator.binding_identity.workspace_id, "id-alpha");
+    }
+
+    #[tokio::test]
+    async fn active_rebind_matrix_is_acknowledgment_gated() {
+        for same_binding in [true, false] {
+            for kind in [
+                OwnerKind::Index,
+                OwnerKind::Sync,
+                OwnerKind::Hydration,
+                OwnerKind::Startup,
+                OwnerKind::Watcher,
+            ] {
+                for explicit_ack in [true, false] {
+                    let state = AppState::new(2);
+                    let old = workspace("old", "uuid-old", "id-old");
+                    let _ = publish(&state, old.clone()).await;
+                    let permit = acquired(request(
+                        admission(&state.coordinator),
+                        WorkMask::from_bits(0b101),
+                        kind,
+                    ));
+                    assert!(matches!(
+                        request(
+                            admission(&state.coordinator),
+                            WorkMask::from_bits(0b010),
+                            OwnerKind::Sync
+                        ),
+                        RequestOutcome::Enqueued
+                    ));
+
+                    let target = if same_binding {
+                        workspace("old-rebound", "uuid-old", "id-old")
+                    } else {
+                        workspace("new", "uuid-new", "id-new")
+                    };
+                    let (target_generation, _target_cancel) = publish(&state, target).await;
+                    assert_eq!(
+                        *permit
+                            .ownership
+                            .as_ref()
+                            .map(|ownership| ownership.cancel_rx.borrow())
+                            .unwrap_or_else(|| panic!("permit lost cancellation ownership")),
+                        true
+                    );
+
+                    let retired_identity = {
+                        let coordinator = state.coordinator.lock();
+                        let barrier = match &coordinator.phase {
+                            CoordinatorPhase::Retiring(barrier) => barrier,
+                            CoordinatorPhase::Idle | CoordinatorPhase::Running(_) => {
+                                panic!("active rebind did not install retirement barrier")
+                            }
+                        };
+                        assert_eq!(barrier.retired_identity, permit.identity);
+                        assert_eq!(barrier.target_generation, target_generation);
+                        assert_eq!(
+                            barrier.deferred.bits(),
+                            if same_binding { 0b111 } else { 0 }
+                        );
+                        assert_eq!(
+                            state.coordinator.notification_calls.load(Ordering::SeqCst),
+                            0
+                        );
+                        barrier.retired_identity
+                    };
+
+                    assert!(matches!(
+                        request(
+                            admission(&state.coordinator),
+                            WorkMask::from_bits(0b100),
+                            OwnerKind::Sync
+                        ),
+                        RequestOutcome::Enqueued
+                    ));
+                    let mut waiting_guard = waiting(request(
+                        admission(&state.coordinator),
+                        WorkMask::default(),
+                        OwnerKind::Startup,
+                    ));
+                    let active_drivers = AtomicUsize::new(1);
+                    assert_eq!(active_drivers.load(Ordering::SeqCst), 1);
+                    active_drivers.store(0, Ordering::SeqCst);
+
+                    if explicit_ack {
+                        assert!(matches!(
+                            CoordinatorCell::complete(permit),
+                            CompletionOutcome::RetirementAcknowledged
+                        ));
+                    } else {
+                        drop(permit);
+                    }
+                    assert_eq!(active_drivers.load(Ordering::SeqCst), 0);
+                    {
+                        let coordinator = state.coordinator.lock();
+                        assert!(matches!(coordinator.phase, CoordinatorPhase::Idle));
+                        assert_eq!(
+                            coordinator.pending.bits(),
+                            if same_binding { 0b111 } else { 0b100 }
+                        );
+                        assert!(coordinator.last_indexed_at.is_none());
+                        assert_eq!(
+                            state.coordinator.notification_calls.load(Ordering::SeqCst),
+                            1
+                        );
+                    }
+
+                    assert!(notification_is_ready(&mut waiting_guard.enabled_notification).await);
+                    let successor = acquired(request(
+                        admission(&state.coordinator),
+                        WorkMask::from_bits(0b001),
+                        OwnerKind::Sync,
+                    ));
+                    assert_eq!(successor.identity.generation, target_generation);
+                    assert_ne!(successor.identity, retired_identity);
+                    active_drivers.store(1, Ordering::SeqCst);
+                    assert_eq!(active_drivers.load(Ordering::SeqCst), 1);
+                    drop(successor);
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn repeated_rebind_retargets_one_barrier_and_stale_terminals_do_nothing() {
+        let state = AppState::new(2);
+        let old = workspace("old", "uuid-old", "id-old");
+        let _ = publish(&state, old.clone()).await;
+        let permit = acquired(request(
+            admission(&state.coordinator),
+            WorkMask::from_bits(0b101),
+            OwnerKind::Index,
+        ));
+        assert!(matches!(
+            request(
+                admission(&state.coordinator),
+                WorkMask::from_bits(0b010),
+                OwnerKind::Sync
+            ),
+            RequestOutcome::Enqueued
+        ));
+
+        let _ = publish(&state, old.clone()).await;
+        let first_identity = match &state.coordinator.lock().phase {
+            CoordinatorPhase::Retiring(barrier) => {
+                assert_eq!(barrier.deferred.bits(), 0b111);
+                barrier.retired_identity
+            }
+            CoordinatorPhase::Idle | CoordinatorPhase::Running(_) => {
+                panic!("first rebind did not retire owner")
+            }
+        };
+        let target_waiter = waiting(request(
+            admission(&state.coordinator),
+            WorkMask::default(),
+            OwnerKind::Watcher,
+        ));
+
+        let (same_target_generation, _) = publish(&state, old.clone()).await;
+        assert!(*target_waiter.cancel_rx.borrow());
+        {
+            let coordinator = state.coordinator.lock();
+            let barrier = match &coordinator.phase {
+                CoordinatorPhase::Retiring(barrier) => barrier,
+                CoordinatorPhase::Idle | CoordinatorPhase::Running(_) => {
+                    panic!("same-target rebind cleared retirement barrier")
+                }
+            };
+            assert_eq!(barrier.retired_identity, first_identity);
+            assert_eq!(barrier.target_generation, same_target_generation);
+            assert_eq!(barrier.deferred.bits(), 0b111);
+        }
+
+        let newest = workspace("newest", "uuid-newest", "id-newest");
+        let (newest_generation, _) = publish(&state, newest.clone()).await;
+        {
+            let coordinator = state.coordinator.lock();
+            let barrier = match &coordinator.phase {
+                CoordinatorPhase::Retiring(barrier) => barrier,
+                CoordinatorPhase::Idle | CoordinatorPhase::Running(_) => {
+                    panic!("distinct retarget cleared retirement barrier")
+                }
+            };
+            assert_eq!(barrier.retired_identity, first_identity);
+            assert_eq!(barrier.target_generation, newest_generation);
+            assert_eq!(barrier.target_binding.workspace_id, "id-newest");
+            assert!(barrier.deferred.is_empty());
+        }
+        assert!(matches!(
+            request(
+                admission(&state.coordinator),
+                WorkMask::from_bits(0b010),
+                OwnerKind::Sync
+            ),
+            RequestOutcome::Enqueued
+        ));
+
+        let (restored_generation, _) = publish(&state, old).await;
+        {
+            let coordinator = state.coordinator.lock();
+            let barrier = match &coordinator.phase {
+                CoordinatorPhase::Retiring(barrier) => barrier,
+                CoordinatorPhase::Idle | CoordinatorPhase::Running(_) => {
+                    panic!("return to retired binding cleared retirement barrier")
+                }
+            };
+            assert_eq!(barrier.retired_identity, first_identity);
+            assert_eq!(barrier.target_generation, restored_generation);
+            assert_eq!(barrier.target_binding.workspace_id, "id-old");
+            assert_eq!(barrier.deferred.bits(), 0b111);
+        }
+
+        let (final_generation, _) = publish(&state, newest).await;
+        {
+            let coordinator = state.coordinator.lock();
+            let barrier = match &coordinator.phase {
+                CoordinatorPhase::Retiring(barrier) => barrier,
+                CoordinatorPhase::Idle | CoordinatorPhase::Running(_) => {
+                    panic!("final distinct retarget cleared retirement barrier")
+                }
+            };
+            assert_eq!(barrier.retired_identity, first_identity);
+            assert_eq!(barrier.target_generation, final_generation);
+            assert!(barrier.deferred.is_empty());
+        }
+        assert!(matches!(
+            request(
+                admission(&state.coordinator),
+                WorkMask::from_bits(0b010),
+                OwnerKind::Sync
+            ),
+            RequestOutcome::Enqueued
+        ));
+
+        drop(permit);
+        let before_stale = {
+            let coordinator = state.coordinator.lock();
+            assert!(matches!(coordinator.phase, CoordinatorPhase::Idle));
+            assert_eq!(coordinator.pending.bits(), 0b010);
+            (
+                coordinator.floor,
+                coordinator.binding_identity.clone(),
+                coordinator.pending,
+                coordinator.last_indexed_at,
+                state.coordinator.notification_calls.load(Ordering::SeqCst),
+            )
+        };
+        let stale = OwnerPermit {
+            ownership: Some(PermitOwnership {
+                cell: Arc::clone(&state.coordinator),
+                token: GenerationToken {
+                    floor: 1,
+                    binding_identity: binding("old"),
+                },
+                binding_snapshot: binding("old"),
+                cancel_rx: state.coordinator.lock().generation_cancel.subscribe(),
+            }),
+            identity: first_identity,
+            work_mask: WorkMask::from_bits(0b111),
+            cleanup_armed: true,
+        };
+        assert!(matches!(
+            CoordinatorCell::complete(stale),
+            CompletionOutcome::Stale
+        ));
+        let after_stale = {
+            let coordinator = state.coordinator.lock();
+            (
+                coordinator.floor,
+                coordinator.binding_identity.clone(),
+                coordinator.pending,
+                coordinator.last_indexed_at,
+                state.coordinator.notification_calls.load(Ordering::SeqCst),
+            )
+        };
+        assert_eq!(before_stale, after_stale);
     }
 }

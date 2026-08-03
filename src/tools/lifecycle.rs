@@ -14,7 +14,7 @@ use crate::db::workspace::{
 };
 use crate::errors::{EngramError, SystemError, WorkspaceError};
 use crate::models::health::{HealthReport, ScanProgress};
-use crate::server::state::{AppState, WorkspaceSnapshot};
+use crate::server::state::{AppState, CoordinatorError, WorkspaceSnapshot};
 use crate::services::code_graph::sync_workspace as sync_code_graph;
 use crate::services::config::parse_config;
 use crate::services::connection::validate_workspace_path;
@@ -161,9 +161,19 @@ pub async fn set_workspace(
         file_mtimes: hydration.file_mtimes.clone(),
     };
 
-    state
-        .set_workspace_and_config(snapshot, Some(ws_config.clone()))
-        .await?;
+    let (sync_generation, cancel_rx) = state
+        .publish_workspace_generation(snapshot, Some(ws_config.clone()))
+        .await
+        .map_err(|error| match error {
+            CoordinatorError::SequenceExhausted => {
+                EngramError::System(SystemError::InvalidParams {
+                    reason: error.to_string(),
+                })
+            }
+            CoordinatorError::WorkspaceLimit { limit } => {
+                EngramError::Workspace(WorkspaceError::LimitReached { limit })
+            }
+        })?;
     crate::services::query_stats::reset_timing();
 
     // Queue a background scan immediately. The DB connect + hydrate +
@@ -178,13 +188,6 @@ pub async fn set_workspace(
         last_completed_at: None,
     };
     state.set_scan_progress(Some(initial_progress)).await;
-
-    // Cancel any stale scan from a prior set_workspace call, then register
-    // a fresh cancellation receiver for this generation.
-    // Also reset the hydration-ready flag so `_health` gates "ready" on the
-    // new cycle completing rather than inheriting the prior workspace's state.
-    state.clear_hydration_ready();
-    let (sync_generation, cancel_rx) = state.begin_scan_generation().await;
 
     let state_bg = Arc::clone(&state);
     let canonical_bg = canonical.clone();
@@ -547,9 +550,9 @@ pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, E
     // concurrent `set_workspace` pair this workspace's path/branch with a
     // DIFFERENT config's `retrieval_eval_enabled`; taking both under one
     // dispatch-context read eliminates that WIDE tear window. The writer side is
-    // now atomic too: `set_workspace_and_config` (092.001-T) publishes the binding
-    // and its config under both write locks, in the same lock order this reader
-    // uses, so this handler observes a fully consistent (workspace, config) pair.
+    // now atomic too: `publish_workspace_generation` publishes the binding,
+    // config, coordinator floor, and cancellation channel under the fixed lock
+    // order, so this handler observes a fully consistent workspace/config pair.
     let Some(ctx) = state.snapshot_dispatch_context().await else {
         return Err(EngramError::Workspace(WorkspaceError::NotSet));
     };
