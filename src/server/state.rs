@@ -1214,6 +1214,11 @@ impl AppState {
             || !matches!(self.coordinator.lock().phase, CoordinatorPhase::Idle)
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_legacy_indexing_is_active(&self) -> bool {
+        self.indexing_in_progress.load(Ordering::SeqCst)
+    }
+
     /// Attempt to start an indexing operation.
     ///
     /// Returns `true` if the flag was set (no other indexing was running).

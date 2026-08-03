@@ -1029,6 +1029,14 @@ mod tests {
             entered_rx
                 .await
                 .unwrap_or_else(|error| panic!("hydration did not enter I/O: {error}"));
+            assert!(
+                !state.coordinator.test_is_idle(),
+                "hydration must own its coordinator permit while I/O is active"
+            );
+            assert!(
+                !state.test_legacy_indexing_is_active(),
+                "the coordinator permit must be the only hydration owner authority"
+            );
 
             let target = if same_binding {
                 coordinator_snapshot("old-rebound", "old")
