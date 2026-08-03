@@ -23,12 +23,14 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
-use tokio::sync::RwLock;
+use tokio::sync::futures::OwnedNotified;
+use tokio::sync::{Notify, RwLock, watch};
 
 use crate::config::StaleStrategy;
 use crate::errors::WorkspaceError;
@@ -211,6 +213,430 @@ impl PendingSyncState {
     }
 }
 
+/// Exact private identity of a workspace binding.
+#[allow(dead_code)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct BindingIdentity {
+    workspace_uuid: String,
+    workspace_id: String,
+}
+
+#[allow(dead_code)]
+impl BindingIdentity {
+    fn unbound() -> Self {
+        Self {
+            workspace_uuid: String::new(),
+            workspace_id: String::new(),
+        }
+    }
+}
+
+/// Opaque generation and binding snapshot used for coordinator admission.
+#[allow(dead_code)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct GenerationToken {
+    floor: u64,
+    binding_identity: BindingIdentity,
+}
+
+/// Complete coalesced work request. The three bits always move together.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct WorkMask(u8);
+
+#[allow(dead_code)]
+impl WorkMask {
+    const ROUTINE: u8 = 0b001;
+    const REVALIDATE: u8 = 0b010;
+    const BACKFILL_PYTHON: u8 = 0b100;
+
+    const fn from_bits(bits: u8) -> Self {
+        Self(bits & (Self::ROUTINE | Self::REVALIDATE | Self::BACKFILL_PYTHON))
+    }
+
+    const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    const fn union(self, other: Self) -> Self {
+        Self::from_bits(self.0 | other.0)
+    }
+
+    const fn bits(self) -> u8 {
+        self.0
+    }
+}
+
+/// Diagnostic owner category retained in the sequenced permit identity.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OwnerKind {
+    Index,
+    Sync,
+    Hydration,
+    Startup,
+    Watcher,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct OwnerIdentity {
+    generation: u64,
+    sequence: u64,
+    kind: OwnerKind,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct OwnerRecord {
+    identity: OwnerIdentity,
+    binding_identity: BindingIdentity,
+    work_mask: WorkMask,
+}
+
+#[allow(dead_code)]
+#[derive(Debug)]
+enum CoordinatorPhase {
+    Idle,
+    Running(OwnerRecord),
+}
+
+#[allow(dead_code)]
+#[derive(Debug)]
+struct SyncCoordinator {
+    floor: u64,
+    binding_identity: BindingIdentity,
+    next_sequence: u64,
+    phase: CoordinatorPhase,
+    pending: WorkMask,
+    generation_cancel: watch::Sender<bool>,
+    last_indexed_at: Option<DateTime<Utc>>,
+}
+
+/// Single private authority for coordinator admission and owner lifecycle.
+#[allow(dead_code)]
+#[derive(Debug)]
+pub(crate) struct CoordinatorCell {
+    state: Mutex<SyncCoordinator>,
+    notify: Arc<Notify>,
+    #[cfg(test)]
+    notification_calls: AtomicUsize,
+    #[cfg(test)]
+    timestamp_writes: AtomicUsize,
+}
+
+/// Move-only pre-acquisition ownership, including an enabled waiter registration.
+#[allow(dead_code)]
+pub(crate) struct AdmissionGuard {
+    cell: Arc<CoordinatorCell>,
+    token: GenerationToken,
+    binding_snapshot: BindingIdentity,
+    cancel_rx: watch::Receiver<bool>,
+    enabled_notification: Pin<Box<OwnedNotified>>,
+}
+
+#[allow(dead_code)]
+struct PermitOwnership {
+    cell: Arc<CoordinatorCell>,
+    token: GenerationToken,
+    binding_snapshot: BindingIdentity,
+    cancel_rx: watch::Receiver<bool>,
+}
+
+/// Move-only exact owner permit with mandatory synchronous abandonment cleanup.
+#[allow(dead_code)]
+pub(crate) struct OwnerPermit {
+    ownership: Option<PermitOwnership>,
+    identity: OwnerIdentity,
+    work_mask: WorkMask,
+    cleanup_armed: bool,
+}
+
+#[allow(dead_code)]
+pub(crate) enum RequestOutcome {
+    Acquired(OwnerPermit),
+    Waiting(AdmissionGuard),
+    Enqueued,
+    Stale,
+}
+
+#[allow(dead_code)]
+pub(crate) enum CompletionOutcome {
+    Transferred(OwnerPermit),
+    Released,
+    SequenceExhausted(OwnerPermit),
+    Stale,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub(crate) enum CoordinatorError {
+    #[error("coordinator owner sequence exhausted")]
+    SequenceExhausted,
+}
+
+#[allow(dead_code)]
+impl CoordinatorCell {
+    fn new(binding_identity: BindingIdentity) -> Self {
+        let (generation_cancel, _cancel_rx) = watch::channel(false);
+        Self {
+            state: Mutex::new(SyncCoordinator {
+                floor: 0,
+                binding_identity,
+                next_sequence: 0,
+                phase: CoordinatorPhase::Idle,
+                pending: WorkMask::default(),
+                generation_cancel,
+                last_indexed_at: None,
+            }),
+            notify: Arc::new(Notify::new()),
+            #[cfg(test)]
+            notification_calls: AtomicUsize::new(0),
+            #[cfg(test)]
+            timestamp_writes: AtomicUsize::new(0),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, SyncCoordinator> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(crate) fn admission(self: &Arc<Self>) -> AdmissionGuard {
+        let state = self.lock();
+        let token = GenerationToken {
+            floor: state.floor,
+            binding_identity: state.binding_identity.clone(),
+        };
+        let binding_snapshot = state.binding_identity.clone();
+        let cancel_rx = state.generation_cancel.subscribe();
+        drop(state);
+
+        let mut enabled_notification = Box::pin(Arc::clone(&self.notify).notified_owned());
+        enabled_notification.as_mut().enable();
+        AdmissionGuard {
+            cell: Arc::clone(self),
+            token,
+            binding_snapshot,
+            cancel_rx,
+            enabled_notification,
+        }
+    }
+
+    pub(crate) fn request(
+        admission: AdmissionGuard,
+        work_mask: WorkMask,
+        kind: OwnerKind,
+    ) -> Result<RequestOutcome, CoordinatorError> {
+        enum Decision {
+            Acquired {
+                identity: OwnerIdentity,
+                work_mask: WorkMask,
+            },
+            Waiting,
+            Enqueued,
+        }
+
+        let cell = Arc::clone(&admission.cell);
+        let mut state = cell.lock();
+        let is_current = admission.token.floor == state.floor
+            && admission.token.binding_identity == state.binding_identity
+            && admission.binding_snapshot == state.binding_identity;
+        if !is_current {
+            drop(state);
+            return Ok(RequestOutcome::Stale);
+        }
+
+        let decision = match &state.phase {
+            CoordinatorPhase::Idle => {
+                if state.next_sequence == u64::MAX {
+                    drop(state);
+                    return Err(CoordinatorError::SequenceExhausted);
+                }
+
+                state.next_sequence += 1;
+                let identity = OwnerIdentity {
+                    generation: state.floor,
+                    sequence: state.next_sequence,
+                    kind,
+                };
+                let selected_work = if work_mask.is_empty() {
+                    WorkMask::default()
+                } else {
+                    let selected = state.pending.union(work_mask);
+                    state.pending = WorkMask::default();
+                    selected
+                };
+                state.phase = CoordinatorPhase::Running(OwnerRecord {
+                    identity,
+                    binding_identity: state.binding_identity.clone(),
+                    work_mask: selected_work,
+                });
+                Decision::Acquired {
+                    identity,
+                    work_mask: selected_work,
+                }
+            }
+            CoordinatorPhase::Running(_) if work_mask.is_empty() => Decision::Waiting,
+            CoordinatorPhase::Running(_) => {
+                state.pending = state.pending.union(work_mask);
+                Decision::Enqueued
+            }
+        };
+        drop(state);
+
+        match decision {
+            Decision::Acquired {
+                identity,
+                work_mask,
+            } => {
+                let AdmissionGuard {
+                    cell,
+                    token,
+                    binding_snapshot,
+                    cancel_rx,
+                    enabled_notification,
+                } = admission;
+                drop(enabled_notification);
+                Ok(RequestOutcome::Acquired(OwnerPermit {
+                    ownership: Some(PermitOwnership {
+                        cell,
+                        token,
+                        binding_snapshot,
+                        cancel_rx,
+                    }),
+                    identity,
+                    work_mask,
+                    cleanup_armed: true,
+                }))
+            }
+            Decision::Waiting => Ok(RequestOutcome::Waiting(admission)),
+            Decision::Enqueued => Ok(RequestOutcome::Enqueued),
+        }
+    }
+
+    pub(crate) fn complete(mut permit: OwnerPermit) -> CompletionOutcome {
+        let Some(ownership) = permit.ownership.as_ref() else {
+            permit.cleanup_armed = false;
+            return CompletionOutcome::Stale;
+        };
+        let cell = Arc::clone(&ownership.cell);
+        let mut state = cell.lock();
+        let exact = matches!(
+            &state.phase,
+            CoordinatorPhase::Running(owner)
+                if owner.identity == permit.identity
+                    && owner.binding_identity == ownership.binding_snapshot
+                    && ownership.token.floor == state.floor
+                    && ownership.token.binding_identity == state.binding_identity
+        );
+        if !exact {
+            drop(state);
+            permit.cleanup_armed = false;
+            let _ = permit.ownership.take();
+            return CompletionOutcome::Stale;
+        }
+
+        if state.pending.is_empty() {
+            state.phase = CoordinatorPhase::Idle;
+            state.last_indexed_at = Some(Utc::now());
+            #[cfg(test)]
+            cell.timestamp_writes.fetch_add(1, Ordering::SeqCst);
+            drop(state);
+
+            permit.cleanup_armed = false;
+            let _ = permit.ownership.take();
+            #[cfg(test)]
+            cell.notification_calls.fetch_add(1, Ordering::SeqCst);
+            cell.notify.notify_one();
+            CompletionOutcome::Released
+        } else {
+            if state.next_sequence == u64::MAX {
+                drop(state);
+                return CompletionOutcome::SequenceExhausted(permit);
+            }
+            state.next_sequence += 1;
+            let identity = OwnerIdentity {
+                generation: state.floor,
+                sequence: state.next_sequence,
+                kind: OwnerKind::Sync,
+            };
+            let work_mask = state.pending;
+            state.pending = WorkMask::default();
+            state.phase = CoordinatorPhase::Running(OwnerRecord {
+                identity,
+                binding_identity: state.binding_identity.clone(),
+                work_mask,
+            });
+            state.last_indexed_at = Some(Utc::now());
+            #[cfg(test)]
+            cell.timestamp_writes.fetch_add(1, Ordering::SeqCst);
+            drop(state);
+
+            permit.cleanup_armed = false;
+            let Some(ownership) = permit.ownership.take() else {
+                return CompletionOutcome::Stale;
+            };
+            CompletionOutcome::Transferred(OwnerPermit {
+                ownership: Some(ownership),
+                identity,
+                work_mask,
+                cleanup_armed: true,
+            })
+        }
+    }
+}
+
+#[allow(dead_code)]
+impl AdmissionGuard {
+    pub(crate) fn rearm(&mut self) {
+        let mut notification = Box::pin(Arc::clone(&self.cell.notify).notified_owned());
+        notification.as_mut().enable();
+        self.enabled_notification = notification;
+    }
+}
+
+impl Drop for OwnerPermit {
+    fn drop(&mut self) {
+        if !self.cleanup_armed {
+            return;
+        }
+        let Some(ownership) = self.ownership.as_ref() else {
+            self.cleanup_armed = false;
+            return;
+        };
+        let cell = Arc::clone(&ownership.cell);
+        let mut state = cell.lock();
+        let owner_work = match &state.phase {
+            CoordinatorPhase::Running(owner)
+                if owner.identity == self.identity
+                    && owner.binding_identity == ownership.binding_snapshot
+                    && ownership.token.floor == state.floor
+                    && ownership.token.binding_identity == state.binding_identity =>
+            {
+                Some(owner.work_mask)
+            }
+            CoordinatorPhase::Idle | CoordinatorPhase::Running(_) => None,
+        };
+        let should_notify = if let Some(owner_work) = owner_work {
+            state.pending = owner_work.union(state.pending);
+            state.phase = CoordinatorPhase::Idle;
+            true
+        } else {
+            false
+        };
+        drop(state);
+
+        if should_notify {
+            #[cfg(test)]
+            cell.notification_calls.fetch_add(1, Ordering::SeqCst);
+            cell.notify.notify_one();
+        }
+        self.cleanup_armed = false;
+    }
+}
+
 #[derive(Debug)]
 pub struct AppState {
     start: Instant,
@@ -221,6 +647,8 @@ pub struct AppState {
     stale_strategy: StaleStrategy,
     connection_registry: ConnectionRegistry,
     rate_limiter: RateLimiter,
+    #[allow(dead_code)]
+    coordinator: Arc<CoordinatorCell>,
     indexing_in_progress: AtomicBool,
     /// Generation-tagged pending-sync request queue (104.002-T / 105.001-T):
     /// bit 0 = `pending_sync` (a `sync_workspace` was requested while indexing
@@ -294,6 +722,7 @@ impl AppState {
             stale_strategy,
             connection_registry: ConnectionRegistry::new(),
             rate_limiter: RateLimiter::new(rate_limit_max, rate_limit_window_secs),
+            coordinator: Arc::new(CoordinatorCell::new(BindingIdentity::unbound())),
             indexing_in_progress: AtomicBool::new(false),
             pending_sync: Mutex::new(PendingSyncState::default()),
             sync_generation: AtomicU64::new(0),
@@ -858,3 +1287,293 @@ impl AppState {
 }
 
 pub type SharedState = Arc<AppState>;
+
+#[cfg(test)]
+mod coordinator_tests {
+    use super::*;
+
+    fn binding(name: &str) -> BindingIdentity {
+        BindingIdentity {
+            workspace_uuid: format!("uuid-{name}"),
+            workspace_id: format!("workspace-{name}"),
+        }
+    }
+
+    fn coordinator_cell(name: &str) -> Arc<CoordinatorCell> {
+        Arc::new(CoordinatorCell::new(binding(name)))
+    }
+
+    fn admission(cell: &Arc<CoordinatorCell>) -> AdmissionGuard {
+        cell.admission()
+    }
+
+    fn publish_idle_generation(cell: &CoordinatorCell, new_binding: BindingIdentity) {
+        let old_cancel = {
+            let mut state = cell.lock();
+            let (new_cancel, _new_rx) = watch::channel(false);
+            let old_cancel = std::mem::replace(&mut state.generation_cancel, new_cancel);
+            state.floor += 1;
+            state.binding_identity = new_binding;
+            old_cancel
+        };
+        let _ = old_cancel.send(true);
+    }
+
+    fn acquired(outcome: RequestOutcome) -> OwnerPermit {
+        match outcome {
+            RequestOutcome::Acquired(permit) => permit,
+            RequestOutcome::Waiting(_) => panic!("expected acquired permit, got waiting"),
+            RequestOutcome::Enqueued => panic!("expected acquired permit, got enqueued"),
+            RequestOutcome::Stale => panic!("expected acquired permit, got stale"),
+        }
+    }
+
+    fn waiting(outcome: RequestOutcome) -> AdmissionGuard {
+        match outcome {
+            RequestOutcome::Waiting(admission) => admission,
+            RequestOutcome::Acquired(_) => panic!("expected waiting guard, got permit"),
+            RequestOutcome::Enqueued => panic!("expected waiting guard, got enqueued"),
+            RequestOutcome::Stale => panic!("expected waiting guard, got stale"),
+        }
+    }
+
+    fn request(admission: AdmissionGuard, mask: WorkMask, kind: OwnerKind) -> RequestOutcome {
+        match CoordinatorCell::request(admission, mask, kind) {
+            Ok(outcome) => outcome,
+            Err(error) => panic!("unexpected request error: {error:?}"),
+        }
+    }
+
+    fn rearm(admission: &mut AdmissionGuard) {
+        admission.rearm();
+    }
+
+    async fn notification_is_ready(notification: &mut Pin<Box<OwnedNotified>>) -> bool {
+        tokio::select! {
+            biased;
+            _ = notification.as_mut() => true,
+            () = std::future::ready(()) => false,
+        }
+    }
+
+    #[test]
+    fn admission_guard_cancels_and_busy_work_is_coordinator_owned() {
+        let cell = coordinator_cell("old");
+        let stale_admission = admission(&cell);
+        publish_idle_generation(&cell, binding("new"));
+        assert!(*stale_admission.cancel_rx.borrow());
+        assert!(matches!(
+            request(stale_admission, WorkMask::default(), OwnerKind::Hydration),
+            RequestOutcome::Stale
+        ));
+
+        let owner = acquired(request(
+            admission(&cell),
+            WorkMask::from_bits(0b101),
+            OwnerKind::Index,
+        ));
+        let enqueued = request(
+            admission(&cell),
+            WorkMask::from_bits(0b010),
+            OwnerKind::Sync,
+        );
+        assert!(matches!(enqueued, RequestOutcome::Enqueued));
+
+        let waiting_guard = waiting(request(
+            admission(&cell),
+            WorkMask::default(),
+            OwnerKind::Startup,
+        ));
+        let before_drop = {
+            let state = cell.lock();
+            (
+                state.pending,
+                cell.notification_calls.load(Ordering::SeqCst),
+            )
+        };
+        drop(waiting_guard);
+        let after_drop = {
+            let state = cell.lock();
+            (
+                state.pending,
+                cell.notification_calls.load(Ordering::SeqCst),
+            )
+        };
+        assert_eq!(before_drop, after_drop);
+        assert_eq!(after_drop.0.bits(), 0b010);
+        drop(owner);
+    }
+
+    #[test]
+    fn owner_kind_completion_drop_and_sequence_matrix() {
+        for kind in [
+            OwnerKind::Index,
+            OwnerKind::Sync,
+            OwnerKind::Hydration,
+            OwnerKind::Startup,
+            OwnerKind::Watcher,
+        ] {
+            let cell = coordinator_cell("kind");
+            let permit = acquired(request(admission(&cell), WorkMask::from_bits(0b001), kind));
+            assert_eq!(permit.identity.kind, kind);
+            assert!(matches!(
+                CoordinatorCell::complete(permit),
+                CompletionOutcome::Released
+            ));
+            let state = cell.lock();
+            assert!(matches!(state.phase, CoordinatorPhase::Idle));
+            assert!(state.last_indexed_at.is_some());
+            assert_eq!(cell.timestamp_writes.load(Ordering::SeqCst), 1);
+            assert_eq!(cell.notification_calls.load(Ordering::SeqCst), 1);
+        }
+
+        let cell = coordinator_cell("transfer");
+        let permit = acquired(request(
+            admission(&cell),
+            WorkMask::from_bits(0b101),
+            OwnerKind::Index,
+        ));
+        assert!(matches!(
+            request(
+                admission(&cell),
+                WorkMask::from_bits(0b010),
+                OwnerKind::Sync
+            ),
+            RequestOutcome::Enqueued
+        ));
+        let successor = match CoordinatorCell::complete(permit) {
+            CompletionOutcome::Transferred(successor) => successor,
+            CompletionOutcome::Released => panic!("expected transferred successor"),
+            CompletionOutcome::SequenceExhausted(_) => {
+                panic!("unexpected sequence exhaustion")
+            }
+            CompletionOutcome::Stale => panic!("expected current completion"),
+        };
+        assert_eq!(successor.work_mask.bits(), 0b010);
+        assert_eq!(successor.identity.kind, OwnerKind::Sync);
+        assert_eq!(cell.timestamp_writes.load(Ordering::SeqCst), 1);
+        drop(successor);
+        let state = cell.lock();
+        assert!(matches!(state.phase, CoordinatorPhase::Idle));
+        assert_eq!(state.pending.bits(), 0b010);
+        assert_eq!(cell.notification_calls.load(Ordering::SeqCst), 1);
+        drop(state);
+
+        let stale_ownership = PermitOwnership {
+            cell: Arc::clone(&cell),
+            token: GenerationToken {
+                floor: 0,
+                binding_identity: binding("transfer"),
+            },
+            binding_snapshot: binding("transfer"),
+            cancel_rx: cell.lock().generation_cancel.subscribe(),
+        };
+        let stale = OwnerPermit {
+            ownership: Some(stale_ownership),
+            identity: OwnerIdentity {
+                generation: 0,
+                sequence: u64::MAX,
+                kind: OwnerKind::Sync,
+            },
+            work_mask: WorkMask::from_bits(0b111),
+            cleanup_armed: true,
+        };
+        assert!(matches!(
+            CoordinatorCell::complete(stale),
+            CompletionOutcome::Stale
+        ));
+        assert_eq!(cell.lock().pending.bits(), 0b010);
+        assert_eq!(cell.notification_calls.load(Ordering::SeqCst), 1);
+
+        let exhausted = coordinator_cell("exhausted");
+        exhausted.lock().next_sequence = u64::MAX;
+        let result = CoordinatorCell::request(
+            admission(&exhausted),
+            WorkMask::from_bits(0b001),
+            OwnerKind::Index,
+        );
+        assert_eq!(result.err(), Some(CoordinatorError::SequenceExhausted));
+        let state = exhausted.lock();
+        assert!(matches!(state.phase, CoordinatorPhase::Idle));
+        assert!(state.pending.is_empty());
+        drop(state);
+
+        let transfer_exhausted = coordinator_cell("transfer-exhausted");
+        transfer_exhausted.lock().next_sequence = u64::MAX - 1;
+        let permit = acquired(request(
+            admission(&transfer_exhausted),
+            WorkMask::from_bits(0b001),
+            OwnerKind::Index,
+        ));
+        assert!(matches!(
+            request(
+                admission(&transfer_exhausted),
+                WorkMask::from_bits(0b010),
+                OwnerKind::Sync
+            ),
+            RequestOutcome::Enqueued
+        ));
+        let permit = match CoordinatorCell::complete(permit) {
+            CompletionOutcome::SequenceExhausted(permit) => permit,
+            CompletionOutcome::Transferred(_) => panic!("sequence exhaustion transferred"),
+            CompletionOutcome::Released => panic!("sequence exhaustion released"),
+            CompletionOutcome::Stale => panic!("sequence exhaustion reported stale"),
+        };
+        {
+            let state = transfer_exhausted.lock();
+            assert!(matches!(state.phase, CoordinatorPhase::Running(_)));
+            assert_eq!(state.pending.bits(), 0b010);
+            assert!(state.last_indexed_at.is_none());
+        }
+        drop(permit);
+        let state = transfer_exhausted.lock();
+        assert!(matches!(state.phase, CoordinatorPhase::Idle));
+        assert_eq!(state.pending.bits(), 0b011);
+        assert_eq!(
+            transfer_exhausted.notification_calls.load(Ordering::SeqCst),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn acquired_registration_cannot_steal_release_baton() {
+        let cell = coordinator_cell("baton");
+        let owner = acquired(request(
+            admission(&cell),
+            WorkMask::default(),
+            OwnerKind::Hydration,
+        ));
+        let mut first = waiting(request(
+            admission(&cell),
+            WorkMask::default(),
+            OwnerKind::Startup,
+        ));
+        let mut second = waiting(request(
+            admission(&cell),
+            WorkMask::default(),
+            OwnerKind::Watcher,
+        ));
+
+        assert!(matches!(
+            CoordinatorCell::complete(owner),
+            CompletionOutcome::Released
+        ));
+        assert!(notification_is_ready(&mut first.enabled_notification).await);
+        assert!(!notification_is_ready(&mut second.enabled_notification).await);
+
+        rearm(&mut first);
+        let first_owner = acquired(request(first, WorkMask::default(), OwnerKind::Startup));
+        assert!(matches!(
+            CoordinatorCell::complete(first_owner),
+            CompletionOutcome::Released
+        ));
+        assert!(notification_is_ready(&mut second.enabled_notification).await);
+        rearm(&mut second);
+        let second_owner = acquired(request(second, WorkMask::default(), OwnerKind::Watcher));
+        assert!(matches!(
+            CoordinatorCell::complete(second_owner),
+            CompletionOutcome::Released
+        ));
+        assert_eq!(cell.notification_calls.load(Ordering::SeqCst), 3);
+    }
+}
