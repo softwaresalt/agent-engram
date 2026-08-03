@@ -27,7 +27,7 @@ review: 109.002-R
 
 ## Final design decision
 
-A non-cloneable `AdmissionGuard` owns the generation token, exact binding snapshot, enabled notification, receiver, and coordinator cell before acquisition. `request` consumes it into `Acquired(OwnerPermit)`, guarded `Waiting`, full-mask-authoritative `Enqueued`, or `Stale`. Acquisition and completion transfer move ownership; direct idle Index/Sync preserve kind. Armed Drop covers error, `?`, early return, panic, caller abort, and transferred-successor loss.
+A non-cloneable `AdmissionGuard` owns the generation token, exact binding snapshot, pinned enabled `OwnedNotified`, receiver, and coordinator cell before acquisition. `request` consumes it into `Acquired(OwnerPermit)`, guarded `Waiting`, full-mask-authoritative `Enqueued`, or `Stale`. Acquisition drops the waiter registration before moving receiver/token/snapshot/cell ownership into the permit, so an acquired owner cannot steal its later release wake; direct idle Index/Sync preserve kind. Armed Drop covers error, `?`, early return, panic, caller abort, and transferred-successor loss.
 
 A reusable parent-retained `DriverTaskGuard` joins normally and aborts on Drop for Hydration, Startup, both Watchers, and progress mutation. Mutation-capable child work must end before permit Drop or retirement acknowledgment. Raw JoinHandle detachment, receiver extraction, caller-optional cleanup, and a detached full `WorkMask` are forbidden.
 

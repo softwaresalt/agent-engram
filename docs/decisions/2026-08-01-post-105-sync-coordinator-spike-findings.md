@@ -129,7 +129,10 @@ SyncCoordinator {
 OwnerKind { Index, Sync, Hydration, Startup, Watcher }
 OwnerIdentity { generation, sequence, kind }
 AdmissionGuard { cell, token, binding_snapshot, cancel_rx, enabled_notification }
-OwnerPermit { admission_ownership, identity, work_mask, cleanup_armed }
+OwnerPermit {
+  cell, token, binding_snapshot, cancel_rx,
+  identity, work_mask, cleanup_armed
+}
 DriverTaskGuard { join_handle, abort_handle, terminal_state }
 RetirementBarrier {
   retired_identity, retired_binding, target_generation, target_binding,
@@ -137,7 +140,7 @@ RetirementBarrier {
 }
 ```
 
-`request(admission, work_mask, owner_kind)` consumes a non-cloneable guard and returns `Acquired(OwnerPermit) | Waiting(AdmissionGuard) | Enqueued | Stale`. In `Running` or `Retiring`, non-empty current work is committed to the authoritative pending/deferred mask before `Enqueued`; an empty internal waiter receives `Waiting` with the same receiver and already-enabled notification. In `Idle`, direct Index/Sync preserves its requested kind and moves admission ownership into the acquired permit; only a completion-transferred coalesced successor normalizes to Sync. The coordinator clones a receiver only when minting AdmissionGuard, callers cannot extract/clone it, and acquisition/transfer moves ownership. A Waiting loop selects its owned notification against its owned receiver and re-arms before recheck.
+`request(admission, work_mask, owner_kind)` consumes a non-cloneable guard and returns `Acquired(OwnerPermit) | Waiting(AdmissionGuard) | Enqueued | Stale`. In `Running` or `Retiring`, non-empty current work is committed to the authoritative pending/deferred mask before `Enqueued`; an empty internal waiter receives `Waiting` with the same receiver and already-enabled pinned `OwnedNotified`. In `Idle`, direct Index/Sync preserves its requested kind, drops the enabled waiter registration, and moves the remaining cancellation/binding ownership into the acquired permit; only a completion-transferred coalesced successor normalizes to Sync. The coordinator clones a receiver only when minting AdmissionGuard, callers cannot extract/clone it, and acquisition/transfer moves ownership without retaining a registration that could steal a release wake. A Waiting loop selects its owned notification against its owned receiver and re-arms before recheck.
 
 ### Atomic active rebind
 
@@ -181,7 +184,7 @@ Strategy B is rejected because it would create and support a public permit-beari
 
 ## Replacement-plan input and disposition
 
-The old residual plan and tasks assume signature preservation, `Reacquired`, split claims, and bounded double-drain behavior. Those scopes remain superseded. The replacement plan keeps every task at `<=110 minutes`, `<=2` production files, `<5` production functions, and `<=4` scenarios in the existing strict chain. Core RED/GREEN adds the cancellation receiver and ordinary RAII lifecycle. Binding RED/GREEN adds one retirement barrier, request coalescing, repeated-rebind retargeting, and exact ack publication. Hydration, Index/Sync, Startup, and both Watcher task pairs each prove cancellation observation and mutation-capable exit before ack. Parameterized OwnerKind/relation/terminal matrices preserve the scenario caps while proving same-binding `0b111`, distinct-binding zero carryover, no successor-before-ack, one post-unlock notification call, max one DB driver, no post-ack old work, and stale-terminal isolation. Existing fixtures also add owner-success/single-empty-waiter and multi-waiter baton rows for Hydration/Startup/Watcher, asserting exact call counts, at-most-one acquisition per call, finite progress, and no spin or queue duplication. Pre-acquisition cancellation remains zero-permit, and non-durable companion work still requires a latest-binding token.
+The old residual plan and tasks assume signature preservation, `Reacquired`, split claims, and bounded double-drain behavior. Those scopes remain superseded. The replacement plan keeps every task at `<=110 minutes`, `<=2` production files, `<5` production functions, and `<=3` scenarios in the existing strict chain. Core RED/GREEN adds the cancellation receiver and ordinary RAII lifecycle. Binding RED/GREEN adds one retirement barrier, request coalescing, repeated-rebind retargeting, and exact ack publication. Hydration, Index/Sync, Startup, and both Watcher task pairs each prove cancellation observation and mutation-capable exit before ack. Parameterized OwnerKind/relation/terminal matrices preserve the scenario caps while proving same-binding `0b111`, distinct-binding zero carryover, no successor-before-ack, one post-unlock notification call, max one DB driver, no post-ack old work, and stale-terminal isolation. Existing fixtures also add owner-success/single-empty-waiter and multi-waiter baton rows for Hydration/Startup/Watcher, asserting exact call counts, at-most-one acquisition per call, finite progress, and no spin or queue duplication. Pre-acquisition cancellation remains zero-permit, and non-durable companion work still requires a latest-binding token.
 
 Final disposition: **PIVOT to strategy A with high confidence.** Final configured Stage review-fix cycle 3/3 passes with P0/P1/P2/P3 = `0/0/0/0`. Implementation remains blocked until Ship closes `106-S`, Stage performs the documented fail-closed requeue transaction, and all existing gates pass.
 
@@ -198,7 +201,7 @@ PR #316 comments `r3701318733` and `r3701318749`, plus the exact Ship backlog co
 
 `request` consumes the guard and has four distinct internal outcomes:
 
-1. `Acquired(OwnerPermit)`: receiver, snapshot, and cell ownership move into one armed non-cloneable permit.
+1. `Acquired(OwnerPermit)`: the enabled waiter registration is dropped, then receiver, token, snapshot, and cell ownership move into one armed non-cloneable permit; no stale registration can consume its release wake.
 2. `Waiting(AdmissionGuard)`: only an empty internal waiter receives this result; it owns the already-enabled notification and selects it against cancellation before re-arming for a recheck.
 3. `Enqueued`: only a non-empty busy producer receives this after the complete mask is coordinator-owned in ordinary pending or barrier deferred; caller return cannot lose the work.
 4. `Stale`: zero mutation and no retained obligation.
@@ -218,4 +221,4 @@ The cleanup guard is therefore explicit, non-optional, and continuous from waiti
 
 ### Deterministic acceptance
 
-The replacement task matrices must compile before failing and prove, without sleeps or public seams: idle rebind cancels a pre-acquisition waiter without any owner wake; guard ownership moves exactly once into acquisition and transfer; post-acquisition early return and abort recover; raw spawned-handle loss cannot detach a mutation-capable owner; Hydration and both Watchers are supervised; progress helpers end before owner terminal; full-mask transfer loss republishes once; and aggregate active-driver count never exceeds one. The existing `109.014-T` through `109.031-T` chain carries these rows within `<=4` scenarios, `<=2` files, and `<=110` minutes per task.
+The replacement task matrices must compile before failing and prove, without sleeps or public seams: idle rebind cancels a pre-acquisition waiter without any owner wake; acquisition removes its enabled registration and moves cancellation/binding ownership exactly once; post-acquisition early return and abort recover; raw spawned-handle loss cannot detach a mutation-capable owner; Hydration and both Watchers are supervised; progress helpers end before owner terminal; full-mask transfer loss republishes once; and aggregate active-driver count never exceeds one. The existing `109.014-T` through `109.031-T` chain carries these rows within `<=3` scenarios, `<=2` files, and `<=110` minutes per task.

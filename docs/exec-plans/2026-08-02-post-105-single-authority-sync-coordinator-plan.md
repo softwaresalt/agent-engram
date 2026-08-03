@@ -12,7 +12,7 @@ tags: ["concurrency", "pending-sync", "permit", "internal-api", "raii", "cancell
 
 ## Pipeline gate
 
-This fresh replacement plan is **`ready_after_106_closure`**, represented by the supported plan body marker and backlog label `ready-after-106-closure`; its actual status remains `blocked`. It does not authorize implementation or a status change now. `106-S` and `109.013-T` remain active. `104-S`, `109-F`, and every implementation task remain blocked until Ship integrates the findings and closes `106-S`, then Stage executes the exact requeue transaction in this plan.
+The historical replacement gate was **`ready_after_106_closure`**, represented by the supported plan body marker and backlog label `ready-after-106-closure`. That gate is now satisfied: `106-S` and `109.013-T` are archived, Stage completed its exact fail-closed requeue transaction, and `104-S`, `109-F`, and replacement tasks `109.014-T` through `109.031-T` are queued. Ship may implement only after revalidating the archived prerequisites, exact shipment manifest/predecessors, branch gate, and claim lifecycle.
 
 This plan supersedes `docs/exec-plans/2026-07-31-post-105-pending-sync-residuals-plan.md` and tasks `109.001-T` through `109.012-T`. None of those task scopes remains accurate: they retain tokenless completion, `Reacquired`, split mask takes, or bounded double-drain behavior rejected by the spike.
 
@@ -55,7 +55,7 @@ The replacement is strategy A from the findings: one private `SyncCoordinator` o
 ### State, cancellation, and RAII ownership
 
 ```text
-CoordinatorCell { state: std::sync::Mutex<SyncCoordinator>, notify: Notify }
+CoordinatorCell { state: std::sync::Mutex<SyncCoordinator>, notify: Arc<Notify> }
 BindingIdentity { workspace_uuid, workspace_id }  // private exact equality; workspace_id includes path/branch
 SyncCoordinator {
   floor, binding_identity: BindingIdentity, next_sequence,
@@ -73,13 +73,17 @@ RetirementBarrier {
 }
 AdmissionGuard {
   cell: Arc<CoordinatorCell>, token, binding_snapshot,
-  cancel_rx: watch::Receiver<bool>, enabled_notification
+  cancel_rx: watch::Receiver<bool>,
+  enabled_notification: Pin<Box<OwnedNotified>>
 }
-OwnerPermit { admission_ownership: AdmissionGuard, identity, work_mask, cleanup_armed }
+OwnerPermit {
+  cell: Arc<CoordinatorCell>, token, binding_snapshot,
+  cancel_rx: watch::Receiver<bool>, identity, work_mask, cleanup_armed
+}
 DriverTaskGuard { join_handle, abort_handle, terminal_state }
 ```
 
-`AppState` owns one private `Arc<CoordinatorCell>`. The coordinator is the only receiver-clone minting point. Each non-Clone `AdmissionGuard` owns one receiver, exact snapshot, cell, and enabled notification; acquisition moves that ownership into a non-Clone `OwnerPermit`. Callers cannot extract or clone the receiver. `Notify` stores neither work nor identity, is never ownership authority, and only triggers a mutex-protected guarded recheck.
+`AppState` owns one private `Arc<CoordinatorCell>`. The coordinator is the only receiver-clone minting point. Each non-Clone `AdmissionGuard` owns one receiver, exact snapshot, cell, and pinned enabled `OwnedNotified`; `Arc<Notify>` avoids a self-referential guard. Acquisition consumes the guard, drops the enabled registration, and moves only the receiver/snapshot/cell/token ownership into a non-Clone `OwnerPermit`. Callers cannot extract or clone the receiver. `Notify` stores neither work nor identity, is never ownership authority, and only triggers a mutex-protected guarded recheck.
 
 The coordinator phase is the sole authority. `pending` is used only in `Idle`/`Running`. During `Retiring`, `RetirementBarrier.deferred` is the sole current-generation work location; the retired permit retains an immutable old binding snapshot and a non-authoritative mask copy only so it can stop safely. No current permit exists and no successor can acquire until the barrier is acknowledged.
 
@@ -93,9 +97,9 @@ Every driver owns its permit around the complete DB/file-capable future. Rebind 
 - In `Retiring`, no request can acquire. A current-token non-empty request ORs into `RetirementBarrier.deferred` and receives `Enqueued`; an empty-mask waiter publishes no work and receives guarded `Waiting`. Thus same-binding `0b111` and all later current-generation requests remain in one authoritative barrier slot. Old-token requests remain stale.
 - A rebind that arrives while already retiring retargets the same barrier, never creates another retired owner: equal target binding preserves and retags `deferred`; a distinct target binding discards the previous target-binding work before accepting later requests for the newest token.
 - In `Idle`, a direct non-empty request atomically takes `pending OR requested` while preserving the requested `Index` or `Sync` kind; only completion-transferred/coalesced work is normalized to `Sync`. Concurrent requesters cannot take it twice. A current empty-mask Hydration/Startup/Watcher request may acquire one empty permit while ordinary pending remains authoritative for later transfer.
-- Each acquisition moves the receiver/snapshot/cell from `AdmissionGuard` into the permit. Only guard minting clones the current channel receiver. Sequence exhaustion fails before mutation. No path installs an owner without returning its armed permit.
+- Each acquisition consumes `AdmissionGuard`, removes its enabled notification registration, and moves the receiver/snapshot/cell/token into the permit. The acquired permit cannot retain or consume a later release wake. Only guard minting clones the current channel receiver. Sequence exhaustion fails before mutation. No path installs an owner without returning its armed permit.
 
-Every empty-mask wait loop owns an `AdmissionGuard` whose `Notified` registration is enabled before the final `request`/recheck. `Acquired` moves guard ownership into the permit; `Waiting` selects the owned registration against the owned receiver; `Stale` or generation cancellation drops the guard and exits. After a wake, the guard is re-armed before rechecking. This closes the release-versus-registration gap without a second queue.
+Every empty-mask wait loop owns an `AdmissionGuard` whose `OwnedNotified` registration is enabled before the final `request`/recheck. `Acquired` cancels that registration before returning the permit and moves the remaining cancellation/binding ownership; `Waiting` selects the owned registration against the owned receiver; `Stale` or generation cancellation drops the guard and exits. After a wake, the guard is re-armed before rechecking. This closes the release-versus-registration gap without letting an acquired owner steal the release wake and without a second queue.
 
 Public behavior remains mapped at the caller boundary: busy Index retains `IndexInProgress`; internal `Enqueued` maps to the exact busy Sync queued JSON only after coordinator ownership of the full mask; and guarded `Waiting` is internal to Hydration/Startup/Watcher rechecks. Neither a waiting notification nor an enqueued response authorizes execution.
 
@@ -158,7 +162,7 @@ Safe observers may remain stable. Request-only publication may only be crate-pri
 ## Protected invariants
 
 1. The coordinator cell is sole authority for binding floor, exact binding identity, owner phase, full mask, handoff, cancellation generation, and completion timestamp.
-2. In `Idle`/`Running`, each set `WorkMask` bit exists in exactly one of owner or ordinary pending; in `Retiring`, all current-generation work exists only in `RetirementBarrier.deferred`.
+2. In `Idle`/`Running`, the owner mask is the in-flight attempt and ordinary pending is the sole queued-rerun slot; a repeated request may therefore set the same bit in both, and terminal/rebind transitions consume their union exactly once. In `Retiring`, all current-generation work exists only in `RetirementBarrier.deferred`.
 3. Every `OwnerKind` receives and observes generation cancellation. No successor permit can be acquired or run until the exact retired permit acknowledges that all DB/file-capable work has exited.
 4. Same-binding active-owner advance atomically moves `owner mask OR pending` into the barrier under the new generation; `0b101 OR 0b010 = 0b111` is mandatory and new requests coalesce there.
 5. Distinct-binding advance moves zero old routine/revalidate/backfill bits; only latest-binding requests may accumulate behind the barrier, durable state uses new-binding reconciliation, and non-durable intent requires new-token reissue.
@@ -176,12 +180,12 @@ Safe observers may remain stable. Request-only publication may only be crate-pri
 
 ## Implementation units
 
-Every unit is `<=110 minutes`, touches `<=2` production files, changes fewer than five production functions, and has `<=4` deterministic scenarios. RED tasks change zero release behavior. GREEN starts only after its direct RED compiles and fails intended assertions. No partial migration is mergeable/releasable.
+Every unit is `<=110 minutes`, touches `<=2` production files, changes fewer than five production functions, and has `<=3` deterministic scenarios. RED tasks change zero release behavior. GREEN starts only after its direct RED compiles and fails intended assertions. No partial migration is mergeable/releasable.
 
 ### 1. `109.014-T` — RED: permit cancellation, completion, and Drop lifecycle
 
 - Files: `src/server/state.rs` only.
-- Scenarios (4 maximum): an `OwnerKind` cancellation fixture; an exact terminal matrix covering completion/Drop, pending/empty, timestamp/disarm, and stale no-op; an owner-success plus one empty Hydration/Startup/Watcher waiter matrix; and a multi-empty-waiter baton fixture.
+- Scenarios (3 maximum): an `OwnerKind` cancellation fixture; an exact terminal matrix covering completion/Drop, pending/empty, timestamp/disarm, and stale no-op; and a parameterized owner-success empty-waiter matrix covering one and multiple Hydration/Startup/Watcher waiters plus baton progress and acquired-registration removal.
 - The release rows require notification enabled before final request, no-pending completion to select `Released`, owner clear before one post-unlock `notify_one`, at most one acquisition, and one empty-owner release per remaining waiter. Use private deterministic cancellation/notification counters; no driver source or release behavior changes.
 - Dependency: `109.013-T` terminal, while status remains blocked until the existing Stage requeue gate.
 
@@ -196,7 +200,7 @@ Every unit is `<=110 minutes`, touches `<=2` production files, changes fewer tha
 ### 3. `109.016-T` — RED: active rebind quiescence and stale isolation
 
 - Files: `src/server/state.rs`, `src/tools/lifecycle.rs`.
-- Scenarios (4 maximum): complete old/new binding-token-cancel-floor tuple; `u64::MAX` no mutation; one parameterized active-rebind matrix over same/distinct binding, every `OwnerKind`, and explicit/Drop acknowledgment; one repeated-rebind/stale-terminal matrix.
+- Scenarios (3 maximum): a complete old/new binding-token-cancel-floor tuple including `u64::MAX` no mutation; one parameterized active-rebind matrix over same/distinct binding, every `OwnerKind`, and explicit/Drop acknowledgment; one repeated-rebind/stale-terminal matrix.
 - The active matrix seeds owner `0b101` plus pending `0b010`. Same binding must expose `0b111` only in `RetirementBarrier.deferred`; distinct binding must expose zero old bits. Current-token requests coalesce in deferred, cancellation reaches the retired permit, and attempted successor acquisition remains blocked until exit acknowledgment.
 - Ack must move the latest deferred mask to ordinary pending, clear the barrier, and invoke `notify_one` exactly once after unlock; deterministic activity counters remain at one and old work count cannot increase after ack. Repeated same-target rebind preserves deferred; distinct retarget discards superseded-target work. Later finish/Drop is stale and changes nothing.
 - Fixture rows do not increase the scenario count. No live DB/file work or release behavior.
@@ -260,7 +264,7 @@ Every unit is `<=110 minutes`, touches `<=2` production files, changes fewer tha
 ### 11. `109.024-T` — RED: Startup/Watcher arbitration and active rebind
 
 - Files: `src/server/state.rs`, `src/daemon/ipc_server.rs`.
-- Scenarios (4 maximum): a Startup/Hydration/legacy-Watcher/v2-Watcher owner-success plus single/multiple empty-waiter release matrix; Startup active same/distinct rebind; legacy/v2 Watcher × same/distinct active-rebind matrix; stale watcher terminal matrix.
+- Scenarios (3 maximum): a Startup/Hydration/legacy-Watcher/v2-Watcher owner-success plus single/multiple empty-waiter release matrix; one parameterized Startup/legacy-Watcher/v2-Watcher × same/distinct active-rebind matrix; stale watcher terminal matrix.
 - Release rows prove pre-registration, `Released` post-unlock notification, one-at-a-time empty acquisition, multi-waiter baton progress, and no spin. Active rows prove cancellation observation, immutable snapshots, no successor acquisition before DB/file-capable exit ack, `max_active_db_drivers == 1`, one ack notification, and zero old work after ack. Both watcher loops are covered.
 - Stale finish/Drop cannot clear or execute a replacement. Barriers/oneshots/counters only.
 - Dependency: `109.023-T`.
@@ -276,14 +280,14 @@ Every unit is `<=110 minutes`, touches `<=2` production files, changes fewer tha
 ### 13. `109.026-T` — compatibility migration: contract tests
 
 - Files: `tests/contract/read_test.rs`, `tests/contract/write_test.rs`; production files: zero.
-- At most four scenarios: read rejection via public behavior; queued exact response; queued complete-mask observable behavior; idle control.
+- At most three scenarios: read rejection via public behavior; queued exact response plus complete-mask observable behavior; idle control.
 - Remove tokenless setup; add no public fixture API.
 - Dependency: `109.025-T`.
 
 ### 14. `109.027-T` — compatibility migration: resilience tests
 
 - Files: `src/server/state.rs`, `tests/integration/indexing_resilience_test.rs`; one production file with test-only private assertions.
-- At most four scenarios: stale finish/Drop rejection; dropped-owner successor recovery; current completion disarm/timestamp once; release control.
+- At most three scenarios: a stale finish/Drop plus dropped-owner recovery lifecycle matrix; current completion disarm/timestamp once; release control.
 - Dependency: `109.026-T`.
 
 ### 15. `109.028-T` — retire tokenless ownership mutators
@@ -307,8 +311,8 @@ Every unit is `<=110 minutes`, touches `<=2` production files, changes fewer tha
 ### 18. `109.031-T` — deterministic quiescence, Windows runtime, and release validation
 
 - Production files: zero; closure/checklist docs only if needed.
-- At most four scenarios: normal bind/Hydration/complete-disarm plus owner-success/empty-waiter rows; queued Sync plus running Drop recovery/exact response and a multi-empty-waiter baton fixture; one deterministic `OwnerKind × same/distinct binding × explicit/Drop ack` active-rebind matrix with forced DB-failure rows; Startup/legacy-watcher/v2-watcher Windows named-pipe handoff smoke.
-- Release fixtures prove notification registration before recheck, exact one post-unlock `notify_one` call on `Released`, at-most-one resumed/acquired waiter per call, finite baton progress, no busy loop, no work duplication, and max one owner. The active matrix preserves cancellation delivery, same-binding `0b111` location, distinct-binding zero carryover, request coalescing during retirement, no acquisition before ack, one ack notification call, `max_active_db_drivers == 1`, zero old work after ack, and stale-terminal no-op. Fixture rows stay within the four-scenario cap.
+- At most three scenarios: normal bind/Hydration/complete-disarm plus owner-success/empty-waiter rows; queued Sync plus running Drop recovery/exact response and a multi-empty-waiter baton fixture; one deterministic `OwnerKind × same/distinct binding × explicit/Drop ack` active-rebind matrix with forced DB-failure and Startup/legacy-watcher/v2-watcher Windows named-pipe handoff rows.
+- Release fixtures prove notification registration before recheck, removal on acquisition, exact one post-unlock `notify_one` call on `Released`, at-most-one resumed/acquired waiter per call, finite baton progress, no busy loop, no work duplication, and max one owner. The active matrix preserves cancellation delivery, same-binding `0b111` location, distinct-binding zero carryover, request coalescing during retirement, no acquisition before ack, one ack notification call, `max_active_db_drivers == 1`, zero old work after ack, and stale-terminal no-op. Fixture rows stay within the three-scenario cap.
 - Smoke is observational; deterministic fixtures prove races. Verify restart reconciliation and qualified non-durable reissue; never claim Drop on process abort.
 - Dependency: `109.030-T`.
 
@@ -446,7 +450,7 @@ Stop and return the release unit blocked if any implementation requires:
 3. a standard mutex guard across await;
 4. a public, feature-gated-public, or test-only-public token/permit/seam;
 5. sleeps, yields, permissions, or live daemon timing as correctness proof;
-6. more than two production files, four production functions, four scenarios, or 110 minutes in one task;
+6. more than two production files, four production functions, three scenarios, or 110 minutes in one task;
 7. a wire, schema, persistence, config, or queued-response change;
 8. a partial merge, deployment, or rollback of the caller migration;
 9. source mutation before exact visibility/caller reinspection confirms `publish = false` and no new supported Rust contract;
@@ -550,7 +554,7 @@ Immediate rollback triggers are missing cancellation or acknowledgment, acknowle
 - **Guardrail:** every `OwnerPermit` receives the generation cancellation receiver and retains its immutable binding snapshot for the complete DB/file-capable future. Exact Drop remains synchronous, poison-safe, and non-panicking.
 - **Barrier rule:** active rebind advances binding/floor but converts the owner to one `RetirementBarrier`. Same binding stores `0b101 OR 0b010 = 0b111` in `deferred`; distinct binding stores zero old bits. Current requests coalesce there and no request acquires.
 - **Acknowledgment rule:** explicit terminal or armed Drop clears the barrier only after mutation-capable work exits, publishes deferred, and invokes `notify_one` exactly once after unlock. Stale terminals remain no-ops; a stuck driver keeps the barrier closed.
-- **Driver proof:** fixture matrices cover Index, Sync, Hydration, Startup, legacy Watcher, and v2 Watcher under same/distinct rebind, explicit/Drop acknowledgment, repeated rebind, and forced failure without exceeding four scenarios per task.
+- **Driver proof:** fixture matrices cover Index, Sync, Hydration, Startup, legacy Watcher, and v2 Watcher under same/distinct rebind, explicit/Drop acknowledgment, repeated rebind, and forced failure without exceeding three scenarios per task.
 - **Abort boundary:** no Drop claim on process abort. Restart reconciliation handles durable state; applicable non-durable flags are reissued; full-unit revert/restart is rollback.
 - **ActionResult:** applied to plan, findings, and blocked task scopes; implementation remains unapproved until the existing post-106 requeue gate.
 
@@ -561,7 +565,7 @@ Immediate rollback triggers are missing cancellation or acknowledgment, acknowle
 - **Registration rule:** each empty waiter owns an `AdmissionGuard` with `Notified` enabled before its final request/recheck. `Waiting(AdmissionGuard)` selects that registration against cancellation; every wake re-arms before rechecking.
 - **Baton rule:** one notification call allows at most one mutex-authorized empty acquisition. Remaining waiters stay registered; the acquired empty owner completes `Released` and emits the next wake. A competing producer merely keeps the waiter queued. No polling, second queue, duplicate work state, notification authority, or concurrent drivers.
 - **Counting rule:** tests assert exactly one `notify_one` invocation per qualifying transition, but only at-most-one resumed/acquired waiter because Tokio may coalesce or retain a permit. Progress, not an impossible exact resumed-task count, is the contract.
-- **Bounded proof:** owner-success/single-empty-waiter and multi-waiter baton rows are folded into existing matrices/fixtures in `109.014-T`, `109.018-T`, `109.020-T`, `109.024-T`, and `109.031-T`; no task exceeds four scenarios, two production files, four production functions, or 110 minutes.
+- **Bounded proof:** owner-success/single-empty-waiter and multi-waiter baton rows are folded into existing matrices/fixtures in `109.014-T`, `109.018-T`, `109.020-T`, `109.024-T`, and `109.031-T`; no task exceeds three scenarios, two production files, four production functions, or 110 minutes.
 - **ActionResult:** applied in final review-fix cycle 3/3; all lifecycle/status/dependency/ownership caps remain unchanged.
 
 ## Superseded Plan Reviews
@@ -589,8 +593,8 @@ Multiple waiters progress by a finite baton. One notification permits at most on
 
 ### Persona verdicts
 
-- **Constitution Reviewer — PASS.** Only existing plan/decision/memory/backlog artifacts change. TDD order and the `<=110 minutes`, `<=2` production files, `<5` production functions, and `<=4` scenario limits remain unchanged.
-- **Rust Reviewer — PASS.** Tokio `Notified::enable` before recheck closes the registration race. `notify_one` occurs only after dropping the standard mutex. Exactness applies to the call, while waiter resumption is correctly stated as at most one.
+- **Constitution Reviewer — PASS.** Only existing plan/decision/memory/backlog artifacts change. TDD order and the `<=110 minutes`, `<=2` production files, `<5` production functions, and `<=3` scenario limits remain unchanged.
+- **Rust Reviewer — PASS.** A pinned `OwnedNotified` enabled before recheck closes the registration race, and acquisition drops that registration before returning a permit so it cannot steal a release wake. `notify_one` occurs only after dropping the standard mutex. Exactness applies to the call, while waiter resumption is correctly stated as at most one.
 - **Scope Boundary Auditor — PASS.** Single/multi-waiter coverage is folded into existing fixtures for the coordinator, Hydration, lifecycle handoff, Startup/Watcher, and final validation; no new task, dependency, file family, status, or cap is introduced.
 - **Learnings Researcher — PASS.** The rule preserves whole-mask ownership and the no-second-queue/no-producer-reacquire decisions while adding only liveness triggering.
 - **Architecture Strategist — PASS.** `Notify` remains a hint, never authority. Mutex-protected request chooses one owner; empty-owner `Released` passes the baton; competing work safely delays but cannot strand waiters.
@@ -599,9 +603,9 @@ Multiple waiters progress by a finite baton. One notification permits at most on
 
 ### Internal consistency checks
 
-- `109.014/015` own exact `Released`/Drop notification semantics and core single/multi-waiter fixtures within four scenarios/functions.
+- `109.014/015` own exact `Released`/Drop notification semantics and core single/multi-waiter fixtures within three scenarios.
 - `109.018/019`, `109.020/021`, and `109.024/025` require pre-registration, blocked waits, and baton behavior for Hydration/Startup/both Watchers.
-- `109.031` folds owner-success and multi-waiter rows into its existing four fixtures and distinguishes exact notification calls from at-most waiter resumption.
+- `109.031` folds owner-success and multi-waiter rows into its existing three fixtures and distinguishes exact notification calls from at-most waiter resumption.
 - Retirement acknowledgment and armed Drop still notify once after unlock; success disarms; stale terminals notify zero; process abort uses reconciliation.
 - Dependency chain remains `109.013 -> 109.014 -> ... -> 109.031`. `106-S`/`109.013-T` remain active; `104-S`/`109-F`/all old and replacement tasks remain blocked and unclaimed.
 
@@ -625,12 +629,13 @@ AdmissionGuard {
 }
 RequestOutcome = Acquired(OwnerPermit) | Waiting(AdmissionGuard) | Enqueued | Stale
 OwnerPermit {
-  admission_ownership, identity, work_mask, cleanup_armed
+  cell, token, binding_snapshot, cancel_rx,
+  identity, work_mask, cleanup_armed
 }
 DriverTaskGuard { join_handle, abort_handle, terminal_state }
 ```
 
-The coordinator may clone the current watch receiver only while minting a new `AdmissionGuard`; callers cannot extract or clone it. `request` consumes the guard. Acquisition moves the same receiver, binding snapshot, and coordinator cell into one armed `OwnerPermit`. An empty internal waiter receives `Waiting(AdmissionGuard)` carrying the already-enabled notification and receiver. A non-empty busy producer receives `Enqueued` only after the whole `WorkMask` is authoritative in `pending` or `RetirementBarrier.deferred`; the caller owns no mask or cancellation obligation after that return. `Stale` mutates nothing.
+The coordinator may clone the current watch receiver only while minting a new `AdmissionGuard`; callers cannot extract or clone it. `request` consumes the guard. Acquisition drops the enabled notification registration, then moves the same receiver, binding snapshot, token, and coordinator cell into one armed `OwnerPermit`; the permit retains no waiter registration. An empty internal waiter receives `Waiting(AdmissionGuard)` carrying the already-enabled notification and receiver. A non-empty busy producer receives `Enqueued` only after the whole `WorkMask` is authoritative in `pending` or `RetirementBarrier.deferred`; the caller owns no mask or cancellation obligation after that return. `Stale` mutates nothing.
 
 Every empty wait iteration enables its notification before `request`. `Waiting` selects that owned registration against its owned cancellation receiver. A notification consumes the registration and the guard is re-armed before recheck; generation cancellation exits by dropping the pre-acquisition guard with zero coordinator mutation. Rebind signals the old channel even when phase is `Idle`, creates no coordinator notification, and therefore deterministically cancels a waiter when no later owner transition occurs.
 
@@ -662,9 +667,9 @@ The existing 18-task chain remains sufficient; no new replacement IDs are requir
 - `109.022-T` / `109.023-T`: Index/Sync `?`/caller abort plus joined/abort-on-drop progress child; busy Sync `Enqueued` keeps exact public JSON.
 - `109.024-T` / `109.025-T`: parent-retained and shutdown-joined/abort-on-drop Startup and both Watcher task handles; no detached permit owner.
 - `109.030-T`: structural zero-inventory for bare admission, receiver extraction, optional cleanup, ignored/raw driver handles, and detached mutation-capable children.
-- `109.031-T`: aggregate matrix covers pre-acquisition no-wake cancellation, post-acquisition early return, transferred-permit abort, and spawned-handle loss/abort within four scenarios.
+- `109.031-T`: three parameterized scenarios cover pre-acquisition no-wake cancellation, post-acquisition early return, transferred-permit abort, and spawned-handle loss/abort.
 
-Each task remains `<=2` files, `<=4` scenarios, and `<=110` minutes. A task that cannot preserve those caps or prove child-before-permit destruction returns blocked to Stage.
+Each task remains `<=2` files, `<=3` scenarios, and `<=110` minutes. A task that cannot preserve those caps or prove child-before-permit destruction returns blocked to Stage.
 
 
 ## Plan Hardening — Phase 5E
@@ -687,7 +692,7 @@ The old learnings reinforce atomic whole-mask publication and complete terminal 
 
 1. Exactly one non-cloneable admission/permit guard owns each caller-side cancellation receiver; coordinator minting is the only clone point.
 2. A pre-acquisition waiter can exit on rebind with no owner transition and no coordinator wake.
-3. Acquisition and completion transfer move guard ownership without an unguarded owner interval.
+3. Acquisition drops the enabled waiter registration and moves cancellation/binding ownership into the permit without an unguarded owner interval; completion transfers only permit ownership.
 4. A non-empty Enqueued return occurs only after the complete mask is coordinator-owned.
 5. Raw JoinHandle drop/detach is forbidden for Hydration, Startup, Watchers, progress, or any mutation-capable child; parent scopes retain DriverTaskGuard.
 6. Normal task shutdown joins; guard Drop aborts; permit terminal remains the only barrier-release authority and runs only after inner mutation-capable work ends.
@@ -708,7 +713,7 @@ The old learnings reinforce atomic whole-mask publication and complete terminal 
 
 Deterministic RED rows must prove the no-later-wake pre-acquisition case, moved guard ownership, early-return/abort recovery, transferred-mask loss, and parent-handle loss/abort. Structural inventory must prove zero receiver extraction, bare queued waiter, ignored raw driver handle, optional cleanup, or unjoined mutation-capable child. Existing owner sequence, barrier, full-mask, timestamp, queued JSON, Windows named-pipe, 15-minute observation, and full-unit rollback signals remain mandatory.
 
-Ship stops before source mutation if a task exceeds two files, four scenarios, or 110 minutes, or if the reusable task guard cannot fit the declared function cap. Ship stops during execution on any detached mutation-capable task, child-outliving-ack path, guard gap, successor-before-ack, or inability to join/cancel a mutation-capable child. No unresolved operator decision remains for Stage; requeue still requires the fresh review and exact terminal prerequisite transaction.
+Ship stops before source mutation if a task exceeds two files, three scenarios, or 110 minutes, or if the reusable task guard cannot fit the declared function cap. Ship stops during execution on any detached mutation-capable task, child-outliving-ack path, guard gap, successor-before-ack, or inability to join/cancel a mutation-capable child. No unresolved operator decision remains for Stage; requeue still requires the fresh review and exact terminal prerequisite transaction.
 
 
 ## Plan Review — Phase 5E fresh gate
@@ -731,17 +736,17 @@ Ship stops before source mutation if a task exceeds two files, four scenarios, o
 
 ### Gate rationale
 
-The residual P1 is valid and is fixed in contract rather than rebutted. A floor-only token and bare queued result are replaced by a consumed non-cloneable `AdmissionGuard`. The guard owns the enabled notification and receiver before acquisition; request either moves ownership into an armed permit, returns guarded Waiting, commits a full non-empty mask before Enqueued, or returns Stale. Idle rebind signals cancellation even without an owner transition or coordinator wake.
+The residual P1 is valid and is fixed in contract rather than rebutted. A floor-only token and bare queued result are replaced by a consumed non-cloneable `AdmissionGuard`. The guard owns the enabled notification and receiver before acquisition; request either drops the registration and moves cancellation/binding ownership into an armed permit, returns guarded Waiting, commits a full non-empty mask before Enqueued, or returns Stale. Idle rebind signals cancellation even without an owner transition or coordinator wake.
 
-Ownership remains continuous after acquisition. Direct Index/Sync kind is preserved. Completion transfers the guard and full mask into an armed successor. Every fallible/early-return/abort path is inside mandatory RAII scope. Hydration, both Watchers, Startup, and progress mutation use parent-retained join-on-normal/abort-on-drop task guards, and inner mutation-capable work ends before permit Drop or acknowledgment. The retirement barrier still prevents a successor until that exact terminal. No detached receiver, permit, task handle, or full mask remains.
+Ownership remains continuous after acquisition. Direct Index/Sync kind is preserved. Completion transfers permit cancellation/binding ownership and the full mask into an armed successor. Every fallible/early-return/abort path is inside mandatory RAII scope. Hydration, both Watchers, Startup, and progress mutation use parent-retained join-on-normal/abort-on-drop task guards, and inner mutation-capable work ends before permit Drop or acknowledgment. The retirement barrier still prevents a successor until that exact terminal. No detached receiver, permit, task handle, or full mask remains.
 
-The proof is width-safe: existing RED/GREEN matrices absorb the new rows, each task remains at most two files, four scenarios, and 110 minutes, and dependencies remain the single `109.013-T -> 109.014-T -> ... -> 109.031-T` chain. No source/test/Cargo, public seam, second queue, mutex-across-await, sleep proof, forced timeout, unsafe, wire/schema/persistence change, or process-abort RAII claim is authorized.
+The proof is width-safe: existing RED/GREEN matrices absorb the new rows, each task remains at most two files, three scenarios, and 110 minutes, and dependencies remain the single `109.013-T -> 109.014-T -> ... -> 109.031-T` chain. No source/test/Cargo, public seam, second queue, mutex-across-await, sleep proof, forced timeout, unsafe, wire/schema/persistence change, or process-abort RAII claim is authorized.
 
 ### Persona verdicts
 
 - **Constitution Reviewer — PASS.** Planning/backlog-only scope is preserved; RED precedes each GREEN; every amended task has acceptance criteria, one concern, and bounded files/scenarios/time.
 - **Rust Reviewer — PASS.** Receiver cloning is confined to guard minting; ownership moves through non-Clone guards; synchronous Drop and abort handles do not await; operation-before-permit destruction and the no-unsafe rule are explicit.
-- **Scope Boundary Auditor — PASS.** No new task is needed. The reusable DriverTaskGuard is introduced in `109.019-T` before write/IPC reuse, while all tasks remain within two files and four production functions/scenarios.
+- **Scope Boundary Auditor — PASS.** No new task is needed. The reusable DriverTaskGuard is introduced in `109.019-T` before write/IPC reuse, while all tasks remain within two files, fewer than five production functions, and three scenarios.
 - **Learnings Researcher — PASS.** Whole-mask atomic publication, complete finish-site coverage, and take-before-lock lessons are retained; the amendment extends them consistently to cancellation/task ownership.
 - **Architecture Strategist — PASS.** Coordinator phase remains sole authority. `Waiting` carries no work, `Enqueued` carries no caller ownership, direct kinds remain diagnostic, and transferred work has one guarded successor.
 - **Agent-Native Parity Reviewer — PASS.** Busy Index behavior, exact busy Sync queued JSON, MCP/CLI schemas/errors, startup contract, health meaning, and persistence remain frozen.
