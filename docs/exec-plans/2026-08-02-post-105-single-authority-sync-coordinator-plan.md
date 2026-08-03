@@ -3,7 +3,7 @@ title: "Post-105 single-authority sync coordinator permit migration"
 type: impl-plan
 doc_type: plan
 date: 2026-08-02
-status: blocked
+status: accepted
 source: "docs/decisions/2026-08-01-post-105-sync-coordinator-spike-findings.md"
 feature: "109-F"
 shipment: "104-S"
@@ -27,7 +27,7 @@ The replacement is strategy A from the findings: one private `SyncCoordinator` o
 - Source basis: exact final review-fix HEAD `2f267d9c617243dd70cbaac9837826a4fd0358e9`; the accepted cancellation/quiescence design is unchanged, and exact Copilot P1 `discussion_r3701238147` identifies the remaining successful-release wake gap for empty Hydration/Startup/Watcher waiters.
 - Evidence basis: `docs/research/2026-08-02-106-sync-coordinator-spike-execution-evidence.md`, reviewed evidence commit `b5d5802e`.
 - Package contract: `Cargo.toml` has `publish = false`; Engram ships a binary. No public Rust permit API is added.
-- API decision: opaque `GenerationToken`, `OwnerPermit`, `OwnerKind`, and `WorkMask` are `pub(crate)` at most, with private fields. The permit is non-`Clone`, owns an `Arc<CoordinatorCell>`, and has mandatory non-awaiting RAII abandonment cleanup.
+- API decision: opaque `GenerationToken`, `AdmissionGuard`, `OwnerPermit`, `DriverTaskGuard`, `OwnerKind`, and `WorkMask` are `pub(crate)` at most, with private fields. Admission and permits are non-Clone; cancellation ownership moves between them, and permit/task guards provide mandatory non-awaiting abandonment cleanup.
 - Semver: no major bump or deprecation bridge. This is an internal source migration. A supported downstream Rust API discovered before source mutation is a hard stop requiring strategy B and a new decision; tokenless adapters are never accepted as a fallback.
 - Repository tests: migrate direct owner setup to public tool behavior or co-located private tests. No public test-only seam.
 
@@ -62,7 +62,7 @@ SyncCoordinator {
   phase: Idle | Running(OwnerRecord) | Retiring(RetirementBarrier),
   pending: Option<WorkMask>, generation_cancel, last_indexed_at
 }
-GenerationToken(u64)
+GenerationToken { floor, binding_identity }
 WorkMask { routine, revalidate, backfill_python }
 OwnerKind { Index, Sync, Hydration, Startup, Watcher }
 OwnerIdentity { generation, sequence, kind }
@@ -71,13 +71,15 @@ RetirementBarrier {
   retired_identity, retired_binding, target_generation, target_binding,
   deferred: WorkMask
 }
-OwnerPermit {
-  cell: Arc<CoordinatorCell>, identity, binding_snapshot, work_mask,
-  cancel_rx: watch::Receiver<bool>, cleanup_armed
+AdmissionGuard {
+  cell: Arc<CoordinatorCell>, token, binding_snapshot,
+  cancel_rx: watch::Receiver<bool>, enabled_notification
 }
+OwnerPermit { admission_ownership: AdmissionGuard, identity, work_mask, cleanup_armed }
+DriverTaskGuard { join_handle, abort_handle, terminal_state }
 ```
 
-`AppState` owns one private `Arc<CoordinatorCell>`. Permits clone the cell, remain non-`Clone`, and expose no public fields. The existing `tokio::sync::watch` facility becomes the per-generation cancellation broadcast; every acquired `OwnerPermit` receives a receiver clone, and pre-acquisition generation waiters receive the same signal. `Notify` stores neither work nor identity, is never ownership authority, and is used only to trigger a mutex-protected request/recheck.
+`AppState` owns one private `Arc<CoordinatorCell>`. The coordinator is the only receiver-clone minting point. Each non-Clone `AdmissionGuard` owns one receiver, exact snapshot, cell, and enabled notification; acquisition moves that ownership into a non-Clone `OwnerPermit`. Callers cannot extract or clone the receiver. `Notify` stores neither work nor identity, is never ownership authority, and only triggers a mutex-protected guarded recheck.
 
 The coordinator phase is the sole authority. `pending` is used only in `Idle`/`Running`. During `Retiring`, `RetirementBarrier.deferred` is the sole current-generation work location; the retired permit retains an immutable old binding snapshot and a non-authoritative mask copy only so it can stop safely. No current permit exists and no successor can acquire until the barrier is acknowledged.
 
@@ -85,17 +87,17 @@ Every driver owns its permit around the complete DB/file-capable future. Rebind 
 
 ### Request transition
 
-`request(token, mask, kind)` returns fallible `Acquired(permit) | Queued | Stale` after validating under the coordinator lock.
+`request(admission, mask, kind)` consumes the non-cloneable guard and returns fallible `Acquired(permit) | Waiting(admission) | Enqueued | Stale` after validating under the coordinator lock.
 
-- In `Running`, a current producer ORs one complete mask into ordinary `pending`; a current empty-mask Hydration/Startup/Watcher waiter publishes no work and receives `Queued`. Stale requests mutate nothing.
-- In `Retiring`, no request can acquire. A current-token non-empty request ORs into `RetirementBarrier.deferred`; an empty-mask waiter publishes no work and receives `Queued`. Thus same-binding `0b111` and all later current-generation requests remain in one authoritative barrier slot. Old-token requests remain stale.
+- In `Running`, a current non-empty producer ORs one complete mask into ordinary `pending` and receives `Enqueued`; a current empty-mask Hydration/Startup/Watcher waiter publishes no work and receives `Waiting` with the same admission guard. Stale requests mutate nothing.
+- In `Retiring`, no request can acquire. A current-token non-empty request ORs into `RetirementBarrier.deferred` and receives `Enqueued`; an empty-mask waiter publishes no work and receives guarded `Waiting`. Thus same-binding `0b111` and all later current-generation requests remain in one authoritative barrier slot. Old-token requests remain stale.
 - A rebind that arrives while already retiring retargets the same barrier, never creates another retired owner: equal target binding preserves and retags `deferred`; a distinct target binding discards the previous target-binding work before accepting later requests for the newest token.
-- In `Idle`, a non-empty request atomically takes `pending OR requested` into one `Sync` permit; concurrent requesters cannot take it twice. A current empty-mask Hydration/Startup/Watcher request may acquire one empty permit while ordinary pending remains authoritative for later transfer.
-- Each acquisition clones the current generation cancellation receiver into the permit. Sequence exhaustion fails before mutation. No path installs an owner without returning its permit.
+- In `Idle`, a direct non-empty request atomically takes `pending OR requested` while preserving the requested `Index` or `Sync` kind; only completion-transferred/coalesced work is normalized to `Sync`. Concurrent requesters cannot take it twice. A current empty-mask Hydration/Startup/Watcher request may acquire one empty permit while ordinary pending remains authoritative for later transfer.
+- Each acquisition moves the receiver/snapshot/cell from `AdmissionGuard` into the permit. Only guard minting clones the current channel receiver. Sequence exhaustion fails before mutation. No path installs an owner without returning its armed permit.
 
-Every empty-mask wait loop creates and enables its `Notified` future before the final `request`/recheck. `Acquired` consumes that iteration; `Queued` awaits the already-registered notification; `Stale` or generation cancellation exits. After a wake, the caller creates/enables a fresh notification before rechecking. This closes the release-versus-registration gap without a second queue.
+Every empty-mask wait loop owns an `AdmissionGuard` whose `Notified` registration is enabled before the final `request`/recheck. `Acquired` moves guard ownership into the permit; `Waiting` selects the owned registration against the owned receiver; `Stale` or generation cancellation drops the guard and exits. After a wake, the guard is re-armed before rechecking. This closes the release-versus-registration gap without a second queue.
 
-Public behavior remains mapped at the caller boundary: busy Index retains `IndexInProgress`, busy Sync retains the exact queued JSON, and internal Hydration/Startup/Watcher paths block only on registered `Notify` futures then recheck coordinator state. `Queued` never authorizes execution and a notification never proves ownership.
+Public behavior remains mapped at the caller boundary: busy Index retains `IndexInProgress`; internal `Enqueued` maps to the exact busy Sync queued JSON only after coordinator ownership of the full mask; and guarded `Waiting` is internal to Hydration/Startup/Watcher rechecks. Neither a waiting notification nor an enqueued response authorizes execution.
 
 ### Explicit completion and retirement acknowledgment
 
@@ -221,7 +223,7 @@ Every unit is `<=110 minutes`, touches `<=2` production files, changes fewer tha
 
 - Files: `src/server/state.rs`, `src/tools/lifecycle.rs`.
 - At most four functions cover notify/retry admission, permit cancellation observation, hydration body, and exact-exit finalization.
-- Create and enable `Notified` before every final request/recheck. On `Queued`, await that registration; after wake, enable a fresh one before rechecking. Pre-acquisition generation cancellation exits without ack. After acquisition, select cancellation at safe boundaries; drop or join all DB/file-capable work before explicit retirement ack or armed Drop. Normal/handled failure completes/disarms.
+- `AdmissionGuard` owns and enables notification before every final request/recheck. On guarded `Waiting`, select that registration against its receiver; after wake, re-arm before rechecking. Pre-acquisition generation cancellation exits without ack. After acquisition, select cancellation at safe boundaries; drop or join all DB/file-capable work before explicit retirement ack or armed Drop. Normal/handled failure completes/disarms.
 - No DB/file work before permit, detached mutator, forced barrier timeout, or caller-optional cleanup.
 - Dependency: `109.018-T`.
 
@@ -556,7 +558,7 @@ Immediate rollback triggers are missing cancellation or acknowledgment, acknowle
 
 - **Trigger:** P1 `discussion_r3701238147` / `PRRT_kwDORJEduc6V25-i` shows that exact `Running` completion with no pending work selected `Released` but emitted no wake, stranding empty Hydration/Startup/Watcher waiters. `ActionRisk: high`.
 - **Release rule:** exact no-pending completion clears owner, disarms and timestamps once, selects `Released`, drops the mutex, invokes `notify_one` exactly once, then returns. Running Drop and retirement acknowledgment retain the same one-call post-unlock discipline.
-- **Registration rule:** each empty waiter creates and enables `Notified` before its final request/recheck. `Queued` awaits that registration; every wake installs a fresh registration before rechecking.
+- **Registration rule:** each empty waiter owns an `AdmissionGuard` with `Notified` enabled before its final request/recheck. `Waiting(AdmissionGuard)` selects that registration against cancellation; every wake re-arms before rechecking.
 - **Baton rule:** one notification call allows at most one mutex-authorized empty acquisition. Remaining waiters stay registered; the acquired empty owner completes `Released` and emits the next wake. A competing producer merely keeps the waiter queued. No polling, second queue, duplicate work state, notification authority, or concurrent drivers.
 - **Counting rule:** tests assert exactly one `notify_one` invocation per qualifying transition, but only at-most-one resumed/acquired waiter because Tokio may coalesce or retain a permit. Progress, not an impossible exact resumed-task count, is the contract.
 - **Bounded proof:** owner-success/single-empty-waiter and multi-waiter baton rows are folded into existing matrices/fixtures in `109.014-T`, `109.018-T`, `109.020-T`, `109.024-T`, and `109.031-T`; no task exceeds four scenarios, two production files, four production functions, or 110 minutes.
@@ -606,3 +608,156 @@ Multiple waiters progress by a finite baton. One notification permits at most on
 ### Review decision
 
 Final cycle 3/3 passes with zero open P0-P3 findings only as blocked replacement scope. PASS does not authorize source/test/Cargo work, closing `106-S`/`109.013-T`, requeueing `104-S`/`109-F`, shipment claim/closure, Git/PR operations, replies, or thread resolution. Ship may commit these uncommitted planning changes and post the suggested reply; the existing post-106 Stage transaction remains the sole requeue gate.
+
+
+## Phase 5E authoritative cancellation-ownership amendment
+
+### Residual P1 disposition
+
+PR #316 discussion `r3701318733`, companion findings comment `r3701318749`, and the Ship comment on blocked `109-F` at commit `c6f2b06174b10724ed9527601cd4ad6448c1433d` are **valid**. The prior contract gave a cancellation receiver only to `OwnerPermit`, while a bare `Queued` result and floor-only `GenerationToken` left a pre-acquisition empty waiter with nothing to select against. A rebind intentionally does not notify the coordinator, so an idle/no-later-owner-transition row could wait forever. The earlier PASS is superseded and is not evidence for requeue.
+
+This section is authoritative over every earlier reference to a bare token or bare `Queued` outcome. The internal API uses a non-cloneable ownership chain:
+
+```text
+AdmissionGuard {
+  cell, token: GenerationToken, binding_snapshot,
+  cancel_rx, enabled_notification
+}
+RequestOutcome = Acquired(OwnerPermit) | Waiting(AdmissionGuard) | Enqueued | Stale
+OwnerPermit {
+  admission_ownership, identity, work_mask, cleanup_armed
+}
+DriverTaskGuard { join_handle, abort_handle, terminal_state }
+```
+
+The coordinator may clone the current watch receiver only while minting a new `AdmissionGuard`; callers cannot extract or clone it. `request` consumes the guard. Acquisition moves the same receiver, binding snapshot, and coordinator cell into one armed `OwnerPermit`. An empty internal waiter receives `Waiting(AdmissionGuard)` carrying the already-enabled notification and receiver. A non-empty busy producer receives `Enqueued` only after the whole `WorkMask` is authoritative in `pending` or `RetirementBarrier.deferred`; the caller owns no mask or cancellation obligation after that return. `Stale` mutates nothing.
+
+Every empty wait iteration enables its notification before `request`. `Waiting` selects that owned registration against its owned cancellation receiver. A notification consumes the registration and the guard is re-armed before recheck; generation cancellation exits by dropping the pre-acquisition guard with zero coordinator mutation. Rebind signals the old channel even when phase is `Idle`, creates no coordinator notification, and therefore deterministically cancels a waiter when no later owner transition occurs.
+
+Direct idle `Index` and `Sync` acquisitions preserve the requested `OwnerKind`. Only a successor created from coalesced pending work is normalized to `Sync`. A completion transfer moves, rather than clones or exposes, cancellation/binding ownership into the successor permit. Dropping or aborting that successor before execution invokes its armed Drop and republishes the entire mask once.
+
+### Mandatory cleanup ownership matrix
+
+| Exit class | Required owner | Required terminal behavior |
+|---|---|---|
+| Pre-acquisition cancellation or caller return | `AdmissionGuard` / `Waiting(AdmissionGuard)` | Drop guard; no completion, acknowledgment, work mutation, or notification. Enqueued non-empty work is already coordinator-owned. |
+| Post-acquisition normal/error/`?`/early return | Armed `OwnerPermit` lexically outside the complete mutation-capable future | Explicit completion consumes/disarms on handled success/failure; any escaping path drops the exact permit and performs running recovery or retirement acknowledgment. |
+| Completion-transferred permit | Successor `OwnerPermit` containing the moved guard ownership and full mask | Execute once or, on loss/cancel/abort, Drop republishes the full mask once and wakes once after unlock. |
+| Spawned Hydration/Startup/Watcher/progress helper | Parent-retained `DriverTaskGuard`; spawned future owns the `OwnerPermit` and an inner mutation-capable future | Raw `JoinHandle` loss/detach is forbidden. Normal shutdown consumes and joins. Guard Drop aborts. The inner DB/file/workspace future is dropped or joined before permit Drop/ack; the barrier stays closed until that terminal runs. |
+| Caller future aborted while inline driver runs | The inline future owns `OwnerPermit` outside an inner operation scope | Operation future drops first; armed permit drops second. No caller cleanup call is required or available. |
+| Process abort | none | No RAII claim. Restart hydration/offline reconciliation, qualified intent reissue, full-unit rollback/restart. |
+
+The current ignored `_task` for Hydration and ignored `tokio::spawn` handles for both watcher loops are explicit migration targets. The retained supervisor slot or outer daemon scope must own `DriverTaskGuard`; replacing or dropping a slot aborts the old task without admitting a successor, and normal shutdown joins it. The write-path scan-progress child is also joined or abort-on-drop before the owner terminal so it cannot mutate workspace progress after permit acknowledgment. Any mutation-capable `spawn_blocking` or other child that cannot be cancelled and joined before acknowledgment is a stop-and-replan condition; CPU-only authority-free parse workers are the only allowed exception.
+
+No API permits `cancel_rx` extraction, bare floor-only admission, caller-optional cleanup, raw detached driver handles, or owner installation without returning an armed permit. No standard mutex crosses await; Drop remains synchronous, poison-safe, non-panicking, non-spawning, and non-allocating. There is still one coordinator, one pending/deferred mask location, no second queue, no sleeps or public test seam, and no unsafe code.
+
+### Phase 5E deterministic proof allocation
+
+The existing 18-task chain remains sufficient; no new replacement IDs are required. Scenario matrices are parameterized rows, not additional scenarios.
+
+- `109.014-T` / `109.015-T`: pre-acquisition rebind with no owner transition/no notify; guard-to-permit move; `?`/early-return/Drop terminal matrix; direct-kind preservation and no owner-without-permit.
+- `109.016-T` / `109.017-T`: old-channel signaling reaches both waiting admission guards and every active permit, including idle/no-successor rebind, while active retirement remains acknowledgment-gated.
+- `109.018-T` / `109.019-T`: retained Hydration task guard, dropped/aborted parent-handle rows, operation-before-permit-drop ordering, and DB failure/early return.
+- `109.020-T` / `109.021-T`: transferred permit moves cancellation ownership and full mask; loss/abort/early return republishes once without a second drain.
+- `109.022-T` / `109.023-T`: Index/Sync `?`/caller abort plus joined/abort-on-drop progress child; busy Sync `Enqueued` keeps exact public JSON.
+- `109.024-T` / `109.025-T`: parent-retained and shutdown-joined/abort-on-drop Startup and both Watcher task handles; no detached permit owner.
+- `109.030-T`: structural zero-inventory for bare admission, receiver extraction, optional cleanup, ignored/raw driver handles, and detached mutation-capable children.
+- `109.031-T`: aggregate matrix covers pre-acquisition no-wake cancellation, post-acquisition early return, transferred-permit abort, and spawned-handle loss/abort within four scenarios.
+
+Each task remains `<=2` files, `<=4` scenarios, and `<=110` minutes. A task that cannot preserve those caps or prove child-before-permit destruction returns blocked to Stage.
+
+
+## Plan Hardening — Phase 5E
+
+**Hardening required: yes — freshly applied after the residual PR #316 P1.** The added risks are pre-acquisition lost cancellation, guard transfer discontinuity, Tokio JoinHandle detachment, caller abort/early return, and mutation-capable child work outliving permit acknowledgment.
+
+### Reinforcing context
+
+- `.github/instructions/strict-safety.instructions.md`
+- `.github/instructions/release-observability.instructions.md`
+- `.github/instructions/concurrency.instructions.md`
+- `.github/instructions/circuit-breaker.instructions.md`
+- `docs/compound/best-practices/packed-atomic-clear-requires-atomic-publish-2026-07-29.md`
+- `docs/compound/concurrency-issues/atomicbool-drain-race-take-before-lock-2026-05-09.md`
+- `docs/compound/concurrency-issues/pending-sync-drain-must-cover-all-finish-indexing-sites-2026-05-09.md`
+
+The old learnings reinforce atomic whole-mask publication and complete terminal coverage. Phase 5E extends the same rule to cancellation and spawned-task ownership: the authority chain is incomplete if a receiver, JoinHandle, or transferred mask becomes caller-detached.
+
+### Protected hardening invariants
+
+1. Exactly one non-cloneable admission/permit guard owns each caller-side cancellation receiver; coordinator minting is the only clone point.
+2. A pre-acquisition waiter can exit on rebind with no owner transition and no coordinator wake.
+3. Acquisition and completion transfer move guard ownership without an unguarded owner interval.
+4. A non-empty Enqueued return occurs only after the complete mask is coordinator-owned.
+5. Raw JoinHandle drop/detach is forbidden for Hydration, Startup, Watchers, progress, or any mutation-capable child; parent scopes retain DriverTaskGuard.
+6. Normal task shutdown joins; guard Drop aborts; permit terminal remains the only barrier-release authority and runs only after inner mutation-capable work ends.
+7. Caller `?`, return, panic, or future abort requires no optional cleanup call and cannot strand owner/mask.
+8. No mutex across await, second queue, sleep-based proof, public seam, unsafe, forced barrier timeout, or process-abort RAII claim.
+
+### ProposedAction PA-5
+
+- Summary: replace bare queued/token cancellation with continuous AdmissionGuard to OwnerPermit ownership and supervise every permit-capable spawned task with parent-retained abort-on-drop/join-on-normal guards.
+- Targets: the accepted plan, findings, and tasks `109.014-T` through `109.031-T`; later Ship source targets remain the four already-declared modules.
+- Change kind: high-blast-radius internal concurrency contract amendment.
+- ActionRisk: high.
+- Approval required: operator Phase 5E instruction plus fresh zero-P0/P1 plan review; Ship still owns implementation and runtime approval.
+- Rollback: return `104-S`, `109-F`, and replacements to blocked; restore planning contracts; no partial source rollout.
+- ActionResult: applied to planning/backlog contracts; implementation not started.
+
+### Verification, monitoring, and rollback delta
+
+Deterministic RED rows must prove the no-later-wake pre-acquisition case, moved guard ownership, early-return/abort recovery, transferred-mask loss, and parent-handle loss/abort. Structural inventory must prove zero receiver extraction, bare queued waiter, ignored raw driver handle, optional cleanup, or unjoined mutation-capable child. Existing owner sequence, barrier, full-mask, timestamp, queued JSON, Windows named-pipe, 15-minute observation, and full-unit rollback signals remain mandatory.
+
+Ship stops before source mutation if a task exceeds two files, four scenarios, or 110 minutes, or if the reusable task guard cannot fit the declared function cap. Ship stops during execution on any detached mutation-capable task, child-outliving-ack path, guard gap, successor-before-ack, or inability to join/cancel a mutation-capable child. No unresolved operator decision remains for Stage; requeue still requires the fresh review and exact terminal prerequisite transaction.
+
+
+## Plan Review — Phase 5E fresh gate
+
+**Review epoch:** fresh post-PR-316 residual review, revision 5; this does not revive rejected `109.001-R` or rely on any superseded PASS.
+
+**Model routing verification:** `.github/agents/stage.agent.md` declares `.Stage`, Tier 3/frontier, high reasoning, provider `anthropic`, family `claude-opus-4.8`; no override was supplied.
+
+**Execution surface:** no subagent invocation surface was exposed. Under the plan-review fallback, `.Stage` directly applied all always-on and triggered personas using the configured model. The Security lens was included conservatively because the internal API controls daemon-wide concurrency authority.
+
+**Hardening required:** yes.
+
+**Hardening satisfied:** yes; the fresh Phase 5E section classifies PA-5, protects continuous guard/task ownership, adds deterministic proof, retains monitoring/rollback, and names fail-closed stop conditions.
+
+**Gate: PASS**
+
+**Accepted review artifact:** `109.002-R`
+
+**Open findings: P0 0 / P1 0 / P2 0 / P3 0.**
+
+### Gate rationale
+
+The residual P1 is valid and is fixed in contract rather than rebutted. A floor-only token and bare queued result are replaced by a consumed non-cloneable `AdmissionGuard`. The guard owns the enabled notification and receiver before acquisition; request either moves ownership into an armed permit, returns guarded Waiting, commits a full non-empty mask before Enqueued, or returns Stale. Idle rebind signals cancellation even without an owner transition or coordinator wake.
+
+Ownership remains continuous after acquisition. Direct Index/Sync kind is preserved. Completion transfers the guard and full mask into an armed successor. Every fallible/early-return/abort path is inside mandatory RAII scope. Hydration, both Watchers, Startup, and progress mutation use parent-retained join-on-normal/abort-on-drop task guards, and inner mutation-capable work ends before permit Drop or acknowledgment. The retirement barrier still prevents a successor until that exact terminal. No detached receiver, permit, task handle, or full mask remains.
+
+The proof is width-safe: existing RED/GREEN matrices absorb the new rows, each task remains at most two files, four scenarios, and 110 minutes, and dependencies remain the single `109.013-T -> 109.014-T -> ... -> 109.031-T` chain. No source/test/Cargo, public seam, second queue, mutex-across-await, sleep proof, forced timeout, unsafe, wire/schema/persistence change, or process-abort RAII claim is authorized.
+
+### Persona verdicts
+
+- **Constitution Reviewer — PASS.** Planning/backlog-only scope is preserved; RED precedes each GREEN; every amended task has acceptance criteria, one concern, and bounded files/scenarios/time.
+- **Rust Reviewer — PASS.** Receiver cloning is confined to guard minting; ownership moves through non-Clone guards; synchronous Drop and abort handles do not await; operation-before-permit destruction and the no-unsafe rule are explicit.
+- **Scope Boundary Auditor — PASS.** No new task is needed. The reusable DriverTaskGuard is introduced in `109.019-T` before write/IPC reuse, while all tasks remain within two files and four production functions/scenarios.
+- **Learnings Researcher — PASS.** Whole-mask atomic publication, complete finish-site coverage, and take-before-lock lessons are retained; the amendment extends them consistently to cancellation/task ownership.
+- **Architecture Strategist — PASS.** Coordinator phase remains sole authority. `Waiting` carries no work, `Enqueued` carries no caller ownership, direct kinds remain diagnostic, and transferred work has one guarded successor.
+- **Agent-Native Parity Reviewer — PASS.** Busy Index behavior, exact busy Sync queued JSON, MCP/CLI schemas/errors, startup contract, health meaning, and persistence remain frozen.
+- **Security Lens Reviewer — PASS.** Binding snapshots and same/distinct retirement rules remain fail-closed; detached mutation authority, stale terminals, cross-binding mask carryover, and forced barrier bypass are forbidden.
+
+### Internal consistency checks
+
+- Main design, findings, and amended tasks use `Acquired | Waiting | Enqueued | Stale`; no live bare-Queued admission contract remains.
+- `109.014/015` own pre-acquisition no-wake cancellation and core move-only guard semantics.
+- `109.018/019` define/reuse DriverTaskGuard and supervise Hydration before later write/IPC tasks depend on it.
+- `109.020/021` own transferred-guard/full-mask loss recovery.
+- `109.022/023` own caller early returns and progress-child termination.
+- `109.024/025` own Startup/legacy-Watcher/v2-Watcher handle retention, join, and abort.
+- `109.030/031` provide structural zero-inventory and aggregate deterministic/runtime stop evidence.
+- Existing binding barrier, full-mask, empty-waiter baton, timestamp, process-abort, monitoring, and full-unit rollback requirements remain unchanged.
+
+### Review decision
+
+The amended plan is accepted for the exact Stage restart transaction only after positive terminal reads for `106-S`, `109.013-T`, `102-S`, and `103-S`. PASS authorizes backlog/manifest requeue, not implementation, shipment claim/closure, source/test/Cargo edits, builds, Git operations, PR actions, or worktree changes. A fresh accepted review artifact must be created under `109-F`; rejected `109.001-R` remains rejected and superseded.
