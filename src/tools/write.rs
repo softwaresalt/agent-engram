@@ -1,5 +1,7 @@
+#[cfg(test)]
 use std::future::Future;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
 use std::pin::Pin;
 
 use chrono::Utc;
@@ -14,10 +16,12 @@ use crate::db::workspace::{resolve_git_branch, workspace_hash};
 use crate::errors::{CodeGraphError, EngramError, SystemError, WorkspaceError};
 use crate::models::config::CodeGraphConfig;
 use crate::models::health::ScanProgress;
-use crate::server::state::SharedState;
+use crate::server::state::{
+    CompletionOutcome, CoordinatorCell, DriverTaskGuard, OwnerKind, OwnerPermit, RequestOutcome,
+    SharedState, WorkMask,
+};
 use crate::services::dehydration;
 use crate::services::hydration;
-use crate::tools::lifecycle::drain_pending_sync_to_completion;
 
 #[cfg(feature = "git-graph")]
 async fn workspace_path(state: &SharedState) -> Result<PathBuf, EngramError> {
@@ -147,83 +151,151 @@ pub async fn index_workspace(
     state: SharedState,
     params: Option<Value>,
 ) -> Result<Value, EngramError> {
-    // 092.004-T: atomic (workspace, config) capture via the shared graph-handler
-    // seam so the `code_graph` config used for indexing cannot tear away from the
-    // workspace path/data_dir/branch under a concurrent bind.
-    let ctx = crate::tools::snapshot_graph_handler_context(&state).await?;
-    let ws_path = PathBuf::from(&ctx.workspace.path);
-    let data_dir = ctx.workspace.data_dir.clone();
-    let branch = ctx.workspace.branch.clone();
-    let code_graph = ctx.config.code_graph.clone();
+    let mut permit = match CoordinatorCell::request(
+        state.coordinator.admission(),
+        WorkMask::from_bits(0b111),
+        OwnerKind::Index,
+    ) {
+        Ok(RequestOutcome::Acquired(permit)) => permit,
+        Ok(RequestOutcome::Waiting(_) | RequestOutcome::Enqueued) => {
+            return Err(EngramError::CodeGraph(CodeGraphError::IndexInProgress));
+        }
+        Ok(RequestOutcome::Stale) => {
+            return Err(EngramError::System(SystemError::DatabaseError {
+                reason: "index admission became stale during workspace rebind".to_owned(),
+            }));
+        }
+        Err(error) => {
+            return Err(EngramError::System(SystemError::DatabaseError {
+                reason: format!("index coordinator admission failed: {error}"),
+            }));
+        }
+    };
 
-    // Reject if indexing is already running.
-    if !state.try_start_indexing() {
-        return Err(EngramError::CodeGraph(CodeGraphError::IndexInProgress));
+    let operation = async {
+        // 092.004-T: capture workspace and config only after the exact owner
+        // permit exists, so every fallible phase is cancellation-owned.
+        let ctx = crate::tools::snapshot_graph_handler_context(&state).await?;
+        let ws_path = PathBuf::from(&ctx.workspace.path);
+        begin_indexing_scan_progress(&state).await;
+        let result = run_workspace_write(
+            &state,
+            &ws_path,
+            &ctx.workspace.data_dir,
+            &ctx.workspace.branch,
+            ctx.config.code_graph,
+            params,
+            true,
+        )
+        .await;
+        finish_indexing_scan_progress(&state, &result, true).await;
+        result
+    };
+    let Some(result) = permit.run_until_cancelled(operation).await else {
+        return Err(EngramError::System(SystemError::DatabaseError {
+            reason: "index cancelled by workspace rebind".to_owned(),
+        }));
+    };
+    let result = result?;
+    if let CompletionOutcome::Transferred(successor) = CoordinatorCell::complete(permit) {
+        drive_transferred_sync(&state, successor).await;
     }
-
-    begin_indexing_scan_progress(&state).await;
-
-    // Run the indexing logic, ensuring the flag is cleared on all exit paths.
-    let result =
-        index_workspace_inner(&state, &ws_path, &data_dir, &branch, code_graph, params).await;
-    finalize_indexing_request(&state, &result, true, |state| {
-        Box::pin(drain_pending_sync_to_completion(state))
-    })
-    .await;
-    result
+    Ok(result)
 }
 
-/// Inner indexing logic separated to guarantee `finish_indexing()` runs.
-async fn index_workspace_inner(
+async fn run_workspace_write(
     state: &SharedState,
     ws_path: &std::path::Path,
     data_dir: &std::path::Path,
     branch: &str,
     config: CodeGraphConfig,
     params: Option<Value>,
+    full_index: bool,
 ) -> Result<Value, EngramError> {
-    let parsed: IndexWorkspaceParams = serde_json::from_value(params.unwrap_or_else(|| json!({})))
-        .map_err(|e| {
-            EngramError::System(SystemError::InvalidParams {
-                reason: e.to_string(),
-            })
-        })?;
-
     let last_completed_at = state
         .scan_progress_snapshot()
         .await
         .and_then(|progress| progress.last_completed_at);
-    let (progress_tx, progress_task) = spawn_scan_progress_updater(state.clone());
-    let result = {
-        let mut progress_callback = move |files_scanned, files_total| {
-            let _ = progress_tx.send(running_scan_progress(
-                files_scanned,
-                files_total,
-                last_completed_at.clone(),
-            ));
-        };
-        crate::services::code_graph::index_workspace_with_progress(
-            ws_path,
-            data_dir,
-            branch,
-            &config,
-            parsed.force,
-            Some(&mut progress_callback),
-        )
-        .await
+    let (progress_tx, progress_task) = spawn_scan_progress_updater(
+        state.clone(),
+        #[cfg(test)]
+        None,
+    );
+    let mut progress_driver = DriverTaskGuard {
+        task: Some(progress_task),
     };
-    progress_task.await.map_err(|e| {
+
+    let value = if full_index {
+        let parsed: IndexWorkspaceParams =
+            serde_json::from_value(params.unwrap_or_else(|| json!({}))).map_err(|error| {
+                EngramError::System(SystemError::InvalidParams {
+                    reason: error.to_string(),
+                })
+            })?;
+        let result = {
+            let mut progress_callback = move |files_scanned, files_total| {
+                let _ = progress_tx.send(running_scan_progress(
+                    files_scanned,
+                    files_total,
+                    last_completed_at.clone(),
+                ));
+            };
+            crate::services::code_graph::index_workspace_with_progress(
+                ws_path,
+                data_dir,
+                branch,
+                &config,
+                parsed.force,
+                Some(&mut progress_callback),
+            )
+            .await
+        }?;
+        serde_json::to_value(result)
+    } else {
+        let parsed: SyncWorkspaceParams =
+            serde_json::from_value(params.unwrap_or_else(|| json!({}))).map_err(|error| {
+                EngramError::System(SystemError::InvalidParams {
+                    reason: error.to_string(),
+                })
+            })?;
+        let result = {
+            let mut progress_callback = move |files_scanned, files_total| {
+                let _ = progress_tx.send(running_scan_progress(
+                    files_scanned,
+                    files_total,
+                    last_completed_at.clone(),
+                ));
+            };
+            crate::services::code_graph::sync_workspace_with_progress(
+                ws_path,
+                data_dir,
+                branch,
+                &config,
+                parsed.backfill_python_canonical,
+                parsed.revalidate_code_graph,
+                Some(&mut progress_callback),
+            )
+            .await
+        }?;
+        serde_json::to_value(result)
+    }
+    .map_err(|error| {
         EngramError::System(SystemError::DatabaseError {
-            reason: format!("scan progress updater failed: {e}"),
+            reason: format!("result serialization failed: {error}"),
         })
     })?;
-    let result = result?;
 
-    serde_json::to_value(result).map_err(|e| {
+    let progress_result = match progress_driver.task.as_mut() {
+        Some(task) => task.await,
+        None => Ok(()),
+    };
+    let _ = progress_driver.task.take();
+    progress_result.map_err(|error| {
         EngramError::System(SystemError::DatabaseError {
-            reason: format!("result serialization failed: {e}"),
+            reason: format!("scan progress updater failed: {error}"),
         })
-    })
+    })?;
+    Ok(value)
 }
 
 // ── sync_workspace (T045) ───────────────────────────────────────────
@@ -238,141 +310,143 @@ pub async fn sync_workspace(
     state: SharedState,
     params: Option<Value>,
 ) -> Result<Value, EngramError> {
-    // 092.004-T: atomic (workspace, config) capture via the shared graph-handler
-    // seam (see index_workspace). The branch-resolution block below may re-point
-    // the active workspace branch, but the captured `code_graph` is unaffected.
-    let ctx = crate::tools::snapshot_graph_handler_context(&state).await?;
-    let ws_path = PathBuf::from(&ctx.workspace.path);
-    let data_dir = ctx.workspace.data_dir.clone();
-    let mut branch = ctx.workspace.branch.clone();
-    let code_graph = ctx.config.code_graph.clone();
-
-    if let Ok(resolved_branch) = resolve_git_branch(&ws_path) {
-        if resolved_branch != branch {
-            let workspace_id = workspace_hash(&ws_path, &resolved_branch);
-            let metrics_branch = resolved_branch.clone();
-            let snapshot_branch = resolved_branch.clone();
-            let _ = state
-                .update_workspace(|ws| {
-                    ws.branch = snapshot_branch;
-                    ws.workspace_id = workspace_id;
-                })
-                .await;
-            crate::services::metrics::switch_branch(metrics_branch);
-            branch = resolved_branch;
-        }
-    }
-
-    // If indexing is already running, queue a sync to run after it finishes
-    // rather than returning an error — callers get a "queued" status (044.004-T).
-    if !state.try_start_indexing() {
-        // 044.004-T / 101.002-T: parse the queued sync's gate flags so the
-        // coalesced drain runs the requested --revalidate-code-graph /
-        // --backfill-python-canonical rather than downgrading to a routine sync.
-        let params_ref = params.as_ref();
-        let queued_flag = |name: &str| -> bool {
-            params_ref
-                .and_then(|p| p.get(name))
+    let params_ref = params.as_ref();
+    let requested = WorkMask::from_bits(
+        0b001
+            | if params_ref
+                .and_then(|value| value.get("revalidate_code_graph"))
                 .and_then(Value::as_bool)
                 .unwrap_or(false)
-        };
-        // 101.002-T / 104.002-T / 105.001-T / 105.002-T: publish the queued
-        // sync's gate flags and the pending bit in ONE locked op
-        // (publish_pending_sync) so a concurrent drain never observes
-        // pending_sync == true alongside a stale companion bit, and a concurrent
-        // clear_pending_sync_for_generation (hydration cancel / DB-fail) can
-        // never interleave to downgrade the request to a bare sync. The publish
-        // is tagged with the current sync generation, so a newer generation's
-        // request replaces (does not OR into) an older generation's stale bits.
-        // The queue decision runs before params are parsed, and a coalesced
-        // drain would otherwise pass both gates as false — silently dropping a
-        // queued --revalidate-code-graph or --backfill-python-canonical.
-        //
-        // 105.002-T (R2): the publish is ALSO the producer→lock-holder handoff.
-        // After publishing, re-attempt the indexing lock. If it acquires, the
-        // prior holder had already released (and may already have run its final
-        // drain-check and exited) — so THIS caller is the guaranteed finisher and
-        // must drain the queued request itself, closing the producer/consumer
-        // lost-wakeup without waiting for an external tick.
-        if state.publish_pending_sync_and_try_reacquire(
-            queued_flag("revalidate_code_graph"),
-            queued_flag("backfill_python_canonical"),
-        ) {
-            // Backstop acquired the lock: release it and drain the request we
-            // just queued (the bounded loop-drain re-acquires as needed and
-            // services the coalesced pending + companion bits).
-            state.finish_indexing().await;
-            drain_pending_sync_to_completion(&state).await;
+            {
+                0b010
+            } else {
+                0
+            }
+            | if params_ref
+                .and_then(|value| value.get("backfill_python_canonical"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                0b100
+            } else {
+                0
+            },
+    );
+    let mut permit = match CoordinatorCell::request(
+        state.coordinator.admission(),
+        requested,
+        OwnerKind::Sync,
+    ) {
+        Ok(RequestOutcome::Acquired(permit)) => permit,
+        Ok(RequestOutcome::Enqueued) => {
+            return Ok(
+                json!({ "status": "queued", "message": "Sync queued; will run after current indexing completes" }),
+            );
         }
-        return Ok(
-            json!({ "status": "queued", "message": "Sync queued; will run after current indexing completes" }),
-        );
+        Ok(RequestOutcome::Waiting(_)) => {
+            return Err(EngramError::System(SystemError::DatabaseError {
+                reason: "non-empty sync request unexpectedly entered waiting admission".to_owned(),
+            }));
+        }
+        Ok(RequestOutcome::Stale) => {
+            return Err(EngramError::System(SystemError::DatabaseError {
+                reason: "sync admission became stale during workspace rebind".to_owned(),
+            }));
+        }
+        Err(error) => {
+            return Err(EngramError::System(SystemError::DatabaseError {
+                reason: format!("sync coordinator admission failed: {error}"),
+            }));
+        }
+    };
+
+    let operation = async {
+        // Capture only after admission so parsing, branch refresh, progress,
+        // DB/file work, serialization, and terminal progress all share a permit.
+        let ctx = crate::tools::snapshot_graph_handler_context(&state).await?;
+        let ws_path = PathBuf::from(&ctx.workspace.path);
+        let mut branch = ctx.workspace.branch.clone();
+        if let Ok(resolved_branch) = resolve_git_branch(&ws_path) {
+            if resolved_branch != branch {
+                let workspace_id = workspace_hash(&ws_path, &resolved_branch);
+                let metrics_branch = resolved_branch.clone();
+                let snapshot_branch = resolved_branch.clone();
+                let _ = state
+                    .update_workspace(|workspace| {
+                        workspace.branch = snapshot_branch;
+                        workspace.workspace_id = workspace_id;
+                    })
+                    .await;
+                crate::services::metrics::switch_branch(metrics_branch);
+                branch = resolved_branch;
+            }
+        }
+
+        begin_indexing_scan_progress(&state).await;
+        let result = run_workspace_write(
+            &state,
+            &ws_path,
+            &ctx.workspace.data_dir,
+            &branch,
+            ctx.config.code_graph,
+            params,
+            false,
+        )
+        .await;
+        finish_indexing_scan_progress(&state, &result, false).await;
+        result
+    };
+    let Some(result) = permit.run_until_cancelled(operation).await else {
+        return Err(EngramError::System(SystemError::DatabaseError {
+            reason: "sync cancelled by workspace rebind".to_owned(),
+        }));
+    };
+    let result = result?;
+    if let CompletionOutcome::Transferred(successor) = CoordinatorCell::complete(permit) {
+        drive_transferred_sync(&state, successor).await;
     }
-
-    begin_indexing_scan_progress(&state).await;
-
-    // Run the sync logic, ensuring the flag is cleared on all exit paths.
-    let result =
-        sync_workspace_inner(&state, &ws_path, &data_dir, &branch, code_graph, params).await;
-    finalize_indexing_request(&state, &result, false, |state| {
-        Box::pin(drain_pending_sync_to_completion(state))
-    })
-    .await;
-    result
+    Ok(result)
 }
 
-/// Inner sync logic separated to guarantee `finish_indexing()` runs.
-async fn sync_workspace_inner(
-    state: &SharedState,
-    ws_path: &std::path::Path,
-    data_dir: &std::path::Path,
-    branch: &str,
-    config: CodeGraphConfig,
-    params: Option<Value>,
-) -> Result<Value, EngramError> {
-    let parsed: SyncWorkspaceParams = serde_json::from_value(params.unwrap_or_else(|| json!({})))
-        .map_err(|e| {
-        EngramError::System(SystemError::InvalidParams {
-            reason: e.to_string(),
-        })
-    })?;
-
-    let last_completed_at = state
-        .scan_progress_snapshot()
-        .await
-        .and_then(|progress| progress.last_completed_at);
-    let (progress_tx, progress_task) = spawn_scan_progress_updater(state.clone());
-    let result = {
-        let mut progress_callback = move |files_scanned, files_total| {
-            let _ = progress_tx.send(running_scan_progress(
-                files_scanned,
-                files_total,
-                last_completed_at.clone(),
-            ));
+async fn drive_transferred_sync(state: &SharedState, mut permit: OwnerPermit) {
+    loop {
+        let work_bits = permit.work_bits();
+        let operation = async {
+            let ctx = crate::tools::snapshot_graph_handler_context(state).await?;
+            let ws_path = PathBuf::from(&ctx.workspace.path);
+            begin_indexing_scan_progress(state).await;
+            let result = run_workspace_write(
+                state,
+                &ws_path,
+                &ctx.workspace.data_dir,
+                &ctx.workspace.branch,
+                ctx.config.code_graph,
+                Some(json!({
+                    "revalidate_code_graph": work_bits & 0b010 != 0,
+                    "backfill_python_canonical": work_bits & 0b100 != 0
+                })),
+                false,
+            )
+            .await;
+            finish_indexing_scan_progress(state, &result, false).await;
+            result
         };
-        crate::services::code_graph::sync_workspace_with_progress(
-            ws_path,
-            data_dir,
-            branch,
-            &config,
-            parsed.backfill_python_canonical,
-            parsed.revalidate_code_graph,
-            Some(&mut progress_callback),
-        )
-        .await
-    };
-    progress_task.await.map_err(|e| {
-        EngramError::System(SystemError::DatabaseError {
-            reason: format!("scan progress updater failed: {e}"),
-        })
-    })?;
-    let result = result?;
 
-    serde_json::to_value(result).map_err(|e| {
-        EngramError::System(SystemError::DatabaseError {
-            reason: format!("result serialization failed: {e}"),
-        })
-    })
+        match permit.run_until_cancelled(operation).await {
+            Some(Ok(_)) => match CoordinatorCell::complete(permit) {
+                CompletionOutcome::Transferred(successor) => permit = successor,
+                CompletionOutcome::Released
+                | CompletionOutcome::RetirementAcknowledged
+                | CompletionOutcome::SequenceExhausted(_)
+                | CompletionOutcome::Stale => return,
+            },
+            Some(Err(error)) => {
+                tracing::warn!(%error, "transferred sync failed");
+                return;
+            }
+            None => return,
+        }
+    }
 }
 
 fn running_scan_progress(
@@ -390,6 +464,7 @@ fn running_scan_progress(
 
 fn spawn_scan_progress_updater(
     state: SharedState,
+    #[cfg(test)] mut probe: Option<ProgressProbe>,
 ) -> (
     tokio::sync::mpsc::UnboundedSender<ScanProgress>,
     tokio::task::JoinHandle<()>,
@@ -397,10 +472,39 @@ fn spawn_scan_progress_updater(
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let handle = tokio::spawn(async move {
         while let Some(progress) = rx.recv().await {
+            #[cfg(test)]
+            if let Some(probe) = probe.as_mut() {
+                if let Some(entered) = probe.entered.take() {
+                    let _ = entered.send(());
+                }
+                if let Some(release) = probe.release.take() {
+                    let _ = release.await;
+                }
+                probe
+                    .writes
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
             state.set_scan_progress(Some(progress)).await;
         }
     });
     (tx, handle)
+}
+
+#[cfg(test)]
+struct ProgressProbe {
+    entered: Option<tokio::sync::oneshot::Sender<()>>,
+    release: Option<tokio::sync::oneshot::Receiver<()>>,
+    writes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    terminated: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+#[cfg(test)]
+impl Drop for ProgressProbe {
+    fn drop(&mut self) {
+        if let Some(terminated) = self.terminated.take() {
+            let _ = terminated.send(());
+        }
+    }
 }
 
 fn indexing_started_progress(last_completed_at: Option<String>) -> ScanProgress {
@@ -457,8 +561,10 @@ async fn finish_indexing_scan_progress(
     state.set_scan_progress(Some(progress)).await;
 }
 
+#[cfg(test)]
 type DrainFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 
+#[cfg(test)]
 async fn finalize_indexing_request<F>(
     state: &SharedState,
     result: &Result<Value, EngramError>,
@@ -535,16 +641,133 @@ pub async fn index_git_history(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use serde_json::json;
+    use tokio::sync::oneshot;
 
     use super::{
-        completed_index_scan_progress, completed_sync_scan_progress, finalize_indexing_request,
-        indexing_started_progress,
+        ProgressProbe, completed_index_scan_progress, completed_sync_scan_progress,
+        finalize_indexing_request, indexing_started_progress, running_scan_progress,
+        spawn_scan_progress_updater, sync_workspace,
     };
-    use crate::server::state::AppState;
+    use crate::models::config::WorkspaceConfig;
+    use crate::server::state::{
+        AppState, CoordinatorCell, DriverTaskGuard, OwnerKind, OwnerPermit, RequestOutcome,
+        WorkMask, WorkspaceSnapshot,
+    };
+
+    #[derive(Clone, Copy)]
+    enum WriteExit {
+        EarlyReturn,
+        EarlyError,
+        Cancellation,
+        CallerAbort,
+    }
+
+    fn snapshot(
+        _name: &str,
+        workspace_uuid: &str,
+        workspace_id: &str,
+        path: &std::path::Path,
+        data_dir: std::path::PathBuf,
+    ) -> WorkspaceSnapshot {
+        WorkspaceSnapshot {
+            workspace_id: workspace_id.to_owned(),
+            workspace_uuid: workspace_uuid.to_owned(),
+            branch: "main".to_owned(),
+            data_dir,
+            path: path.to_string_lossy().into_owned(),
+            last_flush: None,
+            stale_files: false,
+            connection_count: 0,
+            file_mtimes: HashMap::new(),
+        }
+    }
+
+    async fn publish(state: &AppState, snapshot: WorkspaceSnapshot) {
+        if let Err(error) = state
+            .publish_workspace_generation(snapshot, Some(WorkspaceConfig::default()))
+            .await
+        {
+            panic!("unexpected workspace publication error: {error}");
+        }
+    }
+
+    fn acquired(outcome: RequestOutcome) -> OwnerPermit {
+        match outcome {
+            RequestOutcome::Acquired(permit) => permit,
+            RequestOutcome::Waiting(_) => panic!("expected acquired permit, got waiting"),
+            RequestOutcome::Enqueued => panic!("expected acquired permit, got enqueued"),
+            RequestOutcome::Stale => panic!("expected acquired permit, got stale"),
+        }
+    }
+
+    fn request(state: &AppState, mask: WorkMask, kind: OwnerKind) -> RequestOutcome {
+        match CoordinatorCell::request(state.coordinator.admission(), mask, kind) {
+            Ok(outcome) => outcome,
+            Err(error) => panic!("unexpected coordinator request error: {error}"),
+        }
+    }
+
+    async fn run_guarded_write_probe(
+        state: Arc<AppState>,
+        mut permit: OwnerPermit,
+        exit: WriteExit,
+        progress_probe: ProgressProbe,
+        driver_entered: oneshot::Sender<()>,
+        release_driver: oneshot::Receiver<()>,
+        active_db_drivers: Arc<AtomicUsize>,
+        max_active_db_drivers: Arc<AtomicUsize>,
+    ) -> Result<(), ()> {
+        struct ActiveDriver(Arc<AtomicUsize>);
+
+        impl Drop for ActiveDriver {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+
+        let (progress_tx, progress_task) =
+            spawn_scan_progress_updater(Arc::clone(&state), Some(progress_probe));
+        let progress_driver = DriverTaskGuard {
+            task: Some(progress_task),
+        };
+        let _ = progress_tx.send(running_scan_progress(1, 1, None));
+        let operation = async move {
+            let active = active_db_drivers.fetch_add(1, Ordering::SeqCst) + 1;
+            max_active_db_drivers.fetch_max(active, Ordering::SeqCst);
+            let _active = ActiveDriver(active_db_drivers);
+            let _ = driver_entered.send(());
+            match exit {
+                WriteExit::EarlyReturn | WriteExit::EarlyError => {
+                    let _ = release_driver.await;
+                }
+                WriteExit::Cancellation | WriteExit::CallerAbort => {
+                    std::future::pending::<()>().await;
+                }
+            }
+            if matches!(exit, WriteExit::EarlyError) {
+                Err(())
+            } else {
+                Ok(())
+            }
+        };
+
+        let outcome = permit.run_until_cancelled(operation).await;
+        drop(progress_tx);
+        drop(progress_driver);
+        match outcome {
+            Some(result) => result?,
+            None => {}
+        }
+        if matches!(exit, WriteExit::EarlyReturn) {
+            let _ = CoordinatorCell::complete(permit);
+        }
+        Ok(())
+    }
 
     #[test]
     fn indexing_started_progress_sets_running_without_totals() {
@@ -629,5 +852,169 @@ mod tests {
         );
         assert_eq!(final_progress.files_scanned, 3);
         assert_eq!(final_progress.files_total, 3);
+    }
+
+    #[tokio::test]
+    async fn write_owner_rebind_and_exit_matrix_quiesces_driver_and_progress_before_ack() {
+        for kind in [OwnerKind::Index, OwnerKind::Sync] {
+            for same_binding in [true, false] {
+                for exit in [
+                    WriteExit::EarlyReturn,
+                    WriteExit::EarlyError,
+                    WriteExit::Cancellation,
+                    WriteExit::CallerAbort,
+                ] {
+                    let temp = tempfile::tempdir().expect("tempdir");
+                    let state = Arc::new(AppState::new(2));
+                    publish(
+                        &state,
+                        snapshot(
+                            "old",
+                            "uuid-old",
+                            "id-old",
+                            temp.path(),
+                            temp.path().join("old-data"),
+                        ),
+                    )
+                    .await;
+                    let permit = acquired(request(&state, WorkMask::from_bits(0b111), kind));
+                    let (progress_entered_tx, progress_entered_rx) = oneshot::channel();
+                    let (release_progress_tx, release_progress_rx) = oneshot::channel();
+                    let (progress_terminated_tx, progress_terminated_rx) = oneshot::channel();
+                    let progress_writes = Arc::new(AtomicUsize::new(0));
+                    let progress_probe = ProgressProbe {
+                        entered: Some(progress_entered_tx),
+                        release: Some(release_progress_rx),
+                        writes: Arc::clone(&progress_writes),
+                        terminated: Some(progress_terminated_tx),
+                    };
+                    let (driver_entered_tx, driver_entered_rx) = oneshot::channel();
+                    let (release_driver_tx, release_driver_rx) = oneshot::channel();
+                    let active_db_drivers = Arc::new(AtomicUsize::new(0));
+                    let max_active_db_drivers = Arc::new(AtomicUsize::new(0));
+                    let caller = tokio::spawn(run_guarded_write_probe(
+                        Arc::clone(&state),
+                        permit,
+                        exit,
+                        progress_probe,
+                        driver_entered_tx,
+                        release_driver_rx,
+                        Arc::clone(&active_db_drivers),
+                        Arc::clone(&max_active_db_drivers),
+                    ));
+                    progress_entered_rx
+                        .await
+                        .expect("progress child should enter its blocked update");
+                    driver_entered_rx
+                        .await
+                        .expect("DB-capable operation should enter");
+
+                    if matches!(exit, WriteExit::EarlyReturn | WriteExit::EarlyError) {
+                        let _ = release_driver_tx.send(());
+                        let result = caller.await.expect("caller task should join");
+                        assert_eq!(result.is_err(), matches!(exit, WriteExit::EarlyError));
+                    } else {
+                        let target = if same_binding {
+                            snapshot(
+                                "same",
+                                "uuid-old",
+                                "id-old",
+                                temp.path(),
+                                temp.path().join("same-data"),
+                            )
+                        } else {
+                            snapshot(
+                                "new",
+                                "uuid-new",
+                                "id-new",
+                                temp.path(),
+                                temp.path().join("new-data"),
+                            )
+                        };
+                        publish(&state, target).await;
+                        if matches!(exit, WriteExit::CallerAbort) {
+                            caller.abort();
+                            assert!(
+                                caller
+                                    .await
+                                    .expect_err("caller abort should cancel")
+                                    .is_cancelled()
+                            );
+                        } else {
+                            assert!(
+                                caller.await.expect("caller task should join").is_ok(),
+                                "cancellation should be handled"
+                            );
+                        }
+                    }
+
+                    assert_eq!(active_db_drivers.load(Ordering::SeqCst), 0);
+                    assert_eq!(max_active_db_drivers.load(Ordering::SeqCst), 1);
+                    assert!(state.coordinator.test_is_idle());
+                    if matches!(exit, WriteExit::Cancellation | WriteExit::CallerAbort) {
+                        assert_eq!(state.coordinator.test_notification_calls(), 1);
+                        assert_eq!(
+                            state.coordinator.test_pending_bits(),
+                            if same_binding { 0b111 } else { 0 }
+                        );
+                    }
+
+                    let _ = release_progress_tx.send(());
+                    progress_terminated_rx
+                        .await
+                        .expect("progress child should terminate");
+                    assert_eq!(
+                        progress_writes.load(Ordering::SeqCst),
+                        0,
+                        "old progress must not write after permit terminal"
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn busy_sync_publishes_full_mask_before_exact_queued_response() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let invalid_data_dir = temp.path().join("not-a-directory");
+        std::fs::write(&invalid_data_dir, b"file blocks database directory")
+            .expect("create invalid data path");
+        let state = Arc::new(AppState::new(1));
+        publish(
+            &state,
+            snapshot(
+                "busy",
+                "uuid-busy",
+                "id-busy",
+                temp.path(),
+                invalid_data_dir,
+            ),
+        )
+        .await;
+        let owner = acquired(request(
+            &state,
+            WorkMask::from_bits(0b001),
+            OwnerKind::Index,
+        ));
+
+        let response = sync_workspace(
+            Arc::clone(&state),
+            Some(json!({
+                "revalidate_code_graph": true,
+                "backfill_python_canonical": true
+            })),
+        )
+        .await
+        .expect("busy sync should queue without touching the database");
+
+        assert_eq!(
+            response,
+            json!({
+                "status": "queued",
+                "message": "Sync queued; will run after current indexing completes"
+            })
+        );
+        assert_eq!(state.coordinator.test_pending_bits(), 0b111);
+        drop(owner);
     }
 }

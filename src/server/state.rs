@@ -1206,6 +1206,7 @@ impl AppState {
     /// Check whether an indexing operation is currently in progress.
     pub fn is_indexing(&self) -> bool {
         self.indexing_in_progress.load(Ordering::SeqCst)
+            || !matches!(self.coordinator.lock().phase, CoordinatorPhase::Idle)
     }
 
     /// Attempt to start an indexing operation.
@@ -1424,6 +1425,10 @@ impl AppState {
 
     /// Get the timestamp of the last completed indexing operation.
     pub async fn last_indexed_at(&self) -> Option<DateTime<Utc>> {
+        let coordinator_timestamp = self.coordinator.lock().last_indexed_at;
+        if coordinator_timestamp.is_some() {
+            return coordinator_timestamp;
+        }
         *self.last_indexed_at.read().await
     }
 
@@ -2211,5 +2216,26 @@ mod coordinator_tests {
             )
         };
         assert_eq!(before_stale, after_stale);
+    }
+
+    #[test]
+    fn write_admission_preserves_direct_kind_and_rejects_stale_snapshot() {
+        for kind in [OwnerKind::Index, OwnerKind::Sync] {
+            let cell = coordinator_cell("write");
+            let stale = admission(&cell);
+            publish_idle_generation(&cell, binding("replacement"));
+            assert!(matches!(
+                request(stale, WorkMask::from_bits(0b111), kind),
+                RequestOutcome::Stale
+            ));
+            assert!(cell.test_is_idle());
+
+            let permit = acquired(request(admission(&cell), WorkMask::from_bits(0b111), kind));
+            assert_eq!(permit.identity.kind, kind);
+            assert!(matches!(
+                CoordinatorCell::complete(permit),
+                CompletionOutcome::Released
+            ));
+        }
     }
 }
