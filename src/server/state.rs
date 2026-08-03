@@ -1312,7 +1312,7 @@ mod coordinator_tests {
     async fn notification_is_ready(notification: &mut Pin<Box<OwnedNotified>>) -> bool {
         tokio::select! {
             biased;
-            _ = notification.as_mut() => true,
+            () = notification.as_mut() => true,
             () = std::future::ready(()) => false,
         }
     }
@@ -1432,7 +1432,7 @@ mod coordinator_tests {
             binding_snapshot: binding("transfer"),
             cancel_rx: cell.lock().generation_cancel.subscribe(),
         };
-        let stale = OwnerPermit {
+        let stale_permit = OwnerPermit {
             ownership: Some(stale_ownership),
             identity: OwnerIdentity {
                 generation: 0,
@@ -1443,7 +1443,7 @@ mod coordinator_tests {
             cleanup_armed: true,
         };
         assert!(matches!(
-            CoordinatorCell::complete(stale),
+            CoordinatorCell::complete(stale_permit),
             CompletionOutcome::Stale
         ));
         assert_eq!(cell.lock().pending.bits(), 0b010);
@@ -1669,9 +1669,8 @@ mod coordinator_tests {
                 0
             );
         }
-        let dispatch = match state.snapshot_dispatch_context().await {
-            Some(dispatch) => dispatch,
-            None => panic!("binding publication did not publish dispatch state"),
+        let Some(dispatch) = state.snapshot_dispatch_context().await else {
+            panic!("binding publication did not publish dispatch state");
         };
         assert_eq!(dispatch.workspace.workspace_uuid, "uuid-alpha");
         assert_eq!(dispatch.workspace.workspace_id, "id-alpha");
@@ -1729,13 +1728,12 @@ mod coordinator_tests {
                         workspace("new", "uuid-new", "id-new")
                     };
                     let (target_generation, _target_cancel) = publish(&state, target).await;
-                    assert_eq!(
+                    assert!(
                         *permit
                             .ownership
                             .as_ref()
                             .map(|ownership| ownership.cancel_rx.borrow())
-                            .unwrap_or_else(|| panic!("permit lost cancellation ownership")),
-                        true
+                            .unwrap_or_else(|| panic!("permit lost cancellation ownership"))
                     );
 
                     let retired_identity = {
@@ -1939,7 +1937,7 @@ mod coordinator_tests {
                 state.coordinator.notification_calls.load(Ordering::SeqCst),
             )
         };
-        let stale = OwnerPermit {
+        let stale_permit = OwnerPermit {
             ownership: Some(PermitOwnership {
                 cell: Arc::clone(&state.coordinator),
                 token: GenerationToken {
@@ -1954,7 +1952,7 @@ mod coordinator_tests {
             cleanup_armed: true,
         };
         assert!(matches!(
-            CoordinatorCell::complete(stale),
+            CoordinatorCell::complete(stale_permit),
             CompletionOutcome::Stale
         ));
         let after_stale = {
@@ -2078,7 +2076,7 @@ mod coordinator_tests {
                         state.coordinator.test_notification_calls(),
                     )
                 };
-                let stale = OwnerPermit {
+                let stale_permit = OwnerPermit {
                     ownership: Some(PermitOwnership {
                         cell: Arc::clone(&state.coordinator),
                         token: GenerationToken {
@@ -2093,7 +2091,7 @@ mod coordinator_tests {
                     cleanup_armed: true,
                 };
                 assert!(matches!(
-                    CoordinatorCell::complete(stale),
+                    CoordinatorCell::complete(stale_permit),
                     CompletionOutcome::Stale
                 ));
                 let after_stale = {

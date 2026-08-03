@@ -674,6 +674,11 @@ mod tests {
         CallerAbort,
     }
 
+    struct DriverCounts {
+        active: Arc<AtomicUsize>,
+        max_active: Arc<AtomicUsize>,
+    }
+
     fn snapshot(
         _name: &str,
         workspace_uuid: &str,
@@ -726,8 +731,7 @@ mod tests {
         progress_probe: ProgressProbe,
         driver_entered: oneshot::Sender<()>,
         release_driver: oneshot::Receiver<()>,
-        active_db_drivers: Arc<AtomicUsize>,
-        max_active_db_drivers: Arc<AtomicUsize>,
+        driver_counts: DriverCounts,
     ) -> Result<(), ()> {
         struct ActiveDriver(Arc<AtomicUsize>);
 
@@ -744,9 +748,9 @@ mod tests {
         };
         let _ = progress_tx.send(running_scan_progress(1, 1, None));
         let operation = async move {
-            let active = active_db_drivers.fetch_add(1, Ordering::SeqCst) + 1;
-            max_active_db_drivers.fetch_max(active, Ordering::SeqCst);
-            let _active = ActiveDriver(active_db_drivers);
+            let active = driver_counts.active.fetch_add(1, Ordering::SeqCst) + 1;
+            driver_counts.max_active.fetch_max(active, Ordering::SeqCst);
+            let _active = ActiveDriver(driver_counts.active);
             let _ = driver_entered.send(());
             match exit {
                 WriteExit::EarlyReturn | WriteExit::EarlyError => {
@@ -766,9 +770,8 @@ mod tests {
         let outcome = permit.run_until_cancelled(operation).await;
         drop(progress_tx);
         drop(progress_driver);
-        match outcome {
-            Some(result) => result?,
-            None => {}
+        if let Some(result) = outcome {
+            result?;
         }
         if matches!(exit, WriteExit::EarlyReturn) {
             let _ = CoordinatorCell::complete(permit);
@@ -906,8 +909,10 @@ mod tests {
                         progress_probe,
                         driver_entered_tx,
                         release_driver_rx,
-                        Arc::clone(&active_db_drivers),
-                        Arc::clone(&max_active_db_drivers),
+                        DriverCounts {
+                            active: Arc::clone(&active_db_drivers),
+                            max_active: Arc::clone(&max_active_db_drivers),
+                        },
                     ));
                     progress_entered_rx
                         .await
