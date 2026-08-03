@@ -17,8 +17,8 @@ use crate::errors::{CodeGraphError, EngramError, SystemError, WorkspaceError};
 use crate::models::config::CodeGraphConfig;
 use crate::models::health::ScanProgress;
 use crate::server::state::{
-    AppState, CompletionOutcome, CoordinatorCell, DispatchSnapshot, DriverTaskGuard, OwnerKind,
-    OwnerPermit, RequestOutcome, SharedState, WorkMask,
+    AppState, ClaimOutcome, CompletionOutcome, CoordinatorCell, DispatchSnapshot, DriverTaskGuard,
+    OwnerKind, OwnerPermit, RequestOutcome, SharedState, WorkMask,
 };
 use crate::services::dehydration;
 use crate::services::hydration;
@@ -381,40 +381,41 @@ pub async fn sync_workspace(
                 0
             },
     );
-    let mut guarded = state
-        .guarded_dispatch_context()
-        .await
-        .ok_or(EngramError::Workspace(WorkspaceError::NotSet))?;
-    let mut metrics_branch = None;
+    let mut next_owner = None;
     loop {
-        let (admission, ctx) = guarded;
-        let mut permit = match CoordinatorCell::request(admission, requested, OwnerKind::Sync) {
-            Ok(RequestOutcome::Acquired(permit)) => permit,
-            Ok(RequestOutcome::Enqueued) => {
-                return Ok(
-                    json!({ "status": "queued", "message": "Sync queued; will run after current indexing completes" }),
-                );
-            }
-            Ok(RequestOutcome::Waiting(_)) => {
-                return Err(EngramError::System(SystemError::DatabaseError {
-                    reason: "non-empty sync request unexpectedly entered waiting admission"
-                        .to_owned(),
-                }));
-            }
-            Ok(RequestOutcome::Stale) => {
-                return Err(EngramError::System(SystemError::DatabaseError {
-                    reason: "sync admission became stale during workspace rebind".to_owned(),
-                }));
-            }
-            Err(error) => {
-                return Err(EngramError::System(SystemError::DatabaseError {
-                    reason: format!("sync coordinator admission failed: {error}"),
-                }));
-            }
+        let (mut permit, ctx) = if let Some(owner) = next_owner.take() {
+            owner
+        } else {
+            let (admission, ctx) = state
+                .guarded_dispatch_context()
+                .await
+                .ok_or(EngramError::Workspace(WorkspaceError::NotSet))?;
+            let permit = match CoordinatorCell::request(admission, requested, OwnerKind::Sync) {
+                Ok(RequestOutcome::Acquired(permit)) => permit,
+                Ok(RequestOutcome::Enqueued) => {
+                    return Ok(
+                        json!({ "status": "queued", "message": "Sync queued; will run after current indexing completes" }),
+                    );
+                }
+                Ok(RequestOutcome::Waiting(_)) => {
+                    return Err(EngramError::System(SystemError::DatabaseError {
+                        reason: "non-empty sync request unexpectedly entered waiting admission"
+                            .to_owned(),
+                    }));
+                }
+                Ok(RequestOutcome::Stale) => {
+                    return Err(EngramError::System(SystemError::DatabaseError {
+                        reason: "sync admission became stale during workspace rebind".to_owned(),
+                    }));
+                }
+                Err(error) => {
+                    return Err(EngramError::System(SystemError::DatabaseError {
+                        reason: format!("sync coordinator admission failed: {error}"),
+                    }));
+                }
+            };
+            (permit, ctx)
         };
-        if let Some(branch) = metrics_branch.take() {
-            crate::services::metrics::switch_branch(branch);
-        }
         let work_bits = permit.work_bits();
 
         enum SyncAttempt {
@@ -456,35 +457,18 @@ pub async fn sync_workspace(
                 let mut workspace = ctx.workspace;
                 workspace.workspace_id = workspace_hash(Path::new(&workspace.path), &branch);
                 workspace.branch = branch.clone();
-                let (_generation, admission) = state
-                    .publish_workspace_generation(workspace.clone(), Some(ctx.config.clone()))
+                let _ = state
+                    .publish_workspace_generation_with_reissue(
+                        workspace.clone(),
+                        Some(ctx.config.clone()),
+                        WorkMask::from_bits(work_bits),
+                    )
                     .await
                     .map_err(|error| {
                         EngramError::System(SystemError::DatabaseError {
                             reason: format!("sync branch publication failed: {error}"),
                         })
                     })?;
-                match CoordinatorCell::request(
-                    admission,
-                    WorkMask::from_bits(work_bits),
-                    OwnerKind::Sync,
-                )
-                .map_err(|error| {
-                    EngramError::System(SystemError::DatabaseError {
-                        reason: format!("sync branch reissue failed: {error}"),
-                    })
-                })? {
-                    RequestOutcome::Enqueued => {}
-                    RequestOutcome::Acquired(_)
-                    | RequestOutcome::Waiting(_)
-                    | RequestOutcome::Stale => {
-                        return Err(EngramError::System(SystemError::DatabaseError {
-                            reason:
-                                "sync branch reissue was not retained by the retirement barrier"
-                                    .to_owned(),
-                        }));
-                    }
-                }
                 if !matches!(
                     CoordinatorCell::complete(permit),
                     CompletionOutcome::RetirementAcknowledged
@@ -493,21 +477,46 @@ pub async fn sync_workspace(
                         reason: "sync branch publication lost retirement acknowledgment".to_owned(),
                     }));
                 }
-                metrics_branch = Some(branch);
-                let next_guarded = state.guarded_dispatch_context().await.ok_or_else(|| {
-                    EngramError::System(SystemError::DatabaseError {
-                        reason: "sync branch publication lost its dispatch context".to_owned(),
-                    })
-                })?;
-                if next_guarded.1.workspace.workspace_uuid != workspace.workspace_uuid
-                    || next_guarded.1.workspace.workspace_id != workspace.workspace_id
-                {
-                    return Err(EngramError::System(SystemError::DatabaseError {
-                        reason: "sync branch publication was superseded by a distinct binding"
-                            .to_owned(),
-                    }));
+                loop {
+                    let next_guarded = state.guarded_dispatch_context().await.ok_or_else(|| {
+                        EngramError::System(SystemError::DatabaseError {
+                            reason: "sync branch publication lost its dispatch context".to_owned(),
+                        })
+                    })?;
+                    if next_guarded.1.workspace.workspace_uuid != workspace.workspace_uuid
+                        || next_guarded.1.workspace.workspace_id != workspace.workspace_id
+                    {
+                        return Err(EngramError::System(SystemError::DatabaseError {
+                            reason: "sync branch publication was superseded by a distinct binding"
+                                .to_owned(),
+                        }));
+                    }
+                    match CoordinatorCell::claim_reissued_sync(next_guarded.0).map_err(|error| {
+                        EngramError::System(SystemError::DatabaseError {
+                            reason: format!("sync branch claim failed: {error}"),
+                        })
+                    })? {
+                        ClaimOutcome::Acquired(next) => {
+                            crate::services::metrics::switch_branch(
+                                next_guarded.1.workspace.branch.clone(),
+                            );
+                            next_owner = Some((next, next_guarded.1));
+                            break;
+                        }
+                        ClaimOutcome::Retained => {
+                            return Ok(
+                                json!({ "status": "queued", "message": "Sync queued; will run after current indexing completes" }),
+                            );
+                        }
+                        ClaimOutcome::Missing => {
+                            return Err(EngramError::System(SystemError::DatabaseError {
+                                reason: "sync branch reissue was superseded before acquisition"
+                                    .to_owned(),
+                            }));
+                        }
+                        ClaimOutcome::Stale => {}
+                    }
                 }
-                guarded = next_guarded;
             }
             SyncAttempt::Finished(result) => {
                 let result = result?;
@@ -539,77 +548,109 @@ pub(crate) async fn prepare_transferred_sync(
     permit: OwnerPermit,
     ctx: DispatchSnapshot,
 ) -> Result<Option<(OwnerPermit, DispatchSnapshot)>, EngramError> {
-    let workspace_path = PathBuf::from(&ctx.workspace.path);
-    let Ok(resolved_branch) = resolve_git_branch(&workspace_path) else {
-        // Non-Git workspaces retain their published default/synthetic branch.
-        return Ok(Some((permit, ctx)));
-    };
-    if resolved_branch == ctx.workspace.branch {
-        return Ok(Some((permit, ctx)));
-    }
+    prepare_branch_owner(state, permit, ctx, OwnerKind::Sync).await
+}
 
-    let work_bits = permit.work_bits();
-    let mut workspace = ctx.workspace;
-    workspace.workspace_id = workspace_hash(Path::new(&workspace.path), &resolved_branch);
-    workspace.branch = resolved_branch;
-    let (_generation, admission) = state
-        .publish_workspace_generation(workspace.clone(), Some(ctx.config))
-        .await
-        .map_err(|error| {
+/// Refresh HEAD and reacquire one owner before any branch-scoped mutation.
+///
+/// Retries only while the same workspace path and UUID remain active. Sync
+/// owners atomically qualify their saved mask to each newly published branch;
+/// empty Startup/Watcher owners publish no inherited work.
+pub(crate) async fn prepare_branch_owner(
+    state: &AppState,
+    mut permit: OwnerPermit,
+    mut ctx: DispatchSnapshot,
+    kind: OwnerKind,
+) -> Result<Option<(OwnerPermit, DispatchSnapshot)>, EngramError> {
+    let workspace_path = ctx.workspace.path.clone();
+    let workspace_uuid = ctx.workspace.workspace_uuid.clone();
+
+    loop {
+        if ctx.workspace.path != workspace_path || ctx.workspace.workspace_uuid != workspace_uuid {
+            return Ok(None);
+        }
+        let path = PathBuf::from(&ctx.workspace.path);
+        let Ok(resolved_branch) = resolve_git_branch(&path) else {
+            // Non-Git workspaces retain their published default/synthetic branch.
+            return Ok(Some((permit, ctx)));
+        };
+        if resolved_branch == ctx.workspace.branch {
+            return Ok(Some((permit, ctx)));
+        }
+
+        let work_bits = permit.work_bits();
+        let mut workspace = ctx.workspace;
+        workspace.workspace_id = workspace_hash(Path::new(&workspace.path), &resolved_branch);
+        workspace.branch = resolved_branch;
+        let publication = if work_bits == 0 {
+            state
+                .publish_workspace_generation(workspace, Some(ctx.config))
+                .await
+        } else {
+            state
+                .publish_workspace_generation_with_reissue(
+                    workspace,
+                    Some(ctx.config),
+                    WorkMask::from_bits(work_bits),
+                )
+                .await
+        };
+        publication.map_err(|error| {
             EngramError::System(SystemError::DatabaseError {
-                reason: format!("transferred sync branch publication failed: {error}"),
+                reason: format!("branch publication failed before {kind:?} mutation: {error}"),
             })
         })?;
 
-    match CoordinatorCell::request(admission, WorkMask::from_bits(work_bits), OwnerKind::Sync)
-        .map_err(|error| {
-            EngramError::System(SystemError::DatabaseError {
-                reason: format!("transferred sync branch reissue failed: {error}"),
-            })
-        })? {
-        RequestOutcome::Enqueued => {}
-        RequestOutcome::Acquired(_) | RequestOutcome::Waiting(_) | RequestOutcome::Stale => {
+        if !matches!(
+            CoordinatorCell::complete(permit),
+            CompletionOutcome::RetirementAcknowledged
+        ) {
             return Err(EngramError::System(SystemError::DatabaseError {
-                reason:
-                    "transferred sync branch reissue was not retained by the retirement barrier"
-                        .to_owned(),
+                reason: format!("branch publication lost {kind:?} retirement acknowledgment"),
             }));
         }
-    }
 
-    if !matches!(
-        CoordinatorCell::complete(permit),
-        CompletionOutcome::RetirementAcknowledged
-    ) {
-        return Err(EngramError::System(SystemError::DatabaseError {
-            reason: "transferred sync branch publication lost retirement acknowledgment".to_owned(),
-        }));
-    }
+        loop {
+            let Some((admission, current_ctx)) = state.guarded_dispatch_context().await else {
+                return Err(EngramError::System(SystemError::DatabaseError {
+                    reason: format!("branch publication lost {kind:?} dispatch context"),
+                }));
+            };
+            if current_ctx.workspace.path != workspace_path
+                || current_ctx.workspace.workspace_uuid != workspace_uuid
+            {
+                return Ok(None);
+            }
 
-    let Some((admission, current_ctx)) = state.guarded_dispatch_context().await else {
-        return Err(EngramError::System(SystemError::DatabaseError {
-            reason: "transferred sync branch publication lost its dispatch context".to_owned(),
-        }));
-    };
-    if current_ctx.workspace.workspace_uuid != workspace.workspace_uuid
-        || current_ctx.workspace.workspace_id != workspace.workspace_id
-    {
-        // A later distinct publication correctly discarded this superseded
-        // target's pending bits. Never carry them into an unrelated binding.
-        return Ok(None);
-    }
-
-    match CoordinatorCell::request(admission, WorkMask::from_bits(work_bits), OwnerKind::Sync)
-        .map_err(|error| {
-            EngramError::System(SystemError::DatabaseError {
-                reason: format!("transferred sync branch reacquisition failed: {error}"),
-            })
-        })? {
-        RequestOutcome::Acquired(permit) => Ok(Some((permit, current_ctx))),
-        RequestOutcome::Enqueued | RequestOutcome::Stale => Ok(None),
-        RequestOutcome::Waiting(_) => Err(EngramError::System(SystemError::DatabaseError {
-            reason: "non-empty transferred sync unexpectedly entered waiting admission".to_owned(),
-        })),
+            if kind == OwnerKind::Sync {
+                match CoordinatorCell::claim_reissued_sync(admission).map_err(|error| {
+                    EngramError::System(SystemError::DatabaseError {
+                        reason: format!("transferred sync branch reacquisition failed: {error}"),
+                    })
+                })? {
+                    ClaimOutcome::Acquired(next) => {
+                        permit = next;
+                        ctx = current_ctx;
+                        break;
+                    }
+                    ClaimOutcome::Retained | ClaimOutcome::Missing => return Ok(None),
+                    ClaimOutcome::Stale => {}
+                }
+            } else {
+                match admission.acquire_background(kind).await.map_err(|error| {
+                    EngramError::System(SystemError::DatabaseError {
+                        reason: format!("{kind:?} branch reacquisition failed: {error}"),
+                    })
+                })? {
+                    Some(next) => {
+                        permit = next;
+                        ctx = current_ctx;
+                        break;
+                    }
+                    None => {}
+                }
+            }
+        }
     }
 }
 
@@ -773,6 +814,7 @@ async fn begin_indexing_scan_progress(state: &SharedState) {
         .await;
 }
 
+#[cfg(test)]
 async fn finish_indexing_scan_progress(
     state: &SharedState,
     result: &Result<Value, EngramError>,

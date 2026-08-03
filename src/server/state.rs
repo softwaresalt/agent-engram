@@ -345,6 +345,14 @@ pub(crate) enum RequestOutcome {
 }
 
 #[allow(dead_code)]
+pub(crate) enum ClaimOutcome {
+    Acquired(OwnerPermit),
+    Retained,
+    Missing,
+    Stale,
+}
+
+#[allow(dead_code)]
 pub(crate) enum CompletionOutcome {
     Transferred(OwnerPermit),
     Released,
@@ -533,6 +541,68 @@ impl CoordinatorCell {
             Decision::Enqueued => Ok(RequestOutcome::Enqueued),
             Decision::Stale => Ok(RequestOutcome::Stale),
         }
+    }
+
+    /// Claim an already-published Sync request without publishing it again.
+    pub(crate) fn claim_reissued_sync(
+        admission: AdmissionGuard,
+    ) -> Result<ClaimOutcome, CoordinatorError> {
+        let cell = Arc::clone(&admission.cell);
+        let mut state = cell.lock();
+        let is_current = admission.token.floor == state.floor
+            && admission.token.binding_identity == state.binding_identity
+            && admission.binding_snapshot == state.binding_identity;
+        if !is_current {
+            drop(state);
+            return Ok(ClaimOutcome::Stale);
+        }
+        if !matches!(state.phase, CoordinatorPhase::Idle) {
+            drop(state);
+            return Ok(ClaimOutcome::Retained);
+        }
+        if state.pending.is_empty() {
+            drop(state);
+            return Ok(ClaimOutcome::Missing);
+        }
+        if state.next_sequence == u64::MAX {
+            drop(state);
+            return Err(CoordinatorError::SequenceExhausted);
+        }
+
+        state.next_sequence += 1;
+        let identity = OwnerIdentity {
+            generation: state.floor,
+            sequence: state.next_sequence,
+            kind: OwnerKind::Sync,
+        };
+        let work_mask = state.pending;
+        state.pending = WorkMask::default();
+        state.phase = CoordinatorPhase::Running(OwnerRecord {
+            identity,
+            binding_identity: state.binding_identity.clone(),
+            work_mask,
+        });
+        drop(state);
+
+        let AdmissionGuard {
+            cell,
+            token,
+            binding_snapshot,
+            cancel_rx,
+            enabled_notification,
+        } = admission;
+        drop(enabled_notification);
+        Ok(ClaimOutcome::Acquired(OwnerPermit {
+            ownership: Some(PermitOwnership {
+                cell,
+                token,
+                binding_snapshot,
+                cancel_rx,
+            }),
+            identity,
+            work_mask,
+            cleanup_armed: true,
+        }))
     }
 
     pub(crate) fn complete(mut permit: OwnerPermit) -> CompletionOutcome {
@@ -985,6 +1055,31 @@ impl AppState {
         snapshot: WorkspaceSnapshot,
         config: Option<WorkspaceConfig>,
     ) -> Result<(u64, AdmissionGuard), CoordinatorError> {
+        self.publish_workspace_generation_transition(snapshot, config, WorkMask::default())
+            .await
+    }
+
+    /// Publish a binding and atomically install an explicit request for that binding.
+    ///
+    /// A distinct binding still inherits no old-binding work. The supplied mask
+    /// is qualified to the newly published binding and is installed under the
+    /// same coordinator lock as publication.
+    pub(crate) async fn publish_workspace_generation_with_reissue(
+        &self,
+        snapshot: WorkspaceSnapshot,
+        config: Option<WorkspaceConfig>,
+        reissued_work: WorkMask,
+    ) -> Result<(u64, AdmissionGuard), CoordinatorError> {
+        self.publish_workspace_generation_transition(snapshot, config, reissued_work)
+            .await
+    }
+
+    async fn publish_workspace_generation_transition(
+        &self,
+        snapshot: WorkspaceSnapshot,
+        config: Option<WorkspaceConfig>,
+        reissued_work: WorkMask,
+    ) -> Result<(u64, AdmissionGuard), CoordinatorError> {
         let target_binding = BindingIdentity {
             workspace_uuid: snapshot.workspace_uuid.clone(),
             workspace_id: snapshot.workspace_id.clone(),
@@ -1023,15 +1118,17 @@ impl AppState {
                 if !same_binding {
                     coordinator.pending = WorkMask::default();
                 }
+                coordinator.pending = coordinator.pending.union(reissued_work);
                 CoordinatorPhase::Idle
             }
             CoordinatorPhase::Running(owner) => {
                 let retired_work_mask = owner.work_mask.union(coordinator.pending);
-                let deferred = if same_binding {
+                let inherited = if same_binding {
                     retired_work_mask
                 } else {
                     WorkMask::default()
                 };
+                let deferred = inherited.union(reissued_work);
                 coordinator.pending = WorkMask::default();
                 CoordinatorPhase::Retiring(RetirementBarrier {
                     retired_identity: owner.identity,
@@ -1050,6 +1147,7 @@ impl AppState {
                         WorkMask::default()
                     };
                 }
+                barrier.deferred = barrier.deferred.union(reissued_work);
                 barrier.target_generation = target_generation;
                 barrier.target_binding = target_binding.clone();
                 CoordinatorPhase::Retiring(barrier)
@@ -1817,6 +1915,74 @@ mod coordinator_tests {
         let coordinator = state.coordinator.lock();
         assert_eq!(coordinator.floor, u64::MAX);
         assert_eq!(coordinator.binding_identity.workspace_id, "id-alpha");
+    }
+
+    #[tokio::test]
+    async fn qualified_reissue_survives_same_target_republication_exactly_once() {
+        for qualified_first in [true, false] {
+            let state = AppState::new(2);
+            let old = workspace("old", "uuid-old", "id-old");
+            let _ = publish(&state, old.clone()).await;
+            let old_owner = acquired(request(
+                admission(&state.coordinator),
+                WorkMask::from_bits(0b001),
+                OwnerKind::Sync,
+            ));
+            let mut target = old;
+            target.workspace_id = "id-target".to_owned();
+            target.branch = "feature".to_owned();
+
+            if qualified_first {
+                let _ = state
+                    .publish_workspace_generation_with_reissue(
+                        target.clone(),
+                        Some(WorkspaceConfig::default()),
+                        WorkMask::from_bits(0b110),
+                    )
+                    .await
+                    .unwrap_or_else(|error| panic!("qualified publication failed: {error}"));
+                let _ = publish(&state, target).await;
+            } else {
+                let _ = publish(&state, target.clone()).await;
+                let _ = state
+                    .publish_workspace_generation_with_reissue(
+                        target,
+                        Some(WorkspaceConfig::default()),
+                        WorkMask::from_bits(0b110),
+                    )
+                    .await
+                    .unwrap_or_else(|error| panic!("qualified publication failed: {error}"));
+            }
+
+            assert!(matches!(
+                CoordinatorCell::complete(old_owner),
+                CompletionOutcome::RetirementAcknowledged
+            ));
+            assert_eq!(
+                state.coordinator.test_pending_bits(),
+                0b110,
+                "either same-target publication order must retain the explicit request"
+            );
+
+            let reissued = match CoordinatorCell::claim_reissued_sync(admission(&state.coordinator))
+                .unwrap_or_else(|error| panic!("qualified claim failed: {error}"))
+            {
+                ClaimOutcome::Acquired(permit) => permit,
+                ClaimOutcome::Retained => panic!("qualified request remained behind an owner"),
+                ClaimOutcome::Missing => panic!("qualified request was lost"),
+                ClaimOutcome::Stale => panic!("qualified request admission was stale"),
+            };
+            assert_eq!(reissued.work_bits(), 0b110);
+            assert!(matches!(
+                CoordinatorCell::complete(reissued),
+                CompletionOutcome::Released
+            ));
+            assert_eq!(
+                state.coordinator.test_pending_bits(),
+                0,
+                "the qualified request must drain exactly once"
+            );
+        }
     }
 
     #[tokio::test]

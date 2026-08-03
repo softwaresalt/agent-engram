@@ -35,8 +35,8 @@ use crate::models::WatcherEvent;
 use crate::models::config::WorkspaceConfig;
 use crate::models::health::ScanProgress;
 use crate::server::state::{
-    AppState, CompletionOutcome, CoordinatorCell, DriverTaskGuard, OwnerKind, SharedState,
-    WorkspaceSnapshot,
+    AppState, CompletionOutcome, CoordinatorCell, DispatchSnapshot, DriverTaskGuard, OwnerKind,
+    OwnerPermit, SharedState, WorkspaceSnapshot,
 };
 use crate::shim::version::{ENGRAM_BUILD_HASH, ENGRAM_PROTOCOL_VERSION};
 use crate::tools;
@@ -387,8 +387,19 @@ async fn guarded_daemon_sync_context(
     state.guarded_workspace_and_config().await
 }
 
-fn same_workspace_binding(left: &WorkspaceSnapshot, right: &WorkspaceSnapshot) -> bool {
-    left.workspace_uuid == right.workspace_uuid && left.workspace_id == right.workspace_id
+fn same_workspace_instance(left: &WorkspaceSnapshot, right: &WorkspaceSnapshot) -> bool {
+    left.workspace_uuid == right.workspace_uuid && left.path == right.path
+}
+
+impl AppState {
+    async fn prepare_daemon_mutation(
+        &self,
+        permit: OwnerPermit,
+        context: DispatchSnapshot,
+        kind: OwnerKind,
+    ) -> Result<Option<(OwnerPermit, DispatchSnapshot)>, EngramError> {
+        crate::tools::write::prepare_branch_owner(self, permit, context, kind).await
+    }
 }
 
 async fn flush_daemon_snapshot(snapshot: &WorkspaceSnapshot) -> Result<(), EngramError> {
@@ -430,14 +441,15 @@ where
     }
 }
 
-async fn stop_retained_hydration(state: &AppState) {
+async fn join_retained_hydration(state: &AppState) -> Result<(), EngramError> {
     if let Some(driver) = state.take_hydration_driver() {
-        if let Err(error) = driver.abort_and_join().await {
-            if !error.is_cancelled() {
-                warn!(%error, "hydration driver join failed during shutdown");
-            }
-        }
+        driver.join().await.map_err(|error| {
+            EngramError::System(crate::errors::SystemError::DatabaseError {
+                reason: format!("retained hydration failed before safe terminal: {error}"),
+            })
+        })?;
     }
+    Ok(())
 }
 
 /// Run the daemon accept loop with graceful shutdown support.
@@ -579,7 +591,7 @@ pub async fn run_with_shutdown(
     if let Err(error) = watcher_driver.join().await {
         warn!(%error, "legacy watcher driver join failed");
     }
-    stop_retained_hydration(&state).await;
+    join_retained_hydration(&state).await?;
     crate::services::metrics::shutdown().await?;
     crate::services::dehydration::flush_all_workspaces(&state).await?;
     Ok(())
@@ -846,7 +858,7 @@ pub async fn run_with_shutdown_v2(
     if let Err(error) = watcher_driver.join().await {
         warn!(%error, "v2 watcher driver join failed");
     }
-    stop_retained_hydration(&state).await;
+    join_retained_hydration(&state).await?;
     crate::services::metrics::shutdown().await?;
     crate::services::dehydration::flush_all_workspaces(&state).await?;
     Ok(())
@@ -876,7 +888,7 @@ async fn run_startup_driver(
     else {
         return;
     };
-    let mut permit = match admission.acquire_background(OwnerKind::Startup).await {
+    let permit = match admission.acquire_background(OwnerKind::Startup).await {
         Ok(Some(permit)) => permit,
         Ok(None) => return,
         Err(error) => {
@@ -884,6 +896,24 @@ async fn run_startup_driver(
             return;
         }
     };
+    let context = DispatchSnapshot {
+        workspace: snapshot,
+        config: workspace_config,
+    };
+    let Some((mut permit, context)) = (match state
+        .prepare_daemon_mutation(permit, context, OwnerKind::Startup)
+        .await
+    {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            error!(%error, "startup branch preparation failed");
+            return;
+        }
+    }) else {
+        return;
+    };
+    let snapshot = context.workspace;
+    let workspace_config = context.config;
 
     let operation = async {
         let workspace_path = std::path::PathBuf::from(&snapshot.path);
@@ -1113,7 +1143,7 @@ async fn run_watcher_driver(
                     else {
                         break 'reconcile_batch;
                     };
-                    if !same_workspace_binding(&snapshot, &next_snapshot) {
+                    if !same_workspace_instance(&snapshot, &next_snapshot) {
                         break 'reconcile_batch;
                     }
                     admission = next_admission;
@@ -1126,6 +1156,25 @@ async fn run_watcher_driver(
                     break 'reconcile_batch;
                 }
             };
+            let context = DispatchSnapshot {
+                workspace: snapshot,
+                config: workspace_config,
+            };
+            let Some((prepared_permit, context)) = (match state
+                .prepare_daemon_mutation(permit, context, OwnerKind::Watcher)
+                .await
+            {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    error!(%error, "watcher branch preparation failed");
+                    break 'reconcile_batch;
+                }
+            }) else {
+                break 'reconcile_batch;
+            };
+            permit = prepared_permit;
+            snapshot = context.workspace;
+            workspace_config = context.config;
             let operation = async {
                 let workspace_path = std::path::PathBuf::from(&snapshot.path);
                 let should_flush = if pending_reindex {
@@ -1177,7 +1226,7 @@ async fn run_watcher_driver(
                 else {
                     break 'reconcile_batch;
                 };
-                if !same_workspace_binding(&snapshot, &next_snapshot) {
+                if !same_workspace_instance(&snapshot, &next_snapshot) {
                     break 'reconcile_batch;
                 }
                 admission = next_admission;
@@ -1300,7 +1349,9 @@ async fn backfill_with_scan_progress(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::server::state::{AppState, CoordinatorCell, OwnerKind, RequestOutcome, WorkMask};
+    use crate::server::state::{
+        AppState, CoordinatorCell, DispatchSnapshot, OwnerKind, RequestOutcome, WorkMask,
+    };
     #[cfg(unix)]
     use std::path::{Path, PathBuf};
 
@@ -1583,34 +1634,89 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn shutdown_aborts_and_joins_retained_hydration_before_returning() {
-        struct Termination(Option<tokio::sync::oneshot::Sender<()>>);
-
-        impl Drop for Termination {
-            fn drop(&mut self) {
-                if let Some(terminated) = self.0.take() {
-                    let _ = terminated.send(());
-                }
-            }
-        }
-
+    async fn normal_shutdown_joins_retained_hydration_to_its_safe_terminal() {
         let state = AppState::new(1);
         let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
-        let (terminated_tx, terminated_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let reached_terminal = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let terminal_for_driver = Arc::clone(&reached_terminal);
         let driver = spawn_daemon_driver(async move {
-            let _termination = Termination(Some(terminated_tx));
             let _ = entered_tx.send(());
-            std::future::pending::<()>().await;
+            let _ = release_rx.await;
+            terminal_for_driver.store(true, std::sync::atomic::Ordering::SeqCst);
         });
         assert!(state.retain_hydration_driver(1, driver).is_none());
         entered_rx.await.expect("hydration should enter");
+        let releaser = tokio::spawn(async move {
+            let _ = release_tx.send(());
+        });
 
-        stop_retained_hydration(&state).await;
-
-        terminated_rx
+        join_retained_hydration(&state)
             .await
-            .expect("hydration future must drop before shutdown continues");
+            .expect("hydration should reach its safe terminal");
+
+        releaser.await.expect("hydration releaser should join");
+        assert!(
+            reached_terminal.load(std::sync::atomic::Ordering::SeqCst),
+            "normal shutdown must not abort hydration before its safe terminal"
+        );
         assert!(state.take_hydration_driver().is_none());
+    }
+
+    #[tokio::test]
+    async fn startup_prepares_current_head_before_database_or_file_mutation() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(workspace.join(".git")).expect("create git metadata");
+        std::fs::write(
+            workspace.join(".git").join("HEAD"),
+            "ref: refs/heads/main\n",
+        )
+        .expect("write git HEAD");
+        let state = AppState::new(1);
+        let mut stale = coordinator_snapshot(
+            "id-stale",
+            "uuid-worktree",
+            &workspace,
+            temp.path().join("data"),
+        );
+        stale.branch = "captured-before-checkout".to_owned();
+        let _ = state
+            .publish_workspace_generation(stale, Some(WorkspaceConfig::default()))
+            .await
+            .expect("publish stale capture");
+        let (admission, workspace, config) = guarded_daemon_sync_context(&state)
+            .await
+            .expect("guarded startup context");
+        let permit = admission
+            .acquire_background(OwnerKind::Startup)
+            .await
+            .expect("startup admission")
+            .expect("startup permit");
+
+        let (_, prepared) = state
+            .prepare_daemon_mutation(
+                permit,
+                DispatchSnapshot { workspace, config },
+                OwnerKind::Startup,
+            )
+            .await
+            .expect("prepare startup mutation")
+            .expect("same worktree remains active");
+
+        assert_eq!(
+            prepared.workspace.branch, "main",
+            "startup must refresh HEAD before its first DB/file mutation"
+        );
+        assert_eq!(
+            state
+                .snapshot_workspace()
+                .await
+                .expect("published workspace")
+                .branch,
+            "main",
+            "the refreshed branch must be coherently published"
+        );
     }
 
     #[tokio::test]
@@ -1798,7 +1904,7 @@ mod tests {
     }
 
     #[test]
-    fn watcher_batch_retries_only_for_same_binding() {
+    fn watcher_batch_retries_only_for_same_worktree_path_and_uuid() {
         let root = std::path::Path::new("C:/workspace");
         let original = coordinator_snapshot(
             "id-original",
@@ -1806,13 +1912,17 @@ mod tests {
             root,
             std::path::PathBuf::from("data/original"),
         );
-        let mut same = original.clone();
-        same.path = "C:/workspace/rebound".to_owned();
-        let mut distinct = same.clone();
-        distinct.workspace_id = "id-distinct".to_owned();
+        let mut checked_out_branch = original.clone();
+        checked_out_branch.branch = "feature".to_owned();
+        checked_out_branch.workspace_id = "id-feature".to_owned();
+        let mut different_path = checked_out_branch.clone();
+        different_path.path = "C:/workspace/rebound".to_owned();
+        let mut different_uuid = checked_out_branch.clone();
+        different_uuid.workspace_uuid = "uuid-replacement".to_owned();
 
-        assert!(same_workspace_binding(&original, &same));
-        assert!(!same_workspace_binding(&original, &distinct));
+        assert!(same_workspace_instance(&original, &checked_out_branch));
+        assert!(!same_workspace_instance(&original, &different_path));
+        assert!(!same_workspace_instance(&original, &different_uuid));
     }
 
     #[test]
