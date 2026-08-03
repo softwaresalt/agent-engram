@@ -13,6 +13,8 @@ width: "daemon lifecycle pending-sync state machine only"
 tags: ["daemon", "lifecycle", "pending-sync", "concurrency", "startup"]
 ---
 
+> **Superseded by Phase 5C:** `docs/exec-plans/2026-08-02-post-105-single-authority-sync-coordinator-plan.md`. The spike rejected this plan's tokenless completion, `Reacquired`, split-take, and bounded double-drain assumptions. Tasks `109.001-T` through `109.012-T` are provenance-only and non-executable.
+
 ## Problem Frame
 
 Archived feature `105-F` established a generation-tagged pending-sync queue. Current code still allows retained public wrapper publication to race below the queue floor, separates token capture from startup acquisition, permits stale claim paths to hold indexing, and lets background hydration reach DB work before it owns indexing. The prior plan incorrectly treated wrapper floor proof as P2 and combined claim repair with hydration completion.
