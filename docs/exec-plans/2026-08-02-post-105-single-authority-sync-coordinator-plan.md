@@ -38,7 +38,7 @@ The replacement is strategy A from the findings: one private `SyncCoordinator` o
 | One authority | Replace owner flag, generation, mask, timestamp, and handoff with one `Arc<CoordinatorCell>` | `109.014-T` -> `109.015-T` |
 | Drop/cancellation safety | Armed RAII permit republishes authoritative owned mask OR pending, clears exact owner, and wakes one | `109.014-T` / `109.015-T` |
 | Successful finish disarms cleanup | Exact completion disarms old permit before Drop and writes timestamp once | `109.014-T` / `109.015-T` |
-| Atomic generation retirement | One lock transition retires old identity, promotes owner mask OR pending, and publishes binding/cancel/floor | `109.016-T` -> `109.017-T` |
+| Binding-aware generation retirement | One lock transition retires old identity; same-binding advance promotes owner mask OR pending, while distinct-binding advance transfers zero old-workspace bits and starts new-binding reconciliation | `109.016-T` -> `109.017-T` |
 | Stale finish/Drop isolation | Old permit after rebind/replacement returns stale/no-op and cannot mutate current generation | `109.016-T` / `109.017-T` |
 | Hydration owns before I/O | Pre-acquisition cancel is zero-permit; post-acquisition cancel relies on RAII | `109.018-T` -> `109.019-T` |
 | Full-mask single successor | Completion or abandonment exposes one whole mask to one successor | `109.020-T` -> `109.021-T` |
@@ -55,8 +55,9 @@ The replacement is strategy A from the findings: one private `SyncCoordinator` o
 
 ```text
 CoordinatorCell { state: std::sync::Mutex<SyncCoordinator>, notify: Notify }
+BindingIdentity { workspace_uuid, workspace_id }  // private exact equality; workspace_id includes path/branch
 SyncCoordinator {
-  floor, binding_identity, next_sequence,
+  floor, binding_identity: BindingIdentity, next_sequence,
   owner: Option<OwnerRecord>, pending: Option<WorkMask>, last_indexed_at
 }
 GenerationToken(u64)
@@ -97,18 +98,20 @@ The next current request is the sole possible successor. A sync-capable request 
 
 ### One atomic generation/binding advance
 
-Prepare the new workspace/config/cancellation tuple and validate capacity before mutation. Acquire binding write guards in documented order, then coordinator mutex; do not await afterward. One coordinator-locked publication:
+Prepare the new workspace/config/cancellation tuple, derive its private exact `BindingIdentity` from stable workspace UUID plus the path/branch-derived workspace ID, and validate capacity before mutation. Generation is not binding identity: rebinding the exact workspace may advance generation without changing binding identity. Acquire binding write guards in documented order, then coordinator mutex; do not await afterward. One coordinator-locked publication:
 
-1. removes and invalidates prior owner identity;
-2. computes `promoted = prior_owner.work_mask OR prior_pending` from authoritative state;
-3. publishes non-empty `promoted` as the new generation's one pending mask;
+1. compares current and prepared binding identities, then removes and invalidates prior owner identity;
+2. computes `retiring = prior_owner.work_mask OR prior_pending` from authoritative state;
+3. branches by binding equality:
+   - **same binding, newer generation:** publish non-empty `retiring` as the new generation pending mask; specifically owner `0b101 OR` pending `0b010 = 0b111`;
+   - **distinct binding:** publish none of `retiring`; old routine/revalidate/backfill work remains old-workspace intent and cannot run against the new workspace;
 4. swaps workspace, config, and cancellation ownership behind held guards;
 5. advances binding identity and floor together and resets hydration readiness; and
 6. synchronously signals old cancellation.
 
-It deliberately leaves `owner = None`; a successor without a recipient would strand ownership. After all guards drop, invoke `notify_one` at most once if retirement made progress possible, then return the new opaque token. Every set bit is promoted to the newest binding. Empty masks do not invent work; obsolete non-coalescible old-binding operations are cancelled.
+It deliberately leaves `owner = None`; a successor without a recipient would strand ownership. After all guards drop, invoke `notify_one` at most once only when same-binding retirement exposed promoted work, then return the new opaque token. Distinct-binding retirement emits no coordinator wake for discarded work. Old cancellation terminates the old driver; the new binding follows startup bind/hydration/offline-change detection to reconcile durable file state. Non-durable revalidate/backfill intent is not inferred from the old mask: a producer reissues it only through `request(new_token, ...)` after determining it applies to the new binding.
 
-Old owners retain an immutable old binding snapshot/cancellation receiver and cannot reread or operate against the new binding. Later finish returns `Stale`; later Drop sees no match. A partially completed old-binding operation may be reconciled on the new binding, but cannot mutate or launch current-generation work. Exactness means one owner/pending location and one driver launch per generation/binding, not exactly-once external side effects.
+Old owners retain an immutable old binding snapshot/cancellation receiver and cannot reread or operate against the new binding. Later finish returns `Stale`; later Drop sees no match. A partially completed old-binding operation may leave durable effects, but the relevant binding reconciliation path discovers them; the retirement transition never converts old intent into new-binding work. Exactness means one owner/pending location and one driver launch within one binding, not exactly-once external side effects.
 
 ### Hydration and process-abort boundary
 
@@ -126,18 +129,19 @@ Safe observers may remain stable. Request-only publication may only be crate-pri
 
 ## Protected invariants
 
-1. The coordinator cell is sole authority for binding floor, owner identity, full mask, handoff, and completion timestamp.
-2. In-process, each `WorkMask` bit exists in exactly one location: owner or pending.
-3. Rebind atomically retires old identity and promotes `owner mask OR pending` to the new binding.
-4. Exact Drop republishes the same union, clears owner once, and wakes at most one; stale Drop changes nothing.
-5. Exact completion disarms Drop and updates `last_indexed_at` once; stale completion/Drop update zero times.
-6. No transition installs owner without returning its permit.
-7. Hydration does zero DB/file I/O before ownership; pre-acquisition cancel has no permit to complete.
-8. Old owners use immutable old binding snapshots and cannot mutate/launch new-generation work.
-9. No mutex crosses await; Drop never awaits, spawns, or panics.
-10. No second queue, double drain, split consumption, producer reacquire, sleeps, unsafe, or public test seam.
-11. No CLI/MCP/wire/schema/persistence/config/queued-response regression.
-12. No exactly-once or RAII claim crosses process abort; reconciliation, reissue, and full rollback are explicit.
+1. The coordinator cell is sole authority for binding floor, exact binding identity, owner identity, full mask, handoff, and completion timestamp.
+2. Within one in-process binding, each `WorkMask` bit exists in exactly one location: owner or pending.
+3. Same-binding generation advance atomically retires old identity and promotes `owner mask OR pending`; `0b101 OR 0b010 = 0b111` is mandatory.
+4. Distinct-binding workspace advance retires/cancels old identity and transfers zero old routine/revalidate/backfill bits; durable state uses new-binding startup bind/hydration/offline-change reconciliation and non-durable intent requires a new-token reissue.
+5. Exact Drop republishes the same-binding union, clears owner once, and wakes at most one; stale Drop changes nothing.
+6. Exact completion disarms Drop and updates `last_indexed_at` once; stale completion/Drop update zero times.
+7. No transition installs owner without returning its permit; distinct-binding discard causes no coordinator wake.
+8. Hydration does zero DB/file I/O before ownership; pre-acquisition cancel has no permit to complete.
+9. Old owners use immutable old binding snapshots and cannot mutate/launch new-generation or new-binding work.
+10. No mutex crosses await; Drop never awaits, spawns, or panics.
+11. No second queue, double drain, split consumption, producer reacquire, sleeps, unsafe, or public test seam.
+12. No CLI/MCP/wire/schema/persistence/config/queued-response regression.
+13. No exactly-once or RAII claim crosses process abort; reconciliation, qualified reissue, and full rollback are explicit.
 
 ## Implementation units
 
@@ -157,18 +161,20 @@ Every unit is `<=110 minutes`, touches `<=2` production files, changes fewer tha
 - Implement authoritative owner mask, completion disarm, synchronous poison-safe Drop, and timestamp-in-transition. No caller-optional cleanup, async Drop work, second queue, or tokenless bridge.
 - Dependency: `109.014-T`.
 
-### 3. `109.016-T` — RED: coherent binding retirement and stale isolation
+### 3. `109.016-T` — RED: binding-aware retirement and stale isolation
 
 - Files: `src/server/state.rs`, `src/tools/lifecycle.rs`.
-- Scenarios (4): complete old/new binding-token-cancel-floor tuple; `u64::MAX` no mutation; advance with active owner `0b101` plus pending `0b010` retires old identity and exposes one new-generation `0b111` pending mask with at most one wake; after successor acquisition a two-fixture matrix proves stale old explicit finish and independently stale old Drop leave successor/mask/floor/timestamp unchanged.
+- Scenarios (4 maximum): complete old/new binding-token-cancel-floor tuple; `u64::MAX` no mutation; a parameterized binding-relation fixture where active owner `0b101` plus pending `0b010` becomes one new-generation `0b111` pending mask for the same binding but zero inherited bits for a distinct binding; a stale-terminal matrix proving old explicit finish and old Drop leave replacement owner/mask/floor/binding/notification/timestamp unchanged in both relation rows.
+- The distinct-binding row uses private lifecycle collaborators/counters, not live DB work: it proves old cancellation, zero old-mask transfer, handoff to startup bind/hydration/offline-change reconciliation for durable files, and acceptance of companion intent only after explicit new-token reissue.
+- Fixture rows do not increase the scenario count beyond four.
 - Dependency: `109.015-T`.
 
 ### 4. `109.017-T` — GREEN: atomic binding advance and owner retirement
 
 - Files: `src/server/state.rs`, `src/tools/lifecycle.rs`.
-- At most four functions cover prepared install, one coordinator publication, retirement/promotion, and lifecycle call.
-- Acquire async binding guards before coordinator; no await under standard mutex. Signal old cancellation synchronously, return token after publication, notify at most one after unlock.
-- Preserve `DispatchSnapshot`, wire, schema, config format, and persistence.
+- At most four functions cover prepared identity/install, one coordinator publication with the binding-equality branch, retirement/promotion-or-discard, and lifecycle reconciliation/reissue entry.
+- Acquire async binding guards before coordinator; no await under standard mutex. Signal old cancellation synchronously. Notify at most one after unlock only for same-binding promoted work; distinct-binding discard relies on cancellation plus the new startup/hydration path.
+- Preserve `DispatchSnapshot`, wire, schema, config format, persistence, and the current no-cross-binding companion contract.
 - Dependency: `109.016-T`.
 
 ### 5. `109.018-T` — RED: hydration admission and exact exit classes
@@ -261,7 +267,7 @@ Every unit is `<=110 minutes`, touches `<=2` production files, changes fewer tha
 ### 18. `109.031-T` — Windows/runtime/release validation
 
 - Production files: zero; closure/checklist docs only if needed.
-- At most four scenarios: normal bind/hydration/complete-disarm; queued sync plus dropped-owner full-mask recovery/exact response; rebind with active owner/pending plus stale finish/Drop and forced DB failure; startup/watcher Windows named-pipe handoff.
+- At most four scenarios: normal bind/hydration/complete-disarm; queued sync plus dropped-owner full-mask recovery/exact response; one same-binding/distinct-binding rebind matrix with active owner/pending, stale finish/Drop, zero cross-workspace companion carryover, and forced DB failure reconciliation; startup/watcher Windows named-pipe handoff.
 - Deterministic fixtures prove races. Smoke is observational. Verify restart reconciliation and record non-durable intent reissue; never claim Drop on process abort.
 - Dependency: `109.030-T`.
 
@@ -287,18 +293,18 @@ This chain is intentionally narrow. The four production modules migrate by respo
 - Private co-located harnesses access coordinator, Drop, notification, and admission seams; no public seam.
 - Every RED first passes narrow `cargo test --lib --no-run <target>`, then fails only its named assertion. Missing symbols/visibility are not RED.
 - Use direct transitions, `Barrier`, oneshot, or `Notify`, with private notification counters. No sleeps, yields, permission races, live-daemon race proof, or wall-clock assertions.
-- Required proofs: `0b101 OR 0b010 == 0b111` promotion during active-owner rebind; stale old finish and Drop leave replacement byte-for-byte unchanged; current Drop clears owner/republishes once; one successor takes recovery once; explicit completion disarms Drop; timestamp writes once only for exact explicit completion.
+- Required proofs: same-binding active-owner retirement preserves `0b101 OR 0b010 == 0b111`; the same seed under a distinct binding transfers zero old bits and routes durable state to new-binding startup bind/hydration/offline-change reconciliation; only a new-token request can reissue non-durable companion intent; stale old finish and Drop leave replacement byte-for-byte unchanged in both rows; current Drop clears owner/republishes once; one successor takes recovery once; explicit completion disarms Drop; timestamp writes once only for exact explicit completion.
 - Hydration distinguishes pre-acquisition cancellation (zero permit/mutation) from post-acquisition RAII cleanup. Handled DB failure explicitly completes/disarms.
 - Static inventory confirms no legacy symbols, caller-optional cleanup, or direct tokenless setup.
 - Process abort is restart reconciliation/intent reissue, never a Drop path. Windows smoke checks liveness only.
 
 ## Migration and atomicity
 
-Intermediate branch commits may checkpoint execution, but none is mergeable/releasable/runtime-valid. The final PR must contain coordinator cell, RAII Drop, binding retirement, every caller migration, and visibility cleanup. Tokenless completion, split-mask cache, second authority, or caller-optional cancellation cleanup stops the unit.
+Intermediate branch commits may checkpoint execution, but none is mergeable/releasable/runtime-valid. The final PR must contain coordinator cell, RAII Drop, binding-aware retirement, every caller migration, and visibility cleanup. Tokenless completion, split-mask cache, second authority, or caller-optional cancellation cleanup stops the unit.
 
-Binding transition is one logical publication: prepare/check first; acquire async binding guards in fixed order; then one no-await coordinator transition retires identity, unions/promotes masks, publishes binding/cancel/floor, and records whether one post-unlock wake is needed. Old and returned-new token are never current together. Stale finish/Drop cannot mutate replacement.
+Binding transition is one logical publication: prepare/check the new exact identity first; acquire async binding guards in fixed order; then one no-await coordinator transition retires identity, computes the authoritative union, branches on binding equality, publishes binding/cancel/floor, and records whether one post-unlock wake is needed. Same-binding retirement promotes the full union, including `0b101 OR 0b010 = 0b111`. Distinct-binding retirement discards the old mask, signals old cancellation, and leaves durable recovery to new-binding startup bind/hydration/offline-change detection; non-durable intent requires an explicit new-token reissue. Old and returned-new token are never current together. Stale finish/Drop cannot mutate replacement.
 
-No storage, schema, config-format, or wire migration exists. Process death is outside Rust Drop: restart hydration/offline reconciliation covers durable files, non-durable companion intent is reissued, and invariant failure rolls back the complete unit then restarts. No exactly-once side-effect claim crosses process death or binding identity.
+No storage, schema, config-format, or wire migration exists. Process death is outside Rust Drop: restart hydration/offline reconciliation covers durable files, non-durable companion intent is reissued only for the applicable current binding, and invariant failure rolls back the complete unit then restarts. No exactly-once side-effect claim crosses process death or binding identity.
 
 ## Exact Stage requeue transaction after Ship closes 106
 
@@ -348,8 +354,8 @@ Rollback is the complete coordinator release-unit revert followed by daemon rest
 | Partial migration exposes tokenless completion | No partial merge/release; final zero-caller inventory is gate-blocking. |
 | Completion/Drop/timestamp gap | Timestamp is written in the exact coordinator transition; old permit is disarmed before destruction; deterministic completion-versus-Drop counter proof. |
 | Hydration lost wake/cancellation | Register before recheck; pre-acquisition cancel is zero-permit; post-acquisition cancel is mandatory RAII Drop. |
-| Successor duplication | Completion returns one successor; Drop/rebind never preallocate inaccessible owner and notify at most one; no producer reacquire. |
-| Mask loss or companion orphan | Rebind/Drop use authoritative `owner mask OR pending` in one lock; one pending slot, no split APIs. |
+| Successor duplication | Completion returns one successor; Drop and same-binding retirement never preallocate inaccessible owner and notify at most one; distinct-binding discard notifies none through the coordinator; no producer reacquire. |
+| Mask loss or cross-binding companion leak | Drop and same-binding retirement use authoritative `owner mask OR pending`; distinct-binding retirement discards that old-workspace union and invokes new-binding reconciliation/reissue rules; one pending slot, no split APIs. |
 | Windows-only runtime behavior | Deterministic tests plus disposable Windows named-pipe validation. |
 | Review drift toward old design | Old tasks marked superseded; forbidden-symbol inventory and P0/P1 gate. |
 
@@ -451,7 +457,7 @@ There is no required new metrics sink. Ship records a structured manual checklis
 | SLI / signal | Query or observation | Healthy baseline | Alert / rollback threshold | Owner |
 |---|---|---|---|---|
 | Owner sequence balance | Structured acquire/complete/abandon logs | Every acquired sequence has one exact completion or abandonment; stale finish/Drop mutate nothing | Missing/duplicate terminal transition, wrong sequence, or stale mutation | Ship |
-| Full-mask handoff | Deterministic counters plus transfer log fields (`generation`, `sequence`, `mask`) | One `0b111` transfer to one successor; pending empty at transfer | Orphan companion, split mask, duplicate successor, or pending retained after transfer | Ship |
+| Full-mask handoff | Deterministic counters plus transfer log fields (`binding`, `generation`, `sequence`, `mask`) | Same binding: one `0b111` transfer to one successor and pending empty at transfer; distinct binding: zero inherited old bits | Orphan/split mask, duplicate successor, pending retained after transfer, or any old-binding companion on the new binding | Ship |
 | Hydration admission | Private pre-DB fixture counter and Windows hydration logs | Counter/log boundary remains zero before permit | Any DB/file boundary before `Acquired(Hydration)` | Ship |
 | Startup/release execution | S4 counters and startup structured logs | Exactly one executor | Zero or more than one executor | Ship |
 | Timestamp completion | Private timestamp-write counter and doctor health observation | One write per valid current completion, zero per stale/mismatch | Any missing, duplicate, or stale-triggered write | Ship |
@@ -473,9 +479,9 @@ Before merge, Ship records:
 
 ### Observation window and rollback
 
-Ship owns an active 15-minute post-startup observation window on Windows after all deterministic gates pass. Exercise one normal bind/hydration, one queued sync, one rebind cancellation/forced DB-failure fixture, and one startup/watcher handoff. The live smoke observes liveness and logs only; deterministic fixtures remain the race proof.
+Ship owns an active 15-minute post-startup observation window on Windows after all deterministic gates pass. Exercise one normal bind/hydration, one queued sync, one same-binding/distinct-binding rebind cancellation and forced-DB-failure matrix, and one startup/watcher handoff. The live smoke observes liveness and logs only; deterministic fixtures remain the race proof.
 
-Immediate rollback triggers are any wrong-generation execution, stale completion mutation, duplicate/missing executor, orphan/split mask, pre-permit DB/file I/O, stuck owner after cancel/failure, invalid timestamp count, queued contract drift, drain-bound warning, or named-pipe liveness regression. Rollback means revert the entire coordinator/caller/test release unit, restart the prior daemon, verify one healthy bind/status cycle, and record the outcome. No partial source rollback and no data/schema action.
+Immediate rollback triggers are any wrong-generation execution, cross-binding companion execution, stale completion mutation, duplicate/missing executor, orphan/split mask, pre-permit DB/file I/O, stuck owner after cancel/failure, invalid timestamp count, queued contract drift, drain-bound warning, or named-pipe liveness regression. Rollback means revert the entire coordinator/caller/test release unit, restart the prior daemon, verify one healthy bind/status cycle, and record the outcome. No partial source rollback and no data/schema action.
 
 ### Operator and agent checkpoints
 
@@ -486,52 +492,54 @@ Immediate rollback triggers are any wrong-generation execution, stale completion
 - Any unavailable index, ambiguous caller visibility, or non-terminal predecessor fails closed.
 
 
-### PR #316 P1 hardening delta
+### PR #316 lifecycle hardening delta
 
-- **Trigger:** owner lifecycle spans completion, cancellation/panic, generation replacement, and restart. `ActionRisk: high`.
+- **Trigger:** owner lifecycle spans completion, cancellation/panic, same-binding generation replacement, distinct-binding workspace replacement, and restart. `ActionRisk: high`.
 - **Guardrail:** `OwnerPermit` holds `Arc<CoordinatorCell>` and armed cleanup; exact Drop is synchronous, poison-safe, non-panicking, and notifies only after unlock.
-- **Atomicity:** generation install prepares/checks first, then one coordinator transition retires identity and publishes `old owner mask OR old pending` under new binding/floor. It never creates a successor without a recipient.
-- **Verification:** four core and four binding scenarios cover Drop republish, one-successor take, completion disarm/timestamp once, active-owner rebind union, and stale finish/Drop isolation.
-- **Abort boundary:** no Drop claim on process abort. Restart reconciliation handles durable state; non-durable flags are reissued; full-unit revert/restart is rollback.
+- **Binding rule:** exact private binding equality uses stable workspace UUID plus path/branch workspace ID. Same binding preserves `0b101 OR 0b010 = 0b111`; distinct binding transfers zero old bits, cancels old work, and delegates durable recovery to new-binding startup bind/hydration/offline-change detection. Non-durable intent requires a new-token reissue.
+- **Atomicity:** generation install prepares/checks first, then one coordinator transition retires identity and either publishes the same-binding union or discards the distinct-binding union. It never creates a successor without a recipient.
+- **Verification:** four core scenarios and four binding scenarios use relation/terminal fixture matrices to cover Drop republish, one-successor take, completion disarm/timestamp once, same-binding union, distinct-binding zero carryover/reconciliation, and stale finish/Drop isolation without exceeding task caps.
+- **Abort boundary:** no Drop claim on process abort. Restart reconciliation handles durable state; non-durable flags are reissued only for the applicable current binding; full-unit revert/restart is rollback.
 - **ActionResult:** applied to plan and blocked task scopes; implementation remains unapproved until the existing post-106 requeue gate.
 
-## Superseded Plan Review (pre-PR-P1 remediation)
+## Superseded Plan Reviews
 
-The earlier PASS at PR head `897406cc` is superseded because `discussion_r3700752674` and `discussion_r3700752695` exposed two valid P1 lifecycle gaps.
+- The pre-cycle-1 PASS at PR head `897406cc` was superseded by `discussion_r3700752674` and `discussion_r3700752695`.
+- Review cycle 1 was superseded at exact head `436436587d7383bf4f97a2699b8aa473703d37df` because six new comments exposed its unsafe unconditional cross-binding promotion rule.
 
 ## Plan Review
 
-**Review cycle:** 1 (fresh review after accepted PR #316 P1 remediation)
+**Review cycle:** 2 (fresh review after binding-aware PR #316 remediation)
 **Model routing verification:** `.github/agents/stage.agent.md` declares `.Stage`, Tier 3/high reasoning, provider `anthropic`, family `claude-opus-4.8`; no model override was supplied.
-**Cross-model status:** no subagent execution surface was available, so all required personas were applied in the caller review as permitted by the skill.
+**Execution surface:** no subagent invocation surface was exposed in this session, so `.Stage` directly applied every always-on and triggered persona under the configured routing, as allowed by the skill fallback.
 **Gate: PASS**
 **Open P0: 0. Open P1: 0. Open P2: 0. Open P3: 0.**
 **Plan hardening:** required, rerun, and satisfied.
 
 ### Gate rationale
 
-The two P1s are closed in design rather than delegated. Generation/binding advance has one no-await coordinator linearization point that retires prior identity, moves authoritative `owner WorkMask OR pending WorkMask` to the new generation, publishes binding/cancellation/floor coherently, and schedules at most one post-unlock wake without creating an inaccessible owner. Stale old finish returns `Stale`; stale Drop is identity-mismatched and cannot mutate replacement.
+All six new bot threads are valid manifestations of one P1 contradiction with the existing generation-isolation contract at `src/tools/lifecycle.rs:850-878`. The plan now makes generation and binding separate dimensions. Same-binding retirement preserves all authoritative work and proves owner `0b101 OR` pending `0b010 = 0b111`, leaves no inaccessible owner, and permits at most one post-unlock wake. Distinct-binding retirement atomically retires/cancels old identity and transfers zero old routine/revalidate/backfill bits, so old-workspace heavy intent cannot execute against the new workspace. New-binding startup bind/hydration/offline-change detection reconciles durable files; non-durable intent enters only through a new-token-qualified request when applicable.
 
-Ownership is RAII. Exact completion disarms before destruction and writes timestamp once in the current-permit transition. Cancellation/panic Drop republishes authoritative union, clears exact owner once, and wakes one without await/spawn/panic. Pre-acquisition cancellation is a zero-permit path. Process abort is not misrepresented: startup reconciliation, non-durable intent reissue, and full-unit rollback/restart are named.
+Stale old explicit finish and Drop are identity-mismatched no-ops after either relation row installs the replacement. The four-scenario cap remains intact by parameterizing binding relation and stale terminal kind as fixtures rather than adding scenarios. Ownership, process-abort, monitoring, rollback, and blocked pipeline rules remain explicit.
 
 ### Persona verdicts
 
-- **Constitution Reviewer — PASS.** Stage changes only planning/docs/blocked backlog; TDD ordering, task width, role boundaries, and blocked shipment lifecycle remain explicit.
-- **Rust Reviewer — PASS.** `Arc<CoordinatorCell>` makes RAII feasible from `&AppState`; Drop uses a recoverable synchronous mutex and synchronous `notify_one`; no async destructor or mutex across await. Private exact identity prevents stale cleanup touching replacement.
-- **Scope Boundary Auditor — PASS.** No public API, wire/schema/config/persistence/Cargo change and no task over two files, four scenarios, or 110 minutes. Dependencies stay acyclic.
-- **Learnings Researcher — PASS.** Whole-mask atomicity, complete release-site coverage, no tokenless bridge, and private harness guidance remain; abandonment is an authoritative release site, not a second drain.
-- **Architecture Strategist — PASS.** Owner/pending union has one source/destination under one lock. Completion may return one successor; generation/Drop leave owner empty and wake at most one, preventing inaccessible permits and duplicate claims.
-- **Agent-Native Parity Reviewer — PASS.** Exact queued JSON, CLI/MCP schemas/errors, health meaning, and startup behavior are frozen and verified deterministically plus at runtime.
-- **Security Lens Reviewer — PASS.** No trust-boundary or sensitive-data expansion. Logs are limited to generation/sequence/kind/mask outcomes and exclude workspace contents.
+- **Constitution Reviewer — PASS.** Stage changes only the decision, blocked plan/backlog descriptions, and existing handoff memory. TDD order, two-hour caps, role boundary, and all blocked/active lifecycle constraints remain explicit.
+- **Rust Reviewer — PASS.** Private `BindingIdentity` equality is separate from generation. One synchronous coordinator critical section computes the authoritative union and branches before publication; stale permit identity prevents old finish/Drop from mutating either replacement. No mutex crosses await and Drop behavior is unchanged for live same-binding abandonment.
+- **Scope Boundary Auditor — PASS.** `109.016/017` stay within two production files, fewer than five production functions, 110 minutes, and four scenarios through fixture matrices. No public API, Cargo, wire, schema, config-format, or persistence expansion appears.
+- **Learnings Researcher — PASS.** The new rule preserves whole-mask same-binding atomicity while honoring the established newer-binding companion replacement test and the existing take-before-lock/finish-site learnings. No old-workspace companion flag is replayed into a new workspace.
+- **Architecture Strategist — PASS.** Binding equality selects exactly one outcome under one lock: promote the complete union for the same binding or discard it for a distinct binding. Durable reconciliation and qualified non-durable reissue are lifecycle responsibilities, not a second queue or authority.
+- **Agent-Native Parity Reviewer — PASS.** Exact queued JSON, CLI/MCP schemas/errors, workspace binding behavior, health meaning, and startup behavior remain frozen; deterministic and Windows runtime matrices cover the internal change.
+- **Security Lens Reviewer — PASS.** Distinct workspace data is not crossed by inherited heavy-work intent. No trust-boundary, sensitive-data, credential, or logging expansion is introduced.
 
 ### Internal consistency checks
 
-- `109.014/015` own four completion/Drop scenarios; `109.016/017` own four generation-retirement scenarios.
-- `109.018/019` distinguish pre-acquisition cancellation from post-acquisition RAII cleanup.
-- `109.020/021` prove a dropped transferred permit cannot strand work or start a second drain.
-- `109.031` treats process abort as restart reconciliation/reissue, not Drop.
-- Dependency chain remains `109.013 -> 109.014 -> ... -> 109.031`; statuses remain blocked.
+- `109.014/015` still own four current-binding completion/Drop scenarios.
+- `109.016/017` own four scenarios: tuple, overflow, binding-relation retirement matrix, and stale-terminal matrix. Fixture rows do not widen the cap.
+- `109.031` uses one runtime relation matrix inside its existing four scenarios and retains process-abort reconciliation rather than a Drop claim.
+- Same binding preserves `0b111`; distinct binding inherits zero old bits and only the new lifecycle may reconcile/reissue.
+- Dependency chain remains `109.013 -> 109.014 -> ... -> 109.031`; `106-S`/`109.013-T` remain active and `104-S`/`109-F`/all old and replacement tasks remain blocked and unclaimed.
 
 ### Review decision
 
-The remediated plan has zero open P0/P1 and is approved only as blocked replacement scope. PASS does not authorize source/test/Cargo work, closing `106-S`/`109.013-T`, requeueing `104-S`/`109-F`, shipment claim/closure, Git/PR operations, or thread resolution. Ship must commit/push these planning changes and reply to both threads; the existing post-106 Stage transaction remains the sole requeue gate.
+The binding-aware plan has no open P0-P3 findings and passes only as blocked replacement scope. PASS does not authorize source/test/Cargo work, closing `106-S`/`109.013-T`, requeueing `104-S`/`109-F`, shipment claim/closure, Git/PR operations, replies, or thread resolution. Ship may later commit/push these uncommitted planning changes and reply to the six threads; the existing post-106 Stage transaction remains the sole requeue gate.
