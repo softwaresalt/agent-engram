@@ -147,72 +147,6 @@ impl RateLimiter {
     }
 }
 
-/// Generation-tagged pending-sync queue state (105.001-T / R1).
-///
-/// Packs the three coalesced-sync request bits with the generation that owns
-/// them, so a generation-scoped clear can distinguish an older generation's
-/// stale request from a newer generation's live one. Guarded by a single mutex
-/// on [`AppState`] so every read/write of `{generation, flags}` is atomic (H1):
-/// a concurrent drain can never observe `pending_sync` set with a stale/missing
-/// companion bit.
-#[derive(Debug, Default, Clone, Copy)]
-struct PendingSyncState {
-    /// Generation that published the currently-queued bits (`0` = none yet).
-    generation: u64,
-    /// Packed request bits:
-    /// `PENDING_SYNC_BIT | *_REVALIDATE_BIT | *_BACKFILL_PYTHON_BIT`.
-    flags: u8,
-}
-
-impl PendingSyncState {
-    /// OR `bits` into the queue, adopting `current_generation` only when the
-    /// queue is currently empty (a fresh arm); a non-empty queue keeps its
-    /// existing owner generation so coalesced companion bits stay grouped with
-    /// the request that armed them (drain re-queue safety, 101.002-T).
-    fn arm(&mut self, current_generation: u64, bits: u8) {
-        if self.flags == 0 {
-            self.generation = current_generation;
-        }
-        self.flags |= bits;
-    }
-
-    /// Publish `bits` for `current_generation`. A publish from a *newer*
-    /// generation than the current owner REPLACES the stale older-generation
-    /// bits (so an old binding's `--revalidate` / `--backfill-python-canonical`
-    /// never leaks into a new binding's routine sync — N2/AC4); the same
-    /// generation coalesces (sticky OR). `current_generation` is monotonic and
-    /// captured under the same lock, so it is never below the owner.
-    fn publish(&mut self, current_generation: u64, bits: u8) {
-        if current_generation > self.generation {
-            self.generation = current_generation;
-            self.flags = bits;
-        } else {
-            self.flags |= bits;
-        }
-    }
-
-    /// Test-and-clear `bit`, returning whether it was set.
-    fn take(&mut self, bit: u8) -> bool {
-        let had = self.flags & bit != 0;
-        self.flags &= !bit;
-        had
-    }
-
-    /// Non-consuming peek at `bit`.
-    fn has(&self, bit: u8) -> bool {
-        self.flags & bit != 0
-    }
-
-    /// Clear all bits iff the caller's generation still owns the queue
-    /// (`owner <= caller_generation`). A newer generation's live request is
-    /// preserved (N1/AC2).
-    fn clear_for_generation(&mut self, caller_generation: u64) {
-        if self.generation <= caller_generation {
-            self.flags = 0;
-        }
-    }
-}
-
 /// Exact private identity of a workspace binding.
 #[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -822,31 +756,6 @@ pub struct AppState {
     pub(crate) coordinator: Arc<CoordinatorCell>,
     /// Parent-retained hydration task. The guard aborts on parent Drop.
     pub(crate) hydration_driver: Mutex<Option<(u64, DriverTaskGuard)>>,
-    indexing_in_progress: AtomicBool,
-    /// Generation-tagged pending-sync request queue (104.002-T / 105.001-T):
-    /// bit 0 = `pending_sync` (a `sync_workspace` was requested while indexing
-    /// was active, drained after `finish_indexing()`); bit 1 = revalidation
-    /// companion (`--revalidate-code-graph`); bit 2 = Python-canonical backfill
-    /// companion (`--backfill-python-canonical`); tagged with the owning
-    /// generation.
-    ///
-    /// A single mutex guards `{generation, flags}` so publish / clear / drain
-    /// updates are atomic (H1): no interleaving with a concurrent publish can
-    /// leave a lone companion bit without its owning `pending_sync`. Companion
-    /// bits are published BEFORE `pending_sync` is consumed (N3) and drained
-    /// AFTER the indexing lock is acquired (101.002-T). The generation tag lets
-    /// [`AppState::clear_pending_sync_for_generation`] wipe only the owning
-    /// generation's request, so a newer generation's queued intent published in
-    /// the `set_workspace` cancel race window survives an older generation's
-    /// clear (105.001-T / R1). See the `PENDING_SYNC_*_BIT` associated constants.
-    pending_sync: Mutex<PendingSyncState>,
-    /// Legacy pending-sync tag mirrored from the coordinator floor by
-    /// [`AppState::publish_workspace_generation`]. Reads give the generation a
-    /// published request is tagged with; the value returned to hydration lets
-    /// its cancel / DB-fail clear identify which generation it owns
-    /// (105.001-T / R1). Later migration tasks retire this mirror.
-    sync_generation: AtomicU64,
-    last_indexed_at: RwLock<Option<DateTime<Utc>>>,
     /// Rolling window of tool-call latencies (in microseconds, capped at 1 000 samples).
     query_latencies: RwLock<VecDeque<u64>>,
     /// Total number of tool calls recorded since startup.
@@ -858,9 +767,6 @@ pub struct AppState {
     /// Background offline-change scan progress (029-F WS-6).
     /// `None` until the first scan is queued after a `set_workspace` call.
     scan_progress: RwLock<Option<ScanProgress>>,
-    /// Cancellation sender for the current background scan generation (029-F WS-6).
-    /// Replaced on each new `set_workspace` call; sending `true` cancels the stale scan.
-    scan_cancel: RwLock<Option<tokio::sync::watch::Sender<bool>>>,
     /// Lock-free process-level reliability counters (029-F WS-8).
     reliability: ReliabilityCounters,
     /// Set to `true` once `background_db_hydration` has run to completion
@@ -897,16 +803,11 @@ impl AppState {
             rate_limiter: RateLimiter::new(rate_limit_max, rate_limit_window_secs),
             coordinator: Arc::new(CoordinatorCell::new(BindingIdentity::unbound())),
             hydration_driver: Mutex::new(None),
-            indexing_in_progress: AtomicBool::new(false),
-            pending_sync: Mutex::new(PendingSyncState::default()),
-            sync_generation: AtomicU64::new(0),
-            last_indexed_at: RwLock::new(None),
             query_latencies: RwLock::new(VecDeque::new()),
             tool_call_count: AtomicU64::new(0),
             watcher_event_count: AtomicU64::new(0),
             last_watcher_event: RwLock::new(None),
             scan_progress: RwLock::new(None),
-            scan_cancel: RwLock::new(None),
             reliability: ReliabilityCounters::default(),
             hydration_ready: AtomicBool::new(false),
         }
@@ -1096,8 +997,6 @@ impl AppState {
         };
         coordinator.floor = target_generation;
         coordinator.binding_identity = target_binding;
-        self.sync_generation
-            .store(target_generation, Ordering::SeqCst);
         self.hydration_ready.store(false, Ordering::Release);
         *workspace = Some(snapshot);
         *workspace_config = config;
@@ -1210,236 +1109,13 @@ impl AppState {
 
     /// Check whether an indexing operation is currently in progress.
     pub fn is_indexing(&self) -> bool {
-        self.indexing_in_progress.load(Ordering::SeqCst)
-            || !matches!(self.coordinator.lock().phase, CoordinatorPhase::Idle)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn test_legacy_indexing_is_active(&self) -> bool {
-        self.indexing_in_progress.load(Ordering::SeqCst)
-    }
-
-    /// Attempt to start an indexing operation.
-    ///
-    /// Returns `true` if the flag was set (no other indexing was running).
-    /// Returns `false` if indexing was already in progress.
-    pub fn try_start_indexing(&self) -> bool {
-        self.indexing_in_progress
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-    }
-
-    /// Clear the indexing-in-progress flag and record the completion time.
-    pub async fn finish_indexing(&self) {
-        self.indexing_in_progress.store(false, Ordering::SeqCst);
-        *self.last_indexed_at.write().await = Some(Utc::now());
-    }
-
-    /// `pending_sync` bit in [`PendingSyncState::flags`] (104.002-T / 105.001-T).
-    const PENDING_SYNC_BIT: u8 = 0b001;
-    /// Revalidation companion bit in [`PendingSyncState::flags`].
-    const PENDING_SYNC_REVALIDATE_BIT: u8 = 0b010;
-    /// Python-canonical backfill companion bit in [`PendingSyncState::flags`].
-    const PENDING_SYNC_BACKFILL_PYTHON_BIT: u8 = 0b100;
-
-    /// Lock the pending-sync queue, recovering from a poisoned mutex.
-    ///
-    /// The critical sections are tiny (`Copy` bit/counter twiddling with no
-    /// `.await` and no panics), so poisoning is not expected; recovering via
-    /// [`std::sync::PoisonError::into_inner`] keeps the daemon live rather than
-    /// propagating a panic, and satisfies the no-`unwrap`/`expect` rule.
-    fn lock_pending_sync(&self) -> std::sync::MutexGuard<'_, PendingSyncState> {
-        self.pending_sync
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    /// The current (latest) sync generation — the value most recently returned
-    /// by [`AppState::begin_scan_generation`]. `0` before the first rebind.
-    pub fn current_sync_generation(&self) -> u64 {
-        self.sync_generation.load(Ordering::SeqCst)
-    }
-
-    /// Signal that a sync was requested while indexing was in progress.
-    ///
-    /// The next caller of [`finish_indexing`] that drains this flag (via
-    /// [`take_pending_sync`]) is responsible for running one coalesced sync.
-    /// A fresh arm adopts the current generation; a drain re-queue coalesces
-    /// into the already-queued generation's request (keeps companion bits).
-    pub fn set_pending_sync(&self) {
-        let generation = self.current_sync_generation();
-        self.lock_pending_sync()
-            .arm(generation, Self::PENDING_SYNC_BIT);
-    }
-
-    /// Atomically publish a queued coalesced sync request — the requested
-    /// companion bits AND `pending_sync` in ONE locked update (104.002-T),
-    /// tagged with the current sync generation (105.001-T / R1).
-    ///
-    /// Because the whole update happens under the pending-sync lock, a
-    /// concurrent [`clear_pending_sync_for_generation`](Self::clear_pending_sync_for_generation)
-    /// can never interleave *between* a companion write and the `pending_sync`
-    /// write: the flags are observed either fully published or (if a
-    /// same-or-newer clear wins the total order) fully absent — never
-    /// `pending_sync == true` with a stale/missing companion bit (N3/H1). A
-    /// publish from a *newer* generation than the queue's current owner replaces
-    /// the stale older-generation bits rather than OR-ing into them, so an old
-    /// binding's `--revalidate` never leaks into a new binding's routine sync
-    /// (N2/AC4).
-    pub fn publish_pending_sync(&self, revalidate: bool, backfill_python: bool) {
-        let mut mask = Self::PENDING_SYNC_BIT;
-        if revalidate {
-            mask |= Self::PENDING_SYNC_REVALIDATE_BIT;
-        }
-        if backfill_python {
-            mask |= Self::PENDING_SYNC_BACKFILL_PYTHON_BIT;
-        }
-        let generation = self.current_sync_generation();
-        self.lock_pending_sync().publish(generation, mask);
-    }
-
-    /// Publish a queued sync request AND backstop the producer/consumer drain
-    /// lost-wakeup (105.002-T / R2).
-    ///
-    /// The bounded snapshot-loop drain (`drain_pending_sync_to_completion`)
-    /// narrows but cannot close the window where a sync caller fails
-    /// [`try_start_indexing`](Self::try_start_indexing) while a holder owns the
-    /// lock, is descheduled BEFORE publishing its intent, and resumes only AFTER
-    /// the holder ran its final [`has_pending_sync`](Self::has_pending_sync) peek
-    /// and exited — stranding the request until an external index/sync/watcher
-    /// tick.
-    ///
-    /// This closes it with an atomic producer→lock-holder handoff. After
-    /// publishing the intent (under the pending mutex, so it is generation-tagged
-    /// and cannot be torn — R1), it RE-ATTEMPTS the indexing lock:
-    ///
-    /// * Returns `true` iff the re-attempt ACQUIRED the lock. That proves the
-    ///   prior holder had already released (and may already have run its final
-    ///   drain-check and exited): the caller is now the **guaranteed finisher**
-    ///   and MUST drain the queued request itself.
-    /// * Returns `false` iff the lock is still held. The current holder is then
-    ///   guaranteed to observe the just-published intent on its release-check.
-    ///
-    /// # Why the handoff has no lost wakeup
-    ///
-    /// The publish `P2` is sequenced-before this re-attempt `P3`. A holder's
-    /// release `finish_indexing` (a SeqCst `store(false)`) is sequenced-before
-    /// its drain-loop `has_pending_sync` read `chk`. Suppose the bad outcome:
-    /// the holder exits without draining (`chk` reads `false`) AND `P3` fails
-    /// (reads `indexing == true`). `P3` reading `true` places `P3` before
-    /// `store(false)` in the SeqCst total order, giving
-    /// `P2 →sb P3 →S store(false) →sb chk`, i.e. `P2` happens-before `chk` — which
-    /// forces `chk` to observe the published bit (`true`), contradicting the
-    /// assumption. So the bad interleaving is impossible: either the holder sees
-    /// the intent (`false` branch) or the producer re-acquires (`true` branch).
-    pub fn publish_pending_sync_and_try_reacquire(
-        &self,
-        revalidate: bool,
-        backfill_python: bool,
-    ) -> bool {
-        self.publish_pending_sync(revalidate, backfill_python);
-        // Backstop the drain lost-wakeup: re-attempt the indexing lock. Success
-        // proves the prior holder already released, so the caller is now the
-        // guaranteed finisher (see the ordering argument above).
-        self.try_start_indexing()
-    }
-
-    /// Atomically clear and return the pending-sync flag.
-    ///
-    /// Returns `true` once after a successful publish/set of the pending bit,
-    /// then `false` until set again.
-    pub fn take_pending_sync(&self) -> bool {
-        self.lock_pending_sync().take(Self::PENDING_SYNC_BIT)
-    }
-
-    /// Atomically move the complete legacy ingress mask into coordinator admission.
-    pub(crate) fn take_pending_work_mask(&self) -> WorkMask {
-        let mut pending = self.lock_pending_sync();
-        if !pending.has(Self::PENDING_SYNC_BIT) {
-            return WorkMask::default();
-        }
-        let mask = WorkMask::from_bits(pending.flags);
-        pending.flags = 0;
-        mask
-    }
-
-    /// Non-consuming peek at the pending-sync flag.
-    ///
-    /// Unlike [`take_pending_sync`], this does not clear the flag. Used by the
-    /// bounded loop-drain (`drain_pending_sync_to_completion`, 104.002-T) to
-    /// decide whether another drain pass is required after a re-arm.
-    pub fn has_pending_sync(&self) -> bool {
-        self.lock_pending_sync().has(Self::PENDING_SYNC_BIT)
-    }
-
-    /// Generation-scoped clear of `pending_sync` and both companion bits
-    /// (105.001-T / R1; supersedes the 104.002-T whole-queue `store(0)` wipe).
-    ///
-    /// Used on the hydration cancellation and DB-connect-failure paths, which
-    /// release the indexing lock WITHOUT draining. The clear zeroes the queue
-    /// ONLY when the caller's generation still owns it (`owner <= caller_gen`).
-    /// A request published by a *newer* generation in the `set_workspace` cancel
-    /// race window (the new snapshot is installed BEFORE the old hydration is
-    /// cancelled) therefore SURVIVES an older generation's clear instead of being
-    /// silently dropped (N1/AC2). Stale bits from the caller's own (or an older)
-    /// generation are still cleared so they cannot leak into a newer generation's
-    /// routine sync (N2/AC4). The new generation's own scan re-queues whatever it
-    /// actually needs (N5).
-    pub fn clear_pending_sync_for_generation(&self, caller_generation: u64) {
-        self.lock_pending_sync()
-            .clear_for_generation(caller_generation);
-    }
-
-    /// Mark the pending coalesced sync as a *revalidation* sync (101.002-T).
-    ///
-    /// Published BEFORE [`set_pending_sync`] when a `--revalidate-code-graph`
-    /// request is queued because indexing is active, so a concurrent drain
-    /// cannot observe `pending_sync == true` while this companion bit is still
-    /// false. Sticky OR-semantics within a generation: once set it stays set
-    /// until drained, so any queued revalidation upgrades the coalesced drain.
-    pub fn set_pending_sync_revalidate(&self) {
-        let generation = self.current_sync_generation();
-        self.lock_pending_sync()
-            .arm(generation, Self::PENDING_SYNC_REVALIDATE_BIT);
-    }
-
-    /// Atomically clear and return the pending-sync-revalidate flag.
-    ///
-    /// The coalesced drain reads this AFTER acquiring the indexing lock so that,
-    /// if the lock grab loses a race and the sync is re-queued, the flag is left
-    /// set for the next drain.
-    pub fn take_pending_sync_revalidate(&self) -> bool {
-        self.lock_pending_sync()
-            .take(Self::PENDING_SYNC_REVALIDATE_BIT)
-    }
-
-    /// Mark the pending coalesced sync as a Python-canonical *backfill* sync
-    /// (101.002-T; mirrors [`set_pending_sync_revalidate`]).
-    ///
-    /// Published BEFORE `set_pending_sync` so a concurrent drain cannot observe
-    /// `pending_sync == true` while this companion bit is still false.
-    pub fn set_pending_sync_backfill_python(&self) {
-        let generation = self.current_sync_generation();
-        self.lock_pending_sync()
-            .arm(generation, Self::PENDING_SYNC_BACKFILL_PYTHON_BIT);
-    }
-
-    /// Atomically clear and return the pending-sync-backfill-python flag.
-    ///
-    /// Read AFTER acquiring the indexing lock (same re-queue safety as
-    /// [`take_pending_sync_revalidate`]).
-    pub fn take_pending_sync_backfill_python(&self) -> bool {
-        self.lock_pending_sync()
-            .take(Self::PENDING_SYNC_BACKFILL_PYTHON_BIT)
+        !matches!(self.coordinator.lock().phase, CoordinatorPhase::Idle)
     }
 
     /// Get the timestamp of the last completed indexing operation.
+    #[allow(clippy::unused_async)] // Preserve the existing async state API contract.
     pub async fn last_indexed_at(&self) -> Option<DateTime<Utc>> {
-        let coordinator_timestamp = self.coordinator.lock().last_indexed_at;
-        if coordinator_timestamp.is_some() {
-            return coordinator_timestamp;
-        }
-        *self.last_indexed_at.read().await
+        self.coordinator.lock().last_indexed_at
     }
 
     // ── Observability ─────────────────────────────────────────────────────────
@@ -1514,34 +1190,6 @@ impl AppState {
         self.scan_progress.read().await.clone()
     }
 
-    /// Begin a new scan generation.
-    ///
-    /// Increments the monotonic [`sync_generation`](Self::current_sync_generation)
-    /// counter (so pending-sync requests published after this rebind are tagged
-    /// with the new generation), cancels any in-flight background scan from the
-    /// previous generation by sending `true` on the old cancel channel, then
-    /// registers a fresh channel for the new scan.
-    ///
-    /// Returns `(generation, Receiver<bool>)`: the new generation number the
-    /// hydration task owns (used by its cancel / DB-fail path to call
-    /// [`clear_pending_sync_for_generation`](Self::clear_pending_sync_for_generation)
-    /// so it never wipes a *newer* generation's queued request — 105.001-T / R1),
-    /// and a `Receiver<bool>` the new scan task should watch; when it yields
-    /// `true` the task should abandon its work.
-    pub async fn begin_scan_generation(&self) -> (u64, tokio::sync::watch::Receiver<bool>) {
-        // Bump the generation FIRST, while holding the cancel lock, so the new
-        // generation number is published before the old scan is signalled to
-        // cancel. A request that arrives after this point is tagged with the
-        // new generation and thus survives the old generation's clear.
-        let mut cancel = self.scan_cancel.write().await;
-        let generation = self.sync_generation.fetch_add(1, Ordering::SeqCst) + 1;
-        let (tx, rx) = tokio::sync::watch::channel(false);
-        if let Some(old_tx) = cancel.take() {
-            let _ = old_tx.send(true);
-        }
-        *cancel = Some(tx);
-        (generation, rx)
-    }
     /// Returns a reference to the process-level reliability counters (029-F WS-8).
     ///
     /// Callers use the returned reference to increment specific counters without
@@ -1997,9 +1645,8 @@ mod coordinator_tests {
         let old_waiter = admission(&state.coordinator);
         let alpha = workspace("alpha", "uuid-alpha", "id-alpha");
         let (generation, new_cancel_rx) = publish(&state, alpha.clone()).await;
-
         assert_eq!(generation, 1);
-        assert_eq!(state.current_sync_generation(), 1);
+        assert_eq!(generation, 1);
         assert!(*old_waiter.cancel_rx.borrow());
         assert!(!*new_cancel_rx.borrow());
         assert!(matches!(

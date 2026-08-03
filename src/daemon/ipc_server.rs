@@ -1143,22 +1143,6 @@ async fn run_watcher_driver(
     }
 }
 
-#[cfg(test)]
-fn try_start_startup_sync(state: &AppState) -> bool {
-    if state.try_start_indexing() {
-        true
-    } else {
-        state.set_pending_sync();
-        false
-    }
-}
-
-#[cfg(test)]
-async fn finish_indexing_and_drain_pending_sync(state: &AppState) {
-    state.finish_indexing().await;
-    crate::tools::lifecycle::drain_pending_sync_to_completion(state).await;
-}
-
 /// Build a `running` scan-status snapshot reflecting embedding-backfill progress.
 fn backfill_running_progress(done: usize, total: usize) -> ScanProgress {
     ScanProgress {
@@ -1184,7 +1168,7 @@ fn backfill_completed_progress(done: usize, completed_at: String) -> ScanProgres
 /// Returns a `running: false` completed snapshot whenever any `running`
 /// progress was relayed — even if `embedded == 0` (model unavailable or every
 /// write-back failed). This clears a `running: true` status that would
-/// otherwise persist forever, since `finish_indexing` does not touch
+/// otherwise persist forever, since owner completion does not touch
 /// `scan_progress`. Returns `None` when no running progress was relayed (there
 /// was nothing to clear).
 fn backfill_completion_snapshot(
@@ -1465,21 +1449,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn startup_sync_queues_when_indexing_is_already_running() {
-        let state = AppState::new(1);
-        assert!(state.try_start_indexing(), "should acquire indexing lock");
-
-        assert!(
-            !try_start_startup_sync(&state),
-            "startup sync must not acquire a second indexing lock"
-        );
-        assert!(
-            state.take_pending_sync(),
-            "startup sync must queue a pending sync when hydration already holds the lock"
-        );
-    }
-
     #[tokio::test]
     async fn daemon_driver_handle_loss_cannot_detach_mutation() {
         struct Termination(Option<tokio::sync::oneshot::Sender<()>>);
@@ -1512,24 +1481,6 @@ mod tests {
             writes.load(std::sync::atomic::Ordering::SeqCst),
             0,
             "a lost parent handle must abort before later mutation"
-        );
-    }
-
-    #[tokio::test]
-    async fn finish_indexing_helper_drains_pending_sync_flag() {
-        let state = AppState::new(1);
-        assert!(state.try_start_indexing(), "should acquire indexing lock");
-        state.set_pending_sync();
-
-        finish_indexing_and_drain_pending_sync(&state).await;
-
-        assert!(
-            !state.is_indexing(),
-            "finish helper must release the indexing lock"
-        );
-        assert!(
-            !state.take_pending_sync(),
-            "finish helper must drain the queued pending sync flag"
         );
     }
 

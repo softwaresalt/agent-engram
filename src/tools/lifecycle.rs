@@ -16,8 +16,8 @@ use crate::errors::{EngramError, SystemError, WorkspaceError};
 use crate::models::health::{HealthReport, ScanProgress};
 use crate::server::state::CoordinatorCell;
 use crate::server::state::{
-    AdmissionGuard, AppState, CompletionOutcome, CoordinatorError, DriverTaskGuard, OwnerKind,
-    OwnerPermit, RequestOutcome, WorkspaceSnapshot,
+    AdmissionGuard, AppState, CompletionOutcome, CoordinatorError, DriverTaskGuard, OwnerPermit,
+    WorkspaceSnapshot,
 };
 use crate::services::code_graph::sync_workspace as sync_code_graph;
 use crate::services::config::parse_config;
@@ -165,7 +165,7 @@ pub async fn set_workspace(
         file_mtimes: hydration.file_mtimes.clone(),
     };
 
-    let (sync_generation, _cancel_rx) = state
+    let (binding_generation, _cancel_rx) = state
         .publish_workspace_generation(snapshot, Some(ws_config.clone()))
         .await
         .map_err(|error| match error {
@@ -222,8 +222,6 @@ pub async fn set_workspace(
             branch_bg,
             admission,
             #[cfg(test)]
-            false,
-            #[cfg(test)]
             None,
         )
         .await;
@@ -236,13 +234,13 @@ pub async fn set_workspace(
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if retained
             .as_ref()
-            .is_some_and(|(generation, _)| *generation > sync_generation)
+            .is_some_and(|(generation, _)| *generation > binding_generation)
         {
             driver.take()
         } else {
             retained
                 .replace((
-                    sync_generation,
+                    binding_generation,
                     driver
                         .take()
                         .unwrap_or_else(|| unreachable!("driver is installed once")),
@@ -389,7 +387,6 @@ async fn background_db_hydration(
     data_dir: PathBuf,
     branch: String,
     admission: AdmissionGuard,
-    #[cfg(test)] legacy_pre_cancelled: bool,
     #[cfg(test)] test_probe: Option<HydrationProbe>,
 ) {
     let mut permit = match admission.acquire_hydration().await {
@@ -400,11 +397,6 @@ async fn background_db_hydration(
             return;
         }
     };
-
-    #[cfg(test)]
-    if test_probe.is_none() && legacy_pre_cancelled {
-        return;
-    }
 
     let operation = async {
         #[cfg(test)]
@@ -590,36 +582,6 @@ async fn drive_transferred_sync(
     }
 }
 
-/// Compatibility ingress used by not-yet-migrated callers.
-///
-/// The complete legacy mask is moved once into coordinator admission. This
-/// function does not poll, re-arm, reacquire the legacy owner, or run a second
-/// drain pass.
-pub async fn drain_pending_sync_to_completion(state: &AppState) {
-    let work_mask = state.take_pending_work_mask();
-    if work_mask.bits() == 0 {
-        return;
-    }
-    match CoordinatorCell::request(state.coordinator.admission(), work_mask, OwnerKind::Sync) {
-        Ok(RequestOutcome::Acquired(permit)) => {
-            drive_transferred_sync(
-                state,
-                permit,
-                #[cfg(test)]
-                None,
-            )
-            .await;
-        }
-        Ok(RequestOutcome::Enqueued | RequestOutcome::Stale) => {}
-        Ok(RequestOutcome::Waiting(_)) => {
-            tracing::error!("non-empty sync work unexpectedly became an empty waiter");
-        }
-        Err(error) => {
-            tracing::error!(%error, "pending sync coordinator admission failed");
-        }
-    }
-}
-
 pub async fn get_daemon_status(state: &AppState) -> Result<DaemonStatus, EngramError> {
     let memory_bytes = crate::services::process_memory::current_process_memory_bytes().unwrap_or(0);
 
@@ -754,8 +716,7 @@ mod tests {
 
     use super::{
         HandoffProbe, HandoffProbeExit, HydrationProbe, HydrationProbeExit,
-        background_db_hydration, drain_pending_sync_to_completion, drive_transferred_sync,
-        get_daemon_status,
+        background_db_hydration, drive_transferred_sync, get_daemon_status,
     };
     use crate::db::connect_db;
     use crate::db::queries::CodeGraphQueries;
@@ -941,7 +902,6 @@ mod tests {
                 PathBuf::from("logs/phase6-group2/old-data"),
                 "main".to_owned(),
                 admission,
-                false,
                 Some(probe),
             )
             .await;
@@ -982,7 +942,6 @@ mod tests {
                         PathBuf::from("logs/phase6-group2/old-data"),
                         "main".to_owned(),
                         admission,
-                        false,
                         Some(probe),
                     )
                     .await;
@@ -994,10 +953,6 @@ mod tests {
             assert!(
                 !state.coordinator.test_is_idle(),
                 "hydration must own its coordinator permit while I/O is active"
-            );
-            assert!(
-                !state.test_legacy_indexing_is_active(),
-                "the coordinator permit must be the only hydration owner authority"
             );
 
             let target = if same_binding {
@@ -1037,7 +992,6 @@ mod tests {
                 PathBuf::from("logs/phase6-group2/terminal-data"),
                 "main".to_owned(),
                 admission,
-                false,
                 Some(probe),
             )
             .await;
@@ -1134,429 +1088,19 @@ mod tests {
         }
     }
 
-    /// Minimal bound-workspace fixture pointing at a scratch tempdir so the
-    /// coalesced drain enters its sync branch (and can re-queue on a lost lock).
-    fn test_snapshot(tmp: &tempfile::TempDir) -> WorkspaceSnapshot {
-        WorkspaceSnapshot {
-            workspace_id: "test-ws".to_owned(),
-            workspace_uuid: "00000000-0000-0000-0000-000000000000".to_owned(),
-            branch: "main".to_owned(),
-            data_dir: tmp.path().to_path_buf(),
-            path: tmp.path().display().to_string(),
-            last_flush: None,
-            stale_files: false,
-            connection_count: 0,
-            file_mtimes: std::collections::HashMap::new(),
-        }
-    }
-
-    /// 104.001-T (T-leak, RED): a revalidation sync queued while indexing must
-    /// not leave its companion bits sticky when the hydration is cancelled. The
-    /// pre-fix cancel path releases the indexing lock without clearing the
-    /// pending/companion flags, so they leak into a later unrelated sync.
-    #[tokio::test]
-    async fn hydration_cancel_path_clears_pending_companion_bits() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let data_dir = tmp.path().join("data");
-        let canonical = tmp.path().join("ws");
-        std::fs::create_dir_all(&canonical).expect("create ws dir");
-        let state = Arc::new(AppState::new(1));
-
-        // Queue a revalidation sync (companion + pending) as if requested while
-        // the daemon was indexing.
-        state.set_pending_sync_revalidate();
-        state.set_pending_sync();
-
-        // Cancellation is already signalled for this generation, so the first
-        // check_cancel! after the DB connects takes the cancel path.
-        background_db_hydration(
-            Arc::clone(&state),
-            canonical,
-            data_dir,
-            "main".to_owned(),
-            state.coordinator.admission(),
-            true,
-            None,
-        )
-        .await;
-
-        assert!(
-            !state.take_pending_sync(),
-            "cancel path must not leave pending_sync set (companion-bit leak)"
-        );
-        assert!(
-            !state.take_pending_sync_revalidate(),
-            "cancel path must not leak the pending_sync_revalidate companion bit"
-        );
-        assert!(
-            !state.take_pending_sync_backfill_python(),
-            "cancel path must not leak the pending_sync_backfill_python companion bit"
-        );
-    }
-
-    /// 104.001-T (T-dbfail, RED): the DB-connect-failure path must also clear
-    /// the queued pending/companion flags rather than leak them. Reproduced by
-    /// pointing `data_dir` at a regular file so `connect_db` fails.
-    #[tokio::test]
-    async fn hydration_db_connect_failure_clears_pending_companion_bits() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        // Point data_dir at a regular FILE so connect_db's create_dir_all fails
-        // deterministically, exercising the DB-connect-failure path.
-        let data_file = tmp.path().join("not-a-directory");
-        std::fs::write(&data_file, b"x").expect("write file");
-        let canonical = tmp.path().join("ws");
-        std::fs::create_dir_all(&canonical).expect("create ws dir");
-        let state = Arc::new(AppState::new(1));
-
-        state.set_pending_sync_backfill_python();
-        state.set_pending_sync();
-
-        // Cancellation stays false so hydration reaches connect_db (which fails).
-        background_db_hydration(
-            Arc::clone(&state),
-            canonical,
-            data_file,
-            "main".to_owned(),
-            state.coordinator.admission(),
-            false,
-            None,
-        )
-        .await;
-
-        assert!(
-            !state.take_pending_sync(),
-            "DB-connect-failure path must not leave pending_sync set (companion-bit leak)"
-        );
-        assert!(
-            !state.take_pending_sync_revalidate(),
-            "DB-connect-failure path must not leak the revalidate companion bit"
-        );
-        assert!(
-            !state.take_pending_sync_backfill_python(),
-            "DB-connect-failure path must not leak the backfill companion bit"
-        );
-    }
-
-    // ── 105.001-T / R1: generation-scoped pending-sync clear ─────────────────
-    //
-    // The cancel/DB-fail clears (lifecycle.rs:255/:280) must be scoped to the
-    // generation that OWNS the queue, not a whole-queue wipe. In the
-    // set_workspace cancel race window the new snapshot is installed (and its
-    // generation counter bumped) BEFORE the old hydration is cancelled; a sync
-    // against the NEW binding can lose the still-held indexing lock and publish
-    // its pending+companion bits, which the OLD generation's clear must NOT
-    // erase (source_stash_id B7F52777, PR #297 Copilot thread).
-
-    /// 105.001-T AC1 (RED FIRST) + AC2 — cancel-path variant. Drive the OLD
-    /// generation's cancel-path clear (lifecycle.rs:255) while the queue is
-    /// owned by a NEWER generation, and assert the newer generation's pending +
-    /// both companion bits SURVIVE. Fails pre-fix (whole-queue `store(0)` wipe
-    /// erases them); the RED scaffold's unconditional `clear_for_generation`
-    /// reproduces that failure. Deterministic — no wall-clock sleeps.
-    #[tokio::test]
-    async fn r1_cancel_path_preserves_newer_generation_pending_bits() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let data_dir = tmp.path().join("data");
-        let canonical = tmp.path().join("ws");
-        std::fs::create_dir_all(&canonical).expect("create ws dir");
-        let state = Arc::new(AppState::new(1));
-
-        // OLD generation begins and captures its cancel receiver (generation 1).
-        let (_old_gen, _old_cancel_rx) = state.begin_scan_generation().await;
-
-        // set_workspace installs the NEW snapshot and cancels the old hydration:
-        // a fresh begin_scan_generation bumps to generation 2 and signals `true`
-        // on the old cancel channel, so the old task takes its cancel path.
-        let (_new_gen, _new_cancel_rx) = state.begin_scan_generation().await;
-
-        // A sync against the NEW binding loses the still-held indexing lock and
-        // publishes pending + BOTH companion bits (tagged with generation 2).
-        state.publish_pending_sync(true, true);
-
-        // Drive the OLD generation's cancel-path clear (lifecycle.rs:255).
-        background_db_hydration(
-            Arc::clone(&state),
-            canonical,
-            data_dir,
-            "main".to_owned(),
-            state.coordinator.admission(),
-            true,
-            None,
-        )
-        .await;
-
-        assert!(
-            state.take_pending_sync(),
-            "AC1/AC2: newer-generation pending_sync must survive the older generation's cancel-path clear"
-        );
-        assert!(
-            state.take_pending_sync_revalidate(),
-            "AC1/AC2: newer-generation --revalidate-code-graph intent must survive the older generation's clear"
-        );
-        assert!(
-            state.take_pending_sync_backfill_python(),
-            "AC1/AC2: newer-generation --backfill-python-canonical intent must survive the older generation's clear"
-        );
-    }
-
-    /// 105.001-T AC1 (RED FIRST) + AC2 — DB-connect-failure-path variant. Same
-    /// invariant driven through the `:280` clear: point `data_dir` at a regular
-    /// file so `connect_db` fails, and assert the newer generation's bits SURVIVE.
-    #[tokio::test]
-    async fn r1_db_connect_failure_path_preserves_newer_generation_pending_bits() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        // Regular file at the data_dir path → connect_db's create_dir_all fails.
-        let data_file = tmp.path().join("not-a-directory");
-        std::fs::write(&data_file, b"x").expect("write file");
-        let canonical = tmp.path().join("ws");
-        std::fs::create_dir_all(&canonical).expect("create ws dir");
-        let state = Arc::new(AppState::new(1));
-
-        let (_old_gen, _old_cancel_rx) = state.begin_scan_generation().await;
-        let (_new_gen, _new_cancel_rx) = state.begin_scan_generation().await;
-
-        // NEW binding publishes pending + both companions (generation 2).
-        state.publish_pending_sync(true, true);
-
-        // DB-connect-failure fires before any cancel check, driving the :280 clear.
-        background_db_hydration(
-            Arc::clone(&state),
-            canonical,
-            data_file,
-            "main".to_owned(),
-            state.coordinator.admission(),
-            false,
-            None,
-        )
-        .await;
-
-        assert!(
-            state.take_pending_sync(),
-            "AC1/AC2: newer-generation pending_sync must survive the older generation's DB-fail clear"
-        );
-        assert!(
-            state.take_pending_sync_revalidate(),
-            "AC1/AC2: newer-generation revalidate intent must survive the older generation's DB-fail clear"
-        );
-        assert!(
-            state.take_pending_sync_backfill_python(),
-            "AC1/AC2: newer-generation backfill intent must survive the older generation's DB-fail clear"
-        );
-    }
-
-    /// 105.001-T AC4 (RED FIRST) — no false heavy sync. An OLD generation's
-    /// stale `--revalidate` / `--backfill-python` companion bits must NOT leak
-    /// into a NEWER generation's routine sync: a newer-generation publish
-    /// REPLACES the older generation's bits rather than OR-ing into them. Fails
-    /// under the RED scaffold's plain sticky-OR `publish`.
-    #[tokio::test]
-    async fn r1_older_generation_companion_does_not_leak_into_newer_routine_sync() {
-        let state = Arc::new(AppState::new(1));
-
-        // OLD generation (1) queues a revalidation + backfill sync.
-        let (_old_gen, _old_rx) = state.begin_scan_generation().await;
-        state.publish_pending_sync(true, true);
-
-        // NEW generation (2) binds and queues a ROUTINE sync (no companions).
-        let (_new_gen, _new_rx) = state.begin_scan_generation().await;
-        state.publish_pending_sync(false, false);
-
-        assert!(
-            state.take_pending_sync(),
-            "the newer generation's routine sync is still queued"
-        );
-        assert!(
-            !state.take_pending_sync_revalidate(),
-            "AC4: an older generation's --revalidate-code-graph must not leak into the newer generation's routine sync"
-        );
-        assert!(
-            !state.take_pending_sync_backfill_python(),
-            "AC4: an older generation's --backfill-python-canonical must not leak into the newer generation's routine sync"
-        );
-    }
-
-    /// 105.001-T AC3 — preserve the 104-F publish-order atomicity invariant. A
-    /// same-generation publish sets pending + companions as an indivisible unit,
-    /// and a same-generation clear removes them as an indivisible unit, so a
-    /// concurrent drain never observes `pending_sync == true` with a
-    /// stale/missing companion bit. The single mutex on `{generation, flags}`
-    /// makes the update all-or-nothing.
-    #[tokio::test]
-    async fn r1_same_generation_publish_and_clear_are_all_or_nothing() {
-        let state = Arc::new(AppState::new(1));
-        let (owner_gen, _rx) = state.begin_scan_generation().await;
-
-        // Publish sets pending + both companions together.
-        state.publish_pending_sync(true, true);
-        assert!(
-            state.has_pending_sync(),
-            "AC3: pending must be visible after an atomic publish"
-        );
-
-        // A same-generation clear removes the whole owned queue as a unit.
-        state.clear_pending_sync_for_generation(owner_gen);
-        assert!(
-            !state.take_pending_sync(),
-            "AC3: same-generation clear removes pending atomically"
-        );
-        assert!(
-            !state.take_pending_sync_revalidate(),
-            "AC3: same-generation clear removes the revalidate companion atomically"
-        );
-        assert!(
-            !state.take_pending_sync_backfill_python(),
-            "AC3: same-generation clear removes the backfill companion atomically"
-        );
-    }
-
-    // ── 105.002-T / R2: producer/consumer drain handoff (close the TOCTOU) ────
-    //
-    // The bounded snapshot-loop drain cannot close the window where a sync caller
-    // fails try_start_indexing while a holder owns the lock, is descheduled
-    // BEFORE publishing pending_sync, and resumes only AFTER the holder's final
-    // has_pending_sync peek returned false — stranding the request until an
-    // external index/sync/watcher tick. The fix is an atomic producer->lock-holder
-    // handoff: publish_pending_sync_and_try_reacquire re-attempts the lock after
-    // publishing; acquiring it makes the producer the guaranteed finisher
-    // (source_stash_id 0B5AAAD2, PR #297 Copilot thread).
-
-    /// 105.002-T AC1 (RED FIRST) + AC2 — intent-after-final-peek. Reproduce the
-    /// TOCTOU: a holder acquired, drained, released, and ran its final
-    /// has_pending peek (nothing queued) then exited; the descheduled producer
-    /// resumes and publishes intent only NOW. The backstop must re-acquire the
-    /// lock so a finisher is guaranteed WITHOUT an external tick. Fails under the
-    /// RED scaffold (publish-only, no re-attempt → returns false → no finisher).
-    #[tokio::test]
-    async fn r2_backstop_guarantees_finisher_when_intent_lands_after_final_peek() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let state = Arc::new(AppState::new(1));
-        state
-            .set_workspace(test_snapshot(&tmp))
-            .await
-            .expect("set workspace");
-        state
-            .set_workspace_config(Some(WorkspaceConfig::default()))
-            .await;
-
-        // A holder acquired the lock, did its work, released, and ran its final
-        // drain-check (nothing queued) then exited — the lock is now free & empty.
-        assert!(
-            state.try_start_indexing(),
-            "holder acquires the indexing lock"
-        );
-        state.finish_indexing().await; // holder releases
-        assert!(
-            !state.has_pending_sync(),
-            "holder's final peek observes an empty queue → holder exits"
-        );
-
-        // The descheduled producer resumes and publishes intent + backstops.
-        let must_drain = state.publish_pending_sync_and_try_reacquire(false, false);
-        assert!(
-            must_drain,
-            "AC1: a publish landing after the holder exited must re-acquire the lock so a finisher is guaranteed (no lost wakeup)"
-        );
-        assert!(
-            state.is_indexing(),
-            "the backstop must hold the re-acquired indexing lock"
-        );
-
-        // The guaranteed finisher drains the queued request with no external tick.
-        state.finish_indexing().await;
-        drain_pending_sync_to_completion(&state).await;
-        assert!(
-            !state.has_pending_sync(),
-            "AC2: the backstopped request is guaranteed drained"
-        );
-        assert!(
-            !state.is_indexing(),
-            "the drain releases the indexing lock on completion"
-        );
-    }
-
-    /// 105.002-T AC4 — no lost-wakeup: BOTH interleavings + the R1 generation
-    /// seam. (1) intent-BEFORE-release: while a holder still holds the lock, the
-    /// backstop must NOT acquire (returns false) and the holder drains on release.
-    /// (2) generation seam: a backstopped request tagged with a newer generation
-    /// is NOT wiped by an older generation's cancel-clear (composes with R1).
-    #[tokio::test]
-    async fn r2_backstop_defers_to_active_holder_and_is_generation_aware() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let state = Arc::new(AppState::new(1));
-        state
-            .set_workspace(test_snapshot(&tmp))
-            .await
-            .expect("set workspace");
-        state
-            .set_workspace_config(Some(WorkspaceConfig::default()))
-            .await;
-
-        // (1) intent-before-release: a holder currently holds the lock.
-        assert!(state.try_start_indexing(), "holder holds the indexing lock");
-        let must_drain = state.publish_pending_sync_and_try_reacquire(false, false);
-        assert!(
-            !must_drain,
-            "AC4: while a holder still holds the lock, the backstop must NOT acquire — the holder drains the queued intent on release"
-        );
-        assert!(
-            state.has_pending_sync(),
-            "the intent is queued for the current holder"
-        );
-
-        // The holder releases and drains the queued intent (no external tick).
-        state.finish_indexing().await;
-        drain_pending_sync_to_completion(&state).await;
-        assert!(
-            !state.has_pending_sync(),
-            "the holder drains the backstopped intent on release"
-        );
-
-        // (2) generation seam with R1: a newer-generation backstopped request
-        // must survive an older generation's cancel-clear.
-        let (old_gen, _old_rx) = state.begin_scan_generation().await;
-        let (_new_gen, _new_rx) = state.begin_scan_generation().await;
-        let _ = state.publish_pending_sync_and_try_reacquire(false, false); // tagged new gen
-        state.clear_pending_sync_for_generation(old_gen); // older-generation clear
-        assert!(
-            state.has_pending_sync(),
-            "AC4 seam with R1: an older generation's clear must not wipe a newer-generation backstopped request"
-        );
-        // Release the lock if the backstop acquired it.
-        if state.is_indexing() {
-            state.finish_indexing().await;
-        }
-    }
-
-    /// The compatibility ingress moves all three legacy bits in one locked
-    /// transition. The transferred-mask driver tests above own execution and
-    /// recovery; no bounded loop or producer reacquire remains here.
-    #[test]
-    fn legacy_ingress_moves_one_complete_mask() {
-        let state = AppState::new(1);
-        state.publish_pending_sync(true, true);
-
-        let mask = state.take_pending_work_mask();
-
-        assert_eq!(mask.bits(), 0b111);
-        assert!(!state.has_pending_sync());
-        assert!(!state.take_pending_sync_revalidate());
-        assert!(!state.take_pending_sync_backfill_python());
-    }
-
     // ── 099.007-T: a queued MCP sync carrying backfill_python_canonical=true
     // must actually RUN the canonical backfill when it drains ────────────────
     //
-    // When `sync_workspace({backfill_python_canonical:true})` arrives while the
-    // daemon is already indexing, write.rs coalesces it via
-    // `publish_pending_sync(revalidate, backfill_python)` and returns "queued".
-    // The drain must carry that intent into a GATED
+    // When `sync_workspace({backfill_python_canonical:true})` arrives while a
+    // coordinator owner is active, write.rs coalesces the complete work mask
+    // and returns "queued". The transferred successor must carry that intent
+    // into a GATED
     // `sync_workspace_with_progress(.., backfill_python, ..)` — not downgrade to
     // a routine (ungated) sync, which would defer the stale-marker migration
     // (C12-5 no-op) and silently drop the requested backfill. The production
-    // carry-through landed in 101.002-T (drain took `backfill_python` instead of
-    // a hardcoded `false`); this is its missing END-TO-END regression guard.
+    // carry-through is an end-to-end regression guard for the transferred mask.
     //
-    // RED-capable: reverting the drain's `backfill_python` argument to `false`
+    // RED-capable: reverting the driver's `backfill_python` argument to `false`
     // makes the coalesced sync ungated, so the pre-upgrade canonical edge is NOT
     // restored and the extraction-version marker stays stale ("0") — both
     // assertions below then fail.
@@ -1624,12 +1168,10 @@ mod tests {
             .set_workspace_config(Some(WorkspaceConfig::default()))
             .await;
 
-        // Exactly what write.rs::sync_workspace publishes for a queued
-        // `sync_workspace({backfill_python_canonical:true})` while indexing runs.
-        state.publish_pending_sync(false, true);
-
-        // Drain: the coalesced sync must run the GATED backfill.
-        drain_pending_sync_to_completion(&state).await;
+        // Queue exactly the routine + Python-backfill work bits behind a
+        // hydration owner, then drive the move-only transferred successor.
+        let successor = transferred_successor(&state, 0b101);
+        drive_transferred_sync(&state, successor, None).await;
 
         let db = connect_db(&data_dir, branch).await.expect("db reconnect");
         let q = CodeGraphQueries::new(db);
@@ -1666,10 +1208,8 @@ mod tests {
             Some("1".to_owned()),
             "a queued backfill that drains must advance the extraction-version marker (not defer as an ungated sync)"
         );
-        assert!(
-            !state.has_pending_sync(),
-            "the drain must fully consume the queued pending sync"
-        );
+        assert!(state.coordinator.test_is_idle());
+        assert_eq!(state.coordinator.test_pending_bits(), 0);
     }
 
     /// Regression guard for 078.001-T: `get_daemon_status.memory_bytes` must
