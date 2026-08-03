@@ -1849,6 +1849,101 @@ mod coordinator_tests {
         );
     }
 
+    #[test]
+    fn compatibility_stale_terminals_and_drop_recovery_are_identity_guarded() {
+        let cell = coordinator_cell("compatibility");
+        let owner = acquired(request(
+            admission(&cell),
+            WorkMask::from_bits(0b101),
+            OwnerKind::Index,
+        ));
+        assert!(matches!(
+            request(
+                admission(&cell),
+                WorkMask::from_bits(0b010),
+                OwnerKind::Sync
+            ),
+            RequestOutcome::Enqueued
+        ));
+
+        drop(owner);
+        {
+            let state = cell.lock();
+            assert!(matches!(state.phase, CoordinatorPhase::Idle));
+            assert_eq!(state.pending.bits(), 0b111);
+            assert!(state.last_indexed_at.is_none());
+            assert_eq!(cell.notification_calls.load(Ordering::SeqCst), 1);
+        }
+
+        let successor = acquired(request(
+            admission(&cell),
+            WorkMask::from_bits(0b001),
+            OwnerKind::Sync,
+        ));
+        assert_eq!(successor.work_mask.bits(), 0b111);
+        let waiting_guard = waiting(request(
+            admission(&cell),
+            WorkMask::default(),
+            OwnerKind::Startup,
+        ));
+        drop(waiting_guard);
+
+        let snapshot = || {
+            let state = cell.lock();
+            let identity = match &state.phase {
+                CoordinatorPhase::Running(owner) => owner.identity,
+                CoordinatorPhase::Idle | CoordinatorPhase::Retiring(_) => {
+                    panic!("recovered successor lost ownership")
+                }
+            };
+            (
+                identity,
+                state.pending,
+                state.last_indexed_at,
+                cell.notification_calls.load(Ordering::SeqCst),
+                cell.timestamp_writes.load(Ordering::SeqCst),
+            )
+        };
+        let before_stale = snapshot();
+        let stale_permit = || OwnerPermit {
+            ownership: Some(PermitOwnership {
+                cell: Arc::clone(&cell),
+                token: GenerationToken {
+                    floor: 0,
+                    binding_identity: binding("compatibility"),
+                },
+                binding_snapshot: binding("compatibility"),
+                cancel_rx: cell.lock().generation_cancel.subscribe(),
+            }),
+            identity: OwnerIdentity {
+                generation: 0,
+                sequence: u64::MAX,
+                kind: OwnerKind::Sync,
+            },
+            work_mask: WorkMask::from_bits(0b111),
+            cleanup_armed: true,
+        };
+
+        assert!(matches!(
+            CoordinatorCell::complete(stale_permit()),
+            CompletionOutcome::Stale
+        ));
+        assert_eq!(snapshot(), before_stale);
+        drop(stale_permit());
+        assert_eq!(snapshot(), before_stale);
+
+        assert!(matches!(
+            CoordinatorCell::complete(successor),
+            CompletionOutcome::Released
+        ));
+        let state = cell.lock();
+        assert!(matches!(state.phase, CoordinatorPhase::Idle));
+        assert!(state.pending.is_empty());
+        assert!(state.last_indexed_at.is_some());
+        assert_eq!(cell.timestamp_writes.load(Ordering::SeqCst), 1);
+        assert_eq!(cell.notification_calls.load(Ordering::SeqCst), 2);
+    }
+
     #[tokio::test]
     async fn acquired_registration_cannot_steal_release_baton() {
         let cell = coordinator_cell("baton");

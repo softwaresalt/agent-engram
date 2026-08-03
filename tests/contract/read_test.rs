@@ -292,67 +292,51 @@ async fn contract_impact_analysis_symbol_not_found() {
 // partial results are returned instead of an error.
 
 #[test]
-async fn contract_get_workspace_statistics_allowed_while_indexing() {
+async fn contract_read_tools_remain_available_during_public_sync() {
     let state = Arc::new(AppState::new(10));
     state
-        .set_workspace(test_snapshot("stats_indexing"))
+        .set_workspace(test_snapshot("reads_during_sync"))
         .await
         .expect("set workspace");
 
-    assert!(state.try_start_indexing(), "should acquire indexing lock");
+    // Polling the owner first makes permit acquisition deterministic without a
+    // test-only ownership seam or timing delay.
+    let active_sync = tools::write::sync_workspace(Arc::clone(&state), Some(json!({})));
+    let read_contracts = async {
+        assert!(
+            state.is_indexing(),
+            "public sync must own coordinator admission"
+        );
+        for (method, params) in [
+            ("get_workspace_statistics", None),
+            (
+                "query_memory",
+                Some(json!({ "query": "user authentication" })),
+            ),
+            (
+                "unified_search",
+                Some(json!({ "query": "database connection pool" })),
+            ),
+        ] {
+            let result = tools::dispatch(Arc::clone(&state), method, params).await;
+            if let Err(err) = result {
+                let code = err.to_response().error.code;
+                assert_ne!(code, INDEX_IN_PROGRESS, "{method} must remain available");
+                assert_ne!(code, WORKSPACE_NOT_SET, "{method} keeps its binding");
+            }
+        }
+    };
 
-    let result = tools::dispatch(state, "get_workspace_statistics", None).await;
-
-    // The tool proceeds during indexing. It may return Ok (empty stats from an
-    // empty DB) or an Err from a missing DB file — but NOT IndexInProgress or
-    // WorkspaceNotSet (workspace was bound above).
-    if let Err(err) = result {
+    let (sync_result, ()) = tokio::join!(biased; active_sync, read_contracts);
+    if let Err(err) = sync_result {
         let code = err.to_response().error.code;
-        assert_ne!(code, INDEX_IN_PROGRESS, "must not return IndexInProgress");
-        assert_ne!(code, WORKSPACE_NOT_SET, "must not return WorkspaceNotSet");
-    }
-}
-
-#[test]
-async fn contract_query_memory_allowed_while_indexing() {
-    let state = Arc::new(AppState::new(10));
-    state
-        .set_workspace(test_snapshot("query_memory_indexing"))
-        .await
-        .expect("set workspace");
-
-    assert!(state.try_start_indexing(), "should acquire indexing lock");
-
-    let params = Some(json!({ "query": "user authentication" }));
-    let result = tools::dispatch(state, "query_memory", params).await;
-
-    // The tool proceeds during indexing. It may succeed or fail due to a missing
-    // DB — but NOT with IndexInProgress or WorkspaceNotSet.
-    if let Err(err) = result {
-        let code = err.to_response().error.code;
-        assert_ne!(code, INDEX_IN_PROGRESS, "must not return IndexInProgress");
-        assert_ne!(code, WORKSPACE_NOT_SET, "must not return WorkspaceNotSet");
-    }
-}
-
-#[test]
-async fn contract_unified_search_allowed_while_indexing() {
-    let state = Arc::new(AppState::new(10));
-    state
-        .set_workspace(test_snapshot("unified_search_indexing"))
-        .await
-        .expect("set workspace");
-
-    assert!(state.try_start_indexing(), "should acquire indexing lock");
-
-    let params = Some(json!({ "query": "database connection pool" }));
-    let result = tools::dispatch(state, "unified_search", params).await;
-
-    // The tool proceeds during indexing. It may fail (e.g. embeddings not
-    // compiled, missing DB) — but NOT with IndexInProgress or WorkspaceNotSet.
-    if let Err(err) = result {
-        let code = err.to_response().error.code;
-        assert_ne!(code, INDEX_IN_PROGRESS, "must not return IndexInProgress");
-        assert_ne!(code, WORKSPACE_NOT_SET, "must not return WorkspaceNotSet");
+        assert_ne!(
+            code, INDEX_IN_PROGRESS,
+            "the public owner acquired admission"
+        );
+        assert_ne!(
+            code, WORKSPACE_NOT_SET,
+            "the public owner retained its binding"
+        );
     }
 }
