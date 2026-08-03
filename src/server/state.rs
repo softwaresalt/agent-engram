@@ -307,6 +307,27 @@ pub(crate) struct DriverTaskGuard {
     pub(crate) task: Option<tokio::task::JoinHandle<()>>,
 }
 
+impl DriverTaskGuard {
+    pub(crate) async fn abort_and_join(mut self) -> Result<(), tokio::task::JoinError> {
+        let Some(task) = self.task.as_mut() else {
+            return Ok(());
+        };
+        task.abort();
+        let result = task.await;
+        let _ = self.task.take();
+        result
+    }
+
+    pub(crate) async fn join(mut self) -> Result<(), tokio::task::JoinError> {
+        let Some(task) = self.task.as_mut() else {
+            return Ok(());
+        };
+        let result = task.await;
+        let _ = self.task.take();
+        result
+    }
+}
+
 impl Drop for DriverTaskGuard {
     fn drop(&mut self) {
         if let Some(task) = self.task.take() {
@@ -755,7 +776,7 @@ pub struct AppState {
     #[allow(dead_code)]
     pub(crate) coordinator: Arc<CoordinatorCell>,
     /// Parent-retained hydration task. The guard aborts on parent Drop.
-    pub(crate) hydration_driver: Mutex<Option<(u64, DriverTaskGuard)>>,
+    hydration_driver: Mutex<Option<(u64, DriverTaskGuard)>>,
     /// Rolling window of tool-call latencies (in microseconds, capped at 1 000 samples).
     query_latencies: RwLock<VecDeque<u64>>,
     /// Total number of tool calls recorded since startup.
@@ -879,6 +900,32 @@ impl AppState {
         Some(DispatchSnapshot { workspace, config })
     }
 
+    /// Capture one immutable dispatch payload and its matching admission guard.
+    pub(crate) async fn guarded_dispatch_context(
+        &self,
+    ) -> Option<(AdmissionGuard, DispatchSnapshot)> {
+        // Publication takes these locks in the same order before the coordinator
+        // mutex, so the payload and admission token belong to one binding view.
+        let workspace_guard = self.active_workspace.read().await;
+        let config_guard = self.workspace_config.read().await;
+        let workspace = workspace_guard.clone()?;
+        let config = config_guard.clone().unwrap_or_default();
+        let admission = self.coordinator.admission();
+        Some((admission, DispatchSnapshot { workspace, config }))
+    }
+
+    /// Capture one configured workspace payload and its matching admission guard.
+    pub(crate) async fn guarded_workspace_and_config(
+        &self,
+    ) -> Option<(AdmissionGuard, WorkspaceSnapshot, WorkspaceConfig)> {
+        let workspace_guard = self.active_workspace.read().await;
+        let config_guard = self.workspace_config.read().await;
+        let workspace = workspace_guard.clone()?;
+        let config = config_guard.clone()?;
+        let admission = self.coordinator.admission();
+        Some((admission, workspace, config))
+    }
+
     pub async fn set_workspace(&self, snapshot: WorkspaceSnapshot) -> Result<(), WorkspaceError> {
         let mut workspace = self.active_workspace.write().await;
         if let Some(active) = workspace.as_ref() {
@@ -928,7 +975,7 @@ impl AppState {
         &self,
         snapshot: WorkspaceSnapshot,
         config: Option<WorkspaceConfig>,
-    ) -> Result<(u64, watch::Receiver<bool>), CoordinatorError> {
+    ) -> Result<(u64, AdmissionGuard), CoordinatorError> {
         let target_binding = BindingIdentity {
             workspace_uuid: snapshot.workspace_uuid.clone(),
             workspace_id: snapshot.workspace_id.clone(),
@@ -940,7 +987,11 @@ impl AppState {
         let mut workspace = self.active_workspace.write().await;
         let mut workspace_config = self.workspace_config.write().await;
         if let Some(active) = workspace.as_ref() {
-            if active.workspace_id != snapshot.workspace_id && self.max_workspaces <= 1 {
+            if active.workspace_id != snapshot.workspace_id
+                && (active.workspace_uuid != snapshot.workspace_uuid
+                    || active.path != snapshot.path)
+                && self.max_workspaces <= 1
+            {
                 return Err(CoordinatorError::WorkspaceLimit {
                     limit: self.max_workspaces,
                 });
@@ -1001,12 +1052,57 @@ impl AppState {
         *workspace = Some(snapshot);
         *workspace_config = config;
 
+        let mut enabled_notification =
+            Box::pin(Arc::clone(&self.coordinator.notify).notified_owned());
+        enabled_notification.as_mut().enable();
+        let admission = AdmissionGuard {
+            cell: Arc::clone(&self.coordinator),
+            token: GenerationToken {
+                floor: target_generation,
+                binding_identity: coordinator.binding_identity.clone(),
+            },
+            binding_snapshot: coordinator.binding_identity.clone(),
+            cancel_rx: new_cancel_rx,
+            enabled_notification,
+        };
+
         // Make the visible binding readable before allowing new admission.
         drop(workspace_config);
         drop(workspace);
         drop(coordinator);
         let _ = old_cancel.send(true);
-        Ok((target_generation, new_cancel_rx))
+        Ok((target_generation, admission))
+    }
+
+    /// Retain only the newest hydration generation without awaiting under the slot lock.
+    pub(crate) fn retain_hydration_driver(
+        &self,
+        generation: u64,
+        driver: DriverTaskGuard,
+    ) -> Option<DriverTaskGuard> {
+        let mut retained = self
+            .hydration_driver
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if retained
+            .as_ref()
+            .is_some_and(|(retained_generation, _)| *retained_generation > generation)
+        {
+            Some(driver)
+        } else {
+            retained
+                .replace((generation, driver))
+                .map(|(_generation, guard)| guard)
+        }
+    }
+
+    /// Remove the retained hydration task so its caller can abort/join without the slot lock.
+    pub(crate) fn take_hydration_driver(&self) -> Option<DriverTaskGuard> {
+        self.hydration_driver
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .map(|(_generation, driver)| driver)
     }
 
     pub fn increment_connections(&self) {
@@ -1251,10 +1347,7 @@ mod coordinator_tests {
         }
     }
 
-    async fn publish(
-        state: &AppState,
-        snapshot: WorkspaceSnapshot,
-    ) -> (u64, watch::Receiver<bool>) {
+    async fn publish(state: &AppState, snapshot: WorkspaceSnapshot) -> (u64, AdmissionGuard) {
         match state
             .publish_workspace_generation(snapshot, Some(WorkspaceConfig::default()))
             .await
@@ -1648,7 +1741,7 @@ mod coordinator_tests {
         assert_eq!(generation, 1);
         assert_eq!(generation, 1);
         assert!(*old_waiter.cancel_rx.borrow());
-        assert!(!*new_cancel_rx.borrow());
+        assert!(!*new_cancel_rx.cancel_rx.borrow());
         assert!(matches!(
             request(old_waiter, WorkMask::default(), OwnerKind::Hydration),
             RequestOutcome::Stale
@@ -1695,6 +1788,58 @@ mod coordinator_tests {
     }
 
     #[tokio::test]
+    async fn guarded_dispatch_keeps_immutable_payload_when_publication_cancels_owner() {
+        let state = AppState::new(2);
+        let alpha = workspace("alpha", "uuid-alpha", "id-alpha");
+        let _ = publish(&state, alpha).await;
+        let Some((admission, dispatch)) = state.guarded_dispatch_context().await else {
+            panic!("guarded dispatch missing");
+        };
+
+        let _ = publish(&state, workspace("beta", "uuid-beta", "id-beta")).await;
+
+        assert_eq!(dispatch.workspace.workspace_id, "id-alpha");
+        assert!(*admission.cancel_rx.borrow());
+        assert!(matches!(
+            request(admission, WorkMask::default(), OwnerKind::Startup),
+            RequestOutcome::Stale
+        ));
+    }
+
+    #[tokio::test]
+    async fn older_hydration_driver_cannot_displace_newer_retained_generation() {
+        let state = AppState::new(1);
+        let newer = DriverTaskGuard {
+            task: Some(tokio::spawn(std::future::pending::<()>())),
+        };
+        assert!(
+            state.retain_hydration_driver(2, newer).is_none(),
+            "newest driver should occupy an empty slot"
+        );
+        let older = DriverTaskGuard {
+            task: Some(tokio::spawn(std::future::pending::<()>())),
+        };
+        let displaced = state
+            .retain_hydration_driver(1, older)
+            .expect("stale incoming driver must be displaced");
+
+        assert_eq!(
+            state
+                .hydration_driver
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .map(|(generation, _)| *generation),
+            Some(2)
+        );
+        let _ = displaced.abort_and_join().await;
+        let retained = state
+            .take_hydration_driver()
+            .expect("newer driver remains retained");
+        let _ = retained.abort_and_join().await;
+    }
+
+    #[tokio::test]
     async fn active_rebind_matrix_is_acknowledgment_gated() {
         for same_binding in [true, false] {
             for kind in [
@@ -1727,7 +1872,7 @@ mod coordinator_tests {
                     } else {
                         workspace("new", "uuid-new", "id-new")
                     };
-                    let (target_generation, _target_cancel) = publish(&state, target).await;
+                    let (target_generation, _) = publish(&state, target).await;
                     assert!(
                         *permit
                             .ownership

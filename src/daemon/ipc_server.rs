@@ -354,21 +354,58 @@ async fn process_request(
 
 // ── Daemon entry point ───────────────────────────────────────────────────────
 
-/// Atomically snapshot the active `(workspace, config)` pair for a daemon
-/// background-sync closure, returning `None` when either value is absent.
+/// Atomically snapshot a daemon driver's immutable payload and admission guard.
 ///
 /// This is the single acquisition seam shared by the auto-sync and file-watcher
 /// closures in [`run_with_shutdown`] and [`run_with_shutdown_v2`] (092.003-T).
 /// Routing all four sites through one helper keeps the atomicity guarantee
-/// testable: [`AppState::snapshot_workspace_and_config`] holds both read locks
+/// testable: [`AppState::guarded_workspace_and_config`] holds both read locks
 /// together, so a concurrent [`AppState::set_workspace_and_config`] cannot yield
 /// a torn `(workspace_i, config_j)` pair. Reverting this body to two separate
 /// reads would reopen that window — the `daemon_sync_context_never_tears_pair`
 /// unit test guards against exactly that regression.
-async fn snapshot_daemon_sync_context(
+async fn guarded_daemon_sync_context(
     state: &AppState,
-) -> Option<(WorkspaceSnapshot, WorkspaceConfig)> {
-    state.snapshot_workspace_and_config().await
+) -> Option<(
+    crate::server::state::AdmissionGuard,
+    WorkspaceSnapshot,
+    WorkspaceConfig,
+)> {
+    state.guarded_workspace_and_config().await
+}
+
+fn same_workspace_binding(left: &WorkspaceSnapshot, right: &WorkspaceSnapshot) -> bool {
+    left.workspace_uuid == right.workspace_uuid && left.workspace_id == right.workspace_id
+}
+
+async fn flush_daemon_snapshot(snapshot: &WorkspaceSnapshot) -> Result<(), EngramError> {
+    let _guard = crate::services::dehydration::acquire_flush_lock().await;
+    let db = crate::db::connect_db(&snapshot.data_dir, &snapshot.branch).await?;
+    let queries = crate::db::queries::CodeGraphQueries::new(db);
+    crate::services::dehydration::dehydrate_code_graph(
+        &queries,
+        &snapshot.data_dir,
+        &snapshot.branch,
+    )
+    .await?;
+    if let Err(error) = crate::services::metrics::compute_and_write_summary(
+        std::path::Path::new(&snapshot.path),
+        &snapshot.branch,
+    )
+    .await
+    {
+        if !matches!(
+            error,
+            EngramError::Metrics(crate::errors::MetricsError::NotFound { .. })
+        ) {
+            warn!(
+                %error,
+                branch = %snapshot.branch,
+                "metrics summary write failed during flush"
+            );
+        }
+    }
+    Ok(())
 }
 
 fn spawn_daemon_driver<F>(future: F) -> DriverTaskGuard
@@ -377,6 +414,16 @@ where
 {
     DriverTaskGuard {
         task: Some(tokio::spawn(future)),
+    }
+}
+
+async fn stop_retained_hydration(state: &AppState) {
+    if let Some(driver) = state.take_hydration_driver() {
+        if let Err(error) = driver.abort_and_join().await {
+            if !error.is_cancelled() {
+                warn!(%error, "hydration driver join failed during shutdown");
+            }
+        }
     }
 }
 
@@ -472,7 +519,7 @@ pub async fn run_with_shutdown(
     let startup_workspace = workspace.to_owned();
     let startup_ttl = Arc::clone(&ttl);
     let startup_tx = Arc::clone(&shutdown_tx);
-    let mut startup_driver = spawn_daemon_driver(async move {
+    let startup_driver = spawn_daemon_driver(async move {
         tokio::select! {
             () = run_startup_driver(
                 startup_state,
@@ -496,7 +543,7 @@ pub async fn run_with_shutdown(
     let mut watcher_shutdown = shutdown_rx.clone();
     let watcher_state = Arc::clone(&state);
     let watcher_ttl = Arc::clone(&ttl);
-    let mut watcher_driver = spawn_daemon_driver(async move {
+    let watcher_driver = spawn_daemon_driver(async move {
         tokio::select! {
             () = run_watcher_driver(watcher_state, watcher_ttl, event_rx, false) => {}
             () = async {
@@ -513,22 +560,13 @@ pub async fn run_with_shutdown(
     });
 
     accept_loop(listener, Arc::clone(&state), ttl, shutdown_tx, shutdown_rx).await;
-    let startup_result = match startup_driver.task.as_mut() {
-        Some(task) => task.await,
-        None => Ok(()),
-    };
-    let _ = startup_driver.task.take();
-    if let Err(error) = startup_result {
+    if let Err(error) = startup_driver.join().await {
         warn!(%error, "startup driver join failed");
     }
-    let watcher_result = match watcher_driver.task.as_mut() {
-        Some(task) => task.await,
-        None => Ok(()),
-    };
-    let _ = watcher_driver.task.take();
-    if let Err(error) = watcher_result {
+    if let Err(error) = watcher_driver.join().await {
         warn!(%error, "legacy watcher driver join failed");
     }
+    stop_retained_hydration(&state).await;
     crate::services::metrics::shutdown().await?;
     crate::services::dehydration::flush_all_workspaces(&state).await?;
     Ok(())
@@ -688,7 +726,7 @@ pub async fn run_with_shutdown_v2(
     let startup_workspace = workspace.to_owned();
     let startup_ttl = Arc::clone(&ttl);
     let startup_tx = Arc::clone(&shutdown_tx);
-    let mut startup_driver = spawn_daemon_driver(async move {
+    let startup_driver = spawn_daemon_driver(async move {
         tokio::select! {
             () = run_startup_driver(
                 startup_state,
@@ -736,7 +774,7 @@ pub async fn run_with_shutdown_v2(
     let mut watcher_shutdown = shutdown_rx.clone();
     let watcher_state = Arc::clone(&state);
     let watcher_ttl = Arc::clone(&ttl);
-    let mut watcher_driver = spawn_daemon_driver(async move {
+    let watcher_driver = spawn_daemon_driver(async move {
         let watcher_init = match watcher_init_handle.await {
             Ok(watcher_init) => watcher_init,
             Err(join_error) => {
@@ -765,22 +803,13 @@ pub async fn run_with_shutdown_v2(
     });
 
     accept_loop(listener, Arc::clone(&state), ttl, shutdown_tx, shutdown_rx).await;
-    let startup_result = match startup_driver.task.as_mut() {
-        Some(task) => task.await,
-        None => Ok(()),
-    };
-    let _ = startup_driver.task.take();
-    if let Err(error) = startup_result {
+    if let Err(error) = startup_driver.join().await {
         warn!(%error, "startup driver join failed");
     }
-    let watcher_result = match watcher_driver.task.as_mut() {
-        Some(task) => task.await,
-        None => Ok(()),
-    };
-    let _ = watcher_driver.task.take();
-    if let Err(error) = watcher_result {
+    if let Err(error) = watcher_driver.join().await {
         warn!(%error, "v2 watcher driver join failed");
     }
+    stop_retained_hydration(&state).await;
     crate::services::metrics::shutdown().await?;
     crate::services::dehydration::flush_all_workspaces(&state).await?;
     Ok(())
@@ -806,12 +835,11 @@ async fn run_startup_driver(
         ttl_task.run_until_expired(shutdown_tx).await;
     });
 
-    let mut permit = match state
-        .coordinator
-        .admission()
-        .acquire_background(OwnerKind::Startup)
-        .await
-    {
+    let Some((admission, snapshot, workspace_config)) = guarded_daemon_sync_context(&state).await
+    else {
+        return;
+    };
+    let mut permit = match admission.acquire_background(OwnerKind::Startup).await {
         Ok(Some(permit)) => permit,
         Ok(None) => return,
         Err(error) => {
@@ -821,94 +849,85 @@ async fn run_startup_driver(
     };
 
     let operation = async {
-        let should_flush = if let Some((snapshot, workspace_config)) =
-            snapshot_daemon_sync_context(&state).await
+        let workspace_path = std::path::PathBuf::from(&snapshot.path);
+        let should_flush = match crate::services::code_graph::sync_workspace(
+            &workspace_path,
+            &snapshot.data_dir,
+            &snapshot.branch,
+            &workspace_config.code_graph,
+        )
+        .await
         {
-            let workspace_path = std::path::PathBuf::from(&snapshot.path);
-            match crate::services::code_graph::sync_workspace(
-                &workspace_path,
-                &snapshot.data_dir,
-                &snapshot.branch,
-                &workspace_config.code_graph,
-            )
-            .await
-            {
-                Ok(result) => {
-                    info!(
-                        files_added = result.files_added,
-                        files_modified = result.files_modified,
-                        files_unchanged = result.files_unchanged,
-                        "startup auto-sync complete"
-                    );
-                    true
-                }
-                Err(error) => {
-                    warn!(%error, "startup auto-sync failed");
-                    false
-                }
+            Ok(result) => {
+                info!(
+                    files_added = result.files_added,
+                    files_modified = result.files_modified,
+                    files_unchanged = result.files_unchanged,
+                    "startup auto-sync complete"
+                );
+                true
             }
-        } else {
-            false
+            Err(error) => {
+                warn!(%error, "startup auto-sync failed");
+                false
+            }
         };
 
-        if let Some(snapshot) = state.snapshot_workspace().await {
-            let workspace_path = std::path::PathBuf::from(&snapshot.path);
-            match crate::db::connect_db(&snapshot.data_dir, &snapshot.branch).await {
-                Ok(db) => {
-                    let queries = crate::db::queries::CodeGraphQueries::new(db);
-                    let registry_path = workspace_path.join(".engram").join("registry.yaml");
-                    match crate::services::registry::load_registry(&registry_path) {
-                        Ok(Some(mut config)) => {
-                            let _ = crate::services::registry::validate_sources(
-                                &mut config,
-                                &workspace_path,
-                            );
-                            match crate::services::ingestion::ingest_all_sources(
-                                &config,
-                                &workspace_path,
-                                &queries,
-                            )
-                            .await
-                            {
-                                Ok(summary) => {
-                                    info!(
-                                        ingested = summary.ingested,
-                                        unchanged = summary.unchanged,
-                                        total = summary.total_files,
-                                        "startup registry ingestion complete"
-                                    );
-                                }
-                                Err(error) => {
-                                    warn!(%error, "startup registry ingestion failed");
-                                }
+        match crate::db::connect_db(&snapshot.data_dir, &snapshot.branch).await {
+            Ok(db) => {
+                let queries = crate::db::queries::CodeGraphQueries::new(db);
+                let registry_path = workspace_path.join(".engram").join("registry.yaml");
+                match crate::services::registry::load_registry(&registry_path) {
+                    Ok(Some(mut config)) => {
+                        let _ = crate::services::registry::validate_sources(
+                            &mut config,
+                            &workspace_path,
+                        );
+                        match crate::services::ingestion::ingest_all_sources(
+                            &config,
+                            &workspace_path,
+                            &queries,
+                        )
+                        .await
+                        {
+                            Ok(summary) => {
+                                info!(
+                                    ingested = summary.ingested,
+                                    unchanged = summary.unchanged,
+                                    total = summary.total_files,
+                                    "startup registry ingestion complete"
+                                );
+                            }
+                            Err(error) => {
+                                warn!(%error, "startup registry ingestion failed");
                             }
                         }
-                        Ok(None) => {
-                            debug!("no registry.yaml — skipping content ingestion");
-                        }
-                        Err(error) => {
-                            warn!(%error, "startup registry load failed");
-                        }
                     }
+                    Ok(None) => {
+                        debug!("no registry.yaml — skipping content ingestion");
+                    }
+                    Err(error) => {
+                        warn!(%error, "startup registry load failed");
+                    }
+                }
 
-                    match backfill_with_scan_progress(&state, &queries).await {
-                        Ok(0) => {}
-                        Ok(updated) => {
-                            info!(updated, "startup content embedding backfill complete");
-                        }
-                        Err(error) => {
-                            warn!(%error, "startup content embedding backfill failed");
-                        }
+                match backfill_with_scan_progress(&state, &queries).await {
+                    Ok(0) => {}
+                    Ok(updated) => {
+                        info!(updated, "startup content embedding backfill complete");
+                    }
+                    Err(error) => {
+                        warn!(%error, "startup content embedding backfill failed");
                     }
                 }
-                Err(error) => {
-                    warn!(%error, "startup ingestion: failed to connect to database");
-                }
+            }
+            Err(error) => {
+                warn!(%error, "startup ingestion: failed to connect to database");
             }
         }
 
         if should_flush {
-            if let Err(error) = crate::services::dehydration::flush_all_workspaces(&state).await {
+            if let Err(error) = flush_daemon_snapshot(&snapshot).await {
                 warn!(%error, "startup auto-flush failed");
             }
         }
@@ -917,22 +936,29 @@ async fn run_startup_driver(
     if permit.run_until_cancelled(operation).await.is_none() {
         return;
     }
-    let mut transferred = match CoordinatorCell::complete(permit) {
+    let transferred = match CoordinatorCell::complete(permit) {
         CompletionOutcome::Transferred(successor) => Some(successor),
         CompletionOutcome::Released
         | CompletionOutcome::RetirementAcknowledged
         | CompletionOutcome::SequenceExhausted(_)
         | CompletionOutcome::Stale => None,
     };
-    while let Some(mut successor) = transferred {
+    if let Some(successor) = transferred {
+        drive_daemon_transferred_syncs(&snapshot, &workspace_config, successor, "startup").await;
+    }
+}
+
+async fn drive_daemon_transferred_syncs(
+    snapshot: &WorkspaceSnapshot,
+    workspace_config: &WorkspaceConfig,
+    mut successor: crate::server::state::OwnerPermit,
+    driver: &'static str,
+) {
+    loop {
         let work_bits = successor.work_bits();
         let operation = async {
-            let Some((snapshot, workspace_config)) = snapshot_daemon_sync_context(&state).await
-            else {
-                return;
-            };
             let workspace_path = std::path::PathBuf::from(&snapshot.path);
-            match crate::services::code_graph::sync_workspace_with_progress(
+            let result = crate::services::code_graph::sync_workspace_with_progress(
                 &workspace_path,
                 &snapshot.data_dir,
                 &snapshot.branch,
@@ -941,34 +967,34 @@ async fn run_startup_driver(
                 work_bits & 0b010 != 0,
                 None,
             )
-            .await
-            {
+            .await;
+            match &result {
                 Ok(result) => {
                     info!(
+                        driver,
                         files_added = result.files_added,
                         files_modified = result.files_modified,
-                        "startup transferred sync complete"
+                        "daemon transferred sync complete"
                     );
-                    if let Err(error) =
-                        crate::services::dehydration::flush_all_workspaces(&state).await
-                    {
-                        warn!(%error, "startup transferred flush failed");
+                    if let Err(error) = flush_daemon_snapshot(snapshot).await {
+                        warn!(%error, driver, "daemon transferred flush failed");
                     }
                 }
                 Err(error) => {
-                    warn!(%error, "startup transferred sync failed");
+                    warn!(%error, driver, "daemon transferred sync failed");
                 }
             }
+            result.is_ok()
         };
-        if successor.run_until_cancelled(operation).await.is_none() {
+        if !matches!(successor.run_until_cancelled(operation).await, Some(true)) {
             return;
         }
-        transferred = match CoordinatorCell::complete(successor) {
-            CompletionOutcome::Transferred(next) => Some(next),
+        successor = match CoordinatorCell::complete(successor) {
+            CompletionOutcome::Transferred(next) => next,
             CompletionOutcome::Released
             | CompletionOutcome::RetirementAcknowledged
             | CompletionOutcome::SequenceExhausted(_)
-            | CompletionOutcome::Stale => None,
+            | CompletionOutcome::Stale => return,
         };
     }
 }
@@ -981,6 +1007,11 @@ async fn run_watcher_driver(
 ) {
     while let Some(event) = event_rx.recv().await {
         ttl.reset();
+        let Some((mut admission, mut snapshot, mut workspace_config)) =
+            guarded_daemon_sync_context(&state).await
+        else {
+            continue;
+        };
         let mut pending_reingest = std::collections::BTreeSet::new();
         let mut pending_reindex = match crate::daemon::debounce::adapt_event(&event) {
             crate::daemon::debounce::ServiceAction::ReindexFile { .. } => true,
@@ -1015,25 +1046,31 @@ async fn run_watcher_driver(
             continue;
         }
 
-        let mut permit = match state
-            .coordinator
-            .admission()
-            .acquire_background(OwnerKind::Watcher)
-            .await
-        {
-            Ok(Some(permit)) => permit,
-            Ok(None) => continue,
-            Err(error) => {
-                error!(%error, "watcher coordinator admission failed");
-                continue;
-            }
-        };
-        let operation = async {
-            let should_flush = if pending_reindex {
-                if let Some((snapshot, workspace_config)) =
-                    snapshot_daemon_sync_context(&state).await
-                {
-                    let workspace_path = std::path::PathBuf::from(&snapshot.path);
+        'reconcile_batch: loop {
+            let mut permit = match admission.acquire_background(OwnerKind::Watcher).await {
+                Ok(Some(permit)) => permit,
+                Ok(None) => {
+                    let Some((next_admission, next_snapshot, next_config)) =
+                        guarded_daemon_sync_context(&state).await
+                    else {
+                        break 'reconcile_batch;
+                    };
+                    if !same_workspace_binding(&snapshot, &next_snapshot) {
+                        break 'reconcile_batch;
+                    }
+                    admission = next_admission;
+                    snapshot = next_snapshot;
+                    workspace_config = next_config;
+                    continue 'reconcile_batch;
+                }
+                Err(error) => {
+                    error!(%error, "watcher coordinator admission failed");
+                    break 'reconcile_batch;
+                }
+            };
+            let operation = async {
+                let workspace_path = std::path::PathBuf::from(&snapshot.path);
+                let should_flush = if pending_reindex {
                     match crate::services::code_graph::sync_workspace(
                         &workspace_path,
                         &snapshot.data_dir,
@@ -1057,14 +1094,9 @@ async fn run_watcher_driver(
                     }
                 } else {
                     false
-                }
-            } else {
-                false
-            };
+                };
 
-            if !pending_reingest.is_empty() {
-                if let Some(snapshot) = state.snapshot_workspace().await {
-                    let workspace_path = std::path::PathBuf::from(&snapshot.path);
+                if !pending_reingest.is_empty() {
                     crate::services::reactive_sync::reingest_pending_markdown(
                         &workspace_path,
                         &snapshot.data_dir,
@@ -1073,72 +1105,34 @@ async fn run_watcher_driver(
                     )
                     .await;
                 }
-            }
 
-            if should_flush {
-                if let Err(error) = crate::services::dehydration::flush_all_workspaces(&state).await
-                {
-                    warn!(%error, "file-change auto-flush failed");
+                if should_flush {
+                    if let Err(error) = flush_daemon_snapshot(&snapshot).await {
+                        warn!(%error, "file-change auto-flush failed");
+                    }
                 }
-            }
-        };
-        if permit.run_until_cancelled(operation).await.is_none() {
-            continue;
-        }
-
-        let mut transferred = match CoordinatorCell::complete(permit) {
-            CompletionOutcome::Transferred(successor) => Some(successor),
-            CompletionOutcome::Released
-            | CompletionOutcome::RetirementAcknowledged
-            | CompletionOutcome::SequenceExhausted(_)
-            | CompletionOutcome::Stale => None,
-        };
-        while let Some(mut successor) = transferred {
-            let work_bits = successor.work_bits();
-            let operation = async {
-                let Some((snapshot, workspace_config)) = snapshot_daemon_sync_context(&state).await
+            };
+            if permit.run_until_cancelled(operation).await.is_none() {
+                drop(permit);
+                let Some((next_admission, next_snapshot, next_config)) =
+                    guarded_daemon_sync_context(&state).await
                 else {
-                    return;
+                    break 'reconcile_batch;
                 };
-                let workspace_path = std::path::PathBuf::from(&snapshot.path);
-                match crate::services::code_graph::sync_workspace_with_progress(
-                    &workspace_path,
-                    &snapshot.data_dir,
-                    &snapshot.branch,
-                    &workspace_config.code_graph,
-                    work_bits & 0b100 != 0,
-                    work_bits & 0b010 != 0,
-                    None,
-                )
-                .await
-                {
-                    Ok(result) => {
-                        info!(
-                            files_added = result.files_added,
-                            files_modified = result.files_modified,
-                            "watcher transferred sync complete"
-                        );
-                        if let Err(error) =
-                            crate::services::dehydration::flush_all_workspaces(&state).await
-                        {
-                            warn!(%error, "watcher transferred flush failed");
-                        }
-                    }
-                    Err(error) => {
-                        warn!(%error, "watcher transferred sync failed");
-                    }
+                if !same_workspace_binding(&snapshot, &next_snapshot) {
+                    break 'reconcile_batch;
                 }
-            };
-            if successor.run_until_cancelled(operation).await.is_none() {
-                break;
+                admission = next_admission;
+                snapshot = next_snapshot;
+                workspace_config = next_config;
+                continue 'reconcile_batch;
             }
-            transferred = match CoordinatorCell::complete(successor) {
-                CompletionOutcome::Transferred(next) => Some(next),
-                CompletionOutcome::Released
-                | CompletionOutcome::RetirementAcknowledged
-                | CompletionOutcome::SequenceExhausted(_)
-                | CompletionOutcome::Stale => None,
+
+            if let CompletionOutcome::Transferred(successor) = CoordinatorCell::complete(permit) {
+                drive_daemon_transferred_syncs(&snapshot, &workspace_config, successor, "watcher")
+                    .await;
             };
+            break 'reconcile_batch;
         }
     }
 }
@@ -1242,9 +1236,28 @@ async fn backfill_with_scan_progress(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::server::state::AppState;
+    use crate::server::state::{AppState, CoordinatorCell, OwnerKind, RequestOutcome, WorkMask};
     #[cfg(unix)]
     use std::path::{Path, PathBuf};
+
+    fn coordinator_snapshot(
+        workspace_id: &str,
+        workspace_uuid: &str,
+        path: &std::path::Path,
+        data_dir: std::path::PathBuf,
+    ) -> WorkspaceSnapshot {
+        WorkspaceSnapshot {
+            workspace_id: workspace_id.to_owned(),
+            workspace_uuid: workspace_uuid.to_owned(),
+            branch: "main".to_owned(),
+            data_dir,
+            path: path.display().to_string(),
+            last_flush: None,
+            stale_files: false,
+            connection_count: 0,
+            file_mtimes: std::collections::HashMap::new(),
+        }
+    }
 
     /// 092.003-T: the shared daemon `(workspace, config)` acquisition seam must
     /// never expose a torn pair to a background-sync closure while a concurrent
@@ -1320,7 +1333,7 @@ mod tests {
         let mut iterations = 0u32;
         while (iterations < 2_000 || observed_a == 0 || observed_b == 0) && iterations < 50_000 {
             iterations += 1;
-            let Some((snap, cfg)) = snapshot_daemon_sync_context(&state).await else {
+            let Some((_admission, snap, cfg)) = guarded_daemon_sync_context(&state).await else {
                 continue;
             };
             let max = cfg.code_graph.max_file_size_bytes;
@@ -1482,6 +1495,105 @@ mod tests {
             0,
             "a lost parent handle must abort before later mutation"
         );
+    }
+
+    #[tokio::test]
+    async fn shutdown_aborts_and_joins_retained_hydration_before_returning() {
+        struct Termination(Option<tokio::sync::oneshot::Sender<()>>);
+
+        impl Drop for Termination {
+            fn drop(&mut self) {
+                if let Some(terminated) = self.0.take() {
+                    let _ = terminated.send(());
+                }
+            }
+        }
+
+        let state = AppState::new(1);
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (terminated_tx, terminated_rx) = tokio::sync::oneshot::channel();
+        let driver = spawn_daemon_driver(async move {
+            let _termination = Termination(Some(terminated_tx));
+            let _ = entered_tx.send(());
+            std::future::pending::<()>().await;
+        });
+        assert!(state.retain_hydration_driver(1, driver).is_none());
+        entered_rx.await.expect("hydration should enter");
+
+        stop_retained_hydration(&state).await;
+
+        terminated_rx
+            .await
+            .expect("hydration future must drop before shutdown continues");
+        assert!(state.take_hydration_driver().is_none());
+    }
+
+    #[tokio::test]
+    async fn daemon_transferred_failure_recovers_full_mask() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("create workspace");
+        let invalid_data_dir = temp.path().join("not-a-directory");
+        std::fs::write(&invalid_data_dir, b"file blocks database directory")
+            .expect("create invalid data path");
+        let snapshot =
+            coordinator_snapshot("id-transfer", "uuid-transfer", &workspace, invalid_data_dir);
+        let config = WorkspaceConfig::default();
+        let state = AppState::new(1);
+        let _ = state
+            .publish_workspace_generation(snapshot.clone(), Some(config.clone()))
+            .await
+            .expect("publish binding");
+        let owner = match CoordinatorCell::request(
+            state.coordinator.admission(),
+            WorkMask::default(),
+            OwnerKind::Startup,
+        )
+        .expect("request startup owner")
+        {
+            RequestOutcome::Acquired(permit) => permit,
+            RequestOutcome::Waiting(_) | RequestOutcome::Enqueued | RequestOutcome::Stale => {
+                panic!("startup owner should acquire")
+            }
+        };
+        assert!(matches!(
+            CoordinatorCell::request(
+                state.coordinator.admission(),
+                WorkMask::from_bits(0b111),
+                OwnerKind::Sync,
+            ),
+            Ok(RequestOutcome::Enqueued)
+        ));
+        let successor = match CoordinatorCell::complete(owner) {
+            CompletionOutcome::Transferred(successor) => successor,
+            CompletionOutcome::Released
+            | CompletionOutcome::RetirementAcknowledged
+            | CompletionOutcome::SequenceExhausted(_)
+            | CompletionOutcome::Stale => panic!("full mask should transfer"),
+        };
+
+        drive_daemon_transferred_syncs(&snapshot, &config, successor, "test").await;
+
+        assert!(state.coordinator.test_is_idle());
+        assert_eq!(state.coordinator.test_pending_bits(), 0b111);
+    }
+
+    #[test]
+    fn watcher_batch_retries_only_for_same_binding() {
+        let root = std::path::Path::new("C:/workspace");
+        let original = coordinator_snapshot(
+            "id-original",
+            "uuid-original",
+            root,
+            std::path::PathBuf::from("data/original"),
+        );
+        let mut same = original.clone();
+        same.path = "C:/workspace/rebound".to_owned();
+        let mut distinct = same.clone();
+        distinct.workspace_id = "id-distinct".to_owned();
+
+        assert!(same_workspace_binding(&original, &same));
+        assert!(!same_workspace_binding(&original, &distinct));
     }
 
     #[test]

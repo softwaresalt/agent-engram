@@ -13,6 +13,7 @@ use crate::db::workspace::{
     workspace_hash,
 };
 use crate::errors::{EngramError, SystemError, WorkspaceError};
+use crate::models::config::CodeGraphConfig;
 use crate::models::health::{HealthReport, ScanProgress};
 use crate::server::state::CoordinatorCell;
 use crate::server::state::{
@@ -165,7 +166,7 @@ pub async fn set_workspace(
         file_mtimes: hydration.file_mtimes.clone(),
     };
 
-    let (binding_generation, _cancel_rx) = state
+    let (binding_generation, admission) = state
         .publish_workspace_generation(snapshot, Some(ws_config.clone()))
         .await
         .map_err(|error| match error {
@@ -180,79 +181,32 @@ pub async fn set_workspace(
         })?;
     crate::services::query_stats::reset_timing();
 
-    let previous_driver = {
-        state
-            .hydration_driver
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-    };
-    if let Some((_generation, mut previous_driver)) = previous_driver {
-        if let Some(task) = previous_driver.task.take() {
-            if !task.is_finished() {
-                task.abort();
-            }
-            let _ = task.await;
-        }
-    }
-
     // Queue a background scan immediately. The DB connect + hydrate +
     // offline-change detection are moved off the hot path so that
     // set_workspace returns well within the 500 ms bind-latency SLA
     // (029-F WS-6). The `pending_scan` field signals to the caller
     // that background work has been scheduled.
-    let initial_progress = ScanProgress {
-        running: true,
-        files_scanned: 0,
-        files_total: 0,
-        last_completed_at: None,
-    };
-    state.set_scan_progress(Some(initial_progress)).await;
-
     let state_bg = Arc::clone(&state);
     let canonical_bg = canonical.clone();
     let data_dir_bg = data_dir.clone();
     let branch_bg = branch.clone();
-    let admission = state.coordinator.admission();
+    let code_graph_config = ws_config.code_graph;
     let task = tokio::spawn(async move {
         background_db_hydration(
             state_bg,
             canonical_bg,
             data_dir_bg,
             branch_bg,
+            code_graph_config,
             admission,
             #[cfg(test)]
             None,
         )
         .await;
     });
-    let mut driver = Some(DriverTaskGuard { task: Some(task) });
-    let displaced = {
-        let mut retained = state
-            .hydration_driver
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if retained
-            .as_ref()
-            .is_some_and(|(generation, _)| *generation > binding_generation)
-        {
-            driver.take()
-        } else {
-            retained
-                .replace((
-                    binding_generation,
-                    driver
-                        .take()
-                        .unwrap_or_else(|| unreachable!("driver is installed once")),
-                ))
-                .map(|(_generation, guard)| guard)
-        }
-    };
-    if let Some(mut displaced) = displaced {
-        if let Some(task) = displaced.task.take() {
-            task.abort();
-            let _ = task.await;
-        }
+    let driver = DriverTaskGuard { task: Some(task) };
+    if let Some(displaced) = state.retain_hydration_driver(binding_generation, driver) {
+        let _ = displaced.abort_and_join().await;
     }
 
     Ok(WorkspaceBinding {
@@ -377,6 +331,7 @@ enum HydrationTerminal {
 #[derive(Clone, Copy)]
 enum HandoffTerminal {
     Handled,
+    Failed,
     #[cfg(test)]
     EarlyReturn,
 }
@@ -386,6 +341,7 @@ async fn background_db_hydration(
     canonical: PathBuf,
     data_dir: PathBuf,
     branch: String,
+    code_graph_config: CodeGraphConfig,
     admission: AdmissionGuard,
     #[cfg(test)] test_probe: Option<HydrationProbe>,
 ) {
@@ -399,6 +355,15 @@ async fn background_db_hydration(
     };
 
     let operation = async {
+        state
+            .set_scan_progress(Some(ScanProgress {
+                running: true,
+                files_scanned: 0,
+                files_total: 0,
+                last_completed_at: None,
+            }))
+            .await;
+
         #[cfg(test)]
         if let Some(probe) = test_probe {
             return match probe.run().await {
@@ -468,30 +433,20 @@ async fn background_db_hydration(
             .unwrap_or(false);
 
         if offline_count > 0 && auto_reindex {
-            if let Some((snapshot, ws_config)) = state.snapshot_workspace_and_config().await {
-                let ws_path = PathBuf::from(&snapshot.path);
-                tracing::info!(
-                    offline_count,
-                    "background_db_hydration: ENGRAM_AUTO_REINDEX=true, starting post-scan re-index"
-                );
-                match sync_code_graph(
-                    &ws_path,
-                    &snapshot.data_dir,
-                    &snapshot.branch,
-                    &ws_config.code_graph,
-                )
-                .await
-                {
-                    Ok(result) => tracing::info!(
-                        files_added = result.files_added,
-                        files_modified = result.files_modified,
-                        "background_db_hydration: post-scan re-index complete"
-                    ),
-                    Err(e) => tracing::warn!(
-                        error = %e,
-                        "background_db_hydration: post-scan re-index failed"
-                    ),
-                }
+            tracing::info!(
+                offline_count,
+                "background_db_hydration: ENGRAM_AUTO_REINDEX=true, starting post-scan re-index"
+            );
+            match sync_code_graph(&canonical, &data_dir, &branch, &code_graph_config).await {
+                Ok(result) => tracing::info!(
+                    files_added = result.files_added,
+                    files_modified = result.files_modified,
+                    "background_db_hydration: post-scan re-index complete"
+                ),
+                Err(e) => tracing::warn!(
+                    error = %e,
+                    "background_db_hydration: post-scan re-index failed"
+                ),
             }
         } else if offline_count > 0 {
             tracing::info!(
@@ -510,6 +465,10 @@ async fn background_db_hydration(
                 drive_transferred_sync(
                     &state,
                     successor,
+                    &canonical,
+                    &data_dir,
+                    &branch,
+                    &code_graph_config,
                     #[cfg(test)]
                     None,
                 )
@@ -525,60 +484,71 @@ async fn background_db_hydration(
 }
 
 async fn drive_transferred_sync(
-    state: &AppState,
+    _state: &AppState,
     mut permit: OwnerPermit,
+    workspace_path: &Path,
+    data_dir: &Path,
+    branch: &str,
+    code_graph_config: &CodeGraphConfig,
     #[cfg(test)] test_probe: Option<HandoffProbe>,
 ) {
-    let work_mask = permit.work_bits();
-    let operation = async {
-        #[cfg(test)]
-        if let Some(probe) = test_probe {
-            return probe.run(work_mask).await;
-        }
-
-        let Some((snapshot, ws_config)) = state.snapshot_workspace_and_config().await else {
-            return HandoffTerminal::Handled;
-        };
-        let ws_path = PathBuf::from(&snapshot.path);
-        let revalidate = work_mask & 0b010 != 0;
-        let backfill_python = work_mask & 0b100 != 0;
-        match crate::services::code_graph::sync_workspace_with_progress(
-            &ws_path,
-            &snapshot.data_dir,
-            &snapshot.branch,
-            &ws_config.code_graph,
-            backfill_python,
-            revalidate,
-            None,
-        )
-        .await
-        {
-            Ok(result) => tracing::info!(
-                files_added = result.files_added,
-                files_modified = result.files_modified,
-                revalidate,
-                backfill_python,
-                "transferred sync complete"
-            ),
-            Err(e) => tracing::warn!(
-                error = %e,
-                revalidate,
-                backfill_python,
-                "transferred sync failed"
-            ),
-        }
-        HandoffTerminal::Handled
-    };
-
-    match permit.run_until_cancelled(operation).await {
-        Some(HandoffTerminal::Handled) => {
-            if let CompletionOutcome::Transferred(successor) = CoordinatorCell::complete(permit) {
-                drop(successor);
+    #[cfg(test)]
+    let mut test_probe = test_probe;
+    loop {
+        let work_mask = permit.work_bits();
+        let operation = async {
+            #[cfg(test)]
+            if let Some(probe) = test_probe.take() {
+                return probe.run(work_mask).await;
             }
+
+            let revalidate = work_mask & 0b010 != 0;
+            let backfill_python = work_mask & 0b100 != 0;
+            let result = crate::services::code_graph::sync_workspace_with_progress(
+                workspace_path,
+                data_dir,
+                branch,
+                code_graph_config,
+                backfill_python,
+                revalidate,
+                None,
+            )
+            .await;
+            match &result {
+                Ok(result) => tracing::info!(
+                    files_added = result.files_added,
+                    files_modified = result.files_modified,
+                    revalidate,
+                    backfill_python,
+                    "transferred sync complete"
+                ),
+                Err(error) => tracing::warn!(
+                    %error,
+                    revalidate,
+                    backfill_python,
+                    "transferred sync failed"
+                ),
+            }
+            if result.is_ok() {
+                HandoffTerminal::Handled
+            } else {
+                HandoffTerminal::Failed
+            }
+        };
+
+        match permit.run_until_cancelled(operation).await {
+            Some(HandoffTerminal::Handled) => match CoordinatorCell::complete(permit) {
+                CompletionOutcome::Transferred(successor) => permit = successor,
+                CompletionOutcome::Released
+                | CompletionOutcome::RetirementAcknowledged
+                | CompletionOutcome::SequenceExhausted(_)
+                | CompletionOutcome::Stale => return,
+            },
+            Some(HandoffTerminal::Failed) => return,
+            #[cfg(test)]
+            Some(HandoffTerminal::EarlyReturn) => return,
+            None => return,
         }
-        #[cfg(test)]
-        Some(HandoffTerminal::EarlyReturn) => {}
-        None => {}
     }
 }
 
@@ -874,6 +844,27 @@ mod tests {
         }
     }
 
+    async fn drive_test_transferred_sync(
+        state: &AppState,
+        permit: OwnerPermit,
+        probe: Option<HandoffProbe>,
+    ) {
+        let (snapshot, config) = state
+            .snapshot_workspace_and_config()
+            .await
+            .expect("test binding and config");
+        drive_transferred_sync(
+            state,
+            permit,
+            std::path::Path::new(&snapshot.path),
+            &snapshot.data_dir,
+            &snapshot.branch,
+            &config.code_graph,
+            probe,
+        )
+        .await;
+    }
+
     #[tokio::test]
     async fn hydration_waiting_and_stale_admission_never_reaches_io() {
         for held_owner in [true, false] {
@@ -901,6 +892,7 @@ mod tests {
                 PathBuf::from("C:/workspace/old"),
                 PathBuf::from("logs/phase6-group2/old-data"),
                 "main".to_owned(),
+                CodeGraphConfig::default(),
                 admission,
                 Some(probe),
             )
@@ -941,6 +933,7 @@ mod tests {
                         PathBuf::from("C:/workspace/old"),
                         PathBuf::from("logs/phase6-group2/old-data"),
                         "main".to_owned(),
+                        CodeGraphConfig::default(),
                         admission,
                         Some(probe),
                     )
@@ -991,6 +984,7 @@ mod tests {
                 PathBuf::from("C:/workspace/terminal"),
                 PathBuf::from("logs/phase6-group2/terminal-data"),
                 "main".to_owned(),
+                CodeGraphConfig::default(),
                 admission,
                 Some(probe),
             )
@@ -1012,7 +1006,7 @@ mod tests {
         let (probe, runs, mask_bits, active_io, owner_active) =
             handoff_probe(&state, HandoffProbeExit::Handled, None);
 
-        drive_transferred_sync(&state, successor, Some(probe)).await;
+        drive_test_transferred_sync(&state, successor, Some(probe)).await;
 
         assert_eq!(runs.load(Ordering::SeqCst), 1);
         assert_eq!(mask_bits.load(Ordering::SeqCst), 0b111);
@@ -1024,6 +1018,87 @@ mod tests {
         );
         assert!(state.coordinator.test_is_idle());
         assert_eq!(state.coordinator.test_pending_bits(), 0);
+    }
+
+    #[tokio::test]
+    async fn failed_transferred_hydration_sync_recovers_its_full_mask() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("create workspace");
+        let invalid_data_dir = temp.path().join("not-a-directory");
+        std::fs::write(&invalid_data_dir, b"file blocks database directory")
+            .expect("create invalid data path");
+        let state = Arc::new(AppState::new(1));
+        let _ = publish_test_binding(
+            &state,
+            WorkspaceSnapshot {
+                workspace_id: "id-transfer-failure".to_owned(),
+                workspace_uuid: "uuid-transfer-failure".to_owned(),
+                branch: "main".to_owned(),
+                data_dir: invalid_data_dir,
+                path: workspace.display().to_string(),
+                last_flush: None,
+                stale_files: false,
+                connection_count: 0,
+                file_mtimes: std::collections::HashMap::new(),
+            },
+        )
+        .await;
+        let successor = transferred_successor(&state, 0b111);
+
+        drive_test_transferred_sync(&state, successor, None).await;
+
+        assert!(state.coordinator.test_is_idle());
+        assert_eq!(
+            state.coordinator.test_pending_bits(),
+            0b111,
+            "a failed transferred sync must remain recoverable through armed Drop"
+        );
+    }
+
+    #[tokio::test]
+    async fn hydration_handoff_supervises_a_second_transferred_successor() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("workspace");
+        let data_dir = temp.path().join("data");
+        std::fs::create_dir_all(&workspace).expect("create workspace");
+        let state = Arc::new(AppState::new(1));
+        let _ = publish_test_binding(
+            &state,
+            WorkspaceSnapshot {
+                workspace_id: "id-second-transfer".to_owned(),
+                workspace_uuid: "uuid-second-transfer".to_owned(),
+                branch: "main".to_owned(),
+                data_dir,
+                path: workspace.display().to_string(),
+                last_flush: None,
+                stale_files: false,
+                connection_count: 0,
+                file_mtimes: std::collections::HashMap::new(),
+            },
+        )
+        .await;
+        let successor = transferred_successor(&state, 0b001);
+        assert!(matches!(
+            CoordinatorCell::request(
+                state.coordinator.admission(),
+                WorkMask::from_bits(0b010),
+                OwnerKind::Sync,
+            ),
+            Ok(RequestOutcome::Enqueued)
+        ));
+        let (probe, runs, _mask_bits, _active_io, _owner_active) =
+            handoff_probe(&state, HandoffProbeExit::Handled, None);
+
+        drive_test_transferred_sync(&state, successor, Some(probe)).await;
+
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+        assert!(state.coordinator.test_is_idle());
+        assert_eq!(
+            state.coordinator.test_pending_bits(),
+            0,
+            "a second transferred successor must be driven rather than dropped"
+        );
     }
 
     #[tokio::test]
@@ -1044,7 +1119,7 @@ mod tests {
             if is_early {
                 let (probe, _runs, _mask, active_io, owner_active) =
                     handoff_probe(&state, mode, None);
-                drive_transferred_sync(&state, successor, Some(probe)).await;
+                drive_test_transferred_sync(&state, successor, Some(probe)).await;
                 assert_eq!(active_io.load(Ordering::SeqCst), 0);
                 assert_eq!(owner_active.load(Ordering::SeqCst), 1);
             } else {
@@ -1057,7 +1132,7 @@ mod tests {
                 let task_state = Arc::clone(&state);
                 let driver = DriverTaskGuard {
                     task: Some(tokio::spawn(async move {
-                        drive_transferred_sync(&task_state, successor, Some(probe)).await;
+                        drive_test_transferred_sync(&task_state, successor, Some(probe)).await;
                     })),
                 };
                 entered_rx
@@ -1171,7 +1246,7 @@ mod tests {
         // Queue exactly the routine + Python-backfill work bits behind a
         // hydration owner, then drive the move-only transferred successor.
         let successor = transferred_successor(&state, 0b101);
-        drive_transferred_sync(&state, successor, None).await;
+        drive_test_transferred_sync(&state, successor, None).await;
 
         let db = connect_db(&data_dir, branch).await.expect("db reconnect");
         let q = CodeGraphQueries::new(db);

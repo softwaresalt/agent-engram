@@ -17,8 +17,8 @@ use crate::errors::{CodeGraphError, EngramError, SystemError, WorkspaceError};
 use crate::models::config::CodeGraphConfig;
 use crate::models::health::ScanProgress;
 use crate::server::state::{
-    CompletionOutcome, CoordinatorCell, DriverTaskGuard, OwnerKind, OwnerPermit, RequestOutcome,
-    SharedState, WorkMask,
+    CompletionOutcome, CoordinatorCell, DispatchSnapshot, DriverTaskGuard, OwnerKind, OwnerPermit,
+    RequestOutcome, SharedState, WorkMask,
 };
 use crate::services::dehydration;
 use crate::services::hydration;
@@ -151,31 +151,30 @@ pub async fn index_workspace(
     state: SharedState,
     params: Option<Value>,
 ) -> Result<Value, EngramError> {
-    let mut permit = match CoordinatorCell::request(
-        state.coordinator.admission(),
-        WorkMask::from_bits(0b111),
-        OwnerKind::Index,
-    ) {
-        Ok(RequestOutcome::Acquired(permit)) => permit,
-        Ok(RequestOutcome::Waiting(_) | RequestOutcome::Enqueued) => {
-            return Err(EngramError::CodeGraph(CodeGraphError::IndexInProgress));
-        }
-        Ok(RequestOutcome::Stale) => {
-            return Err(EngramError::System(SystemError::DatabaseError {
-                reason: "index admission became stale during workspace rebind".to_owned(),
-            }));
-        }
-        Err(error) => {
-            return Err(EngramError::System(SystemError::DatabaseError {
-                reason: format!("index coordinator admission failed: {error}"),
-            }));
-        }
-    };
+    let (admission, ctx) = state
+        .guarded_dispatch_context()
+        .await
+        .ok_or(EngramError::Workspace(WorkspaceError::NotSet))?;
+    let mut permit =
+        match CoordinatorCell::request(admission, WorkMask::from_bits(0b111), OwnerKind::Index) {
+            Ok(RequestOutcome::Acquired(permit)) => permit,
+            Ok(RequestOutcome::Waiting(_) | RequestOutcome::Enqueued) => {
+                return Err(EngramError::CodeGraph(CodeGraphError::IndexInProgress));
+            }
+            Ok(RequestOutcome::Stale) => {
+                return Err(EngramError::System(SystemError::DatabaseError {
+                    reason: "index admission became stale during workspace rebind".to_owned(),
+                }));
+            }
+            Err(error) => {
+                return Err(EngramError::System(SystemError::DatabaseError {
+                    reason: format!("index coordinator admission failed: {error}"),
+                }));
+            }
+        };
+    let work_bits = permit.work_bits();
 
     let operation = async {
-        // 092.004-T: capture workspace and config only after the exact owner
-        // permit exists, so every fallible phase is cancellation-owned.
-        let ctx = crate::tools::snapshot_graph_handler_context(&state).await?;
         let ws_path = PathBuf::from(&ctx.workspace.path);
         begin_indexing_scan_progress(&state).await;
         let result = run_workspace_write(
@@ -183,9 +182,10 @@ pub async fn index_workspace(
             &ws_path,
             &ctx.workspace.data_dir,
             &ctx.workspace.branch,
-            ctx.config.code_graph,
+            ctx.config.code_graph.clone(),
             params,
             true,
+            work_bits,
         )
         .await;
         finish_indexing_scan_progress(&state, &result, true).await;
@@ -198,7 +198,7 @@ pub async fn index_workspace(
     };
     let result = result?;
     if let CompletionOutcome::Transferred(successor) = CoordinatorCell::complete(permit) {
-        drive_transferred_sync(&state, successor).await;
+        drive_transferred_sync(&state, successor, &ctx).await;
     }
     Ok(result)
 }
@@ -211,6 +211,7 @@ async fn run_workspace_write(
     config: CodeGraphConfig,
     params: Option<Value>,
     full_index: bool,
+    required_work_bits: u8,
 ) -> Result<Value, EngramError> {
     let last_completed_at = state
         .scan_progress_snapshot()
@@ -252,12 +253,14 @@ async fn run_workspace_write(
         }?;
         serde_json::to_value(result)
     } else {
-        let parsed: SyncWorkspaceParams =
+        let mut parsed: SyncWorkspaceParams =
             serde_json::from_value(params.unwrap_or_else(|| json!({}))).map_err(|error| {
                 EngramError::System(SystemError::InvalidParams {
                     reason: error.to_string(),
                 })
             })?;
+        parsed.revalidate_code_graph |= required_work_bits & 0b010 != 0;
+        parsed.backfill_python_canonical |= required_work_bits & 0b100 != 0;
         let result = {
             let mut progress_callback = move |files_scanned, files_total| {
                 let _ = progress_tx.send(running_scan_progress(
@@ -332,87 +335,126 @@ pub async fn sync_workspace(
                 0
             },
     );
-    let mut permit = match CoordinatorCell::request(
-        state.coordinator.admission(),
-        requested,
-        OwnerKind::Sync,
-    ) {
-        Ok(RequestOutcome::Acquired(permit)) => permit,
-        Ok(RequestOutcome::Enqueued) => {
-            return Ok(
-                json!({ "status": "queued", "message": "Sync queued; will run after current indexing completes" }),
-            );
+    let mut guarded = state
+        .guarded_dispatch_context()
+        .await
+        .ok_or(EngramError::Workspace(WorkspaceError::NotSet))?;
+    let mut metrics_branch = None;
+    loop {
+        let (admission, ctx) = guarded;
+        let mut permit = match CoordinatorCell::request(admission, requested, OwnerKind::Sync) {
+            Ok(RequestOutcome::Acquired(permit)) => permit,
+            Ok(RequestOutcome::Enqueued) => {
+                return Ok(
+                    json!({ "status": "queued", "message": "Sync queued; will run after current indexing completes" }),
+                );
+            }
+            Ok(RequestOutcome::Waiting(_)) => {
+                return Err(EngramError::System(SystemError::DatabaseError {
+                    reason: "non-empty sync request unexpectedly entered waiting admission"
+                        .to_owned(),
+                }));
+            }
+            Ok(RequestOutcome::Stale) => {
+                return Err(EngramError::System(SystemError::DatabaseError {
+                    reason: "sync admission became stale during workspace rebind".to_owned(),
+                }));
+            }
+            Err(error) => {
+                return Err(EngramError::System(SystemError::DatabaseError {
+                    reason: format!("sync coordinator admission failed: {error}"),
+                }));
+            }
+        };
+        if let Some(branch) = metrics_branch.take() {
+            crate::services::metrics::switch_branch(branch);
         }
-        Ok(RequestOutcome::Waiting(_)) => {
-            return Err(EngramError::System(SystemError::DatabaseError {
-                reason: "non-empty sync request unexpectedly entered waiting admission".to_owned(),
-            }));
-        }
-        Ok(RequestOutcome::Stale) => {
-            return Err(EngramError::System(SystemError::DatabaseError {
-                reason: "sync admission became stale during workspace rebind".to_owned(),
-            }));
-        }
-        Err(error) => {
-            return Err(EngramError::System(SystemError::DatabaseError {
-                reason: format!("sync coordinator admission failed: {error}"),
-            }));
-        }
-    };
+        let work_bits = permit.work_bits();
 
-    let operation = async {
-        // Capture only after admission so parsing, branch refresh, progress,
-        // DB/file work, serialization, and terminal progress all share a permit.
-        let ctx = crate::tools::snapshot_graph_handler_context(&state).await?;
-        let ws_path = PathBuf::from(&ctx.workspace.path);
-        let mut branch = ctx.workspace.branch.clone();
-        if let Ok(resolved_branch) = resolve_git_branch(&ws_path) {
-            if resolved_branch != branch {
-                let workspace_id = workspace_hash(&ws_path, &resolved_branch);
-                let metrics_branch = resolved_branch.clone();
-                let snapshot_branch = resolved_branch.clone();
-                let _ = state
-                    .update_workspace(|workspace| {
-                        workspace.branch = snapshot_branch;
-                        workspace.workspace_id = workspace_id;
-                    })
-                    .await;
-                crate::services::metrics::switch_branch(metrics_branch);
-                branch = resolved_branch;
+        enum SyncAttempt {
+            BranchChanged(String),
+            Finished(Result<Value, EngramError>),
+        }
+
+        let operation = async {
+            let ws_path = PathBuf::from(&ctx.workspace.path);
+            if let Ok(resolved_branch) = resolve_git_branch(&ws_path) {
+                if resolved_branch != ctx.workspace.branch {
+                    return SyncAttempt::BranchChanged(resolved_branch);
+                }
+            }
+
+            begin_indexing_scan_progress(&state).await;
+            let result = run_workspace_write(
+                &state,
+                &ws_path,
+                &ctx.workspace.data_dir,
+                &ctx.workspace.branch,
+                ctx.config.code_graph.clone(),
+                params.clone(),
+                false,
+                work_bits,
+            )
+            .await;
+            finish_indexing_scan_progress(&state, &result, false).await;
+            SyncAttempt::Finished(result)
+        };
+        let Some(attempt) = permit.run_until_cancelled(operation).await else {
+            return Err(EngramError::System(SystemError::DatabaseError {
+                reason: "sync cancelled by workspace rebind".to_owned(),
+            }));
+        };
+
+        match attempt {
+            SyncAttempt::BranchChanged(branch) => {
+                let mut workspace = ctx.workspace;
+                workspace.workspace_id = workspace_hash(Path::new(&workspace.path), &branch);
+                workspace.branch = branch.clone();
+                let (_generation, admission) = state
+                    .publish_workspace_generation(workspace.clone(), Some(ctx.config.clone()))
+                    .await
+                    .map_err(|error| {
+                        EngramError::System(SystemError::DatabaseError {
+                            reason: format!("sync branch publication failed: {error}"),
+                        })
+                    })?;
+                if !matches!(
+                    CoordinatorCell::complete(permit),
+                    CompletionOutcome::RetirementAcknowledged
+                ) {
+                    return Err(EngramError::System(SystemError::DatabaseError {
+                        reason: "sync branch publication lost retirement acknowledgment".to_owned(),
+                    }));
+                }
+                metrics_branch = Some(branch);
+                guarded = (
+                    admission,
+                    DispatchSnapshot {
+                        workspace,
+                        config: ctx.config,
+                    },
+                );
+            }
+            SyncAttempt::Finished(result) => {
+                let result = result?;
+                if let CompletionOutcome::Transferred(successor) = CoordinatorCell::complete(permit)
+                {
+                    drive_transferred_sync(&state, successor, &ctx).await;
+                }
+                return Ok(result);
             }
         }
-
-        begin_indexing_scan_progress(&state).await;
-        let result = run_workspace_write(
-            &state,
-            &ws_path,
-            &ctx.workspace.data_dir,
-            &branch,
-            ctx.config.code_graph,
-            params,
-            false,
-        )
-        .await;
-        finish_indexing_scan_progress(&state, &result, false).await;
-        result
-    };
-    let Some(result) = permit.run_until_cancelled(operation).await else {
-        return Err(EngramError::System(SystemError::DatabaseError {
-            reason: "sync cancelled by workspace rebind".to_owned(),
-        }));
-    };
-    let result = result?;
-    if let CompletionOutcome::Transferred(successor) = CoordinatorCell::complete(permit) {
-        drive_transferred_sync(&state, successor).await;
     }
-    Ok(result)
 }
 
-async fn drive_transferred_sync(state: &SharedState, mut permit: OwnerPermit) {
+async fn drive_transferred_sync(
+    state: &SharedState,
+    mut permit: OwnerPermit,
+    ctx: &DispatchSnapshot,
+) {
     loop {
         let work_bits = permit.work_bits();
         let operation = async {
-            let ctx = crate::tools::snapshot_graph_handler_context(state).await?;
             let ws_path = PathBuf::from(&ctx.workspace.path);
             begin_indexing_scan_progress(state).await;
             let result = run_workspace_write(
@@ -420,12 +462,13 @@ async fn drive_transferred_sync(state: &SharedState, mut permit: OwnerPermit) {
                 &ws_path,
                 &ctx.workspace.data_dir,
                 &ctx.workspace.branch,
-                ctx.config.code_graph,
+                ctx.config.code_graph.clone(),
                 Some(json!({
                     "revalidate_code_graph": work_bits & 0b010 != 0,
                     "backfill_python_canonical": work_bits & 0b100 != 0
                 })),
                 false,
+                work_bits,
             )
             .await;
             finish_indexing_scan_progress(state, &result, false).await;
@@ -660,11 +703,14 @@ mod tests {
         finalize_indexing_request, indexing_started_progress, running_scan_progress,
         spawn_scan_progress_updater, sync_workspace,
     };
-    use crate::models::config::WorkspaceConfig;
+    use crate::db::connect_db;
+    use crate::db::queries::CodeGraphQueries;
+    use crate::models::config::{CodeGraphConfig, WorkspaceConfig};
     use crate::server::state::{
         AppState, CoordinatorCell, DriverTaskGuard, OwnerKind, OwnerPermit, RequestOutcome,
         WorkMask, WorkspaceSnapshot,
     };
+    use crate::services::code_graph;
 
     #[derive(Clone, Copy)]
     enum WriteExit {
@@ -1028,5 +1074,117 @@ mod tests {
         );
         assert_eq!(state.coordinator.test_pending_bits(), 0b111);
         drop(owner);
+    }
+
+    #[tokio::test]
+    async fn direct_sync_executes_recovered_backfill_mask_not_only_request_params() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("workspace");
+        let data_dir = temp.path().join("data");
+        std::fs::create_dir_all(&workspace).expect("create workspace");
+        std::fs::write(
+            workspace.join("app.py"),
+            "from helper import compute\n\n\ndef run():\n    compute()\n",
+        )
+        .expect("write app.py");
+        std::fs::write(
+            workspace.join("helper.py"),
+            "def compute():\n    return 1\n",
+        )
+        .expect("write helper.py");
+
+        let config = CodeGraphConfig::default();
+        code_graph::index_workspace(&workspace, &data_dir, "main", &config, false)
+            .await
+            .expect("seed index");
+        {
+            let db = connect_db(&data_dir, "main")
+                .await
+                .expect("connect seed DB");
+            let queries = CodeGraphQueries::new(db);
+            queries
+                .retract_all_calls_resolved_canonical_edges()
+                .await
+                .expect("retract canonical edges");
+            queries
+                .set_python_extraction_version("0")
+                .await
+                .expect("reset extraction marker");
+        }
+
+        let state = Arc::new(AppState::new(1));
+        publish(
+            &state,
+            snapshot(
+                "recovered",
+                "uuid-recovered",
+                "id-recovered",
+                &workspace,
+                data_dir.clone(),
+            ),
+        )
+        .await;
+        let abandoned = acquired(request(&state, WorkMask::from_bits(0b101), OwnerKind::Sync));
+        drop(abandoned);
+        assert_eq!(state.coordinator.test_pending_bits(), 0b101);
+
+        sync_workspace(Arc::clone(&state), None)
+            .await
+            .expect("direct recovery sync");
+
+        let db = connect_db(&data_dir, "main")
+            .await
+            .expect("reconnect recovered DB");
+        let queries = CodeGraphQueries::new(db);
+        assert_eq!(
+            queries.python_extraction_version().expect("read marker"),
+            Some("1".to_owned()),
+            "the acquired permit's recovered backfill bit must augment the direct request"
+        );
+        assert_eq!(state.coordinator.test_pending_bits(), 0);
+    }
+
+    #[tokio::test]
+    async fn sync_branch_refresh_rebinds_coordinator_before_writing_new_branch() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("workspace");
+        let data_dir = temp.path().join("data");
+        std::fs::create_dir_all(workspace.join(".git")).expect("create git metadata");
+        std::fs::write(
+            workspace.join(".git").join("HEAD"),
+            "ref: refs/heads/main\n",
+        )
+        .expect("write git HEAD");
+        let state = Arc::new(AppState::new(1));
+        let mut stale = snapshot(
+            "branch-refresh",
+            "uuid-branch-refresh",
+            "id-stale-branch",
+            &workspace,
+            data_dir,
+        );
+        stale.branch = "stale-branch".to_owned();
+        publish(&state, stale).await;
+        let old_admission = state.coordinator.admission();
+
+        sync_workspace(Arc::clone(&state), None)
+            .await
+            .expect("branch-refresh sync");
+
+        let active = state
+            .snapshot_workspace()
+            .await
+            .expect("active branch snapshot");
+        assert_eq!(active.branch, "main");
+        assert_eq!(
+            active.workspace_id,
+            super::workspace_hash(&workspace, "main")
+        );
+        assert!(matches!(
+            CoordinatorCell::request(old_admission, WorkMask::from_bits(0b001), OwnerKind::Sync,),
+            Ok(RequestOutcome::Stale)
+        ));
+        assert!(state.coordinator.test_is_idle());
+        assert_eq!(state.coordinator.test_pending_bits(), 0);
     }
 }
