@@ -220,7 +220,6 @@ pub async fn set_workspace(
             canonical_bg,
             data_dir_bg,
             branch_bg,
-            sync_generation,
             admission,
             #[cfg(test)]
             false,
@@ -389,7 +388,6 @@ async fn background_db_hydration(
     canonical: PathBuf,
     data_dir: PathBuf,
     branch: String,
-    sync_generation: u64,
     admission: AdmissionGuard,
     #[cfg(test)] legacy_pre_cancelled: bool,
     #[cfg(test)] test_probe: Option<HydrationProbe>,
@@ -403,27 +401,8 @@ async fn background_db_hydration(
         }
     };
 
-    // Acquire the indexing lock immediately so the startup auto-sync task
-    // (spawned after set_workspace returns) cannot grab it and open a competing
-    // DB connection while we are still doing schema bootstrap.  Concurrent
-    // writers on the same CozoDB/SQLite file cause SQLITE_BUSY retries in
-    // run_schema_bootstrap (up to 500ms × 20 attempts × 23 scripts ≈ minutes)
-    // which prevents set_hydration_ready() from being called within the shim's
-    // poll_until_ready timeout.  Holding the lock here forces the auto-sync
-    // task to see try_start_indexing() == false and exit immediately; the lock
-    // is released after we call finish_indexing() at the end of this function.
-    //
-    // `acquired_lock` tracks whether THIS task holds the flag so that only the
-    // holder calls finish_indexing() — releasing another task's lock would break
-    // the concurrency guard.
-    let acquired_lock = state.try_start_indexing();
-
     #[cfg(test)]
     if test_probe.is_none() && legacy_pre_cancelled {
-        if acquired_lock {
-            state.clear_pending_sync_for_generation(sync_generation);
-            state.finish_indexing().await;
-        }
         return;
     }
 
@@ -534,13 +513,7 @@ async fn background_db_hydration(
     };
 
     match permit.run_until_cancelled(operation).await {
-        Some(terminal @ (HydrationTerminal::Handled | HydrationTerminal::DbFailure)) => {
-            if acquired_lock && matches!(terminal, HydrationTerminal::DbFailure) {
-                state.clear_pending_sync_for_generation(sync_generation);
-            }
-            if acquired_lock {
-                state.finish_indexing().await;
-            }
+        Some(HydrationTerminal::Handled | HydrationTerminal::DbFailure) => {
             if let CompletionOutcome::Transferred(successor) = CoordinatorCell::complete(permit) {
                 drive_transferred_sync(
                     &state,
@@ -552,17 +525,9 @@ async fn background_db_hydration(
             }
         }
         #[cfg(test)]
-        Some(HydrationTerminal::EarlyReturn) => {
-            if acquired_lock {
-                state.finish_indexing().await;
-            }
-        }
+        Some(HydrationTerminal::EarlyReturn) => {}
         None => {
             tracing::info!("background_db_hydration: scan cancelled by new generation");
-            if acquired_lock {
-                state.clear_pending_sync_for_generation(sync_generation);
-                state.finish_indexing().await;
-            }
         }
     }
 }
@@ -952,8 +917,7 @@ mod tests {
     async fn hydration_waiting_and_stale_admission_never_reaches_io() {
         for held_owner in [true, false] {
             let state = Arc::new(AppState::new(2));
-            let old_generation =
-                publish_test_binding(&state, coordinator_snapshot("old", "old")).await;
+            let _ = publish_test_binding(&state, coordinator_snapshot("old", "old")).await;
             let owner = held_owner.then(|| {
                 acquired(
                     request_empty(&state, OwnerKind::Index)
@@ -976,7 +940,6 @@ mod tests {
                 PathBuf::from("C:/workspace/old"),
                 PathBuf::from("logs/phase6-group2/old-data"),
                 "main".to_owned(),
-                old_generation,
                 admission,
                 false,
                 Some(probe),
@@ -1005,7 +968,7 @@ mod tests {
             [(true, false), (true, true), (false, false), (false, true)]
         {
             let state = Arc::new(AppState::new(2));
-            let generation = publish_test_binding(&state, coordinator_snapshot("old", "old")).await;
+            let _ = publish_test_binding(&state, coordinator_snapshot("old", "old")).await;
             let admission = state.coordinator.admission();
             let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
             let (probe, _io_starts, active_io) =
@@ -1018,7 +981,6 @@ mod tests {
                         PathBuf::from("C:/workspace/old"),
                         PathBuf::from("logs/phase6-group2/old-data"),
                         "main".to_owned(),
-                        generation,
                         admission,
                         false,
                         Some(probe),
@@ -1064,7 +1026,7 @@ mod tests {
             HydrationProbeExit::EarlyReturn,
         ] {
             let state = Arc::new(AppState::new(1));
-            let generation =
+            let _ =
                 publish_test_binding(&state, coordinator_snapshot("terminal", "terminal")).await;
             let admission = state.coordinator.admission();
             let (probe, io_starts, active_io) = probe(exit, None);
@@ -1074,7 +1036,6 @@ mod tests {
                 PathBuf::from("C:/workspace/terminal"),
                 PathBuf::from("logs/phase6-group2/terminal-data"),
                 "main".to_owned(),
-                generation,
                 admission,
                 false,
                 Some(probe),
@@ -1213,7 +1174,6 @@ mod tests {
             canonical,
             data_dir,
             "main".to_owned(),
-            0,
             state.coordinator.admission(),
             true,
             None,
@@ -1257,7 +1217,6 @@ mod tests {
             canonical,
             data_file,
             "main".to_owned(),
-            0,
             state.coordinator.admission(),
             false,
             None,
@@ -1303,7 +1262,7 @@ mod tests {
         let state = Arc::new(AppState::new(1));
 
         // OLD generation begins and captures its cancel receiver (generation 1).
-        let (old_gen, _old_cancel_rx) = state.begin_scan_generation().await;
+        let (_old_gen, _old_cancel_rx) = state.begin_scan_generation().await;
 
         // set_workspace installs the NEW snapshot and cancels the old hydration:
         // a fresh begin_scan_generation bumps to generation 2 and signals `true`
@@ -1320,7 +1279,6 @@ mod tests {
             canonical,
             data_dir,
             "main".to_owned(),
-            old_gen,
             state.coordinator.admission(),
             true,
             None,
@@ -1354,7 +1312,7 @@ mod tests {
         std::fs::create_dir_all(&canonical).expect("create ws dir");
         let state = Arc::new(AppState::new(1));
 
-        let (old_gen, _old_cancel_rx) = state.begin_scan_generation().await;
+        let (_old_gen, _old_cancel_rx) = state.begin_scan_generation().await;
         let (_new_gen, _new_cancel_rx) = state.begin_scan_generation().await;
 
         // NEW binding publishes pending + both companions (generation 2).
@@ -1366,7 +1324,6 @@ mod tests {
             canonical,
             data_file,
             "main".to_owned(),
-            old_gen,
             state.coordinator.admission(),
             false,
             None,

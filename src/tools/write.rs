@@ -567,13 +567,20 @@ type DrainFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 #[cfg(test)]
 async fn finalize_indexing_request<F>(
     state: &SharedState,
+    permit: OwnerPermit,
     result: &Result<Value, EngramError>,
     full_index: bool,
     drain: F,
 ) where
     F: for<'a> FnOnce(&'a SharedState) -> DrainFuture<'a>,
 {
-    state.finish_indexing().await;
+    assert!(
+        matches!(
+            CoordinatorCell::complete(permit),
+            CompletionOutcome::Released
+        ),
+        "fixture owner must complete without pending work"
+    );
     drain(state).await;
     finish_indexing_scan_progress(state, result, full_index).await;
 }
@@ -817,7 +824,7 @@ mod tests {
         state
             .set_scan_progress(Some(indexing_started_progress(None)))
             .await;
-        assert!(state.try_start_indexing(), "should acquire indexing lock");
+        let permit = acquired(request(&state, WorkMask::default(), OwnerKind::Index));
 
         let observed_running = Arc::new(AtomicBool::new(false));
         let observed_running_for_drain = Arc::clone(&observed_running);
@@ -826,7 +833,7 @@ mod tests {
             "files_skipped": 1
         }));
 
-        finalize_indexing_request(&state, &result, true, |state| {
+        finalize_indexing_request(&state, permit, &result, true, |state| {
             let observed_running = Arc::clone(&observed_running_for_drain);
             Box::pin(async move {
                 let progress = state
