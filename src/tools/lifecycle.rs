@@ -14,7 +14,8 @@ use crate::db::workspace::{
 };
 use crate::errors::{EngramError, SystemError, WorkspaceError};
 use crate::models::health::{HealthReport, ScanProgress};
-use crate::server::state::{AppState, CoordinatorError, WorkspaceSnapshot};
+use crate::server::state::{AdmissionGuard, AppState, CoordinatorError, WorkspaceSnapshot};
+use crate::server::state::{CoordinatorCell, DriverTaskGuard};
 use crate::services::code_graph::sync_workspace as sync_code_graph;
 use crate::services::config::parse_config;
 use crate::services::connection::validate_workspace_path;
@@ -161,7 +162,7 @@ pub async fn set_workspace(
         file_mtimes: hydration.file_mtimes.clone(),
     };
 
-    let (sync_generation, cancel_rx) = state
+    let (sync_generation, _cancel_rx) = state
         .publish_workspace_generation(snapshot, Some(ws_config.clone()))
         .await
         .map_err(|error| match error {
@@ -175,6 +176,22 @@ pub async fn set_workspace(
             }
         })?;
     crate::services::query_stats::reset_timing();
+
+    let previous_driver = {
+        state
+            .hydration_driver
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    };
+    if let Some((_generation, mut previous_driver)) = previous_driver {
+        if let Some(task) = previous_driver.task.take() {
+            if !task.is_finished() {
+                task.abort();
+            }
+            let _ = task.await;
+        }
+    }
 
     // Queue a background scan immediately. The DB connect + hydrate +
     // offline-change detection are moved off the hot path so that
@@ -193,17 +210,50 @@ pub async fn set_workspace(
     let canonical_bg = canonical.clone();
     let data_dir_bg = data_dir.clone();
     let branch_bg = branch.clone();
-    let _task = tokio::spawn(async move {
+    let admission = state.coordinator.admission();
+    let task = tokio::spawn(async move {
         background_db_hydration(
             state_bg,
             canonical_bg,
             data_dir_bg,
             branch_bg,
             sync_generation,
-            cancel_rx,
+            admission,
+            #[cfg(test)]
+            false,
+            #[cfg(test)]
+            None,
         )
         .await;
     });
+    let mut driver = Some(DriverTaskGuard { task: Some(task) });
+    let displaced = {
+        let mut retained = state
+            .hydration_driver
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if retained
+            .as_ref()
+            .is_some_and(|(generation, _)| *generation > sync_generation)
+        {
+            driver.take()
+        } else {
+            retained
+                .replace((
+                    sync_generation,
+                    driver
+                        .take()
+                        .unwrap_or_else(|| unreachable!("driver is installed once")),
+                ))
+                .map(|(_generation, guard)| guard)
+        }
+    };
+    if let Some(mut displaced) = displaced {
+        if let Some(task) = displaced.task.take() {
+            task.abort();
+            let _ = task.await;
+        }
+    }
 
     Ok(WorkspaceBinding {
         workspace_id,
@@ -219,24 +269,76 @@ pub async fn set_workspace(
 /// offline-change detection — all off the bind-latency hot path. Updates
 /// [`AppState::scan_progress`] when complete (029-F WS-6).
 ///
-/// Checks `cancel_rx` at each major step; when `true` is signalled by
-/// [`AppState::begin_scan_generation`], the task abandons its work (029-F WS-6
-/// CancellationToken requirement).
-///
-/// `sync_generation` is the generation this task owns (returned alongside
-/// `cancel_rx` by [`AppState::begin_scan_generation`]). The cancel and
-/// DB-connect-failure paths clear the pending-sync queue scoped to THIS
-/// generation ([`AppState::clear_pending_sync_for_generation`]) so they never
-/// wipe a *newer* generation's request published in the `set_workspace` cancel
-/// race window (105.001-T / R1).
+/// The move-only admission guard owns pre-acquisition cancellation and becomes
+/// the exact Hydration permit before any DB/file boundary. Post-acquisition
+/// cancellation drops the in-function operation future before permit cleanup.
+#[cfg(test)]
+#[derive(Clone, Copy)]
+enum HydrationProbeExit {
+    DbFailure,
+    EarlyReturn,
+    AwaitCancellation,
+}
+
+#[cfg(test)]
+struct HydrationProbe {
+    exit: HydrationProbeExit,
+    io_starts: Arc<std::sync::atomic::AtomicUsize>,
+    active_io: Arc<std::sync::atomic::AtomicUsize>,
+    entered: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+#[cfg(test)]
+impl HydrationProbe {
+    async fn run(mut self) -> HydrationProbeExit {
+        struct ActiveIo(Arc<std::sync::atomic::AtomicUsize>);
+
+        impl Drop for ActiveIo {
+            fn drop(&mut self) {
+                self.0.store(0, Ordering::SeqCst);
+            }
+        }
+
+        self.io_starts.fetch_add(1, Ordering::SeqCst);
+        self.active_io.store(1, Ordering::SeqCst);
+        let _active = ActiveIo(Arc::clone(&self.active_io));
+        if let Some(entered) = self.entered.take() {
+            let _ = entered.send(());
+        }
+        if matches!(self.exit, HydrationProbeExit::AwaitCancellation) {
+            std::future::pending::<()>().await;
+        }
+        self.exit
+    }
+}
+
+#[derive(Clone, Copy)]
+enum HydrationTerminal {
+    Handled,
+    DbFailure,
+    #[cfg(test)]
+    EarlyReturn,
+}
+
 async fn background_db_hydration(
     state: Arc<AppState>,
     canonical: PathBuf,
     data_dir: PathBuf,
     branch: String,
     sync_generation: u64,
-    mut cancel_rx: tokio::sync::watch::Receiver<bool>,
+    admission: AdmissionGuard,
+    #[cfg(test)] legacy_pre_cancelled: bool,
+    #[cfg(test)] test_probe: Option<HydrationProbe>,
 ) {
+    let mut permit = match admission.acquire_hydration().await {
+        Ok(Some(permit)) => permit,
+        Ok(None) => return,
+        Err(error) => {
+            tracing::error!(%error, "background_db_hydration: admission failed");
+            return;
+        }
+    };
+
     // Acquire the indexing lock immediately so the startup auto-sync task
     // (spawned after set_workspace returns) cannot grab it and open a competing
     // DB connection while we are still doing schema bootstrap.  Concurrent
@@ -252,10 +354,29 @@ async fn background_db_hydration(
     // the concurrency guard.
     let acquired_lock = state.try_start_indexing();
 
-    macro_rules! check_cancel {
-        () => {
-            if *cancel_rx.borrow_and_update() {
-                tracing::info!("background_db_hydration: scan cancelled by new generation");
+    #[cfg(test)]
+    if test_probe.is_none() && legacy_pre_cancelled {
+        if acquired_lock {
+            state.clear_pending_sync_for_generation(sync_generation);
+            state.finish_indexing().await;
+        }
+        return;
+    }
+
+    let operation = async {
+        #[cfg(test)]
+        if let Some(probe) = test_probe {
+            return match probe.run().await {
+                HydrationProbeExit::EarlyReturn => HydrationTerminal::EarlyReturn,
+                HydrationProbeExit::DbFailure => HydrationTerminal::DbFailure,
+                HydrationProbeExit::AwaitCancellation => HydrationTerminal::Handled,
+            };
+        }
+
+        let db = match connect_db(&data_dir, &branch).await {
+            Ok(db) => db,
+            Err(e) => {
+                tracing::warn!(error = %e, "background_db_hydration: DB connect failed");
                 state
                     .set_scan_progress(Some(ScanProgress {
                         running: false,
@@ -265,145 +386,116 @@ async fn background_db_hydration(
                     }))
                     .await;
                 state.set_hydration_ready();
-                // Only release the lock if this task acquired it.
-                if acquired_lock {
-                    // 104.002-T / 105.001-T (N1/N5): a cancelled generation must
-                    // not drain the queued heavy sync against a torn-down state —
-                    // clear the pending + companion bits scoped to THIS
-                    // generation. A newer generation's request published in the
-                    // cancel race window survives; this generation's own stale
-                    // bits are dropped. The new generation's scan re-queues
-                    // whatever it actually needs.
-                    state.clear_pending_sync_for_generation(sync_generation);
-                    state.finish_indexing().await;
-                }
-                return;
+                return HydrationTerminal::DbFailure;
             }
         };
-    }
 
-    let db = match connect_db(&data_dir, &branch).await {
-        Ok(db) => db,
-        Err(e) => {
-            tracing::warn!(error = %e, "background_db_hydration: DB connect failed");
-            state
-                .set_scan_progress(Some(ScanProgress {
-                    running: false,
-                    files_scanned: 0,
-                    files_total: 0,
-                    last_completed_at: Some(Utc::now().to_rfc3339()),
-                }))
-                .await;
-            state.set_hydration_ready();
+        let cg_queries = CodeGraphQueries::new(db);
+
+        // Signal "ready" immediately after the DB connects so the shim's
+        // poll_until_ready succeeds while the longer hydration continues.
+        state.set_hydration_ready();
+
+        if let Err(e) = hydrate_code_graph(&canonical, &data_dir, &branch, &cg_queries).await {
+            tracing::warn!(error = %e, "background_db_hydration: code graph hydration failed");
+        }
+
+        let offline_count = match detect_offline_changes(&canonical, &cg_queries).await {
+            Ok(changes) => {
+                if !changes.is_empty() {
+                    tracing::info!(
+                        count = changes.len(),
+                        "background_db_hydration: offline changes detected"
+                    );
+                }
+                changes.len() as u64
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "background_db_hydration: offline change detection failed"
+                );
+                0
+            }
+        };
+
+        state
+            .set_scan_progress(Some(ScanProgress {
+                running: false,
+                files_scanned: offline_count,
+                files_total: offline_count,
+                last_completed_at: Some(Utc::now().to_rfc3339()),
+            }))
+            .await;
+
+        let auto_reindex = std::env::var("ENGRAM_AUTO_REINDEX")
+            .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes"))
+            .unwrap_or(false);
+
+        if offline_count > 0 && auto_reindex {
+            if let Some((snapshot, ws_config)) = state.snapshot_workspace_and_config().await {
+                let ws_path = PathBuf::from(&snapshot.path);
+                tracing::info!(
+                    offline_count,
+                    "background_db_hydration: ENGRAM_AUTO_REINDEX=true, starting post-scan re-index"
+                );
+                match sync_code_graph(
+                    &ws_path,
+                    &snapshot.data_dir,
+                    &snapshot.branch,
+                    &ws_config.code_graph,
+                )
+                .await
+                {
+                    Ok(result) => tracing::info!(
+                        files_added = result.files_added,
+                        files_modified = result.files_modified,
+                        "background_db_hydration: post-scan re-index complete"
+                    ),
+                    Err(e) => tracing::warn!(
+                        error = %e,
+                        "background_db_hydration: post-scan re-index failed"
+                    ),
+                }
+            }
+        } else if offline_count > 0 {
+            tracing::info!(
+                offline_count,
+                "background_db_hydration: offline changes detected; \
+                 set ENGRAM_AUTO_REINDEX=true to re-index on startup, \
+                 or run `engram sync` to update the code graph"
+            );
+        }
+        HydrationTerminal::Handled
+    };
+
+    match permit.run_until_cancelled(operation).await {
+        Some(HydrationTerminal::Handled) => {
             if acquired_lock {
-                // 104.002-T / 105.001-T (N1): DB connect failed — clear the
-                // queued pending + companion bits scoped to THIS generation
-                // rather than leak them into a later unrelated sync (there is no
-                // live DB to drain against anyway). A newer generation's request
-                // is preserved.
+                state.finish_indexing().await;
+            }
+            let _ = CoordinatorCell::complete(permit);
+        }
+        Some(HydrationTerminal::DbFailure) => {
+            if acquired_lock {
                 state.clear_pending_sync_for_generation(sync_generation);
                 state.finish_indexing().await;
             }
-            return;
+            let _ = CoordinatorCell::complete(permit);
         }
-    };
-
-    check_cancel!();
-
-    let cg_queries = CodeGraphQueries::new(db);
-
-    // Signal "ready" immediately after the DB connects so the shim's
-    // poll_until_ready succeeds as soon as the daemon is responsive.
-    // JSONL code-graph hydration and offline-change detection may take
-    // minutes on large workspaces; keeping the daemon in "starting" for that
-    // entire duration causes the shim to time out.  Read-only tool handlers
-    // no longer gate on is_indexing(), so they return available (possibly
-    // partial) data while the background hydration and re-index complete.
-    state.set_hydration_ready();
-
-    if let Err(e) = hydrate_code_graph(&canonical, &data_dir, &branch, &cg_queries).await {
-        tracing::warn!(error = %e, "background_db_hydration: code graph hydration failed");
-    }
-
-    check_cancel!();
-
-    let offline_count = match detect_offline_changes(&canonical, &cg_queries).await {
-        Ok(changes) => {
-            if !changes.is_empty() {
-                tracing::info!(
-                    count = changes.len(),
-                    "background_db_hydration: offline changes detected"
-                );
-            }
-            changes.len() as u64
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "background_db_hydration: offline change detection failed");
-            0
-        }
-    };
-
-    check_cancel!();
-
-    state
-        .set_scan_progress(Some(ScanProgress {
-            running: false,
-            files_scanned: offline_count,
-            files_total: offline_count,
-            last_completed_at: Some(Utc::now().to_rfc3339()),
-        }))
-        .await;
-
-    // Trigger a code-graph re-index when offline changes were found, but only
-    // when ENGRAM_AUTO_REINDEX=true is set.  Without the opt-in, startup
-    // re-indexing on a large workspace (e.g. 1 000+ files) can consume
-    // several gigabytes of RAM and block the daemon for many minutes.
-    // Users can trigger a re-index explicitly with `engram sync` or
-    // `engram index` at any time.
-    let auto_reindex = std::env::var("ENGRAM_AUTO_REINDEX")
-        .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes"))
-        .unwrap_or(false);
-
-    if offline_count > 0 && auto_reindex {
-        check_cancel!();
-        if let Some((snapshot, ws_config)) = state.snapshot_workspace_and_config().await {
-            let ws_path = PathBuf::from(&snapshot.path);
-            tracing::info!(
-                offline_count,
-                "background_db_hydration: ENGRAM_AUTO_REINDEX=true, starting post-scan re-index"
-            );
-            match sync_code_graph(
-                &ws_path,
-                &snapshot.data_dir,
-                &snapshot.branch,
-                &ws_config.code_graph,
-            )
-            .await
-            {
-                Ok(result) => tracing::info!(
-                    files_added = result.files_added,
-                    files_modified = result.files_modified,
-                    "background_db_hydration: post-scan re-index complete"
-                ),
-                Err(e) => tracing::warn!(
-                    error = %e,
-                    "background_db_hydration: post-scan re-index failed"
-                ),
+        #[cfg(test)]
+        Some(HydrationTerminal::EarlyReturn) => {
+            if acquired_lock {
+                state.finish_indexing().await;
             }
         }
-    } else if offline_count > 0 {
-        tracing::info!(
-            offline_count,
-            "background_db_hydration: offline changes detected; \
-             set ENGRAM_AUTO_REINDEX=true to re-index on startup, \
-             or run `engram sync` to update the code graph"
-        );
-    }
-    // Release the indexing lock only if this task acquired it, then drain any
-    // pending sync that was queued while we held the lock.
-    if acquired_lock {
-        state.finish_indexing().await;
-        drain_pending_sync_to_completion(&state).await;
+        None => {
+            tracing::info!("background_db_hydration: scan cancelled by new generation");
+            if acquired_lock {
+                state.clear_pending_sync_for_generation(sync_generation);
+                state.finish_indexing().await;
+            }
+        }
     }
 }
 
@@ -629,16 +721,231 @@ pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, E
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use sysinfo::System;
 
-    use super::{background_db_hydration, drain_pending_sync_to_completion, get_daemon_status};
+    use super::{
+        HydrationProbe, HydrationProbeExit, background_db_hydration,
+        drain_pending_sync_to_completion, get_daemon_status,
+    };
     use crate::db::connect_db;
     use crate::db::queries::CodeGraphQueries;
     use crate::models::config::{CodeGraphConfig, WorkspaceConfig};
-    use crate::server::state::{AppState, WorkspaceSnapshot};
+    use crate::server::state::{
+        AppState, CoordinatorCell, DriverTaskGuard, OwnerKind, OwnerPermit, RequestOutcome,
+        WorkMask, WorkspaceSnapshot,
+    };
     use crate::services::code_graph;
+
+    fn coordinator_snapshot(name: &str, workspace_id: &str) -> WorkspaceSnapshot {
+        WorkspaceSnapshot {
+            workspace_id: workspace_id.to_owned(),
+            workspace_uuid: format!("uuid-{workspace_id}"),
+            branch: "main".to_owned(),
+            data_dir: PathBuf::from(format!("logs/phase6-group2/{name}")),
+            path: format!("C:/workspace/{name}"),
+            last_flush: None,
+            stale_files: false,
+            connection_count: 0,
+            file_mtimes: std::collections::HashMap::new(),
+        }
+    }
+
+    async fn publish_test_binding(state: &AppState, snapshot: WorkspaceSnapshot) -> u64 {
+        state
+            .publish_workspace_generation(snapshot, Some(WorkspaceConfig::default()))
+            .await
+            .unwrap_or_else(|error| panic!("publish test binding: {error}"))
+            .0
+    }
+
+    fn request_empty(
+        state: &AppState,
+        kind: OwnerKind,
+    ) -> Result<RequestOutcome, crate::server::state::CoordinatorError> {
+        CoordinatorCell::request(state.coordinator.admission(), WorkMask::default(), kind)
+    }
+
+    fn acquired(outcome: RequestOutcome) -> OwnerPermit {
+        match outcome {
+            RequestOutcome::Acquired(permit) => permit,
+            RequestOutcome::Waiting(_) => panic!("expected acquired hydration permit"),
+            RequestOutcome::Enqueued => panic!("empty hydration request was enqueued"),
+            RequestOutcome::Stale => panic!("current hydration request was stale"),
+        }
+    }
+
+    fn waiting(outcome: RequestOutcome) -> crate::server::state::AdmissionGuard {
+        match outcome {
+            RequestOutcome::Waiting(admission) => admission,
+            RequestOutcome::Acquired(_) => panic!("expected waiting hydration admission"),
+            RequestOutcome::Enqueued => panic!("empty hydration request was enqueued"),
+            RequestOutcome::Stale => panic!("current hydration request was stale"),
+        }
+    }
+
+    fn probe(
+        exit: HydrationProbeExit,
+        entered: Option<tokio::sync::oneshot::Sender<()>>,
+    ) -> (HydrationProbe, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+        let io_starts = Arc::new(AtomicUsize::new(0));
+        let active_io = Arc::new(AtomicUsize::new(0));
+        (
+            HydrationProbe {
+                exit,
+                io_starts: Arc::clone(&io_starts),
+                active_io: Arc::clone(&active_io),
+                entered,
+            },
+            io_starts,
+            active_io,
+        )
+    }
+
+    async fn finish_driver(mut driver: DriverTaskGuard, abort: bool) {
+        if let Some(task) = driver.task.take() {
+            if abort {
+                task.abort();
+            }
+            let _ = task.await;
+        }
+    }
+
+    #[tokio::test]
+    async fn hydration_waiting_and_stale_admission_never_reaches_io() {
+        for held_owner in [true, false] {
+            let state = Arc::new(AppState::new(2));
+            let old_generation =
+                publish_test_binding(&state, coordinator_snapshot("old", "old")).await;
+            let owner = held_owner.then(|| {
+                acquired(
+                    request_empty(&state, OwnerKind::Index)
+                        .unwrap_or_else(|error| panic!("owner request: {error}")),
+                )
+            });
+            let admission = if held_owner {
+                waiting(
+                    request_empty(&state, OwnerKind::Hydration)
+                        .unwrap_or_else(|error| panic!("hydration request: {error}")),
+                )
+            } else {
+                state.coordinator.admission()
+            };
+
+            let _ = publish_test_binding(&state, coordinator_snapshot("new", "new")).await;
+            let (probe, io_starts, active_io) = probe(HydrationProbeExit::DbFailure, None);
+            background_db_hydration(
+                Arc::clone(&state),
+                PathBuf::from("C:/workspace/old"),
+                PathBuf::from("logs/phase6-group2/old-data"),
+                "main".to_owned(),
+                old_generation,
+                admission,
+                false,
+                Some(probe),
+            )
+            .await;
+
+            assert_eq!(
+                io_starts.load(Ordering::SeqCst),
+                0,
+                "pre-acquisition cancellation must exclude every hydration I/O boundary"
+            );
+            assert_eq!(active_io.load(Ordering::SeqCst), 0);
+            assert_eq!(state.coordinator.test_notification_calls(), 0);
+            if held_owner {
+                assert!(state.coordinator.test_is_retiring());
+            } else {
+                assert!(state.coordinator.test_is_idle());
+            }
+            drop(owner);
+        }
+    }
+
+    #[tokio::test]
+    async fn spawned_hydration_rebind_is_supervised_until_quiescent_ack() {
+        for (same_binding, abort_task) in
+            [(true, false), (true, true), (false, false), (false, true)]
+        {
+            let state = Arc::new(AppState::new(2));
+            let generation = publish_test_binding(&state, coordinator_snapshot("old", "old")).await;
+            let admission = state.coordinator.admission();
+            let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+            let (probe, _io_starts, active_io) =
+                probe(HydrationProbeExit::AwaitCancellation, Some(entered_tx));
+            let task_state = Arc::clone(&state);
+            let task = DriverTaskGuard {
+                task: Some(tokio::spawn(async move {
+                    background_db_hydration(
+                        task_state,
+                        PathBuf::from("C:/workspace/old"),
+                        PathBuf::from("logs/phase6-group2/old-data"),
+                        "main".to_owned(),
+                        generation,
+                        admission,
+                        false,
+                        Some(probe),
+                    )
+                    .await;
+                })),
+            };
+            entered_rx
+                .await
+                .unwrap_or_else(|error| panic!("hydration did not enter I/O: {error}"));
+
+            let target = if same_binding {
+                coordinator_snapshot("old-rebound", "old")
+            } else {
+                coordinator_snapshot("new", "new")
+            };
+            let _ = publish_test_binding(&state, target).await;
+            finish_driver(task, abort_task).await;
+
+            assert_eq!(
+                active_io.load(Ordering::SeqCst),
+                0,
+                "DB/file future must be gone before retirement acknowledgment"
+            );
+            assert!(state.coordinator.test_is_idle());
+            assert_eq!(state.coordinator.test_notification_calls(), 1);
+            assert_eq!(state.coordinator.test_pending_bits(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn hydration_db_failure_and_early_return_use_exact_terminals() {
+        for exit in [
+            HydrationProbeExit::DbFailure,
+            HydrationProbeExit::EarlyReturn,
+        ] {
+            let state = Arc::new(AppState::new(1));
+            let generation =
+                publish_test_binding(&state, coordinator_snapshot("terminal", "terminal")).await;
+            let admission = state.coordinator.admission();
+            let (probe, io_starts, active_io) = probe(exit, None);
+
+            background_db_hydration(
+                Arc::clone(&state),
+                PathBuf::from("C:/workspace/terminal"),
+                PathBuf::from("logs/phase6-group2/terminal-data"),
+                "main".to_owned(),
+                generation,
+                admission,
+                false,
+                Some(probe),
+            )
+            .await;
+
+            assert_eq!(io_starts.load(Ordering::SeqCst), 1);
+            assert_eq!(active_io.load(Ordering::SeqCst), 0);
+            assert!(state.coordinator.test_is_idle());
+            assert_eq!(state.coordinator.test_notification_calls(), 1);
+            assert_eq!(state.coordinator.test_pending_bits(), 0);
+        }
+    }
 
     /// Minimal bound-workspace fixture pointing at a scratch tempdir so the
     /// coalesced drain enters its sync branch (and can re-queue on a lost lock).
@@ -675,15 +982,15 @@ mod tests {
 
         // Cancellation is already signalled for this generation, so the first
         // check_cancel! after the DB connects takes the cancel path.
-        let (_cancel_tx, cancel_rx) = tokio::sync::watch::channel(true);
-
         background_db_hydration(
             Arc::clone(&state),
             canonical,
             data_dir,
             "main".to_owned(),
             0,
-            cancel_rx,
+            state.coordinator.admission(),
+            true,
+            None,
         )
         .await;
 
@@ -719,15 +1026,15 @@ mod tests {
         state.set_pending_sync();
 
         // Cancellation stays false so hydration reaches connect_db (which fails).
-        let (_cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
-
         background_db_hydration(
             Arc::clone(&state),
             canonical,
             data_file,
             "main".to_owned(),
             0,
-            cancel_rx,
+            state.coordinator.admission(),
+            false,
+            None,
         )
         .await;
 
@@ -770,7 +1077,7 @@ mod tests {
         let state = Arc::new(AppState::new(1));
 
         // OLD generation begins and captures its cancel receiver (generation 1).
-        let (old_gen, old_cancel_rx) = state.begin_scan_generation().await;
+        let (old_gen, _old_cancel_rx) = state.begin_scan_generation().await;
 
         // set_workspace installs the NEW snapshot and cancels the old hydration:
         // a fresh begin_scan_generation bumps to generation 2 and signals `true`
@@ -788,7 +1095,9 @@ mod tests {
             data_dir,
             "main".to_owned(),
             old_gen,
-            old_cancel_rx,
+            state.coordinator.admission(),
+            true,
+            None,
         )
         .await;
 
@@ -819,7 +1128,7 @@ mod tests {
         std::fs::create_dir_all(&canonical).expect("create ws dir");
         let state = Arc::new(AppState::new(1));
 
-        let (old_gen, old_cancel_rx) = state.begin_scan_generation().await;
+        let (old_gen, _old_cancel_rx) = state.begin_scan_generation().await;
         let (_new_gen, _new_cancel_rx) = state.begin_scan_generation().await;
 
         // NEW binding publishes pending + both companions (generation 2).
@@ -832,7 +1141,9 @@ mod tests {
             data_file,
             "main".to_owned(),
             old_gen,
-            old_cancel_rx,
+            state.coordinator.admission(),
+            false,
+            None,
         )
         .await;
 

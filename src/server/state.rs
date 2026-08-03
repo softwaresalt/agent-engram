@@ -366,6 +366,21 @@ pub(crate) struct OwnerPermit {
     cleanup_armed: bool,
 }
 
+/// Parent-owned supervision for one mutation-capable driver task.
+#[allow(dead_code)]
+#[derive(Debug)]
+pub(crate) struct DriverTaskGuard {
+    pub(crate) task: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl Drop for DriverTaskGuard {
+    fn drop(&mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+    }
+}
+
 #[allow(dead_code)]
 pub(crate) enum RequestOutcome {
     Acquired(OwnerPermit),
@@ -418,6 +433,26 @@ impl CoordinatorCell {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_is_idle(&self) -> bool {
+        matches!(self.lock().phase, CoordinatorPhase::Idle)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_is_retiring(&self) -> bool {
+        matches!(self.lock().phase, CoordinatorPhase::Retiring(_))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_notification_calls(&self) -> usize {
+        self.notification_calls.load(Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_pending_bits(&self) -> u8 {
+        self.lock().pending.bits()
     }
 
     pub(crate) fn admission(self: &Arc<Self>) -> AdmissionGuard {
@@ -645,10 +680,56 @@ impl CoordinatorCell {
 
 #[allow(dead_code)]
 impl AdmissionGuard {
+    pub(crate) async fn acquire_hydration(
+        mut self,
+    ) -> Result<Option<OwnerPermit>, CoordinatorError> {
+        loop {
+            if *self.cancel_rx.borrow() {
+                return Ok(None);
+            }
+            match CoordinatorCell::request(self, WorkMask::default(), OwnerKind::Hydration)? {
+                RequestOutcome::Acquired(permit) => return Ok(Some(permit)),
+                RequestOutcome::Waiting(mut waiting) => {
+                    let cancelled = tokio::select! {
+                        biased;
+                        changed = waiting.cancel_rx.changed() => {
+                            changed.is_err() || *waiting.cancel_rx.borrow()
+                        }
+                        () = waiting.enabled_notification.as_mut() => false,
+                    };
+                    if cancelled {
+                        return Ok(None);
+                    }
+                    waiting.rearm();
+                    self = waiting;
+                }
+                RequestOutcome::Enqueued | RequestOutcome::Stale => return Ok(None),
+            }
+        }
+    }
+
     pub(crate) fn rearm(&mut self) {
         let mut notification = Box::pin(Arc::clone(&self.cell.notify).notified_owned());
         notification.as_mut().enable();
         self.enabled_notification = notification;
+    }
+}
+
+impl OwnerPermit {
+    pub(crate) async fn run_until_cancelled<F>(&mut self, operation: F) -> Option<F::Output>
+    where
+        F: std::future::Future,
+    {
+        let ownership = self.ownership.as_mut()?;
+        if *ownership.cancel_rx.borrow() {
+            return None;
+        }
+        tokio::pin!(operation);
+        tokio::select! {
+            biased;
+            _ = ownership.cancel_rx.changed() => None,
+            output = &mut operation => Some(output),
+        }
     }
 }
 
@@ -729,7 +810,9 @@ pub struct AppState {
     connection_registry: ConnectionRegistry,
     rate_limiter: RateLimiter,
     #[allow(dead_code)]
-    coordinator: Arc<CoordinatorCell>,
+    pub(crate) coordinator: Arc<CoordinatorCell>,
+    /// Parent-retained hydration task. The guard aborts on parent Drop.
+    pub(crate) hydration_driver: Mutex<Option<(u64, DriverTaskGuard)>>,
     indexing_in_progress: AtomicBool,
     /// Generation-tagged pending-sync request queue (104.002-T / 105.001-T):
     /// bit 0 = `pending_sync` (a `sync_workspace` was requested while indexing
@@ -804,6 +887,7 @@ impl AppState {
             connection_registry: ConnectionRegistry::new(),
             rate_limiter: RateLimiter::new(rate_limit_max, rate_limit_window_secs),
             coordinator: Arc::new(CoordinatorCell::new(BindingIdentity::unbound())),
+            hydration_driver: Mutex::new(None),
             indexing_in_progress: AtomicBool::new(false),
             pending_sync: Mutex::new(PendingSyncState::default()),
             sync_generation: AtomicU64::new(0),
