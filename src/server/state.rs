@@ -635,6 +635,10 @@ impl CoordinatorCell {
 
 #[allow(dead_code)]
 impl AdmissionGuard {
+    pub(crate) const fn generation(&self) -> u64 {
+        self.token.floor
+    }
+
     pub(crate) async fn acquire_hydration(self) -> Result<Option<OwnerPermit>, CoordinatorError> {
         self.acquire_background(OwnerKind::Hydration).await
     }
@@ -678,6 +682,12 @@ impl AdmissionGuard {
 impl OwnerPermit {
     pub(crate) const fn work_bits(&self) -> u8 {
         self.work_mask.bits()
+    }
+
+    pub(crate) fn generation(&self) -> Option<u64> {
+        self.ownership
+            .as_ref()
+            .map(|ownership| ownership.token.floor)
     }
 
     pub(crate) async fn run_until_cancelled<F>(&mut self, operation: F) -> Option<F::Output>
@@ -790,10 +800,9 @@ pub struct AppState {
     scan_progress: RwLock<Option<ScanProgress>>,
     /// Lock-free process-level reliability counters (029-F WS-8).
     reliability: ReliabilityCounters,
-    /// Set to `true` once `background_db_hydration` has run to completion
-    /// (success, failure, or cancellation).  `_health` gates "ready" on this
-    /// flag so that polling clients (shim, test harness) wait until initial
-    /// data load is done before issuing real tool calls.
+    /// Set to `true` once the current generation has initialized its branch DB.
+    /// `_health` gates "ready" on this flag so polling clients do not issue
+    /// workspace calls against an uninitialized branch.
     hydration_ready: AtomicBool,
 }
 
@@ -1294,11 +1303,34 @@ impl AppState {
         &self.reliability
     }
 
-    /// Mark the initial background DB hydration as complete (success, failure,
-    /// or cancellation).  The `_health` handler gates the "ready" status on
-    /// this flag so clients wait until data is loaded before issuing queries.
+    /// Mark the current branch DB as initialized.
+    ///
+    /// Generation-owned production paths use
+    /// [`set_hydration_ready_for_generation`](Self::set_hydration_ready_for_generation)
+    /// so stale work cannot mark a newer binding ready.
     pub fn set_hydration_ready(&self) {
         self.hydration_ready.store(true, Ordering::Release);
+    }
+
+    /// Mark readiness only when `generation` is still the published generation.
+    ///
+    /// The coordinator lock linearizes this store with generation publication:
+    /// an older hydration cannot restore readiness after a branch/workspace
+    /// publication has cleared it.
+    pub(crate) fn set_hydration_ready_for_generation(&self, generation: u64) -> bool {
+        let coordinator = self.coordinator.lock();
+        if coordinator.floor != generation {
+            return false;
+        }
+        self.hydration_ready.store(true, Ordering::Release);
+        true
+    }
+
+    /// Mark readiness only for a permit belonging to the current generation.
+    pub(crate) fn set_hydration_ready_for_permit(&self, permit: &OwnerPermit) -> bool {
+        permit
+            .generation()
+            .is_some_and(|generation| self.set_hydration_ready_for_generation(generation))
     }
 
     /// Reset the hydration-ready flag before a new background hydration cycle.
@@ -1785,6 +1817,24 @@ mod coordinator_tests {
         let coordinator = state.coordinator.lock();
         assert_eq!(coordinator.floor, u64::MAX);
         assert_eq!(coordinator.binding_identity.workspace_id, "id-alpha");
+    }
+
+    #[tokio::test]
+    async fn stale_generation_cannot_restore_hydration_readiness() {
+        let state = AppState::new(2);
+        let (old_generation, _) = publish(&state, workspace("old", "uuid-old", "id-old")).await;
+        assert!(state.set_hydration_ready_for_generation(old_generation));
+        assert!(state.is_hydration_ready());
+
+        let (current_generation, _) = publish(&state, workspace("new", "uuid-new", "id-new")).await;
+        assert!(!state.is_hydration_ready());
+        assert!(!state.set_hydration_ready_for_generation(old_generation));
+        assert!(
+            !state.is_hydration_ready(),
+            "cancelled old-generation work must not mark the new binding ready"
+        );
+        assert!(state.set_hydration_ready_for_generation(current_generation));
+        assert!(state.is_hydration_ready());
     }
 
     #[tokio::test]

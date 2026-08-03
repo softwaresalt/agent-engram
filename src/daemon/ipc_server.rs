@@ -257,10 +257,11 @@ async fn handle_connection(
             debug!("IPC connection closed before sending a request (EOF)");
             return;
         }
-        Ok(n) if n > MAX_REQUEST_BYTES => {
-            IpcResponse::parse_error(format!("request exceeds {MAX_REQUEST_BYTES} byte limit"))
-        }
-        Ok(_) => process_request(&line, &state, &shutdown_tx).await,
+        Ok(n) if n > MAX_REQUEST_BYTES => (
+            IpcResponse::parse_error(format!("request exceeds {MAX_REQUEST_BYTES} byte limit")),
+            false,
+        ),
+        Ok(_) => process_request(&line, &state).await,
         Err(e) => {
             warn!(error = %e, "failed to read IPC request line");
             debug!(connection_id = %connection_id, "ipc_connection_closed");
@@ -268,7 +269,8 @@ async fn handle_connection(
         }
     };
 
-    match response.to_line() {
+    let shutdown_requested = response.1;
+    match response.0.to_line() {
         Ok(line_str) => {
             if let Err(e) = send_half.write_all(line_str.as_bytes()).await {
                 error!(error = %e, "failed to write IPC response");
@@ -282,27 +284,29 @@ async fn handle_connection(
     }
 
     debug!(connection_id = %connection_id, "ipc_connection_closed");
+    if shutdown_requested {
+        // Signal only after the shutdown response has been fully attempted.
+        // The accept loop may now abort/join every tracked handler, including
+        // this one, without truncating the required response or self-joining.
+        let _ = shutdown_tx.send(true);
+    }
 }
 
 /// Deserialize and dispatch a single raw request line, returning an [`IpcResponse`].
-async fn process_request(
-    line: &str,
-    state: &SharedState,
-    shutdown_tx: &Arc<watch::Sender<bool>>,
-) -> IpcResponse {
+async fn process_request(line: &str, state: &SharedState) -> (IpcResponse, bool) {
     let request = match IpcRequest::from_line(line.trim()) {
         Ok(r) => r,
-        Err(err_response) => return err_response,
+        Err(err_response) => return (err_response, false),
     };
 
     if let Err(err_response) = request.validate() {
-        return err_response;
+        return (err_response, false);
     }
 
     // Safe to unwrap: validate() ensures id is Some.
     let id = request.id.clone().unwrap_or(Value::Null);
 
-    match request.method.as_str() {
+    let response = match request.method.as_str() {
         "_health" => {
             // Return "starting" while workspace hydration is in progress so
             // the shim keeps polling rather than treating the daemon as healthy
@@ -313,43 +317,52 @@ async fn process_request(
             } else {
                 "starting"
             };
-            IpcResponse::success(
-                id,
-                json!(HealthCheckResult {
-                    status: status.to_owned(),
-                    uptime_seconds: state.uptime_seconds(),
-                    workspace: snapshot.map(|s| s.path),
-                    active_connections: state.active_connections(),
-                    protocol_version: ENGRAM_PROTOCOL_VERSION,
-                    build_hash: ENGRAM_BUILD_HASH.to_owned(),
-                }),
+            (
+                IpcResponse::success(
+                    id,
+                    json!(HealthCheckResult {
+                        status: status.to_owned(),
+                        uptime_seconds: state.uptime_seconds(),
+                        workspace: snapshot.map(|s| s.path),
+                        active_connections: state.active_connections(),
+                        protocol_version: ENGRAM_PROTOCOL_VERSION,
+                        build_hash: ENGRAM_BUILD_HASH.to_owned(),
+                    }),
+                ),
+                false,
             )
         }
-        // T052: `_shutdown` triggers the shared shutdown channel so the accept
-        // loop exits after returning this response (S022, S037).
+        // T052: `_shutdown` is signalled by `handle_connection` only after
+        // this response has been written and flushed (S022, S037).
         "_shutdown" => {
             info!("daemon received _shutdown IPC request — initiating graceful shutdown");
-            let _ = shutdown_tx.send(true);
-            IpcResponse::success(
-                id,
-                json!({ "status": "shutting_down", "flush_started": true }),
+            (
+                IpcResponse::success(
+                    id,
+                    json!({ "status": "shutting_down", "flush_started": true }),
+                ),
+                true,
             )
         }
-        method => match tools::dispatch(Arc::clone(state), method, request.params).await {
-            Ok(result) => IpcResponse::success(id, result),
-            Err(e) => {
-                let resp = e.to_response();
-                IpcResponse::error(
-                    id,
-                    WireError {
-                        code: -32_603,
-                        message: resp.error.message,
-                        data: Some(json!({ "engram_code": resp.error.code })),
-                    },
-                )
-            }
-        },
-    }
+        method => (
+            match tools::dispatch(Arc::clone(state), method, request.params).await {
+                Ok(result) => IpcResponse::success(id, result),
+                Err(e) => {
+                    let resp = e.to_response();
+                    IpcResponse::error(
+                        id,
+                        WireError {
+                            code: -32_603,
+                            message: resp.error.message,
+                            data: Some(json!({ "engram_code": resp.error.code })),
+                        },
+                    )
+                }
+            },
+            false,
+        ),
+    };
+    response
 }
 
 // ── Daemon entry point ───────────────────────────────────────────────────────
@@ -605,23 +618,14 @@ async fn accept_loop(
     shutdown_tx: Arc<watch::Sender<bool>>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
+    let mut connection_handlers = tokio::task::JoinSet::new();
     loop {
+        if *shutdown_rx.borrow() {
+            info!("shutdown signal already set — stopping IPC listener");
+            break;
+        }
         tokio::select! {
-            accept_result = listener.accept() => {
-                match accept_result {
-                    Ok(stream) => {
-                        // T049: every accepted connection resets the idle timer (S046).
-                        ttl.reset();
-
-                        let state = Arc::clone(&state);
-                        let tx = Arc::clone(&shutdown_tx);
-                        tokio::spawn(handle_connection(stream, state, tx));
-                    }
-                    Err(e) => {
-                        error!(error = %e, "IPC listener accept error");
-                    }
-                }
-            }
+            biased;
             // Watch for shutdown signal from TTL expiry, _shutdown handler, or signal.
             changed = shutdown_rx.changed() => {
                 match changed {
@@ -636,6 +640,39 @@ async fn accept_loop(
                         break;
                     }
                 }
+            }
+            joined = connection_handlers.join_next(), if !connection_handlers.is_empty() => {
+                if let Some(Err(error)) = joined {
+                    if !error.is_cancelled() {
+                        warn!(%error, "IPC connection handler join failed");
+                    }
+                }
+            }
+            accept_result = listener.accept() => {
+                match accept_result {
+                    Ok(stream) => {
+                        // T049: every accepted connection resets the idle timer (S046).
+                        ttl.reset();
+
+                        let state = Arc::clone(&state);
+                        let tx = Arc::clone(&shutdown_tx);
+                        connection_handlers.spawn(handle_connection(stream, state, tx));
+                    }
+                    Err(e) => {
+                        error!(error = %e, "IPC listener accept error");
+                    }
+                }
+            }
+        }
+    }
+
+    // Admission has stopped. Cancel and join every accepted handler before
+    // startup/hydration/watchers are drained and the final flush begins.
+    connection_handlers.abort_all();
+    while let Some(result) = connection_handlers.join_next().await {
+        if let Err(error) = result {
+            if !error.is_cancelled() {
+                warn!(%error, "IPC connection handler join failed during shutdown");
             }
         }
     }
@@ -944,25 +981,45 @@ async fn run_startup_driver(
         | CompletionOutcome::Stale => None,
     };
     if let Some(successor) = transferred {
-        drive_daemon_transferred_syncs(&snapshot, &workspace_config, successor, "startup").await;
+        drive_daemon_transferred_syncs(&state, &snapshot, &workspace_config, successor, "startup")
+            .await;
     }
 }
 
 async fn drive_daemon_transferred_syncs(
+    state: &AppState,
     snapshot: &WorkspaceSnapshot,
     workspace_config: &WorkspaceConfig,
-    mut successor: crate::server::state::OwnerPermit,
+    successor: crate::server::state::OwnerPermit,
     driver: &'static str,
 ) {
+    let mut successor = successor;
+    let mut current_ctx = crate::server::state::DispatchSnapshot {
+        workspace: snapshot.clone(),
+        config: workspace_config.clone(),
+    };
     loop {
+        let prepared =
+            crate::tools::write::prepare_transferred_sync(state, successor, current_ctx).await;
+        let Some((prepared_successor, prepared_ctx)) = (match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                warn!(%error, driver, "daemon transferred branch preparation failed");
+                return;
+            }
+        }) else {
+            return;
+        };
+        successor = prepared_successor;
+        current_ctx = prepared_ctx;
         let work_bits = successor.work_bits();
         let operation = async {
-            let workspace_path = std::path::PathBuf::from(&snapshot.path);
+            let workspace_path = std::path::PathBuf::from(&current_ctx.workspace.path);
             let result = crate::services::code_graph::sync_workspace_with_progress(
                 &workspace_path,
-                &snapshot.data_dir,
-                &snapshot.branch,
-                &workspace_config.code_graph,
+                &current_ctx.workspace.data_dir,
+                &current_ctx.workspace.branch,
+                &current_ctx.config.code_graph,
                 work_bits & 0b100 != 0,
                 work_bits & 0b010 != 0,
                 None,
@@ -976,7 +1033,7 @@ async fn drive_daemon_transferred_syncs(
                         files_modified = result.files_modified,
                         "daemon transferred sync complete"
                     );
-                    if let Err(error) = flush_daemon_snapshot(snapshot).await {
+                    if let Err(error) = flush_daemon_snapshot(&current_ctx.workspace).await {
                         warn!(%error, driver, "daemon transferred flush failed");
                     }
                 }
@@ -989,6 +1046,7 @@ async fn drive_daemon_transferred_syncs(
         if !matches!(successor.run_until_cancelled(operation).await, Some(true)) {
             return;
         }
+        let _ = state.set_hydration_ready_for_permit(&successor);
         successor = match CoordinatorCell::complete(successor) {
             CompletionOutcome::Transferred(next) => next,
             CompletionOutcome::Released
@@ -1129,8 +1187,14 @@ async fn run_watcher_driver(
             }
 
             if let CompletionOutcome::Transferred(successor) = CoordinatorCell::complete(permit) {
-                drive_daemon_transferred_syncs(&snapshot, &workspace_config, successor, "watcher")
-                    .await;
+                drive_daemon_transferred_syncs(
+                    &state,
+                    &snapshot,
+                    &workspace_config,
+                    successor,
+                    "watcher",
+                )
+                .await;
             };
             break 'reconcile_batch;
         }
@@ -1239,6 +1303,27 @@ mod tests {
     use crate::server::state::{AppState, CoordinatorCell, OwnerKind, RequestOutcome, WorkMask};
     #[cfg(unix)]
     use std::path::{Path, PathBuf};
+
+    #[cfg(unix)]
+    async fn connect_test_stream(endpoint: &str) -> Stream {
+        use interprocess::local_socket::{GenericFilePath, ToFsName};
+
+        let name = endpoint
+            .to_fs_name::<GenericFilePath>()
+            .expect("convert test socket path");
+        Stream::connect(name).await.expect("connect test socket")
+    }
+
+    #[cfg(windows)]
+    async fn connect_test_stream(endpoint: &str) -> Stream {
+        use interprocess::local_socket::{GenericNamespaced, ToNsName};
+
+        let pipe_name = endpoint.strip_prefix(r"\\.\pipe\").unwrap_or(endpoint);
+        let name = pipe_name
+            .to_ns_name::<GenericNamespaced>()
+            .expect("convert test pipe name");
+        Stream::connect(name).await.expect("connect test pipe")
+    }
 
     fn coordinator_snapshot(
         workspace_id: &str,
@@ -1529,6 +1614,140 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shared_accept_loop_quiesces_accepted_handlers_before_returning() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        std::fs::create_dir_all(workspace.path().join(".git")).expect("create git metadata");
+        std::fs::write(
+            workspace.path().join(".git").join("HEAD"),
+            "ref: refs/heads/main\n",
+        )
+        .expect("write git HEAD");
+        let endpoint = ipc_endpoint(workspace.path()).expect("IPC endpoint");
+        let listener = bind_listener(&endpoint).expect("bind IPC listener");
+        let state = Arc::new(AppState::new(1));
+        let ttl = TtlTimer::new(Duration::ZERO);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let shutdown_tx = Arc::new(shutdown_tx);
+        let server_state = Arc::clone(&state);
+        let server_tx = Arc::clone(&shutdown_tx);
+        let server = tokio::spawn(async move {
+            accept_loop(listener, server_state, ttl, server_tx, shutdown_rx).await;
+        });
+
+        let blocker = connect_test_stream(&endpoint).await;
+        let (blocker_recv, mut blocker_send) = blocker.split();
+        blocker_send
+            .write_all(
+                br#"{"jsonrpc":"2.0","id":1,"method":"blocked_until_shutdown","params":null}"#,
+            )
+            .await
+            .expect("write partial blocking request");
+        blocker_send
+            .flush()
+            .await
+            .expect("flush partial blocking request");
+
+        // A later accepted witness proves the partial connection's handler was
+        // already admitted before shutdown; no timing or sleep is involved.
+        let witness = connect_test_stream(&endpoint).await;
+        let (witness_recv, mut witness_send) = witness.split();
+        witness_send
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"_health\"}\n")
+            .await
+            .expect("write witness request");
+        witness_send.flush().await.expect("flush witness request");
+        let mut witness_reader = BufReader::new(witness_recv);
+        let mut witness_response = String::new();
+        assert!(
+            witness_reader
+                .read_line(&mut witness_response)
+                .await
+                .expect("read witness response")
+                > 0,
+            "witness connection must complete"
+        );
+
+        shutdown_tx.send(true).expect("signal shutdown");
+        server.await.expect("accept loop joins");
+
+        let _ = blocker_send.write_all(b"\n").await;
+        let _ = blocker_send.flush().await;
+        drop(blocker_send);
+        let mut blocker_reader = BufReader::new(blocker_recv);
+        let mut blocker_response = String::new();
+        let bytes = blocker_reader
+            .read_line(&mut blocker_response)
+            .await
+            .expect("read blocker terminal");
+
+        assert_eq!(
+            state.tool_call_count(),
+            0,
+            "an accepted handler must not dispatch after accept-loop shutdown"
+        );
+        assert_eq!(
+            bytes, 0,
+            "quiesced handler must close without processing its partial request"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_request_flushes_exact_response_before_handler_quiescence() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        std::fs::create_dir_all(workspace.path().join(".git")).expect("create git metadata");
+        std::fs::write(
+            workspace.path().join(".git").join("HEAD"),
+            "ref: refs/heads/main\n",
+        )
+        .expect("write git HEAD");
+        let endpoint = ipc_endpoint(workspace.path()).expect("IPC endpoint");
+        let listener = bind_listener(&endpoint).expect("bind IPC listener");
+        let state = Arc::new(AppState::new(1));
+        let ttl = TtlTimer::new(Duration::ZERO);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let shutdown_tx = Arc::new(shutdown_tx);
+        let server_tx = Arc::clone(&shutdown_tx);
+        let server = tokio::spawn(async move {
+            accept_loop(listener, state, ttl, server_tx, shutdown_rx).await;
+        });
+
+        let stream = connect_test_stream(&endpoint).await;
+        let (recv, mut send) = stream.split();
+        send.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"_shutdown\"}\n")
+            .await
+            .expect("write shutdown request");
+        send.flush().await.expect("flush shutdown request");
+        let mut reader = BufReader::new(recv);
+        let mut response = String::new();
+        assert!(
+            reader
+                .read_line(&mut response)
+                .await
+                .expect("read shutdown response")
+                > 0,
+            "shutdown response must be flushed before quiescence"
+        );
+        let response: Value =
+            serde_json::from_str(response.trim()).expect("parse shutdown response");
+        assert_eq!(
+            response,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 9,
+                "result": {
+                    "status": "shutting_down",
+                    "flush_started": true
+                }
+            })
+        );
+
+        server
+            .await
+            .expect("shutdown handler must not self-join or deadlock");
+        assert!(*shutdown_tx.borrow());
+    }
+
+    #[tokio::test]
     async fn daemon_transferred_failure_recovers_full_mask() {
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace = temp.path().join("workspace");
@@ -1572,7 +1791,7 @@ mod tests {
             | CompletionOutcome::Stale => panic!("full mask should transfer"),
         };
 
-        drive_daemon_transferred_syncs(&snapshot, &config, successor, "test").await;
+        drive_daemon_transferred_syncs(&state, &snapshot, &config, successor, "test").await;
 
         assert!(state.coordinator.test_is_idle());
         assert_eq!(state.coordinator.test_pending_bits(), 0b111);

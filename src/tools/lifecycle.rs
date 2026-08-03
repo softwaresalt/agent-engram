@@ -345,6 +345,7 @@ async fn background_db_hydration(
     admission: AdmissionGuard,
     #[cfg(test)] test_probe: Option<HydrationProbe>,
 ) {
+    let binding_generation = admission.generation();
     let mut permit = match admission.acquire_hydration().await {
         Ok(Some(permit)) => permit,
         Ok(None) => return,
@@ -385,7 +386,6 @@ async fn background_db_hydration(
                         last_completed_at: Some(Utc::now().to_rfc3339()),
                     }))
                     .await;
-                state.set_hydration_ready();
                 return HydrationTerminal::DbFailure;
             }
         };
@@ -394,7 +394,7 @@ async fn background_db_hydration(
 
         // Signal "ready" immediately after the DB connects so the shim's
         // poll_until_ready succeeds while the longer hydration continues.
-        state.set_hydration_ready();
+        let _ = state.set_hydration_ready_for_generation(binding_generation);
 
         if let Err(e) = hydrate_code_graph(&canonical, &data_dir, &branch, &cg_queries).await {
             tracing::warn!(error = %e, "background_db_hydration: code graph hydration failed");
@@ -465,10 +465,6 @@ async fn background_db_hydration(
                 drive_transferred_sync(
                     &state,
                     successor,
-                    &canonical,
-                    &data_dir,
-                    &branch,
-                    &code_graph_config,
                     #[cfg(test)]
                     None,
                 )
@@ -484,17 +480,31 @@ async fn background_db_hydration(
 }
 
 async fn drive_transferred_sync(
-    _state: &AppState,
-    mut permit: OwnerPermit,
-    workspace_path: &Path,
-    data_dir: &Path,
-    branch: &str,
-    code_graph_config: &CodeGraphConfig,
+    state: &AppState,
+    permit: OwnerPermit,
     #[cfg(test)] test_probe: Option<HandoffProbe>,
 ) {
+    let Some(initial_ctx) = state.snapshot_dispatch_context().await else {
+        return;
+    };
+    let mut permit = permit;
+    let mut current_ctx = initial_ctx;
     #[cfg(test)]
     let mut test_probe = test_probe;
     loop {
+        let prepared =
+            crate::tools::write::prepare_transferred_sync(state, permit, current_ctx).await;
+        let Some((prepared_permit, prepared_ctx)) = (match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                tracing::warn!(%error, "hydration transferred branch preparation failed");
+                return;
+            }
+        }) else {
+            return;
+        };
+        permit = prepared_permit;
+        current_ctx = prepared_ctx;
         let work_mask = permit.work_bits();
         let operation = async {
             #[cfg(test)]
@@ -505,10 +515,10 @@ async fn drive_transferred_sync(
             let revalidate = work_mask & 0b010 != 0;
             let backfill_python = work_mask & 0b100 != 0;
             let result = crate::services::code_graph::sync_workspace_with_progress(
-                workspace_path,
-                data_dir,
-                branch,
-                code_graph_config,
+                Path::new(&current_ctx.workspace.path),
+                &current_ctx.workspace.data_dir,
+                &current_ctx.workspace.branch,
+                &current_ctx.config.code_graph,
                 backfill_python,
                 revalidate,
                 None,
@@ -537,13 +547,16 @@ async fn drive_transferred_sync(
         };
 
         match permit.run_until_cancelled(operation).await {
-            Some(HandoffTerminal::Handled) => match CoordinatorCell::complete(permit) {
-                CompletionOutcome::Transferred(successor) => permit = successor,
-                CompletionOutcome::Released
-                | CompletionOutcome::RetirementAcknowledged
-                | CompletionOutcome::SequenceExhausted(_)
-                | CompletionOutcome::Stale => return,
-            },
+            Some(HandoffTerminal::Handled) => {
+                let _ = state.set_hydration_ready_for_permit(&permit);
+                match CoordinatorCell::complete(permit) {
+                    CompletionOutcome::Transferred(successor) => permit = successor,
+                    CompletionOutcome::Released
+                    | CompletionOutcome::RetirementAcknowledged
+                    | CompletionOutcome::SequenceExhausted(_)
+                    | CompletionOutcome::Stale => return,
+                }
+            }
             Some(HandoffTerminal::Failed) => return,
             #[cfg(test)]
             Some(HandoffTerminal::EarlyReturn) => return,
@@ -849,20 +862,7 @@ mod tests {
         permit: OwnerPermit,
         probe: Option<HandoffProbe>,
     ) {
-        let (snapshot, config) = state
-            .snapshot_workspace_and_config()
-            .await
-            .expect("test binding and config");
-        drive_transferred_sync(
-            state,
-            permit,
-            std::path::Path::new(&snapshot.path),
-            &snapshot.data_dir,
-            &snapshot.branch,
-            &config.code_graph,
-            probe,
-        )
-        .await;
+        drive_transferred_sync(state, permit, probe).await;
     }
 
     #[tokio::test]
@@ -964,6 +964,10 @@ mod tests {
             assert!(state.coordinator.test_is_idle());
             assert_eq!(state.coordinator.test_notification_calls(), 1);
             assert_eq!(state.coordinator.test_pending_bits(), 0);
+            assert!(
+                !state.is_hydration_ready(),
+                "cancelled hydration must not mark its replacement generation ready"
+            );
         }
     }
 
@@ -995,6 +999,10 @@ mod tests {
             assert!(state.coordinator.test_is_idle());
             assert_eq!(state.coordinator.test_notification_calls(), 1);
             assert_eq!(state.coordinator.test_pending_bits(), 0);
+            assert!(
+                !state.is_hydration_ready(),
+                "DB failure and early return must not report hydration readiness"
+            );
         }
     }
 

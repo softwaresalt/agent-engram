@@ -17,8 +17,8 @@ use crate::errors::{CodeGraphError, EngramError, SystemError, WorkspaceError};
 use crate::models::config::CodeGraphConfig;
 use crate::models::health::ScanProgress;
 use crate::server::state::{
-    CompletionOutcome, CoordinatorCell, DispatchSnapshot, DriverTaskGuard, OwnerKind, OwnerPermit,
-    RequestOutcome, SharedState, WorkMask,
+    AppState, CompletionOutcome, CoordinatorCell, DispatchSnapshot, DriverTaskGuard, OwnerKind,
+    OwnerPermit, RequestOutcome, SharedState, WorkMask,
 };
 use crate::services::dehydration;
 use crate::services::hydration;
@@ -188,7 +188,7 @@ pub async fn index_workspace(
             work_bits,
         )
         .await;
-        finish_indexing_scan_progress(&state, &result, true).await;
+        finish_workspace_write_scan_progress(&state, &result, true).await;
         result
     };
     let Some(result) = permit.run_until_cancelled(operation).await else {
@@ -197,10 +197,25 @@ pub async fn index_workspace(
         }));
     };
     let result = result?;
+    if result.unfulfilled_work_bits != 0 {
+        // Armed Drop atomically republishes the complete owner mask together
+        // with any concurrent pending work. A structured per-file error remains
+        // part of the successful response contract, but its heavy intent must
+        // stay coordinator-owned for a later retry.
+        drop(permit);
+        return Ok(result.value);
+    }
+    let _ = state.set_hydration_ready_for_permit(&permit);
+    let value = result.value;
     if let CompletionOutcome::Transferred(successor) = CoordinatorCell::complete(permit) {
         drive_transferred_sync(&state, successor, &ctx).await;
     }
-    Ok(result)
+    Ok(value)
+}
+
+struct WorkspaceWriteOutcome {
+    value: Value,
+    unfulfilled_work_bits: u8,
 }
 
 async fn run_workspace_write(
@@ -212,7 +227,7 @@ async fn run_workspace_write(
     params: Option<Value>,
     full_index: bool,
     required_work_bits: u8,
-) -> Result<Value, EngramError> {
+) -> Result<WorkspaceWriteOutcome, EngramError> {
     let last_completed_at = state
         .scan_progress_snapshot()
         .await
@@ -226,13 +241,17 @@ async fn run_workspace_write(
         task: Some(progress_task),
     };
 
-    let value = if full_index {
+    let (value, unfulfilled_work_bits) = if full_index {
         let parsed: IndexWorkspaceParams =
             serde_json::from_value(params.unwrap_or_else(|| json!({}))).map_err(|error| {
                 EngramError::System(SystemError::InvalidParams {
                     reason: error.to_string(),
                 })
             })?;
+        // A full Index owner claims all three work bits. Heavy bits mean every
+        // indexed file must be re-extracted; a hash-skipping index cannot
+        // certify either durable migration marker.
+        let force = parsed.force || required_work_bits & 0b110 != 0;
         let result = {
             let mut progress_callback = move |files_scanned, files_total| {
                 let _ = progress_tx.send(running_scan_progress(
@@ -246,12 +265,13 @@ async fn run_workspace_write(
                 data_dir,
                 branch,
                 &config,
-                parsed.force,
+                force,
                 Some(&mut progress_callback),
             )
             .await
         }?;
-        serde_json::to_value(result)
+        let unfulfilled_work_bits = unfulfilled_work_bits(&result.errors, required_work_bits);
+        (serde_json::to_value(result), unfulfilled_work_bits)
     } else {
         let mut parsed: SyncWorkspaceParams =
             serde_json::from_value(params.unwrap_or_else(|| json!({}))).map_err(|error| {
@@ -280,9 +300,10 @@ async fn run_workspace_write(
             )
             .await
         }?;
-        serde_json::to_value(result)
-    }
-    .map_err(|error| {
+        let unfulfilled_work_bits = unfulfilled_work_bits(&result.errors, required_work_bits);
+        (serde_json::to_value(result), unfulfilled_work_bits)
+    };
+    let value = value.map_err(|error| {
         EngramError::System(SystemError::DatabaseError {
             reason: format!("result serialization failed: {error}"),
         })
@@ -298,7 +319,32 @@ async fn run_workspace_write(
             reason: format!("scan progress updater failed: {error}"),
         })
     })?;
-    Ok(value)
+    Ok(WorkspaceWriteOutcome {
+        value,
+        unfulfilled_work_bits,
+    })
+}
+
+fn unfulfilled_work_bits(
+    errors: &[crate::services::code_graph::FileError],
+    required_work_bits: u8,
+) -> u8 {
+    let revalidation = if required_work_bits & 0b010 != 0 && !errors.is_empty() {
+        0b010
+    } else {
+        0
+    };
+    let python_backfill = if required_work_bits & 0b100 != 0
+        && errors.iter().any(|error| {
+            Path::new(&error.file)
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("py"))
+        }) {
+        0b100
+    } else {
+        0
+    };
+    revalidation | python_backfill
 }
 
 // ── sync_workspace (T045) ───────────────────────────────────────────
@@ -373,7 +419,7 @@ pub async fn sync_workspace(
 
         enum SyncAttempt {
             BranchChanged(String),
-            Finished(Result<Value, EngramError>),
+            Finished(Result<WorkspaceWriteOutcome, EngramError>),
         }
 
         let operation = async {
@@ -396,7 +442,7 @@ pub async fn sync_workspace(
                 work_bits,
             )
             .await;
-            finish_indexing_scan_progress(&state, &result, false).await;
+            finish_workspace_write_scan_progress(&state, &result, false).await;
             SyncAttempt::Finished(result)
         };
         let Some(attempt) = permit.run_until_cancelled(operation).await else {
@@ -418,6 +464,27 @@ pub async fn sync_workspace(
                             reason: format!("sync branch publication failed: {error}"),
                         })
                     })?;
+                match CoordinatorCell::request(
+                    admission,
+                    WorkMask::from_bits(work_bits),
+                    OwnerKind::Sync,
+                )
+                .map_err(|error| {
+                    EngramError::System(SystemError::DatabaseError {
+                        reason: format!("sync branch reissue failed: {error}"),
+                    })
+                })? {
+                    RequestOutcome::Enqueued => {}
+                    RequestOutcome::Acquired(_)
+                    | RequestOutcome::Waiting(_)
+                    | RequestOutcome::Stale => {
+                        return Err(EngramError::System(SystemError::DatabaseError {
+                            reason:
+                                "sync branch reissue was not retained by the retirement barrier"
+                                    .to_owned(),
+                        }));
+                    }
+                }
                 if !matches!(
                     CoordinatorCell::complete(permit),
                     CompletionOutcome::RetirementAcknowledged
@@ -427,42 +494,151 @@ pub async fn sync_workspace(
                     }));
                 }
                 metrics_branch = Some(branch);
-                guarded = (
-                    admission,
-                    DispatchSnapshot {
-                        workspace,
-                        config: ctx.config,
-                    },
-                );
+                let next_guarded = state.guarded_dispatch_context().await.ok_or_else(|| {
+                    EngramError::System(SystemError::DatabaseError {
+                        reason: "sync branch publication lost its dispatch context".to_owned(),
+                    })
+                })?;
+                if next_guarded.1.workspace.workspace_uuid != workspace.workspace_uuid
+                    || next_guarded.1.workspace.workspace_id != workspace.workspace_id
+                {
+                    return Err(EngramError::System(SystemError::DatabaseError {
+                        reason: "sync branch publication was superseded by a distinct binding"
+                            .to_owned(),
+                    }));
+                }
+                guarded = next_guarded;
             }
             SyncAttempt::Finished(result) => {
                 let result = result?;
+                if result.unfulfilled_work_bits != 0 {
+                    drop(permit);
+                    return Ok(result.value);
+                }
+                let _ = state.set_hydration_ready_for_permit(&permit);
+                let value = result.value;
                 if let CompletionOutcome::Transferred(successor) = CoordinatorCell::complete(permit)
                 {
                     drive_transferred_sync(&state, successor, &ctx).await;
                 }
-                return Ok(result);
+                return Ok(value);
             }
         }
     }
 }
 
-async fn drive_transferred_sync(
-    state: &SharedState,
-    mut permit: OwnerPermit,
-    ctx: &DispatchSnapshot,
-) {
+/// Re-resolve and, when needed, coherently publish a transferred Sync's branch.
+///
+/// Branch publication deliberately transfers zero old-binding bits. The saved
+/// mask is reissued with the returned new-generation admission while the old
+/// permit is still behind its retirement barrier, then the old permit
+/// acknowledges quiescence. This is a new-binding request, not an implicit
+/// cross-binding transfer.
+pub(crate) async fn prepare_transferred_sync(
+    state: &AppState,
+    permit: OwnerPermit,
+    ctx: DispatchSnapshot,
+) -> Result<Option<(OwnerPermit, DispatchSnapshot)>, EngramError> {
+    let workspace_path = PathBuf::from(&ctx.workspace.path);
+    let Ok(resolved_branch) = resolve_git_branch(&workspace_path) else {
+        // Non-Git workspaces retain their published default/synthetic branch.
+        return Ok(Some((permit, ctx)));
+    };
+    if resolved_branch == ctx.workspace.branch {
+        return Ok(Some((permit, ctx)));
+    }
+
+    let work_bits = permit.work_bits();
+    let mut workspace = ctx.workspace;
+    workspace.workspace_id = workspace_hash(Path::new(&workspace.path), &resolved_branch);
+    workspace.branch = resolved_branch;
+    let (_generation, admission) = state
+        .publish_workspace_generation(workspace.clone(), Some(ctx.config))
+        .await
+        .map_err(|error| {
+            EngramError::System(SystemError::DatabaseError {
+                reason: format!("transferred sync branch publication failed: {error}"),
+            })
+        })?;
+
+    match CoordinatorCell::request(admission, WorkMask::from_bits(work_bits), OwnerKind::Sync)
+        .map_err(|error| {
+            EngramError::System(SystemError::DatabaseError {
+                reason: format!("transferred sync branch reissue failed: {error}"),
+            })
+        })? {
+        RequestOutcome::Enqueued => {}
+        RequestOutcome::Acquired(_) | RequestOutcome::Waiting(_) | RequestOutcome::Stale => {
+            return Err(EngramError::System(SystemError::DatabaseError {
+                reason:
+                    "transferred sync branch reissue was not retained by the retirement barrier"
+                        .to_owned(),
+            }));
+        }
+    }
+
+    if !matches!(
+        CoordinatorCell::complete(permit),
+        CompletionOutcome::RetirementAcknowledged
+    ) {
+        return Err(EngramError::System(SystemError::DatabaseError {
+            reason: "transferred sync branch publication lost retirement acknowledgment".to_owned(),
+        }));
+    }
+
+    let Some((admission, current_ctx)) = state.guarded_dispatch_context().await else {
+        return Err(EngramError::System(SystemError::DatabaseError {
+            reason: "transferred sync branch publication lost its dispatch context".to_owned(),
+        }));
+    };
+    if current_ctx.workspace.workspace_uuid != workspace.workspace_uuid
+        || current_ctx.workspace.workspace_id != workspace.workspace_id
+    {
+        // A later distinct publication correctly discarded this superseded
+        // target's pending bits. Never carry them into an unrelated binding.
+        return Ok(None);
+    }
+
+    match CoordinatorCell::request(admission, WorkMask::from_bits(work_bits), OwnerKind::Sync)
+        .map_err(|error| {
+            EngramError::System(SystemError::DatabaseError {
+                reason: format!("transferred sync branch reacquisition failed: {error}"),
+            })
+        })? {
+        RequestOutcome::Acquired(permit) => Ok(Some((permit, current_ctx))),
+        RequestOutcome::Enqueued | RequestOutcome::Stale => Ok(None),
+        RequestOutcome::Waiting(_) => Err(EngramError::System(SystemError::DatabaseError {
+            reason: "non-empty transferred sync unexpectedly entered waiting admission".to_owned(),
+        })),
+    }
+}
+
+async fn drive_transferred_sync(state: &SharedState, permit: OwnerPermit, ctx: &DispatchSnapshot) {
+    let mut permit = permit;
+    let mut current_ctx = ctx.clone();
     loop {
+        let prepared = prepare_transferred_sync(state, permit, current_ctx).await;
+        let Some((prepared_permit, prepared_ctx)) = (match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                tracing::warn!(%error, "transferred sync branch preparation failed");
+                return;
+            }
+        }) else {
+            return;
+        };
+        permit = prepared_permit;
+        current_ctx = prepared_ctx;
         let work_bits = permit.work_bits();
         let operation = async {
-            let ws_path = PathBuf::from(&ctx.workspace.path);
+            let ws_path = PathBuf::from(&current_ctx.workspace.path);
             begin_indexing_scan_progress(state).await;
             let result = run_workspace_write(
                 state,
                 &ws_path,
-                &ctx.workspace.data_dir,
-                &ctx.workspace.branch,
-                ctx.config.code_graph.clone(),
+                &current_ctx.workspace.data_dir,
+                &current_ctx.workspace.branch,
+                current_ctx.config.code_graph.clone(),
                 Some(json!({
                     "revalidate_code_graph": work_bits & 0b010 != 0,
                     "backfill_python_canonical": work_bits & 0b100 != 0
@@ -471,18 +647,24 @@ async fn drive_transferred_sync(
                 work_bits,
             )
             .await;
-            finish_indexing_scan_progress(state, &result, false).await;
+            finish_workspace_write_scan_progress(state, &result, false).await;
             result
         };
 
         match permit.run_until_cancelled(operation).await {
-            Some(Ok(_)) => match CoordinatorCell::complete(permit) {
-                CompletionOutcome::Transferred(successor) => permit = successor,
-                CompletionOutcome::Released
-                | CompletionOutcome::RetirementAcknowledged
-                | CompletionOutcome::SequenceExhausted(_)
-                | CompletionOutcome::Stale => return,
-            },
+            Some(Ok(result)) => {
+                if result.unfulfilled_work_bits != 0 {
+                    return;
+                }
+                let _ = state.set_hydration_ready_for_permit(&permit);
+                match CoordinatorCell::complete(permit) {
+                    CompletionOutcome::Transferred(successor) => permit = successor,
+                    CompletionOutcome::Released
+                    | CompletionOutcome::RetirementAcknowledged
+                    | CompletionOutcome::SequenceExhausted(_)
+                    | CompletionOutcome::Stale => return,
+                }
+            }
             Some(Err(error)) => {
                 tracing::warn!(%error, "transferred sync failed");
                 return;
@@ -604,6 +786,19 @@ async fn finish_indexing_scan_progress(
     state.set_scan_progress(Some(progress)).await;
 }
 
+async fn finish_workspace_write_scan_progress(
+    state: &SharedState,
+    result: &Result<WorkspaceWriteOutcome, EngramError>,
+    full_index: bool,
+) {
+    let progress = match result {
+        Ok(result) if full_index => completed_index_scan_progress(&result.value),
+        Ok(result) => completed_sync_scan_progress(&result.value),
+        Err(_) => completed_scan_progress(0),
+    };
+    state.set_scan_progress(Some(progress)).await;
+}
+
 #[cfg(test)]
 type DrainFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 
@@ -700,15 +895,16 @@ mod tests {
 
     use super::{
         ProgressProbe, completed_index_scan_progress, completed_sync_scan_progress,
-        finalize_indexing_request, indexing_started_progress, running_scan_progress,
-        spawn_scan_progress_updater, sync_workspace,
+        drive_transferred_sync, finalize_indexing_request, index_workspace,
+        indexing_started_progress, running_scan_progress, spawn_scan_progress_updater,
+        sync_workspace,
     };
     use crate::db::connect_db;
     use crate::db::queries::CodeGraphQueries;
     use crate::models::config::{CodeGraphConfig, WorkspaceConfig};
     use crate::server::state::{
-        AppState, CoordinatorCell, DriverTaskGuard, OwnerKind, OwnerPermit, RequestOutcome,
-        WorkMask, WorkspaceSnapshot,
+        AppState, CompletionOutcome, CoordinatorCell, DispatchSnapshot, DriverTaskGuard, OwnerKind,
+        OwnerPermit, RequestOutcome, WorkMask, WorkspaceSnapshot,
     };
     use crate::services::code_graph;
 
@@ -1166,6 +1362,9 @@ mod tests {
         stale.branch = "stale-branch".to_owned();
         publish(&state, stale).await;
         let old_admission = state.coordinator.admission();
+        state.set_hydration_ready();
+        let recovered = acquired(request(&state, WorkMask::from_bits(0b111), OwnerKind::Sync));
+        drop(recovered);
 
         sync_workspace(Arc::clone(&state), None)
             .await
@@ -1186,5 +1385,237 @@ mod tests {
         ));
         assert!(state.coordinator.test_is_idle());
         assert_eq!(state.coordinator.test_pending_bits(), 0);
+        assert!(
+            state.is_hydration_ready(),
+            "successful branch initialization must restore readiness"
+        );
+
+        let db = connect_db(&active.data_dir, "main")
+            .await
+            .expect("connect refreshed branch DB");
+        let queries = CodeGraphQueries::new(db);
+        assert_eq!(
+            queries
+                .python_extraction_version()
+                .expect("read Python extraction marker"),
+            Some("1".to_owned()),
+            "recovered backfill intent must be reissued for the new branch"
+        );
+        assert_eq!(
+            queries
+                .code_graph_extraction_generation()
+                .expect("read code-graph generation"),
+            Some("1".to_owned()),
+            "recovered revalidation intent must be reissued for the new branch"
+        );
+    }
+
+    #[tokio::test]
+    async fn full_index_fulfills_recovered_heavy_work_before_success() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("workspace");
+        let data_dir = temp.path().join("data");
+        std::fs::create_dir_all(&workspace).expect("create workspace");
+        std::fs::write(workspace.join("app.py"), "def run():\n    return 1\n")
+            .expect("write source");
+
+        let config = CodeGraphConfig::default();
+        code_graph::index_workspace(&workspace, &data_dir, "main", &config, false)
+            .await
+            .expect("seed index");
+        {
+            let db = connect_db(&data_dir, "main")
+                .await
+                .expect("connect seed DB");
+            let queries = CodeGraphQueries::new(db);
+            queries
+                .set_python_extraction_version("0")
+                .await
+                .expect("reset Python marker");
+            queries
+                .set_code_graph_extraction_generation("0")
+                .await
+                .expect("reset code-graph marker");
+        }
+
+        let state = Arc::new(AppState::new(1));
+        publish(
+            &state,
+            snapshot(
+                "full-heavy",
+                "uuid-full-heavy",
+                "id-full-heavy",
+                &workspace,
+                data_dir.clone(),
+            ),
+        )
+        .await;
+        let recovered = acquired(request(
+            &state,
+            WorkMask::from_bits(0b111),
+            OwnerKind::Index,
+        ));
+        drop(recovered);
+
+        index_workspace(Arc::clone(&state), None)
+            .await
+            .expect("full index with recovered heavy work");
+
+        let db = connect_db(&data_dir, "main")
+            .await
+            .expect("reconnect indexed DB");
+        let queries = CodeGraphQueries::new(db);
+        assert_eq!(
+            queries
+                .python_extraction_version()
+                .expect("read Python marker"),
+            Some("1".to_owned())
+        );
+        assert_eq!(
+            queries
+                .code_graph_extraction_generation()
+                .expect("read code-graph marker"),
+            Some("1".to_owned())
+        );
+        assert_eq!(state.coordinator.test_pending_bits(), 0);
+    }
+
+    #[tokio::test]
+    async fn full_index_retains_heavy_work_when_file_errors_prevent_fulfillment() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("workspace");
+        let data_dir = temp.path().join("data");
+        std::fs::create_dir_all(&workspace).expect("create workspace");
+        std::fs::write(workspace.join("invalid.py"), [0xff]).expect("write invalid UTF-8 source");
+
+        let state = Arc::new(AppState::new(1));
+        publish(
+            &state,
+            snapshot(
+                "full-error",
+                "uuid-full-error",
+                "id-full-error",
+                &workspace,
+                data_dir,
+            ),
+        )
+        .await;
+
+        let response = index_workspace(Arc::clone(&state), None)
+            .await
+            .expect("per-file failures remain structured index results");
+        assert!(
+            response["errors"]
+                .as_array()
+                .is_some_and(|errors| !errors.is_empty()),
+            "fixture must exercise a non-fatal file error"
+        );
+        assert_eq!(
+            state.coordinator.test_pending_bits(),
+            0b111,
+            "unfulfilled claimed heavy work must remain coordinator-owned"
+        );
+    }
+
+    #[tokio::test]
+    async fn transferred_sync_refreshes_branch_before_any_database_write() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("workspace");
+        let data_dir = temp.path().join("data");
+        std::fs::create_dir_all(workspace.join(".git")).expect("create git metadata");
+        std::fs::write(
+            workspace.join(".git").join("HEAD"),
+            "ref: refs/heads/main\n",
+        )
+        .expect("write git HEAD");
+
+        let state = Arc::new(AppState::new(1));
+        let mut stale = snapshot(
+            "transferred-branch",
+            "uuid-transferred-branch",
+            "id-transferred-stale",
+            &workspace,
+            data_dir.clone(),
+        );
+        stale.branch = "stale-branch".to_owned();
+        publish(&state, stale.clone()).await;
+        let owner = acquired(request(&state, WorkMask::default(), OwnerKind::Index));
+        assert!(matches!(
+            request(&state, WorkMask::from_bits(0b111), OwnerKind::Sync),
+            RequestOutcome::Enqueued
+        ));
+        let successor = match CoordinatorCell::complete(owner) {
+            CompletionOutcome::Transferred(successor) => successor,
+            CompletionOutcome::Released
+            | CompletionOutcome::RetirementAcknowledged
+            | CompletionOutcome::SequenceExhausted(_)
+            | CompletionOutcome::Stale => panic!("queued full mask must transfer"),
+        };
+        let context = DispatchSnapshot {
+            workspace: stale,
+            config: WorkspaceConfig::default(),
+        };
+
+        drive_transferred_sync(&state, successor, &context).await;
+
+        let active = state
+            .snapshot_workspace()
+            .await
+            .expect("active branch snapshot");
+        assert_eq!(active.branch, "main");
+        assert_eq!(
+            active.workspace_id,
+            super::workspace_hash(&workspace, "main")
+        );
+        assert!(
+            !data_dir
+                .join("cozo")
+                .join("stale-branch")
+                .join("engram.db")
+                .exists(),
+            "predecessor branch DB must remain untouched"
+        );
+        assert!(
+            data_dir
+                .join("cozo")
+                .join("main")
+                .join("engram.db")
+                .exists(),
+            "transferred work must initialize the resolved branch DB"
+        );
+        assert!(state.is_hydration_ready());
+    }
+
+    #[tokio::test]
+    async fn failed_branch_initialization_does_not_restore_readiness() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(workspace.join(".git")).expect("create git metadata");
+        std::fs::write(
+            workspace.join(".git").join("HEAD"),
+            "ref: refs/heads/main\n",
+        )
+        .expect("write git HEAD");
+        let invalid_data_dir = temp.path().join("not-a-directory");
+        std::fs::write(&invalid_data_dir, b"blocks database directory")
+            .expect("write invalid data path");
+
+        let state = Arc::new(AppState::new(1));
+        let mut stale = snapshot(
+            "failed-branch",
+            "uuid-failed-branch",
+            "id-failed-stale",
+            &workspace,
+            invalid_data_dir,
+        );
+        stale.branch = "stale-branch".to_owned();
+        publish(&state, stale).await;
+        state.set_hydration_ready();
+
+        assert!(sync_workspace(Arc::clone(&state), None).await.is_err());
+        assert!(
+            !state.is_hydration_ready(),
+            "failed branch initialization must remain in starting state"
+        );
     }
 }
