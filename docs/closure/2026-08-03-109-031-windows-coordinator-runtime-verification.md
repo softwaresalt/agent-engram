@@ -6,6 +6,7 @@ feature: 109-F
 task: 109.031-T
 branch: feat/109-single-authority-coordinator
 commit: 1edcc61f9d90296e16c7132c8fdd6ef3adc8f8b9
+current_candidate: be805eec36c4da8aa272e3638f1b059ead633adc
 surface: background-job
 mode: manual
 verdict: pass
@@ -20,9 +21,10 @@ CI-equivalent all-target gate. The current candidate then passed the required
 15-minute named-pipe observation, PID-specific restart/reconciliation, and
 full-release-unit rollback restart against disposable state.
 
-PR readiness is still blocked outside this runtime verdict: the repository
-clippy gate reports production-source lint failures that cannot be changed
-under `109.031-T`'s zero-production-file constraint.
+The operator subsequently authorized the production lint repairs and any
+review-blocking remediation. Candidate
+`be805eec36c4da8aa272e3638f1b059ead633adc` clears both strict clippy variants
+and preserves queued heavy work after partial transferred-sync errors.
 
 ## Environment Prechecks
 
@@ -112,6 +114,22 @@ identity, contained DB, graph contents, and a clean sync all passed. PID
 `35352` was stopped explicitly and the clean baseline worktree was removed.
 No partial source, schema, or data rollback occurred.
 
+### Scenario 5 — Current-candidate affected failure path
+
+The clippy-only edits are mechanical and do not alter the named-pipe,
+restart/reconciliation, or rollback paths exercised above. Standard review did
+identify one behavior defect in transferred-sync partial-error handling. Two
+Windows real-database tests were added RED-first:
+
+- `tools::lifecycle::tests::transferred_partial_file_errors_recover_full_mask`;
+- `daemon::ipc_server::tests::daemon_transferred_partial_file_errors_recover_full_mask`.
+
+Both initially failed with pending work `0` instead of `0b111`, then passed on
+the current candidate after lifecycle and daemon drivers reused the shared
+fail-closed fulfillment predicate. This is the smallest affected runtime
+scenario; the successful 15-minute IPC observation remains valid because its
+runtime surface was unchanged.
+
 ## Ownership and Driver Invariants
 
 The clean aggregate run is the deterministic race proof. Its matrices cover
@@ -141,18 +159,8 @@ counters.
   **ActionRisk:** destructive but contained. **Approval:** covered by the
   disposable rollback request. **ActionResult:** applied.
 
-## Required Follow-up
+## Final Disposition
 
-The runtime gate has no remaining blocker. PR readiness remains blocked by one
-production-only quality gate:
-
-```text
-cargo clippy --no-default-features --features cozo-backend,embeddings \
-  --all-targets -- -D warnings -D clippy::pedantic
-```
-
-It reports nine lint findings in `src/daemon/ipc_server.rs` and
-`src/tools/write.rs` (`similar_names`, `let_and_return`,
-`unnecessary_semicolon`, `too_many_arguments`, `items_after_statements`, and
-`single_match`). Fixing those findings requires forbidden production edits, so
-`109.031-T` remains blocked under this final delegation.
+The runtime gate and both strict clippy variants pass. The exact CI all-target
+suite also passes on the current candidate. `109.031-T` is complete; shipment
+`104-S` remains active until an explicitly approved PR merge.

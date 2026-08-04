@@ -6,18 +6,17 @@ shipment: 104-S
 feature: 109-F
 task: 109.031-T
 verification_report: "docs/closure/2026-08-03-109-031-windows-coordinator-runtime-verification.md"
-status: blocked
+status: ready
 ---
 
 # 109.031-T Windows Coordinator Operational Closure
 
 ## Readiness
 
-**BLOCKED.** Do not create a PR from this gate evidence. The test-isolation,
-exact Windows all-target, 15-minute named-pipe, restart/reconciliation, and
-full-unit rollback gates now pass. The remaining blocker is the repository
-clippy gate: it requires production-source lint repairs forbidden by this
-task's zero-production-file constraint.
+**READY.** The operator authorized the production lint repairs and required
+review remediation. All local quality gates now pass except `cargo audit`,
+whose non-zero result is the documented `RUSTSEC-2026-0041` baseline. The PR
+may be opened and reviewed; merge still requires explicit operator approval.
 
 ## Invariants to Preserve
 
@@ -35,15 +34,44 @@ task's zero-production-file constraint.
 
 | Check | Result |
 |---|---|
-| Production files changed by this cycle | PASS — zero |
+| Production lint files changed | PASS — `ipc_server.rs`, `write.rs` |
+| Review-blocking correctness remediation | PASS — minimal `lifecycle.rs` partial-error fix |
 | TEMP and Git discovery confined to repository | PASS |
 | Retrieval-eval RED then test-only GREEN | PASS |
 | Exact Windows all-target run | PASS — one post-fix run, exit 0 |
 | Current-HEAD 15-minute named-pipe observation | PASS — 16/16 probes |
 | Restart/reconciliation evidence | PASS — PID 26388 → PID 41812 |
 | Full-release-unit revert/restart | PASS — baseline `df2803e1`, PID 35352 |
-| Repository clippy gate | BLOCKED — nine production-source findings |
+| `cargo fmt --all -- --check` | PASS |
+| Exact CI clippy | PASS |
+| Repository all-target clippy | PASS |
+| `cargo dev-test` | PASS — 529 tests |
+| Exact CI all-target suite | PASS — exit 0 |
+| Standard review | PASS — zero applicable P0/P1 after two cycles |
+| Dependency audit | PASS WITH KNOWN ADVISORY — `RUSTSEC-2026-0041` |
 | Schema or data rollback | Not applicable |
+
+The lint repairs were behavior-neutral. Review found one real correctness gap:
+transferred lifecycle and daemon syncs completed after non-fatal file errors
+even when heavy work could not be certified. Two Windows real-database tests
+failed RED (`pending=0`, expected `0b111`) and passed GREEN after the shared
+fail-closed predicate was applied.
+
+## Deployment or Rollout Path
+
+This is a merge-only handoff. Keep the PR open on
+`feat/109-single-authority-coordinator`; do not merge until the operator gives
+explicit approval. No migration, feature flag, schema action, or staged data
+rollout is required.
+
+## Post-deploy Checks
+
+1. Confirm named-pipe health and workspace identity after the release daemon
+   starts.
+2. Run one no-op sync and confirm the coordinator returns to idle.
+3. Confirm no duplicate-daemon event and no active DB-driver overlap.
+4. If a heavy sync reports per-file errors, confirm the heavy mask remains
+   pending for a later retry.
 
 ## Monitoring Plan
 
@@ -62,6 +90,10 @@ manual checks remain:
 Validation window: completed for 15 minutes on Windows, owned by Ship,
 `2026-08-04T02:01:45.8318676Z` through
 `2026-08-04T02:16:59.8654522Z`.
+
+Post-merge owner: operator/Ship. Observe the first released daemon session and
+one explicit sync; retain the existing 15-minute window if any lifecycle signal
+deviates from baseline.
 
 ## Healthy and Failure Signals
 
@@ -91,10 +123,23 @@ serialization were explicitly abandoned. Operator-authorized runtime and
 rollback actions were applied only to PIDs `26388`, `41812`, and `35352`; the
 clean disposable rollback worktree was removed afterward.
 
-## Next Gate
+The final source remediation was executed in investigate-first and
+freeze-scope modes. **ProposedAction:** remove strict clippy blockers and fix
+the review-confirmed transferred partial-error loss. **ActionRisk:** moderate.
+**Approval required:** yes, supplied by the operator. **Rollback:** revert
+`be805eec36c4da8aa272e3638f1b059ead633adc` as one unit.
+**ActionResult:** applied and fully validated.
 
-Resolve the nine clippy findings in `src/daemon/ipc_server.rs` and
-`src/tools/write.rs` under separately authorized production scope, then rerun
-the clippy gate. The findings are `similar_names`, `let_and_return`,
-`unnecessary_semicolon`, `too_many_arguments`, `items_after_statements`, and
-`single_match`. Keep `109.031-T` blocked and keep `104-S` active.
+## Residual Advisory Risk
+
+`cargo audit` still reports `RUSTSEC-2026-0041` for `lz4_flex 0.10.0` through
+`cozo 0.7.6 -> swapvec 0.3.0`. `Cargo.toml` and `Cargo.lock` have no branch
+diff, CI treats audit as continue-on-error, and queued low-priority `017-D`
+owns the dependency upgrade. Thirteen additional audit entries are allowed
+maintenance/unsoundness warnings, not new vulnerability failures.
+
+## Final Gate
+
+Open the PR, require green GitHub checks, resolve all bot threads, and require
+a Copilot review whose `commit_id` equals the final PR HEAD. Stop before merge
+and wait for explicit approval. Shipment `104-S` remains active until merge.
