@@ -3,7 +3,7 @@ title: "104-S batch-completion compact-context report"
 date: 2026-08-04
 shipment: 104-S
 feature: 109-F
-target: all
+target: "104-S / 109-F batch"
 ---
 
 # 104-S Batch-Completion Compact-Context Report
@@ -21,7 +21,9 @@ above the default file-count threshold. The completed coordinator plan was
 - One completed-feature plan with appended reviews and authoritative
   amendments.
 - No unrelated active-task checkpoint.
-- No closure record older than the 14-day threshold.
+- No `104-S` / `109-F` closure record older than the 14-day threshold.
+  Repository-wide older closure records were excluded as unrelated to this
+  batch-completion scope.
 
 ## Result
 

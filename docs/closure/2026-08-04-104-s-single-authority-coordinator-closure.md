@@ -77,11 +77,22 @@ carry, stale progress, pre-permit I/O, stranded waiters, or any IPC regression.
 
 ## Monitoring Plan
 
-The operator owns the first released daemon session and one explicit sync.
-Observe daemon health, duplicate-daemon counters, coordinator idleness, branch
-identity, and pending heavy work. The validation window ends after those checks
-pass; reopen the existing 15-minute observation window if any lifecycle signal
-deviates from baseline.
+The operator owns a fixed 15-minute validation window on the first released
+daemon session, with observations at start, 5, 10, and 15 minutes:
+
+1. Run `engram daemon-status` at each observation. Require overall health
+   green, a live PID, reachable IPC, and `duplicate_daemon_detected == 0`.
+2. Run `engram workspace-status` at each observation. Require an unchanged
+   workspace path/identity/branch, no stale files, and no scan stuck across two
+   consecutive samples.
+3. Run one `engram sync` during the window, then require the next workspace
+   status to report no running scan and the same binding identity.
+4. If that sync reports file errors, inspect its result and daemon log for a
+   retained heavy retry request; loss of the retry intent is a rollback signal.
+
+Any command failure, non-green health check, duplicate daemon, binding drift,
+two-sample stuck scan, failed no-op sync, or lost heavy retry intent ends the
+window as failed and invokes rollback.
 
 ## Rollback Procedure
 
