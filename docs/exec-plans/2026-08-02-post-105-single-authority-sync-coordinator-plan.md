@@ -766,3 +766,108 @@ The proof is width-safe: existing RED/GREEN matrices absorb the new rows, each t
 ### Review decision
 
 The amended plan is accepted for the exact Stage restart transaction only after positive terminal reads for `106-S`, `109.013-T`, `102-S`, and `103-S`. PASS authorizes backlog/manifest requeue, not implementation, shipment claim/closure, source/test/Cargo edits, builds, Git operations, PR actions, or worktree changes. A fresh accepted review artifact must be created under `109-F`; rejected `109.001-R` remains rejected and superseded.
+
+
+## Phase 6 authoritative plan-trigger remediation — 2026-08-03
+
+**Status:** accepted amendment. This section is authoritative over the earlier `109.028-T`–`109.030-T` scopes and dependency graph only. Tasks `109.014-T`–`109.027-T`, their invariants, and their evidence are unchanged. Group 4 remains complete at implementation commit `5d5106ba` and archive commit `2e3bf4a2`; contract 18/18, resilience 1/1, and coordinator 10/10 are preserved as supplied execution evidence.
+
+### Exact trigger evidence at clean HEAD `91855788`
+
+Bounded direct inspection found one remaining production double-authority caller family and one compiled compatibility ingress:
+
+- `src/tools/lifecycle.rs:397` already owns an `OwnerPermit`, but `background_db_hydration` still calls `try_start_indexing` at line 419, `clear_pending_sync_for_generation` at 424/539/563, and `finish_indexing` at 425/542/557/564. Permit ownership must replace these calls before deletion.
+- `src/tools/lifecycle.rs:633-654` still compiles `drain_pending_sync_to_completion`, which moves `take_pending_work_mask` into coordinator admission. It has no non-test caller and must retire after its co-located fixtures migrate.
+- `src/server/state.rs` still exposes the legacy compatibility subsystem: `try_start_indexing` 1221, `finish_indexing` 1228, `set_pending_sync` 1264, `publish_pending_sync` 1284, `publish_pending_sync_and_try_reacquire` 1330, `take_pending_sync` 1346, `take_pending_work_mask` 1351, `has_pending_sync` 1366, `clear_pending_sync_for_generation` 1383, companion set/takes at 1395/1406/1416/1426, and the test-only generation path `current_sync_generation`/`begin_scan_generation` at 1254/1529. The backing `indexing_in_progress`, `pending_sync`, `sync_generation`, and `scan_cancel` fields remain.
+- Remaining `write.rs` and `ipc_server.rs` symbol hits are under `#[cfg(test)]` helpers/modules (`write.rs:564-579/820`; `ipc_server.rs:1146-1160/1471-1531`), not production callers. Lifecycle hits after its test-module boundary at line 783 are also test-only.
+
+Therefore API removal before lifecycle migration is invalid. The fail-closed order is RED dependency proof, GREEN production caller migration, compatibility-fixture/ingress cleanup, then state API deletion and zero-caller proof.
+
+### Revised remaining implementation units
+
+#### `109.028-T` — RED: prove lifecycle still depends on legacy double authority
+
+- Files: `src/server/state.rs`, `src/tools/lifecycle.rs`; production behavior changes: zero. Only private/co-located test support may change.
+- Compile the RED before running it. It must fail for the intended assertion: hydration already owns an `OwnerPermit` yet also raises the legacy AtomicBool owner mirror. A compile error, timeout, or unrelated failure does not satisfy RED.
+- At most three parameterized scenarios cover permit acquisition with no legacy mirror, DB-failure/early-return/cancellation terminals, and full-mask/one-owner preservation.
+- Retire or rewrite obsolete lifecycle fixtures that only restate the legacy AtomicBool/split-mask contract; add no public or test-only-public permit seam.
+- Time cap: 90 minutes. Dependency: `109.027-T`.
+
+#### `109.029-T` — GREEN: migrate lifecycle hydration before deletion
+
+- Files: `src/tools/lifecycle.rs`, `src/tools/write.rs`; only `background_db_hydration` changes production behavior, while `write.rs` changes are `#[cfg(test)]` compatibility-fixture migration only.
+- Remove `acquired_lock` and every production lifecycle call to tokenless start/finish/generation-clear. The already-owned permit remains the sole authority across normal, DB-failure, early-return, cancellation, and caller-abort exits; mutation-capable work ends before complete/Drop.
+- Make the `109.028-T` RED pass and migrate the write test helper off direct tokenless ownership. At most three parameterized scenarios; no response, schema, persistence, or timestamp contract change.
+- Time cap: 110 minutes. Dependency: `109.028-T`.
+
+#### `109.032-T` — compatibility-fixture and ingress retirement
+
+One added width-safe task is necessary: production lifecycle migration, three co-located legacy fixture surfaces, and state deletion cannot remain within two files and 110 minutes if forced into the original three units.
+
+- Files: `src/tools/lifecycle.rs`, `src/daemon/ipc_server.rs`; IPC production behavior changes: zero.
+- Migrate/remove remaining lifecycle and IPC `#[cfg(test)]` callers of the legacy owner, split-mask, companion, generation-clear, and producer-reacquire APIs.
+- Remove the compiled `drain_pending_sync_to_completion` compatibility ingress only after its test callers are gone. Preserve coordinator-native behavior coverage and exact queued/startup contracts.
+- At most four parameterized scenario groups; no public seam and no state API deletion in this task. Time cap: 100 minutes. Dependency: `109.029-T`.
+
+#### `109.030-T` — final GREEN: delete state compatibility subsystem and prove zero callers
+
+- File: `src/server/state.rs` only.
+- Remove the tokenless/boolean owner, finish, producer-reacquire, generation-clear, split pending, complete-mask ingress, companion, and obsolete scan-generation APIs plus their legacy-only backing state. `is_indexing` becomes coordinator-derived only.
+- Exact structural inventory must find zero legacy symbol definitions or callers across `src/` and `tests/`; no adapter, visibility downgrade, extracted mask, second queue, or caller-optional cleanup may replace them.
+- Run existing coordinator-native deterministic coverage; no more than four targeted scenario groups and no new behavior surface. Time cap: 110 minutes. Dependency: `109.032-T`.
+
+`109.031-T` remains unchanged and depends on `109.030-T`. The exact revised chain is:
+
+```text
+109.027-T -> 109.028-T (RED)
+            -> 109.029-T (GREEN lifecycle migration)
+            -> 109.032-T (fixture/ingress retirement)
+            -> 109.030-T (final state deletion/zero callers)
+            -> 109.031-T (unchanged final validation)
+```
+
+No checkpoint is mergeable or runtime-valid before `109.030-T` completes and aggregate compile/evidence is green.
+
+## Plan Hardening — Phase 6 trigger remediation
+
+**Hardening required:** yes. Removing a daemon-wide concurrency compatibility subsystem while an active permit owner still calls a second authority has elevated overlap, lost-work, and stale-terminal risk.
+
+### ProposedAction PA-6
+
+- Summary: prove and remove lifecycle double authority before deleting the state compatibility subsystem.
+- Targets: only the revised remaining tasks and the four already-reviewed source modules during later Ship execution.
+- Change kind: high-blast-radius internal concurrency contract correction.
+- ActionRisk: high.
+- Approval required: this fresh zero-P0/P1 gate; Ship still owns source/test execution.
+- Rollback: full release-unit revert/restart only; no partial merge or compatibility bridge.
+- ActionResult: applied to planning/backlog contracts; implementation not started.
+
+### Reinforced invariants and stop conditions
+
+- Continuous non-cloneable `AdmissionGuard -> OwnerPermit -> transferred OwnerPermit` ownership remains authoritative.
+- Hydration never owns both permit and legacy AtomicBool; no terminal performs caller-optional clear/finish.
+- Full masks remain in exactly one coordinator location; same-binding barrier behavior, distinct-binding zero carry, exact ack, one driver, child-before-permit terminal, and no successor-before-ack remain unchanged.
+- No source step may exceed two production files, four scenario groups, or 110 minutes.
+- Stop on any non-test caller outside the bounded inventory, public/supported Rust contract, detached receiver/permit/task, compile RED that does not fail for the intended assertion, legacy adapter requirement, mutex across await, second queue/drain, sleep/timeout proof, schema/wire/persistence drift, or inability to reach exact zero callers.
+- Monitoring, 15-minute disposable Windows observation, named-pipe shutdown rows, rollback triggers, and full-unit revert/restart remain owned by unchanged `109.031-T`.
+
+Reinforcing context re-read: strict-safety, circuit-breaker, concurrency, and release-observability instructions plus the packed atomic publish, take-before-lock, and all-finish-sites drain learnings already cited by this plan.
+
+## Plan Review — Phase 6 trigger remediation fresh gate
+
+**Model routing verification:** `.github/agents/stage.agent.md` declares `.Stage`, Tier 3/frontier, high reasoning, provider `anthropic`, family `claude-opus-4.8`; no override was supplied.
+
+**Review execution:** no subagent invocation surface was exposed, so `.Stage` directly applied Constitution, Rust, Scope Boundary, Learnings, Architecture, Agent-Native Parity, and Security lenses using the configured model.
+
+**Hardening:** required and satisfied by PA-6, exact caller evidence, width/time caps, rollback coupling, runtime stop conditions, and unchanged final observation duties.
+
+**Gate: PASS**
+
+**Open findings: P0 0 / P1 0 / P2 0 / P3 0.**
+
+- Constitution/Rust: PASS — compiling RED precedes GREEN; permit RAII replaces tokenless cleanup; every task is at most two production files, four scenario groups, and 110 minutes.
+- Scope/Learnings: PASS — one extra task is the minimum width-safe split; atomic whole-mask and complete terminal-coverage lessons remain enforced.
+- Architecture/Security: PASS — migration precedes deletion, one coordinator remains authoritative, and ambiguity fails closed.
+- Agent-native parity/operations: PASS — public responses, schemas, persistence, startup contract, monitoring, Windows observation, and full-unit rollback remain unchanged.
+
+PASS authorizes only the backlog/status remediation below. It does not authorize source/tests/Cargo, build, Git, PR, worktree, daemon, shipment claim, or shipment closure actions.

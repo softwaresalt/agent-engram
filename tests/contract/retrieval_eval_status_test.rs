@@ -6,6 +6,9 @@
 //! 3. `run_retrieval_eval` writes a JSON run under `.engram/eval/{branch}/`.
 //! 4. `get_retrieval_eval_report` returns the latest persisted run.
 
+#[path = "../helpers/mod.rs"]
+mod helpers;
+
 use std::fs;
 use std::sync::Arc;
 use std::time::Duration;
@@ -60,17 +63,7 @@ async fn setup_workspace(config: WorkspaceConfig) -> (Arc<AppState>, tempfile::T
     fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").expect("write HEAD");
 
     let state = Arc::new(AppState::new(10));
-    let path = workspace.path().to_string_lossy().to_string();
-
-    tools::dispatch(
-        state.clone(),
-        "set_workspace",
-        Some(json!({ "path": path })),
-    )
-    .await
-    .expect("set_workspace must succeed");
-
-    state.set_workspace_config(Some(config)).await;
+    helpers::bind_isolated_workspace(&state, workspace.path(), "main", config).await;
     (state, workspace)
 }
 

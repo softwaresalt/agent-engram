@@ -10,9 +10,12 @@
 //!   3. default (unconfigured) thresholds -> no gating (back-compat);
 //!   4. disabled or empty run -> no FALSE breach (contract preserved).
 //!
-//! Isolation: the harness binds a fresh tempdir workspace. Under CI (and any
-//! shell without `ENGRAM_DATA_DIR`) the branch DB lives inside that tempdir, so
-//! the corpus and metrics are deterministic.
+//! Isolation: the harness binds a fresh tempdir workspace. Whether or not the
+//! shell exports an ambient `ENGRAM_DATA_DIR`, the branch DB lives inside that
+//! tempdir, so the corpus and metrics are deterministic.
+
+#[path = "../helpers/mod.rs"]
+mod helpers;
 
 use std::fs;
 use std::sync::Arc;
@@ -64,16 +67,25 @@ async fn setup_workspace(config: WorkspaceConfig) -> (Arc<AppState>, tempfile::T
     fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").expect("write HEAD");
 
     let state = Arc::new(AppState::new(10));
-    let path = workspace.path().to_string_lossy().to_string();
-    tools::dispatch(
-        state.clone(),
-        "set_workspace",
-        Some(json!({ "path": path })),
-    )
-    .await
-    .expect("set_workspace must succeed");
-    state.set_workspace_config(Some(config)).await;
+    helpers::bind_isolated_workspace(&state, workspace.path(), "main", config).await;
     (state, workspace)
+}
+
+/// Regression: an ambient developer data directory must never redirect this
+/// in-process fixture away from its disposable workspace.
+#[test]
+async fn setup_workspace_keeps_data_dir_inside_temp_workspace() {
+    let (state, workspace) = setup_workspace(WorkspaceConfig::default()).await;
+    let snapshot = state
+        .snapshot_workspace()
+        .await
+        .expect("test workspace must be bound");
+
+    assert_eq!(
+        snapshot.data_dir,
+        workspace.path().join(".engram"),
+        "ambient ENGRAM_DATA_DIR must not redirect retrieval-eval test state"
+    );
 }
 
 /// Write the fixture into the workspace and index it via the dispatch path so
