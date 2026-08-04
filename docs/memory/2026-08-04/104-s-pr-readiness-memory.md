@@ -117,6 +117,8 @@ RED/GREEN remediation now:
 - runs full index through `prepare_branch_owner` before database/file work;
 - atomically republishes the full work mask on branch transition and claims it
   with the original `OwnerKind::Index`;
+- switches branchless process metrics to the refreshed branch before returning
+  the reacquired owner;
 - owns the startup progress relay outside the cancellable future;
 - aborts and joins before cancellation returns, or drains and joins on normal
   completion;
@@ -132,3 +134,8 @@ baseline unchanged (`RUSTSEC-2026-0041` plus 13 allowed warnings, no dependency
 diff). Standard review's two applicable P1 panic risks were removed by graceful
 scope handling and a non-panicking relay construction API. Other reported
 items were pre-existing or outside the final remediation diff.
+
+The exact-HEAD Copilot pass generated no new inline thread but surfaced one
+valid suppressed observation: the new generic branch refresh did not switch
+the process-wide metrics writer. A RED branchless-event assertion wrote only
+to `stale-branch`; GREEN writes to `main` and leaves no stale usage file.

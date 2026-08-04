@@ -683,6 +683,9 @@ pub(crate) async fn prepare_branch_owner(
                     })
                 })? {
                     ClaimOutcome::Acquired(next) => {
+                        crate::services::metrics::switch_branch(
+                            current_ctx.workspace.branch.clone(),
+                        );
                         permit = next;
                         ctx = current_ctx;
                         break;
@@ -697,6 +700,7 @@ pub(crate) async fn prepare_branch_owner(
                     })
                 })?
             {
+                crate::services::metrics::switch_branch(current_ctx.workspace.branch.clone());
                 permit = next;
                 ctx = current_ctx;
                 break;
@@ -1610,6 +1614,10 @@ mod tests {
         stale_snapshot.branch = "stale-branch".to_owned();
         publish(&state, stale_snapshot).await;
         let old_admission = state.coordinator.admission();
+        let metrics_config = crate::models::metrics::MetricsConfig::default();
+        crate::services::metrics::initialize(&workspace, "stale-branch", &metrics_config)
+            .await
+            .expect("initialize stale-branch metrics");
 
         let _response = index_workspace(Arc::clone(&state), Some(json!({ "force": true })))
             .await
@@ -1647,6 +1655,31 @@ mod tests {
                 .expect("read code-graph generation"),
             Some("1".to_owned()),
             "forced index must preserve its revalidation work"
+        );
+        crate::services::metrics::record(crate::models::metrics::UsageEvent {
+            tool_name: "branch-probe".to_owned(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            ..crate::models::metrics::UsageEvent::default()
+        });
+        crate::services::metrics::shutdown()
+            .await
+            .expect("flush metrics writer");
+        let main_usage =
+            crate::services::metrics::resolve_usage_path(&workspace, "main", &metrics_config)
+                .expect("resolve main metrics path");
+        assert!(
+            main_usage.is_file(),
+            "post-refresh usage metrics must follow the active branch"
+        );
+        let stale_usage = crate::services::metrics::resolve_usage_path(
+            &workspace,
+            "stale-branch",
+            &metrics_config,
+        )
+        .expect("resolve stale metrics path");
+        assert!(
+            !stale_usage.exists(),
+            "no post-refresh event may be written to the stale branch"
         );
     }
 

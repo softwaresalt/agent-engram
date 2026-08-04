@@ -69,10 +69,11 @@ Final review found two more valid older-HEAD gaps. Full indexes did not refresh
 Git HEAD before mutation, and startup embedding progress was still spawned
 inside its cancellable future with unrestricted writes. The final candidate
 reuses branch-owner preparation for `OwnerKind::Index`, preserves the complete
-reissued mask, and moves startup progress supervision outside the cancellable
-future with exact-owner fencing and abort/drain-and-join terminals. A focused
-real named-pipe contract caught and fixed a producer-clone join deadlock before
-the final suite. No endpoint, schema, or persistence format changed.
+reissued mask, switches the process metrics sink to the refreshed branch, and
+moves startup progress supervision outside the cancellable future with
+exact-owner fencing and abort/drain-and-join terminals. A focused real
+named-pipe contract caught and fixed a producer-clone join deadlock before the
+final suite. No endpoint, schema, or persistence format changed.
 
 ## Deployment or Rollout Path
 

@@ -184,7 +184,8 @@ The final candidate adds RED/GREEN coverage and closes both lifecycle gaps:
 
 - a full index now resolves the current Git HEAD before its first database or
   file mutation, republishes the complete work mask across the branch
-  generation transition, and reacquires it as `OwnerKind::Index`;
+  generation transition, reacquires it as `OwnerKind::Index`, and switches the
+  process metrics writer to the refreshed branch;
 - the startup embedding progress relay is parent-owned outside the cancellable
   operation, aborts and joins before retirement on cancellation, drains and
   joins on normal completion, and owner-fences running and terminal progress.
@@ -198,6 +199,8 @@ then passed, as did the TTL shutdown scenario.
 Affected Windows verification:
 
 - `index_branch_refresh_rebinds_coordinator_and_preserves_full_work`: PASS;
+  its RED/GREEN metrics assertion proves branchless events no longer land in
+  the stale branch after refresh;
 - both `backfill_progress_relay` tests: PASS;
 - `eval_empty_run_json_and_quiet_contract`: PASS against a real named pipe;
 - `run_with_shutdown_v2_exits_cleanly_on_ttl_expiry`: PASS;
