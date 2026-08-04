@@ -121,7 +121,8 @@ released daemon session for IPC reachability, stable binding identity, one
 database driver, finite owner progress, exact retirement acknowledgement, and
 heavy-mask retention after file errors.
 
-On invariant failure, revert PR #319 merge commit
-`d8fba2c3c4538e061e2ac4f56da83f82801d78e9` as one unit, restart only the
-tracked daemon PID, and verify bind, status, and no-op sync. Partial source
+On invariant failure, create a dedicated branch from current `main` and run
+`git revert --no-edit -m 1 d8fba2c3c4538e061e2ac4f56da83f82801d78e9`.
+Push that complete-unit revert through a reviewed PR, restart only the tracked
+daemon PID after merge, and verify bind, status, and no-op sync. Partial source
 rollback remains forbidden.

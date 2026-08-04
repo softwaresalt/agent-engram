@@ -96,10 +96,12 @@ window as failed and invokes rollback.
 
 ## Rollback Procedure
 
-Revert merge commit `d8fba2c3c4538e061e2ac4f56da83f82801d78e9` as one complete
-unit through a new reviewed PR, restart only the tracked daemon PID, then
-verify bind, status, and a no-op sync. Do not partially revert coordinator
-files. No schema or data rollback is required.
+From a dedicated rollback branch based on current `main`, run
+`git revert --no-edit -m 1 d8fba2c3c4538e061e2ac4f56da83f82801d78e9`,
+then push that complete-unit revert through a new reviewed PR. After merge,
+restart only the tracked daemon PID and verify bind, status, and a no-op sync.
+Do not partially revert coordinator files. No schema or data rollback is
+required.
 
 ## Risky Action Record
 
