@@ -162,7 +162,7 @@ pub async fn index_workspace(
         .await
         .ok_or(EngramError::Workspace(WorkspaceError::NotSet))?;
     let requested = WorkMask::from_bits(if parsed.force { 0b111 } else { 0b001 });
-    let mut permit = match CoordinatorCell::request(admission, requested, OwnerKind::Index) {
+    let permit = match CoordinatorCell::request(admission, requested, OwnerKind::Index) {
         Ok(RequestOutcome::Acquired(permit)) => permit,
         Ok(RequestOutcome::Waiting(_) | RequestOutcome::Enqueued) => {
             return Err(EngramError::CodeGraph(CodeGraphError::IndexInProgress));
@@ -177,6 +177,13 @@ pub async fn index_workspace(
                 reason: format!("index coordinator admission failed: {error}"),
             }));
         }
+    };
+    let Some((mut permit, ctx)) =
+        prepare_branch_owner(&state, permit, ctx, OwnerKind::Index).await?
+    else {
+        return Err(EngramError::System(SystemError::DatabaseError {
+            reason: "index branch preparation was superseded".to_owned(),
+        }));
     };
     let work_bits = permit.work_bits();
     let ws_path = PathBuf::from(&ctx.workspace.path);
@@ -669,10 +676,10 @@ pub(crate) async fn prepare_branch_owner(
                 return Ok(None);
             }
 
-            if kind == OwnerKind::Sync {
-                match CoordinatorCell::claim_reissued_sync(admission).map_err(|error| {
+            if work_bits != 0 {
+                match CoordinatorCell::claim_reissued(admission, kind).map_err(|error| {
                     EngramError::System(SystemError::DatabaseError {
-                        reason: format!("transferred sync branch reacquisition failed: {error}"),
+                        reason: format!("{kind:?} branch work reacquisition failed: {error}"),
                     })
                 })? {
                     ClaimOutcome::Acquired(next) => {
@@ -1576,6 +1583,70 @@ mod tests {
                 .expect("read code-graph generation"),
             Some("1".to_owned()),
             "recovered revalidation intent must be reissued for the new branch"
+        );
+    }
+
+    #[tokio::test]
+    async fn index_branch_refresh_rebinds_coordinator_and_preserves_full_work() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("workspace");
+        let data_dir = temp.path().join("data");
+        std::fs::create_dir_all(workspace.join(".git")).expect("create git metadata");
+        std::fs::write(
+            workspace.join(".git").join("HEAD"),
+            "ref: refs/heads/main\n",
+        )
+        .expect("write git HEAD");
+        std::fs::write(workspace.join("app.py"), "def run():\n    return 1\n")
+            .expect("write source");
+        let state = Arc::new(AppState::new(1));
+        let mut stale_snapshot = snapshot(
+            "index-branch-refresh",
+            "uuid-index-branch-refresh",
+            "id-index-stale-branch",
+            &workspace,
+            data_dir,
+        );
+        stale_snapshot.branch = "stale-branch".to_owned();
+        publish(&state, stale_snapshot).await;
+        let old_admission = state.coordinator.admission();
+
+        let _response = index_workspace(Arc::clone(&state), Some(json!({ "force": true })))
+            .await
+            .expect("branch-refresh index");
+
+        let active = state
+            .snapshot_workspace()
+            .await
+            .expect("active branch snapshot");
+        assert_eq!(active.branch, "main");
+        assert_eq!(
+            active.workspace_id,
+            super::workspace_hash(&workspace, "main")
+        );
+        assert!(matches!(
+            CoordinatorCell::request(old_admission, WorkMask::from_bits(0b001), OwnerKind::Sync,),
+            Ok(RequestOutcome::Stale)
+        ));
+        assert!(state.coordinator.test_is_idle());
+        assert_eq!(state.coordinator.test_pending_bits(), 0);
+        let db = connect_db(&active.data_dir, "main")
+            .await
+            .expect("connect refreshed branch DB");
+        let queries = CodeGraphQueries::new(db);
+        assert_eq!(
+            queries
+                .python_extraction_version()
+                .expect("read Python extraction marker"),
+            Some("1".to_owned()),
+            "forced index must preserve its canonical backfill work"
+        );
+        assert_eq!(
+            queries
+                .code_graph_extraction_generation()
+                .expect("read code-graph generation"),
+            Some("1".to_owned()),
+            "forced index must preserve its revalidation work"
         );
     }
 

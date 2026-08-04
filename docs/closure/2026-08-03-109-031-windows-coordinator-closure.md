@@ -45,9 +45,9 @@ may be opened and reviewed; merge still requires explicit operator approval.
 | `cargo fmt --all -- --check` | PASS |
 | Exact CI clippy | PASS |
 | Repository all-target clippy | PASS |
-| `cargo dev-test` | PASS — 533 tests after PR remediation |
+| `cargo dev-test` | PASS — 535 tests after final PR remediation |
 | Exact CI all-target suite | PASS — exit 0 after PR remediation |
-| Standard review | PASS — zero applicable P0/P1 after two cycles |
+| Standard review | PASS — final applicable P1 panic risks remediated |
 | Dependency audit | PASS WITH KNOWN ADVISORY — `RUSTSEC-2026-0041` |
 | Schema or data rollback | Not applicable |
 
@@ -64,6 +64,15 @@ while parent progress writes were not owner-fenced. The final implementation
 uses routine-only ownership for plain indexes, complete ownership for forced
 indexes, validates parameters before admission, joins children on structured
 exit, and rejects every stale parent or child progress publication.
+
+Final review found two more valid older-HEAD gaps. Full indexes did not refresh
+Git HEAD before mutation, and startup embedding progress was still spawned
+inside its cancellable future with unrestricted writes. The final candidate
+reuses branch-owner preparation for `OwnerKind::Index`, preserves the complete
+reissued mask, and moves startup progress supervision outside the cancellable
+future with exact-owner fencing and abort/drain-and-join terminals. A focused
+real named-pipe contract caught and fixed a producer-clone join deadlock before
+the final suite. No endpoint, schema, or persistence format changed.
 
 ## Deployment or Rollout Path
 

@@ -6,7 +6,7 @@ feature: 109-F
 task: 109.031-T
 branch: feat/109-single-authority-coordinator
 implementation_commit: be805eec36c4da8aa272e3638f1b059ead633adc
-status: pr-remediation-validated
+status: final-review-remediation-validated
 ---
 
 # 104-S Final PR-Readiness Memory
@@ -104,3 +104,31 @@ resilience scenario passed 20 consecutive runs.
 Push the fixture repair, re-request Copilot on the new HEAD, require green CI
 and zero unresolved threads, then stop with the PR open for explicit merge
 approval.
+
+## Final Review-Thread Remediation
+
+The green CI candidate still had two valid Copilot threads from older heads:
+full index used the branch captured at bind time, and the startup embedding
+progress task was aborted without an awaited terminal and published
+unrestricted progress.
+
+RED/GREEN remediation now:
+
+- runs full index through `prepare_branch_owner` before database/file work;
+- atomically republishes the full work mask on branch transition and claims it
+  with the original `OwnerKind::Index`;
+- owns the startup progress relay outside the cancellable future;
+- aborts and joins before cancellation returns, or drains and joins on normal
+  completion;
+- fences running and final progress to the exact startup owner.
+
+The first real named-pipe eval run exposed a producer-clone deadlock in the new
+relay. Explicitly dropping the operation's producer before join restored daemon
+readiness. Focused eval and TTL-shutdown scenarios passed afterward.
+
+Final local gates: formatting PASS; both pedantic clippy commands PASS;
+`cargo dev-test` PASS with 535 tests; exact CI all-target suite PASS; audit
+baseline unchanged (`RUSTSEC-2026-0041` plus 13 allowed warnings, no dependency
+diff). Standard review's two applicable P1 panic risks were removed by graceful
+scope handling and a non-panicking relay construction API. Other reported
+items were pre-existing or outside the final remediation diff.

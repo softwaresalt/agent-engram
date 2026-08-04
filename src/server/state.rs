@@ -556,6 +556,14 @@ impl CoordinatorCell {
     pub(crate) fn claim_reissued_sync(
         admission: AdmissionGuard,
     ) -> Result<ClaimOutcome, CoordinatorError> {
+        Self::claim_reissued(admission, OwnerKind::Sync)
+    }
+
+    /// Claim already-published work without publishing it again.
+    pub(crate) fn claim_reissued(
+        admission: AdmissionGuard,
+        kind: OwnerKind,
+    ) -> Result<ClaimOutcome, CoordinatorError> {
         let cell = Arc::clone(&admission.cell);
         let mut state = cell.lock();
         let is_current = admission.token.floor == state.floor
@@ -582,7 +590,7 @@ impl CoordinatorCell {
         let identity = OwnerIdentity {
             generation: state.floor,
             sequence: state.next_sequence,
-            kind: OwnerKind::Sync,
+            kind,
         };
         let work_mask = state.pending;
         state.pending = WorkMask::default();

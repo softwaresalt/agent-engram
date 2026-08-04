@@ -177,6 +177,38 @@ checks busy/queued responses before unrelated awaits, and leaves read-during-
 sync behavior to its dedicated contract test. The resilience scenario passed
 20 consecutive runs, and the dedicated read contract passed separately.
 
+### Scenario 7 — Final review-thread remediation
+
+Two valid older-HEAD Copilot threads remained after CI first turned green.
+The final candidate adds RED/GREEN coverage and closes both lifecycle gaps:
+
+- a full index now resolves the current Git HEAD before its first database or
+  file mutation, republishes the complete work mask across the branch
+  generation transition, and reacquires it as `OwnerKind::Index`;
+- the startup embedding progress relay is parent-owned outside the cancellable
+  operation, aborts and joins before retirement on cancellation, drains and
+  joins on normal completion, and owner-fences running and terminal progress.
+
+The first focused Windows daemon contract exposed one implementation error:
+the cloned progress producer remained live while the parent awaited the relay,
+so startup health never became ready. The producer is now explicitly closed
+before either join path. The previously failing real named-pipe eval contract
+then passed, as did the TTL shutdown scenario.
+
+Affected Windows verification:
+
+- `index_branch_refresh_rebinds_coordinator_and_preserves_full_work`: PASS;
+- both `backfill_progress_relay` tests: PASS;
+- `eval_empty_run_json_and_quiet_contract`: PASS against a real named pipe;
+- `run_with_shutdown_v2_exits_cleanly_on_ttl_expiry`: PASS;
+- exact CI all-target suite: PASS after one isolated parallel-load timeout
+  whose focused test passed in 17.08 seconds under its 30-second bound.
+
+No IPC endpoint, process identity, persistence schema, or rollback format
+changed. The prior 16/16 observation, reconciliation, and complete-unit
+rollback remain valid; the changed ownership/lifecycle paths were rerun through
+the smallest affected Windows scenarios above.
+
 ## Ownership and Driver Invariants
 
 The clean aggregate run is the deterministic race proof. Its matrices cover
@@ -208,6 +240,7 @@ counters.
 
 ## Final Disposition
 
-The runtime gate and both strict clippy variants pass. The exact CI all-target
-suite also passes on the current candidate. `109.031-T` is complete; shipment
-`104-S` remains active until an explicitly approved PR merge.
+The runtime gate and both strict clippy variants pass. `cargo dev-test` passes
+535 tests, and the exact CI all-target suite passes on the current candidate.
+`109.031-T` is complete; shipment `104-S` remains active until an explicitly
+approved PR merge.
