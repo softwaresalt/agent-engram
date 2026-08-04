@@ -189,6 +189,11 @@ The final candidate adds RED/GREEN coverage and closes both lifecycle gaps:
 - the startup embedding progress relay is parent-owned outside the cancellable
   operation, aborts and joins before retirement on cancellation, drains and
   joins on normal completion, and owner-fences running and terminal progress.
+- retiring reissued work now acknowledges and installs its same-kind successor
+  under one coordinator lock, so an empty background waiter cannot steal the
+  release baton and downgrade a forced index to an incremental sync;
+- hydration refreshes HEAD before its first I/O boundary and owner-fences all
+  running, failure, and terminal progress publications.
 
 The first focused Windows daemon contract exposed one implementation error:
 the cloned progress producer remained live while the parent awaited the relay,
@@ -202,6 +207,8 @@ Affected Windows verification:
   its RED/GREEN metrics assertion proves branchless events no longer land in
   the stale branch after refresh;
 - both `backfill_progress_relay` tests: PASS;
+- atomic retirement/reissue and both hydration branch/progress regressions:
+  PASS;
 - `eval_empty_run_json_and_quiet_contract`: PASS against a real named pipe;
 - `run_with_shutdown_v2_exits_cleanly_on_ttl_expiry`: PASS;
 - exact CI all-target suite: PASS after one isolated parallel-load timeout
@@ -244,6 +251,6 @@ counters.
 ## Final Disposition
 
 The runtime gate and both strict clippy variants pass. `cargo dev-test` passes
-535 tests, and the exact CI all-target suite passes on the current candidate.
+538 tests, and the exact CI all-target suite passes on the current candidate.
 `109.031-T` is complete; shipment `104-S` remains active until an explicitly
 approved PR merge.

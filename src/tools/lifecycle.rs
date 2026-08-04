@@ -13,12 +13,11 @@ use crate::db::workspace::{
     workspace_hash,
 };
 use crate::errors::{EngramError, SystemError, WorkspaceError};
-use crate::models::config::CodeGraphConfig;
 use crate::models::health::{HealthReport, ScanProgress};
 use crate::server::state::CoordinatorCell;
 use crate::server::state::{
-    AdmissionGuard, AppState, CompletionOutcome, CoordinatorError, DriverTaskGuard, OwnerPermit,
-    WorkspaceSnapshot,
+    AdmissionGuard, AppState, CompletionOutcome, CoordinatorError, DispatchSnapshot,
+    DriverTaskGuard, OwnerKind, OwnerPermit, OwnerProgressScope, WorkspaceSnapshot,
 };
 use crate::services::code_graph::sync_workspace as sync_code_graph;
 use crate::services::config::parse_config;
@@ -165,6 +164,10 @@ pub async fn set_workspace(
         connection_count: state.active_connections(),
         file_mtimes: hydration.file_mtimes.clone(),
     };
+    let hydration_context = DispatchSnapshot {
+        workspace: snapshot.clone(),
+        config: ws_config.clone(),
+    };
 
     let (binding_generation, admission) = state
         .publish_workspace_generation(snapshot, Some(ws_config.clone()))
@@ -187,17 +190,10 @@ pub async fn set_workspace(
     // (029-F WS-6). The `pending_scan` field signals to the caller
     // that background work has been scheduled.
     let state_bg = Arc::clone(&state);
-    let canonical_bg = canonical.clone();
-    let data_dir_bg = data_dir.clone();
-    let branch_bg = branch.clone();
-    let code_graph_config = ws_config.code_graph;
     let task = tokio::spawn(async move {
         background_db_hydration(
             state_bg,
-            canonical_bg,
-            data_dir_bg,
-            branch_bg,
-            code_graph_config,
+            hydration_context,
             admission,
             #[cfg(test)]
             None,
@@ -336,17 +332,21 @@ enum HandoffTerminal {
     EarlyReturn,
 }
 
+async fn set_hydration_progress(
+    state: &AppState,
+    scope: &OwnerProgressScope,
+    progress: Option<ScanProgress>,
+) -> bool {
+    state.set_scan_progress_for_owner(scope, progress).await
+}
+
 async fn background_db_hydration(
     state: Arc<AppState>,
-    canonical: PathBuf,
-    data_dir: PathBuf,
-    branch: String,
-    code_graph_config: CodeGraphConfig,
+    context: DispatchSnapshot,
     admission: AdmissionGuard,
     #[cfg(test)] test_probe: Option<HydrationProbe>,
 ) {
-    let binding_generation = admission.generation();
-    let mut permit = match admission.acquire_hydration().await {
+    let permit = match admission.acquire_hydration().await {
         Ok(Some(permit)) => permit,
         Ok(None) => return,
         Err(error) => {
@@ -354,16 +354,47 @@ async fn background_db_hydration(
             return;
         }
     };
+    let Some((mut permit, context)) = (match crate::tools::write::prepare_branch_owner(
+        &state,
+        permit,
+        context,
+        OwnerKind::Hydration,
+    )
+    .await
+    {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            tracing::error!(%error, "background_db_hydration: branch preparation failed");
+            return;
+        }
+    }) else {
+        return;
+    };
+    let Some(binding_generation) = permit.generation() else {
+        tracing::error!("background_db_hydration: prepared permit lost ownership");
+        return;
+    };
+    let Some(progress_scope) = permit.progress_scope() else {
+        tracing::error!("background_db_hydration: prepared permit lost progress scope");
+        return;
+    };
+    let canonical = PathBuf::from(&context.workspace.path);
+    let data_dir = context.workspace.data_dir;
+    let branch = context.workspace.branch;
+    let code_graph_config = context.config.code_graph;
 
     let operation = async {
-        state
-            .set_scan_progress(Some(ScanProgress {
+        set_hydration_progress(
+            &state,
+            &progress_scope,
+            Some(ScanProgress {
                 running: true,
                 files_scanned: 0,
                 files_total: 0,
                 last_completed_at: None,
-            }))
-            .await;
+            }),
+        )
+        .await;
 
         #[cfg(test)]
         if let Some(probe) = test_probe {
@@ -378,14 +409,17 @@ async fn background_db_hydration(
             Ok(db) => db,
             Err(e) => {
                 tracing::warn!(error = %e, "background_db_hydration: DB connect failed");
-                state
-                    .set_scan_progress(Some(ScanProgress {
+                set_hydration_progress(
+                    &state,
+                    &progress_scope,
+                    Some(ScanProgress {
                         running: false,
                         files_scanned: 0,
                         files_total: 0,
                         last_completed_at: Some(Utc::now().to_rfc3339()),
-                    }))
-                    .await;
+                    }),
+                )
+                .await;
                 return HydrationTerminal::DbFailure;
             }
         };
@@ -419,14 +453,17 @@ async fn background_db_hydration(
             }
         };
 
-        state
-            .set_scan_progress(Some(ScanProgress {
+        set_hydration_progress(
+            &state,
+            &progress_scope,
+            Some(ScanProgress {
                 running: false,
                 files_scanned: offline_count,
                 files_total: offline_count,
                 last_completed_at: Some(Utc::now().to_rfc3339()),
-            }))
-            .await;
+            }),
+        )
+        .await;
 
         let auto_reindex = std::env::var("ENGRAM_AUTO_REINDEX")
             .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes"))
@@ -707,14 +744,15 @@ mod tests {
 
     use super::{
         HandoffProbe, HandoffProbeExit, HydrationProbe, HydrationProbeExit,
-        background_db_hydration, drive_transferred_sync, get_daemon_status,
+        background_db_hydration, drive_transferred_sync, get_daemon_status, set_hydration_progress,
     };
     use crate::db::connect_db;
     use crate::db::queries::CodeGraphQueries;
     use crate::models::config::{CodeGraphConfig, WorkspaceConfig};
+    use crate::models::health::ScanProgress;
     use crate::server::state::{
-        AppState, CompletionOutcome, CoordinatorCell, DriverTaskGuard, OwnerKind, OwnerPermit,
-        RequestOutcome, WorkMask, WorkspaceSnapshot,
+        AppState, CompletionOutcome, CoordinatorCell, DispatchSnapshot, DriverTaskGuard, OwnerKind,
+        OwnerPermit, RequestOutcome, WorkMask, WorkspaceSnapshot,
     };
     use crate::services::code_graph;
 
@@ -877,7 +915,8 @@ mod tests {
     async fn hydration_waiting_and_stale_admission_never_reaches_io() {
         for held_owner in [true, false] {
             let state = Arc::new(AppState::new(2));
-            let _ = publish_test_binding(&state, coordinator_snapshot("old", "old")).await;
+            let old_snapshot = coordinator_snapshot("old", "old");
+            let _ = publish_test_binding(&state, old_snapshot.clone()).await;
             let owner = held_owner.then(|| {
                 acquired(
                     request_empty(&state, OwnerKind::Index)
@@ -897,10 +936,10 @@ mod tests {
             let (probe, io_starts, active_io) = probe(HydrationProbeExit::DbFailure, None);
             background_db_hydration(
                 Arc::clone(&state),
-                PathBuf::from("C:/workspace/old"),
-                PathBuf::from("logs/phase6-group2/old-data"),
-                "main".to_owned(),
-                CodeGraphConfig::default(),
+                DispatchSnapshot {
+                    workspace: old_snapshot,
+                    config: WorkspaceConfig::default(),
+                },
                 admission,
                 Some(probe),
             )
@@ -923,12 +962,90 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn hydration_progress_rejects_retired_owner_after_rebind() {
+        let state = Arc::new(AppState::new(2));
+        let _ = publish_test_binding(&state, coordinator_snapshot("old", "old")).await;
+        let permit = acquired(
+            request_empty(&state, OwnerKind::Hydration)
+                .unwrap_or_else(|error| panic!("hydration request: {error}")),
+        );
+        let scope = permit.progress_scope().expect("hydration progress scope");
+        let _ = publish_test_binding(&state, coordinator_snapshot("new", "new")).await;
+
+        assert!(
+            !set_hydration_progress(
+                &state,
+                &scope,
+                Some(ScanProgress {
+                    running: true,
+                    files_scanned: 1,
+                    files_total: 2,
+                    last_completed_at: None,
+                }),
+            )
+            .await,
+            "retired hydration owner must not publish into the replacement binding"
+        );
+        assert!(state.scan_progress_snapshot().await.is_none());
+        assert!(matches!(
+            CoordinatorCell::complete(permit),
+            CompletionOutcome::RetirementAcknowledged
+        ));
+    }
+
+    #[tokio::test]
+    async fn hydration_refreshes_head_before_its_first_io_boundary() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_path = temp.path().join("workspace");
+        std::fs::create_dir_all(workspace_path.join(".git")).expect("create git metadata");
+        std::fs::write(
+            workspace_path.join(".git").join("HEAD"),
+            "ref: refs/heads/main\n",
+        )
+        .expect("write git HEAD");
+        let state = Arc::new(AppState::new(2));
+        let mut stale_snapshot = coordinator_snapshot("hydration-branch", "stale-id");
+        stale_snapshot.workspace_uuid = "uuid-worktree".to_owned();
+        stale_snapshot.path = workspace_path.to_string_lossy().into_owned();
+        stale_snapshot.data_dir = temp.path().join("data");
+        stale_snapshot.branch = "captured-before-checkout".to_owned();
+        let _ = publish_test_binding(&state, stale_snapshot.clone()).await;
+        let old_admission = state.coordinator.admission();
+        let admission = state.coordinator.admission();
+        let (probe, io_starts, _) = probe(HydrationProbeExit::DbFailure, None);
+
+        background_db_hydration(
+            Arc::clone(&state),
+            DispatchSnapshot {
+                workspace: stale_snapshot,
+                config: WorkspaceConfig::default(),
+            },
+            admission,
+            Some(probe),
+        )
+        .await;
+
+        assert_eq!(io_starts.load(Ordering::SeqCst), 1);
+        let active = state.snapshot_workspace().await.expect("active workspace");
+        assert_eq!(active.branch, "main");
+        assert_eq!(
+            active.workspace_id,
+            crate::db::workspace::workspace_hash(&workspace_path, "main")
+        );
+        assert!(matches!(
+            CoordinatorCell::request(old_admission, WorkMask::from_bits(0b001), OwnerKind::Sync,),
+            Ok(RequestOutcome::Stale)
+        ));
+    }
+
+    #[tokio::test]
     async fn spawned_hydration_rebind_is_supervised_until_quiescent_ack() {
         for (same_binding, abort_task) in
             [(true, false), (true, true), (false, false), (false, true)]
         {
             let state = Arc::new(AppState::new(2));
-            let _ = publish_test_binding(&state, coordinator_snapshot("old", "old")).await;
+            let old_snapshot = coordinator_snapshot("old", "old");
+            let _ = publish_test_binding(&state, old_snapshot.clone()).await;
             let admission = state.coordinator.admission();
             let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
             let (probe, _io_starts, active_io) =
@@ -938,10 +1055,10 @@ mod tests {
                 task: Some(tokio::spawn(async move {
                     background_db_hydration(
                         task_state,
-                        PathBuf::from("C:/workspace/old"),
-                        PathBuf::from("logs/phase6-group2/old-data"),
-                        "main".to_owned(),
-                        CodeGraphConfig::default(),
+                        DispatchSnapshot {
+                            workspace: old_snapshot,
+                            config: WorkspaceConfig::default(),
+                        },
                         admission,
                         Some(probe),
                     )
@@ -986,17 +1103,17 @@ mod tests {
             HydrationProbeExit::EarlyReturn,
         ] {
             let state = Arc::new(AppState::new(1));
-            let _ =
-                publish_test_binding(&state, coordinator_snapshot("terminal", "terminal")).await;
+            let snapshot = coordinator_snapshot("terminal", "terminal");
+            let _ = publish_test_binding(&state, snapshot.clone()).await;
             let admission = state.coordinator.admission();
             let (probe, io_starts, active_io) = probe(exit, None);
 
             background_db_hydration(
                 Arc::clone(&state),
-                PathBuf::from("C:/workspace/terminal"),
-                PathBuf::from("logs/phase6-group2/terminal-data"),
-                "main".to_owned(),
-                CodeGraphConfig::default(),
+                DispatchSnapshot {
+                    workspace: snapshot,
+                    config: WorkspaceConfig::default(),
+                },
                 admission,
                 Some(probe),
             )

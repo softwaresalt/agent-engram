@@ -129,7 +129,7 @@ relay. Explicitly dropping the operation's producer before join restored daemon
 readiness. Focused eval and TTL-shutdown scenarios passed afterward.
 
 Final local gates: formatting PASS; both pedantic clippy commands PASS;
-`cargo dev-test` PASS with 535 tests; exact CI all-target suite PASS; audit
+`cargo dev-test` PASS with 538 tests; exact CI all-target suite PASS; audit
 baseline unchanged (`RUSTSEC-2026-0041` plus 13 allowed warnings, no dependency
 diff). Standard review's two applicable P1 panic risks were removed by graceful
 scope handling and a non-panicking relay construction API. Other reported
@@ -139,3 +139,12 @@ The exact-HEAD Copilot pass generated no new inline thread but surfaced one
 valid suppressed observation: the new generic branch refresh did not switch
 the process-wide metrics writer. A RED branchless-event assertion wrote only
 to `stale-branch`; GREEN writes to `main` and leaves no stale usage file.
+
+The next exact-HEAD pass identified unrestricted hydration progress and a
+suppressed baton race. Both were valid. Hydration now carries its coherent
+dispatch snapshot through `prepare_branch_owner`, refreshes HEAD before I/O,
+and fences every progress publication. Reissued work now uses an atomic
+retirement-acknowledge-and-claim transition, preserving `OwnerKind::Index` and
+`0b111` before any empty background waiter can acquire. New deterministic
+tests cover the waiting waiter, no early notification, hydration branch
+refresh, and rejected post-rebind hydration progress.

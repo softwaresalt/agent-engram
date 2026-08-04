@@ -636,6 +636,10 @@ pub(crate) async fn prepare_branch_owner(
         let mut workspace = ctx.workspace;
         workspace.workspace_id = workspace_hash(Path::new(&workspace.path), &resolved_branch);
         workspace.branch = resolved_branch;
+        let published_ctx = DispatchSnapshot {
+            workspace: workspace.clone(),
+            config: ctx.config.clone(),
+        };
         let publication = if work_bits == 0 {
             state
                 .publish_workspace_generation(workspace, Some(ctx.config))
@@ -649,12 +653,31 @@ pub(crate) async fn prepare_branch_owner(
                 )
                 .await
         };
-        publication.map_err(|error| {
+        let (_, publication_admission) = publication.map_err(|error| {
             EngramError::System(SystemError::DatabaseError {
                 reason: format!("branch publication failed before {kind:?} mutation: {error}"),
             })
         })?;
 
+        if work_bits != 0 {
+            return match CoordinatorCell::acknowledge_and_claim_reissued(
+                permit,
+                publication_admission,
+                kind,
+            )
+            .map_err(|error| {
+                EngramError::System(SystemError::DatabaseError {
+                    reason: format!("{kind:?} atomic branch reacquisition failed: {error}"),
+                })
+            })? {
+                ClaimOutcome::Acquired(next) => {
+                    crate::services::metrics::switch_branch(published_ctx.workspace.branch.clone());
+                    Ok(Some((next, published_ctx)))
+                }
+                ClaimOutcome::Retained | ClaimOutcome::Missing | ClaimOutcome::Stale => Ok(None),
+            };
+        }
+        drop(publication_admission);
         if !matches!(
             CoordinatorCell::complete(permit),
             CompletionOutcome::RetirementAcknowledged
@@ -676,30 +699,11 @@ pub(crate) async fn prepare_branch_owner(
                 return Ok(None);
             }
 
-            if work_bits != 0 {
-                match CoordinatorCell::claim_reissued(admission, kind).map_err(|error| {
-                    EngramError::System(SystemError::DatabaseError {
-                        reason: format!("{kind:?} branch work reacquisition failed: {error}"),
-                    })
-                })? {
-                    ClaimOutcome::Acquired(next) => {
-                        crate::services::metrics::switch_branch(
-                            current_ctx.workspace.branch.clone(),
-                        );
-                        permit = next;
-                        ctx = current_ctx;
-                        break;
-                    }
-                    ClaimOutcome::Retained | ClaimOutcome::Missing => return Ok(None),
-                    ClaimOutcome::Stale => {}
-                }
-            } else if let Some(next) =
-                admission.acquire_background(kind).await.map_err(|error| {
-                    EngramError::System(SystemError::DatabaseError {
-                        reason: format!("{kind:?} branch reacquisition failed: {error}"),
-                    })
-                })?
-            {
+            if let Some(next) = admission.acquire_background(kind).await.map_err(|error| {
+                EngramError::System(SystemError::DatabaseError {
+                    reason: format!("{kind:?} branch reacquisition failed: {error}"),
+                })
+            })? {
                 crate::services::metrics::switch_branch(current_ctx.workspace.branch.clone());
                 permit = next;
                 ctx = current_ctx;

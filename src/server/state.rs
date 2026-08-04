@@ -622,6 +622,97 @@ impl CoordinatorCell {
         }))
     }
 
+    /// Acknowledge one retiring owner and install its reissued successor under
+    /// the same coordinator lock.
+    pub(crate) fn acknowledge_and_claim_reissued(
+        mut retired: OwnerPermit,
+        admission: AdmissionGuard,
+        kind: OwnerKind,
+    ) -> Result<ClaimOutcome, CoordinatorError> {
+        let Some(retired_ownership) = retired.ownership.as_ref() else {
+            retired.cleanup_armed = false;
+            return Ok(ClaimOutcome::Stale);
+        };
+        if !Arc::ptr_eq(&retired_ownership.cell, &admission.cell) {
+            return Ok(ClaimOutcome::Stale);
+        }
+
+        let cell = Arc::clone(&admission.cell);
+        let mut state = cell.lock();
+        let deferred = match &state.phase {
+            CoordinatorPhase::Retiring(barrier)
+                if barrier.retired_identity == retired.identity
+                    && barrier.retired_binding == retired_ownership.binding_snapshot
+                    && retired_ownership.token.floor == retired.identity.generation
+                    && retired_ownership.token.binding_identity == barrier.retired_binding
+                    && admission.token.floor == state.floor
+                    && admission.token.floor == barrier.target_generation
+                    && admission.token.binding_identity == state.binding_identity
+                    && admission.binding_snapshot == barrier.target_binding =>
+            {
+                barrier.deferred
+            }
+            CoordinatorPhase::Running(_) => {
+                drop(state);
+                return Ok(ClaimOutcome::Retained);
+            }
+            CoordinatorPhase::Idle | CoordinatorPhase::Retiring(_) => {
+                drop(state);
+                return Ok(ClaimOutcome::Stale);
+            }
+        };
+        if deferred.is_empty() {
+            state.phase = CoordinatorPhase::Idle;
+            drop(state);
+            retired.cleanup_armed = false;
+            let _ = retired.ownership.take();
+            #[cfg(test)]
+            cell.notification_calls.fetch_add(1, Ordering::SeqCst);
+            cell.notify.notify_one();
+            return Ok(ClaimOutcome::Missing);
+        }
+        if state.next_sequence == u64::MAX {
+            drop(state);
+            return Err(CoordinatorError::SequenceExhausted);
+        }
+
+        state.next_sequence += 1;
+        let identity = OwnerIdentity {
+            generation: state.floor,
+            sequence: state.next_sequence,
+            kind,
+        };
+        state.pending = WorkMask::default();
+        state.phase = CoordinatorPhase::Running(OwnerRecord {
+            identity,
+            binding_identity: state.binding_identity.clone(),
+            work_mask: deferred,
+        });
+        drop(state);
+
+        retired.cleanup_armed = false;
+        let _ = retired.ownership.take();
+        let AdmissionGuard {
+            cell,
+            token,
+            binding_snapshot,
+            cancel_rx,
+            enabled_notification,
+        } = admission;
+        drop(enabled_notification);
+        Ok(ClaimOutcome::Acquired(OwnerPermit {
+            ownership: Some(PermitOwnership {
+                cell,
+                token,
+                binding_snapshot,
+                cancel_rx,
+            }),
+            identity,
+            work_mask: deferred,
+            cleanup_armed: true,
+        }))
+    }
+
     pub(crate) fn complete(mut permit: OwnerPermit) -> CompletionOutcome {
         let Some(ownership) = permit.ownership.as_ref() else {
             permit.cleanup_armed = false;
@@ -2032,6 +2123,59 @@ mod coordinator_tests {
                 "the qualified request must drain exactly once"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn retirement_acknowledgment_atomically_claims_reissued_index_work() {
+        let state = AppState::new(2);
+        let mut target = workspace("worktree", "uuid-worktree", "id-main");
+        let _ = publish(&state, target.clone()).await;
+        let old_owner = acquired(request(
+            admission(&state.coordinator),
+            WorkMask::from_bits(0b111),
+            OwnerKind::Index,
+        ));
+        target.workspace_id = "id-feature".to_owned();
+        target.branch = "feature".to_owned();
+        let (_, next_admission) = state
+            .publish_workspace_generation_with_reissue(
+                target,
+                Some(WorkspaceConfig::default()),
+                WorkMask::from_bits(0b111),
+            )
+            .await
+            .expect("publish refreshed branch");
+        let _waiting_background = waiting(request(
+            admission(&state.coordinator),
+            WorkMask::default(),
+            OwnerKind::Startup,
+        ));
+
+        let next = match CoordinatorCell::acknowledge_and_claim_reissued(
+            old_owner,
+            next_admission,
+            OwnerKind::Index,
+        )
+        .expect("atomic retirement claim")
+        {
+            ClaimOutcome::Acquired(permit) => permit,
+            ClaimOutcome::Retained => panic!("background waiter stole reissued work"),
+            ClaimOutcome::Missing => panic!("reissued work disappeared"),
+            ClaimOutcome::Stale => panic!("refreshed admission became stale"),
+        };
+
+        assert_eq!(next.identity.kind, OwnerKind::Index);
+        assert_eq!(next.work_bits(), 0b111);
+        assert_eq!(
+            state.coordinator.test_notification_calls(),
+            0,
+            "atomic successor installation must not release a waiter"
+        );
+        assert!(matches!(
+            CoordinatorCell::complete(next),
+            CompletionOutcome::Released
+        ));
+        assert_eq!(state.coordinator.test_pending_bits(), 0);
     }
 
     #[tokio::test]

@@ -45,7 +45,7 @@ may be opened and reviewed; merge still requires explicit operator approval.
 | `cargo fmt --all -- --check` | PASS |
 | Exact CI clippy | PASS |
 | Repository all-target clippy | PASS |
-| `cargo dev-test` | PASS — 535 tests after final PR remediation |
+| `cargo dev-test` | PASS — 538 tests after final PR remediation |
 | Exact CI all-target suite | PASS — exit 0 after PR remediation |
 | Standard review | PASS — final applicable P1 panic risks remediated |
 | Dependency audit | PASS WITH KNOWN ADVISORY — `RUSTSEC-2026-0041` |
@@ -74,6 +74,11 @@ moves startup progress supervision outside the cancellable future with
 exact-owner fencing and abort/drain-and-join terminals. A focused real
 named-pipe contract caught and fixed a producer-clone join deadlock before the
 final suite. No endpoint, schema, or persistence format changed.
+
+The last exact-HEAD review also closed two authority races: retirement
+acknowledgment now atomically installs a reissued same-kind successor before a
+background waiter can take the baton, and hydration now refreshes HEAD before
+I/O while exact-owner fencing every progress terminal.
 
 ## Deployment or Rollout Path
 
