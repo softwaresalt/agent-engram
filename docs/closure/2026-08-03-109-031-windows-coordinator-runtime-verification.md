@@ -167,6 +167,16 @@ finished. The contract now uses the established direct isolated binding helper
 and asserts that the control sync actually acquired admission. The focused
 feature-matched contract passed ten consecutive Windows runs.
 
+GitHub run `30927059402` exposed the same retained-hydration setup in the
+indexing-resilience integration. Stressing the first repair also showed that
+its busy-write assertion occurred only after three awaited DB reads, by which
+time a valid no-op owner could finish; forcing changed-file work while keeping
+those duplicate reads could instead surface the known Windows Cozo lock. The
+final focused scenario uses isolated binding, performs real changed-file work,
+checks busy/queued responses before unrelated awaits, and leaves read-during-
+sync behavior to its dedicated contract test. The resilience scenario passed
+20 consecutive runs, and the dedicated read contract passed separately.
+
 ## Ownership and Driver Invariants
 
 The clean aggregate run is the deterministic race proof. Its matrices cover

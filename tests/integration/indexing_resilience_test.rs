@@ -4,9 +4,13 @@
 //! stale-terminal, Drop recovery, and timestamp invariants stay co-located with
 //! the coordinator implementation in `server::state`.
 
+#[path = "../helpers/mod.rs"]
+mod helpers;
+
 use std::sync::Arc;
 
-use engram::errors::codes::{INDEX_IN_PROGRESS, WORKSPACE_NOT_SET};
+use engram::errors::codes::INDEX_IN_PROGRESS;
+use engram::models::config::WorkspaceConfig;
 use engram::server::state::AppState;
 use engram::services::dehydration::SCHEMA_VERSION;
 use engram::tools;
@@ -28,40 +32,23 @@ fn make_workspace() -> (tempfile::TempDir, Arc<AppState>) {
     (dir, state)
 }
 
-async fn bind_workspace(state: Arc<AppState>, path: &std::path::Path) {
-    tools::dispatch(
-        Arc::clone(&state),
-        "set_workspace",
-        Some(json!({ "path": path.to_str().unwrap() })),
-    )
-    .await
-    .expect("set_workspace");
-}
-
 #[tokio::test]
-async fn public_owner_preserves_busy_read_queue_and_release_contracts() {
+async fn public_owner_preserves_busy_queue_and_release_contracts() {
     let (ws, state) = make_workspace();
-    bind_workspace(Arc::clone(&state), ws.path()).await;
+    helpers::bind_isolated_workspace(&state, ws.path(), "main", WorkspaceConfig::default()).await;
 
     tools::dispatch(Arc::clone(&state), "index_workspace", Some(json!({})))
         .await
         .expect("idle index control");
+    std::fs::write(
+        ws.path().join("src/lib.rs"),
+        "pub fn ready() {}\npub fn changed() {}\n",
+    )
+    .expect("modify fixture before active sync");
 
     let active_sync = tools::write::sync_workspace(Arc::clone(&state), Some(json!({})));
     let public_contracts = async {
         assert!(state.is_indexing(), "public sync must own admission");
-
-        for (method, params) in [
-            ("get_workspace_statistics", None),
-            ("query_memory", Some(json!({ "query": "test" }))),
-            ("unified_search", Some(json!({ "query": "test" }))),
-        ] {
-            if let Err(error) = tools::dispatch(Arc::clone(&state), method, params).await {
-                let code = error.to_response().error.code;
-                assert_ne!(code, INDEX_IN_PROGRESS, "{method} remains readable");
-                assert_ne!(code, WORKSPACE_NOT_SET, "{method} keeps its binding");
-            }
-        }
 
         let busy_index = tools::dispatch(Arc::clone(&state), "index_workspace", Some(json!({})))
             .await
@@ -81,7 +68,11 @@ async fn public_owner_preserves_busy_read_queue_and_release_contracts() {
     };
 
     let (sync_result, ()) = tokio::join!(biased; active_sync, public_contracts);
-    sync_result.expect("owner and one queued successor complete");
+    let sync_value = sync_result.expect("owner and one queued successor complete");
+    assert!(
+        sync_value.get("files_modified").is_some(),
+        "control sync must own admission rather than queue behind a background driver"
+    );
 
     if let Err(error) = tools::dispatch(Arc::clone(&state), "get_workspace_statistics", None).await
     {

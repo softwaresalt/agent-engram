@@ -92,6 +92,15 @@ observe migration markers too early. The contract now uses direct isolated
 binding and asserts that its control sync acquired admission; the focused
 feature-matched scenario passed ten consecutive runs.
 
+A third Linux run found the same retained-hydration setup in
+`indexing_resilience`. Local stress then caught a second flaw before push: the
+busy assertion followed three awaited DB reads, allowing the owner to finish,
+while forcing changed-file work plus duplicate reads could trigger the known
+Windows Cozo lock. The final test is single-purpose: isolated binding, real
+changed-file sync, immediate busy/queued assertions, and clean release.
+Read-during-sync behavior remains covered by its dedicated contract. The
+resilience scenario passed 20 consecutive runs.
+
 Push the fixture repair, re-request Copilot on the new HEAD, require green CI
 and zero unresolved threads, then stop with the PR open for explicit merge
 approval.
