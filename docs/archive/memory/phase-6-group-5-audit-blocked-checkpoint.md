@@ -8,6 +8,8 @@ task: 109.031-T
 status: blocked
 ---
 
+# Phase 6 Group 5 Audit-Blocked Checkpoint
+
 ## Blocker
 
 `cargo audit` failed on `RUSTSEC-2026-0041` (severity 8.2) for transitive

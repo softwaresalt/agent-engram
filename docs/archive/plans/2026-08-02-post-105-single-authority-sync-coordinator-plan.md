@@ -10,6 +10,8 @@ shipment: "104-S"
 tags: ["concurrency", "pending-sync", "permit", "internal-api", "raii", "cancellation-safety", "ready-after-106-closure"]
 ---
 
+# Post-105 Single-Authority Sync Coordinator Plan
+
 ## Pipeline gate
 
 The historical replacement gate was **`ready_after_106_closure`**, represented by the supported plan body marker and backlog label `ready-after-106-closure`. That gate is now satisfied: `106-S` and `109.013-T` are archived, Stage completed its exact fail-closed requeue transaction, and `104-S`, `109-F`, and replacement tasks `109.014-T` through `109.031-T` are queued. Ship may implement only after revalidating the archived prerequisites, exact shipment manifest/predecessors, branch gate, and claim lifecycle.
