@@ -1,3 +1,6 @@
+#[path = "../helpers/mod.rs"]
+mod helpers;
+
 use std::fs;
 use std::sync::Arc;
 
@@ -7,6 +10,7 @@ use tokio::test;
 use engram::db::connect_db;
 use engram::db::queries::CodeGraphQueries;
 use engram::errors::codes::{INDEX_IN_PROGRESS, WORKSPACE_NOT_SET};
+use engram::models::config::WorkspaceConfig;
 use engram::server::state::AppState;
 use engram::services::dehydration::SCHEMA_VERSION;
 use engram::tools;
@@ -103,13 +107,8 @@ async fn contract_busy_writes_preserve_public_responses_and_complete_mask() {
     fs::write(engram_dir.join(".version"), SCHEMA_VERSION).expect("write .version");
 
     let state = Arc::new(AppState::new(10));
-    tools::dispatch(
-        state.clone(),
-        "set_workspace",
-        Some(json!({ "path": workspace.path().to_str().unwrap() })),
-    )
-    .await
-    .expect("set_workspace should succeed");
+    helpers::bind_isolated_workspace(&state, workspace.path(), "main", WorkspaceConfig::default())
+        .await;
 
     // Idle control: the public Index tool acquires and completes normally.
     let idle = tools::dispatch(Arc::clone(&state), "index_workspace", Some(json!({})))
@@ -178,7 +177,11 @@ async fn contract_busy_writes_preserve_public_responses_and_complete_mask() {
     };
 
     let (sync_result, ()) = tokio::join!(biased; active_sync, competing_calls);
-    sync_result.expect("routine owner and transferred sync should complete");
+    let sync_value = sync_result.expect("routine owner and transferred sync should complete");
+    assert!(
+        sync_value.get("files_modified").is_some(),
+        "control sync must own admission rather than queue behind a background driver"
+    );
 
     let db = connect_db(&snapshot.data_dir, &snapshot.branch)
         .await

@@ -85,6 +85,13 @@ fencing. RED/GREEN remediation now provides:
 - isolated evaluation-contract binding to prevent telemetry contamination.
 
 Concurrency review cycle two and focused code-review cycle two reported no
-remaining P0/P1 or significant issues. Push the remediation, re-request
-Copilot on the new HEAD, require green CI and zero unresolved threads, then
-stop with the PR open for explicit merge approval.
+remaining P0/P1 or significant issues. A second Linux run then exposed that
+the busy-write contract's public `set_workspace` setup retained a hydration
+driver; Linux could queue the intended routine control sync behind it and
+observe migration markers too early. The contract now uses direct isolated
+binding and asserts that its control sync acquired admission; the focused
+feature-matched scenario passed ten consecutive runs.
+
+Push the fixture repair, re-request Copilot on the new HEAD, require green CI
+and zero unresolved threads, then stop with the PR open for explicit merge
+approval.

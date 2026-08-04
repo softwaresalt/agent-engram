@@ -159,6 +159,14 @@ contract, resilience, cancellation-matrix, and all-target scenarios passed;
 the earlier named-pipe observation, restart, and rollback evidence remains
 valid because no endpoint, process, schema, or persistence format changed.
 
+GitHub run `30925748780` exposed a second fixture race in the busy-write
+contract. Its public `set_workspace` setup retained an asynchronous hydration
+driver, so Linux could queue the intended routine control sync behind
+hydration and let the assertion read migration markers before transferred work
+finished. The contract now uses the established direct isolated binding helper
+and asserts that the control sync actually acquired admission. The focused
+feature-matched contract passed ten consecutive Windows runs.
+
 ## Ownership and Driver Invariants
 
 The clean aggregate run is the deterministic race proof. Its matrices cover
