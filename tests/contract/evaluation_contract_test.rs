@@ -3,6 +3,9 @@
 //! Validates that `get_evaluation_report` returns a well-formed
 //! [`EvaluationReport`] JSON structure with correct field types.
 
+#[path = "../helpers/mod.rs"]
+mod helpers;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
@@ -24,18 +27,7 @@ async fn setup_workspace_with_events(events: &[UsageEvent]) -> (Arc<AppState>, t
     fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").expect("write HEAD");
 
     let state = Arc::new(AppState::new(10));
-    let path = workspace.path().to_string_lossy().to_string();
-
-    tools::dispatch(
-        state.clone(),
-        "set_workspace",
-        Some(json!({ "path": path })),
-    )
-    .await
-    .expect("set_workspace must succeed");
-
-    state
-        .set_workspace_config(Some(WorkspaceConfig::default()))
+    helpers::bind_isolated_workspace(&state, workspace.path(), "main", WorkspaceConfig::default())
         .await;
 
     // Write events as NDJSON to the metrics file.

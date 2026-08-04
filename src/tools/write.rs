@@ -18,7 +18,7 @@ use crate::models::config::CodeGraphConfig;
 use crate::models::health::ScanProgress;
 use crate::server::state::{
     AppState, ClaimOutcome, CompletionOutcome, CoordinatorCell, DispatchSnapshot, DriverTaskGuard,
-    OwnerKind, OwnerPermit, RequestOutcome, SharedState, WorkMask,
+    OwnerKind, OwnerPermit, OwnerProgressScope, RequestOutcome, SharedState, WorkMask,
 };
 use crate::services::dehydration;
 use crate::services::hydration;
@@ -116,7 +116,7 @@ pub async fn flush_state(state: SharedState, params: Option<Value>) -> Result<Va
 
 // ── index_workspace ─────────────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Clone, Copy, Deserialize)]
 struct IndexWorkspaceParams {
     #[serde(default)]
     force: bool,
@@ -135,7 +135,7 @@ struct IndexWorkspaceParams {
 /// indexed file is force re-extracted so the 100-F fail-closed same-file guard
 /// re-runs over stale wrong same-file direct edges persisted before the fix.
 /// Defaults to `false` (a stale generation is a no-op deferral on routine sync).
-#[derive(Deserialize, Default)]
+#[derive(Clone, Copy, Deserialize, Default)]
 struct SyncWorkspaceParams {
     #[serde(default)]
     backfill_python_canonical: bool,
@@ -151,49 +151,50 @@ pub async fn index_workspace(
     state: SharedState,
     params: Option<Value>,
 ) -> Result<Value, EngramError> {
+    let parsed: IndexWorkspaceParams = serde_json::from_value(params.unwrap_or_else(|| json!({})))
+        .map_err(|error| {
+            EngramError::System(SystemError::InvalidParams {
+                reason: error.to_string(),
+            })
+        })?;
     let (admission, ctx) = state
         .guarded_dispatch_context()
         .await
         .ok_or(EngramError::Workspace(WorkspaceError::NotSet))?;
-    let mut permit =
-        match CoordinatorCell::request(admission, WorkMask::from_bits(0b111), OwnerKind::Index) {
-            Ok(RequestOutcome::Acquired(permit)) => permit,
-            Ok(RequestOutcome::Waiting(_) | RequestOutcome::Enqueued) => {
-                return Err(EngramError::CodeGraph(CodeGraphError::IndexInProgress));
-            }
-            Ok(RequestOutcome::Stale) => {
-                return Err(EngramError::System(SystemError::DatabaseError {
-                    reason: "index admission became stale during workspace rebind".to_owned(),
-                }));
-            }
-            Err(error) => {
-                return Err(EngramError::System(SystemError::DatabaseError {
-                    reason: format!("index coordinator admission failed: {error}"),
-                }));
-            }
-        };
-    let work_bits = permit.work_bits();
-
-    let operation = async {
-        let ws_path = PathBuf::from(&ctx.workspace.path);
-        begin_indexing_scan_progress(&state).await;
-        let result = run_workspace_write(
-            &state,
-            WorkspaceWriteTarget {
-                path: &ws_path,
-                data_dir: &ctx.workspace.data_dir,
-                branch: &ctx.workspace.branch,
-                config: &ctx.config.code_graph,
-            },
-            params,
-            true,
-            work_bits,
-        )
-        .await;
-        finish_workspace_write_scan_progress(&state, &result, true).await;
-        result
+    let requested = WorkMask::from_bits(if parsed.force { 0b111 } else { 0b001 });
+    let mut permit = match CoordinatorCell::request(admission, requested, OwnerKind::Index) {
+        Ok(RequestOutcome::Acquired(permit)) => permit,
+        Ok(RequestOutcome::Waiting(_) | RequestOutcome::Enqueued) => {
+            return Err(EngramError::CodeGraph(CodeGraphError::IndexInProgress));
+        }
+        Ok(RequestOutcome::Stale) => {
+            return Err(EngramError::System(SystemError::DatabaseError {
+                reason: "index admission became stale during workspace rebind".to_owned(),
+            }));
+        }
+        Err(error) => {
+            return Err(EngramError::System(SystemError::DatabaseError {
+                reason: format!("index coordinator admission failed: {error}"),
+            }));
+        }
     };
-    let Some(result) = permit.run_until_cancelled(operation).await else {
+    let work_bits = permit.work_bits();
+    let ws_path = PathBuf::from(&ctx.workspace.path);
+    let Some(result) = run_guarded_workspace_write(
+        &state,
+        &mut permit,
+        WorkspaceWriteTarget {
+            path: &ws_path,
+            data_dir: &ctx.workspace.data_dir,
+            branch: &ctx.workspace.branch,
+            config: &ctx.config.code_graph,
+        },
+        Some(json!({ "force": parsed.force })),
+        true,
+        work_bits,
+    )
+    .await
+    else {
         return Err(EngramError::System(SystemError::DatabaseError {
             reason: "index cancelled by workspace rebind".to_owned(),
         }));
@@ -233,25 +234,13 @@ enum SyncAttempt {
 }
 
 async fn run_workspace_write(
-    state: &SharedState,
     target: WorkspaceWriteTarget<'_>,
     params: Option<Value>,
     full_index: bool,
     required_work_bits: u8,
+    last_completed_at: Option<String>,
+    progress_tx: tokio::sync::mpsc::UnboundedSender<ScanProgress>,
 ) -> Result<WorkspaceWriteOutcome, EngramError> {
-    let last_completed_at = state
-        .scan_progress_snapshot()
-        .await
-        .and_then(|progress| progress.last_completed_at);
-    let (progress_tx, progress_task) = spawn_scan_progress_updater(
-        state.clone(),
-        #[cfg(test)]
-        None,
-    );
-    let mut progress_driver = DriverTaskGuard {
-        task: Some(progress_task),
-    };
-
     let (value, unfulfilled_work_bits) = if full_index {
         let parsed: IndexWorkspaceParams =
             serde_json::from_value(params.unwrap_or_else(|| json!({}))).map_err(|error| {
@@ -259,9 +248,8 @@ async fn run_workspace_write(
                     reason: error.to_string(),
                 })
             })?;
-        // A full Index owner claims all three work bits. Heavy bits mean every
-        // indexed file must be re-extracted; a hash-skipping index cannot
-        // certify either durable migration marker.
+        // Recovered heavy bits mean every indexed file must be re-extracted; a
+        // hash-skipping index cannot certify either durable migration marker.
         let force = parsed.force || required_work_bits & 0b110 != 0;
         let result = {
             let mut progress_callback = move |files_scanned, files_total| {
@@ -320,20 +308,64 @@ async fn run_workspace_write(
         })
     })?;
 
-    let progress_result = match progress_driver.task.as_mut() {
-        Some(task) => task.await,
-        None => Ok(()),
-    };
-    let _ = progress_driver.task.take();
-    progress_result.map_err(|error| {
-        EngramError::System(SystemError::DatabaseError {
-            reason: format!("scan progress updater failed: {error}"),
-        })
-    })?;
     Ok(WorkspaceWriteOutcome {
         value,
         unfulfilled_work_bits,
     })
+}
+
+async fn run_guarded_workspace_write(
+    state: &SharedState,
+    permit: &mut OwnerPermit,
+    target: WorkspaceWriteTarget<'_>,
+    params: Option<Value>,
+    full_index: bool,
+    required_work_bits: u8,
+) -> Option<Result<WorkspaceWriteOutcome, EngramError>> {
+    let last_completed_at = state
+        .scan_progress_snapshot()
+        .await
+        .and_then(|progress| progress.last_completed_at);
+    let progress_scope = permit.progress_scope()?;
+    if !begin_indexing_scan_progress(state, &progress_scope, last_completed_at.clone()).await {
+        return None;
+    }
+    let (progress_tx, progress_task) = spawn_scan_progress_updater(
+        state.clone(),
+        progress_scope.clone(),
+        #[cfg(test)]
+        None,
+    );
+    let progress_driver = DriverTaskGuard {
+        task: Some(progress_task),
+    };
+    let operation = run_workspace_write(
+        target,
+        params,
+        full_index,
+        required_work_bits,
+        last_completed_at,
+        progress_tx,
+    );
+
+    let result = permit.run_until_cancelled(operation).await;
+    let Some(result) = result else {
+        if let Err(error) = progress_driver.abort_and_join().await {
+            if !error.is_cancelled() {
+                tracing::warn!(%error, "scan progress updater cancellation failed");
+            }
+        }
+        return None;
+    };
+    if let Err(error) = progress_driver.join().await {
+        return Some(Err(EngramError::System(SystemError::DatabaseError {
+            reason: format!("scan progress updater failed: {error}"),
+        })));
+    }
+    if !finish_workspace_write_scan_progress(state, &progress_scope, &result, full_index).await {
+        return None;
+    }
+    Some(result)
 }
 
 pub(crate) fn unfulfilled_work_bits(
@@ -370,28 +402,29 @@ pub async fn sync_workspace(
     state: SharedState,
     params: Option<Value>,
 ) -> Result<Value, EngramError> {
-    let params_ref = params.as_ref();
+    let parsed: SyncWorkspaceParams = serde_json::from_value(params.unwrap_or_else(|| json!({})))
+        .map_err(|error| {
+        EngramError::System(SystemError::InvalidParams {
+            reason: error.to_string(),
+        })
+    })?;
     let requested = WorkMask::from_bits(
         0b001
-            | if params_ref
-                .and_then(|value| value.get("revalidate_code_graph"))
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-            {
+            | if parsed.revalidate_code_graph {
                 0b010
             } else {
                 0
             }
-            | if params_ref
-                .and_then(|value| value.get("backfill_python_canonical"))
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-            {
+            | if parsed.backfill_python_canonical {
                 0b100
             } else {
                 0
             },
     );
+    let write_params = Some(json!({
+        "revalidate_code_graph": parsed.revalidate_code_graph,
+        "backfill_python_canonical": parsed.backfill_python_canonical
+    }));
     let mut next_owner = None;
     loop {
         let (mut permit, ctx) = if let Some(owner) = next_owner.take() {
@@ -428,36 +461,42 @@ pub async fn sync_workspace(
             (permit, ctx)
         };
         let work_bits = permit.work_bits();
-
-        let operation = async {
-            let ws_path = PathBuf::from(&ctx.workspace.path);
-            if let Ok(resolved_branch) = resolve_git_branch(&ws_path) {
-                if resolved_branch != ctx.workspace.branch {
-                    return SyncAttempt::BranchChanged(resolved_branch);
-                }
-            }
-
-            begin_indexing_scan_progress(&state).await;
-            let result = run_workspace_write(
+        let ws_path = PathBuf::from(&ctx.workspace.path);
+        let Some(branch_change) = permit
+            .run_until_cancelled(async {
+                resolve_git_branch(&ws_path)
+                    .ok()
+                    .filter(|branch| branch != &ctx.workspace.branch)
+            })
+            .await
+        else {
+            return Err(EngramError::System(SystemError::DatabaseError {
+                reason: "sync cancelled by workspace rebind".to_owned(),
+            }));
+        };
+        let attempt = if let Some(branch) = branch_change {
+            SyncAttempt::BranchChanged(branch)
+        } else {
+            let Some(result) = run_guarded_workspace_write(
                 &state,
+                &mut permit,
                 WorkspaceWriteTarget {
                     path: &ws_path,
                     data_dir: &ctx.workspace.data_dir,
                     branch: &ctx.workspace.branch,
                     config: &ctx.config.code_graph,
                 },
-                params.clone(),
+                write_params.clone(),
                 false,
                 work_bits,
             )
-            .await;
-            finish_workspace_write_scan_progress(&state, &result, false).await;
+            .await
+            else {
+                return Err(EngramError::System(SystemError::DatabaseError {
+                    reason: "sync cancelled by workspace rebind".to_owned(),
+                }));
+            };
             SyncAttempt::Finished(result)
-        };
-        let Some(attempt) = permit.run_until_cancelled(operation).await else {
-            return Err(EngramError::System(SystemError::DatabaseError {
-                reason: "sync cancelled by workspace rebind".to_owned(),
-            }));
         };
 
         match attempt {
@@ -676,30 +715,25 @@ async fn drive_transferred_sync(state: &SharedState, permit: OwnerPermit, ctx: &
         permit = prepared_permit;
         current_ctx = prepared_ctx;
         let work_bits = permit.work_bits();
-        let operation = async {
-            let ws_path = PathBuf::from(&current_ctx.workspace.path);
-            begin_indexing_scan_progress(state).await;
-            let result = run_workspace_write(
-                state,
-                WorkspaceWriteTarget {
-                    path: &ws_path,
-                    data_dir: &current_ctx.workspace.data_dir,
-                    branch: &current_ctx.workspace.branch,
-                    config: &current_ctx.config.code_graph,
-                },
-                Some(json!({
-                    "revalidate_code_graph": work_bits & 0b010 != 0,
-                    "backfill_python_canonical": work_bits & 0b100 != 0
-                })),
-                false,
-                work_bits,
-            )
-            .await;
-            finish_workspace_write_scan_progress(state, &result, false).await;
-            result
-        };
-
-        match permit.run_until_cancelled(operation).await {
+        let ws_path = PathBuf::from(&current_ctx.workspace.path);
+        match run_guarded_workspace_write(
+            state,
+            &mut permit,
+            WorkspaceWriteTarget {
+                path: &ws_path,
+                data_dir: &current_ctx.workspace.data_dir,
+                branch: &current_ctx.workspace.branch,
+                config: &current_ctx.config.code_graph,
+            },
+            Some(json!({
+                "revalidate_code_graph": work_bits & 0b010 != 0,
+                "backfill_python_canonical": work_bits & 0b100 != 0
+            })),
+            false,
+            work_bits,
+        )
+        .await
+        {
             Some(Ok(result)) => {
                 if result.unfulfilled_work_bits != 0 {
                     return;
@@ -737,6 +771,7 @@ fn running_scan_progress(
 
 fn spawn_scan_progress_updater(
     state: SharedState,
+    progress_scope: OwnerProgressScope,
     #[cfg(test)] mut probe: Option<ProgressProbe>,
 ) -> (
     tokio::sync::mpsc::UnboundedSender<ScanProgress>,
@@ -757,7 +792,9 @@ fn spawn_scan_progress_updater(
                     .writes
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }
-            state.set_scan_progress(Some(progress)).await;
+            let _ = state
+                .set_scan_progress_for_owner(&progress_scope, Some(progress))
+                .await;
         }
     });
     (tx, handle)
@@ -811,14 +848,17 @@ fn value_u64(result: &Value, field: &str) -> u64 {
     result.get(field).and_then(Value::as_u64).unwrap_or(0)
 }
 
-async fn begin_indexing_scan_progress(state: &SharedState) {
-    let last_completed_at = state
-        .scan_progress_snapshot()
-        .await
-        .and_then(|progress| progress.last_completed_at);
+async fn begin_indexing_scan_progress(
+    state: &SharedState,
+    progress_scope: &OwnerProgressScope,
+    last_completed_at: Option<String>,
+) -> bool {
     state
-        .set_scan_progress(Some(indexing_started_progress(last_completed_at)))
-        .await;
+        .set_scan_progress_for_owner(
+            progress_scope,
+            Some(indexing_started_progress(last_completed_at)),
+        )
+        .await
 }
 
 #[cfg(test)]
@@ -837,15 +877,18 @@ async fn finish_indexing_scan_progress(
 
 async fn finish_workspace_write_scan_progress(
     state: &SharedState,
+    progress_scope: &OwnerProgressScope,
     result: &Result<WorkspaceWriteOutcome, EngramError>,
     full_index: bool,
-) {
+) -> bool {
     let progress = match result {
         Ok(result) if full_index => completed_index_scan_progress(&result.value),
         Ok(result) => completed_sync_scan_progress(&result.value),
         Err(_) => completed_scan_progress(0),
     };
-    state.set_scan_progress(Some(progress)).await;
+    state
+        .set_scan_progress_for_owner(progress_scope, Some(progress))
+        .await
 }
 
 #[cfg(test)]
@@ -943,8 +986,9 @@ mod tests {
     use tokio::sync::oneshot;
 
     use super::{
-        ProgressProbe, completed_index_scan_progress, completed_sync_scan_progress,
-        drive_transferred_sync, finalize_indexing_request, index_workspace,
+        ProgressProbe, WorkspaceWriteOutcome, begin_indexing_scan_progress,
+        completed_index_scan_progress, completed_sync_scan_progress, drive_transferred_sync,
+        finalize_indexing_request, finish_workspace_write_scan_progress, index_workspace,
         indexing_started_progress, running_scan_progress, spawn_scan_progress_updater,
         sync_workspace,
     };
@@ -1032,8 +1076,9 @@ mod tests {
             }
         }
 
+        let progress_scope = permit.progress_scope().expect("active progress scope");
         let (progress_tx, progress_task) =
-            spawn_scan_progress_updater(Arc::clone(&state), Some(progress_probe));
+            spawn_scan_progress_updater(Arc::clone(&state), progress_scope, Some(progress_probe));
         let progress_driver = DriverTaskGuard {
             task: Some(progress_task),
         };
@@ -1277,6 +1322,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn delayed_progress_update_is_rejected_after_owner_terminal() {
+        let state = Arc::new(AppState::new(1));
+        let permit = acquired(request(
+            &state,
+            WorkMask::from_bits(0b001),
+            OwnerKind::Index,
+        ));
+        let (progress_entered_tx, progress_entered_rx) = oneshot::channel();
+        let (release_progress_tx, release_progress_rx) = oneshot::channel();
+        let progress_writes = Arc::new(AtomicUsize::new(0));
+        let progress_probe = ProgressProbe {
+            entered: Some(progress_entered_tx),
+            release: Some(release_progress_rx),
+            writes: Arc::clone(&progress_writes),
+            terminated: None,
+        };
+        let progress_scope = permit.progress_scope().expect("active progress scope");
+        let (progress_tx, progress_task) =
+            spawn_scan_progress_updater(Arc::clone(&state), progress_scope, Some(progress_probe));
+        progress_tx
+            .send(running_scan_progress(1, 1, None))
+            .expect("queue progress update");
+        progress_entered_rx
+            .await
+            .expect("progress child should block before its write");
+
+        drop(permit);
+        release_progress_tx
+            .send(())
+            .expect("release stale progress child");
+        drop(progress_tx);
+        progress_task.await.expect("progress child should join");
+
+        assert_eq!(progress_writes.load(Ordering::SeqCst), 1);
+        assert!(
+            state.scan_progress_snapshot().await.is_none(),
+            "a child released after its owner terminal must not mutate progress"
+        );
+    }
+
+    #[tokio::test]
+    async fn parent_progress_updates_are_rejected_after_owner_terminal() {
+        let state = Arc::new(AppState::new(1));
+        let permit = acquired(request(
+            &state,
+            WorkMask::from_bits(0b001),
+            OwnerKind::Index,
+        ));
+        let progress_scope = permit.progress_scope().expect("active progress scope");
+        drop(permit);
+
+        assert!(
+            !begin_indexing_scan_progress(&state, &progress_scope, None).await,
+            "stale initial progress publication must be rejected"
+        );
+        assert!(
+            state.scan_progress_snapshot().await.is_none(),
+            "stale owner must not publish initial progress"
+        );
+
+        let result = Ok(WorkspaceWriteOutcome {
+            value: json!({ "files_parsed": 1, "files_skipped": 0 }),
+            unfulfilled_work_bits: 0,
+        });
+        assert!(
+            !finish_workspace_write_scan_progress(&state, &progress_scope, &result, true).await,
+            "stale final progress publication must be rejected"
+        );
+        assert!(
+            state.scan_progress_snapshot().await.is_none(),
+            "stale owner must not publish final progress"
+        );
+    }
+
+    #[tokio::test]
     async fn busy_sync_publishes_full_mask_before_exact_queued_response() {
         let temp = tempfile::tempdir().expect("tempdir");
         let invalid_data_dir = temp.path().join("not-a-directory");
@@ -1460,6 +1580,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn plain_full_index_preserves_hash_skip_without_pending_heavy_work() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("workspace");
+        let data_dir = temp.path().join("data");
+        std::fs::create_dir_all(&workspace).expect("create workspace");
+        std::fs::write(workspace.join("lib.rs"), "pub fn unchanged() {}\n").expect("write source");
+
+        let state = Arc::new(AppState::new(1));
+        publish(
+            &state,
+            snapshot(
+                "plain-full",
+                "uuid-plain-full",
+                "id-plain-full",
+                &workspace,
+                data_dir,
+            ),
+        )
+        .await;
+
+        index_workspace(Arc::clone(&state), None)
+            .await
+            .expect("seed full index");
+        let result = index_workspace(Arc::clone(&state), None)
+            .await
+            .expect("repeat plain full index");
+
+        assert_eq!(result["files_parsed"], 0);
+        assert_eq!(
+            result["files_skipped"], 1,
+            "a plain full index must preserve unchanged-file hash skipping"
+        );
+    }
+
+    #[tokio::test]
     async fn full_index_fulfills_recovered_heavy_work_before_success() {
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace = temp.path().join("workspace");
@@ -1530,7 +1685,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn full_index_retains_heavy_work_when_file_errors_prevent_fulfillment() {
+    async fn plain_full_index_does_not_invent_heavy_work_for_file_errors() {
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace = temp.path().join("workspace");
         let data_dir = temp.path().join("data");
@@ -1561,8 +1716,45 @@ mod tests {
         );
         assert_eq!(
             state.coordinator.test_pending_bits(),
+            0,
+            "a plain full index must not invent durable migration work"
+        );
+    }
+
+    #[tokio::test]
+    async fn forced_full_index_retains_heavy_work_for_file_errors() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("workspace");
+        let data_dir = temp.path().join("data");
+        std::fs::create_dir_all(&workspace).expect("create workspace");
+        std::fs::write(workspace.join("invalid.py"), [0xff]).expect("write invalid UTF-8 source");
+
+        let state = Arc::new(AppState::new(1));
+        publish(
+            &state,
+            snapshot(
+                "forced-error",
+                "uuid-forced-error",
+                "id-forced-error",
+                &workspace,
+                data_dir,
+            ),
+        )
+        .await;
+
+        let response = index_workspace(Arc::clone(&state), Some(json!({ "force": true })))
+            .await
+            .expect("per-file failures remain structured forced-index results");
+        assert!(
+            response["errors"]
+                .as_array()
+                .is_some_and(|errors| !errors.is_empty()),
+            "fixture must exercise a non-fatal file error"
+        );
+        assert_eq!(
+            state.coordinator.test_pending_bits(),
             0b111,
-            "unfulfilled claimed heavy work must remain coordinator-owned"
+            "a forced full index must retain unfulfilled migration work"
         );
     }
 

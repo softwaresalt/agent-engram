@@ -300,6 +300,15 @@ pub(crate) struct OwnerPermit {
     cleanup_armed: bool,
 }
 
+/// Cloneable authority witness for owner-scoped child mutations.
+#[allow(dead_code)]
+#[derive(Clone)]
+pub(crate) struct OwnerProgressScope {
+    cell: Arc<CoordinatorCell>,
+    identity: OwnerIdentity,
+    binding_snapshot: BindingIdentity,
+}
+
 /// Parent-owned supervision for one mutation-capable driver task.
 #[allow(dead_code)]
 #[derive(Debug)]
@@ -752,6 +761,15 @@ impl AdmissionGuard {
 impl OwnerPermit {
     pub(crate) const fn work_bits(&self) -> u8 {
         self.work_mask.bits()
+    }
+
+    pub(crate) fn progress_scope(&self) -> Option<OwnerProgressScope> {
+        let ownership = self.ownership.as_ref()?;
+        Some(OwnerProgressScope {
+            cell: Arc::clone(&ownership.cell),
+            identity: self.identity,
+            binding_snapshot: ownership.binding_snapshot.clone(),
+        })
     }
 
     pub(crate) fn generation(&self) -> Option<u64> {
@@ -1385,6 +1403,29 @@ impl AppState {
     /// Store or clear the current background scan progress snapshot.
     pub async fn set_scan_progress(&self, progress: Option<ScanProgress>) {
         *self.scan_progress.write().await = progress;
+    }
+
+    /// Store progress only while `scope` is still the exact current owner.
+    pub(crate) async fn set_scan_progress_for_owner(
+        &self,
+        scope: &OwnerProgressScope,
+        progress: Option<ScanProgress>,
+    ) -> bool {
+        // Take the progress lock first, then validate under the synchronous
+        // coordinator lock. Keeping both guards through assignment makes the
+        // write happen-before any owner completion or retirement transition.
+        let mut slot = self.scan_progress.write().await;
+        let coordinator = scope.cell.lock();
+        let is_current = matches!(
+            &coordinator.phase,
+            CoordinatorPhase::Running(owner)
+                if owner.identity == scope.identity
+                    && owner.binding_identity == scope.binding_snapshot
+        );
+        if is_current {
+            *slot = progress;
+        }
+        is_current
     }
 
     /// Return a clone of the current scan progress, or `None` when no scan

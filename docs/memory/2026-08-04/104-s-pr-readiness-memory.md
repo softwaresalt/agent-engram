@@ -6,7 +6,7 @@ feature: 109-F
 task: 109.031-T
 branch: feat/109-single-authority-coordinator
 implementation_commit: be805eec36c4da8aa272e3638f1b059ead633adc
-status: pr-ready
+status: pr-remediation-validated
 ---
 
 # 104-S Final PR-Readiness Memory
@@ -72,6 +72,19 @@ for the post-merge batch-completion compaction step.
 
 ## Next Steps
 
-Commit and push closure/backlog artifacts, open the PR against `main`, request
-Copilot review, monitor CI, resolve bot threads, and stop with the PR open for
-explicit merge approval.
+PR #319 is open. Its first Linux run exposed missing runtime directories in two
+direct Unix IPC fixtures. Copilot then identified plain-index mask inflation
+and unjoined progress children. Follow-up review also required parent progress
+fencing. RED/GREEN remediation now provides:
+
+- Unix fixture parity with production `.engram/run` setup;
+- routine-only plain index ownership and full forced-index retry ownership;
+- parameter validation before coordinator mutation;
+- structured progress-child abort/join;
+- exact-owner fencing for initial, child, and final progress writes;
+- isolated evaluation-contract binding to prevent telemetry contamination.
+
+Concurrency review cycle two and focused code-review cycle two reported no
+remaining P0/P1 or significant issues. Push the remediation, re-request
+Copilot on the new HEAD, require green CI and zero unresolved threads, then
+stop with the PR open for explicit merge approval.

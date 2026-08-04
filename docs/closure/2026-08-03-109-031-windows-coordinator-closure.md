@@ -34,7 +34,7 @@ may be opened and reviewed; merge still requires explicit operator approval.
 
 | Check | Result |
 |---|---|
-| Production lint files changed | PASS — `ipc_server.rs`, `write.rs` |
+| Production/remediation files changed | PASS — `ipc_server.rs`, `write.rs`, `state.rs` |
 | Review-blocking correctness remediation | PASS — minimal `lifecycle.rs` partial-error fix |
 | TEMP and Git discovery confined to repository | PASS |
 | Retrieval-eval RED then test-only GREEN | PASS |
@@ -45,8 +45,8 @@ may be opened and reviewed; merge still requires explicit operator approval.
 | `cargo fmt --all -- --check` | PASS |
 | Exact CI clippy | PASS |
 | Repository all-target clippy | PASS |
-| `cargo dev-test` | PASS — 529 tests |
-| Exact CI all-target suite | PASS — exit 0 |
+| `cargo dev-test` | PASS — 533 tests after PR remediation |
+| Exact CI all-target suite | PASS — exit 0 after PR remediation |
 | Standard review | PASS — zero applicable P0/P1 after two cycles |
 | Dependency audit | PASS WITH KNOWN ADVISORY — `RUSTSEC-2026-0041` |
 | Schema or data rollback | Not applicable |
@@ -56,6 +56,14 @@ transferred lifecycle and daemon syncs completed after non-fatal file errors
 even when heavy work could not be certified. Two Windows real-database tests
 failed RED (`pending=0`, expected `0b111`) and passed GREEN after the shared
 fail-closed predicate was applied.
+
+PR review found two additional correctness gaps. Plain full indexes had
+incorrectly claimed heavy migration work and therefore forced unchanged-file
+re-extraction. Scan-progress child cancellation also aborted without joining,
+while parent progress writes were not owner-fenced. The final implementation
+uses routine-only ownership for plain indexes, complete ownership for forced
+indexes, validates parameters before admission, joins children on structured
+exit, and rejects every stale parent or child progress publication.
 
 ## Deployment or Rollout Path
 

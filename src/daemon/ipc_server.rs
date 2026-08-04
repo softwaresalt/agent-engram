@@ -1726,6 +1726,8 @@ mod tests {
     async fn shared_accept_loop_quiesces_accepted_handlers_before_returning() {
         let workspace = tempfile::tempdir().expect("workspace tempdir");
         std::fs::create_dir_all(workspace.path().join(".git")).expect("create git metadata");
+        std::fs::create_dir_all(workspace.path().join(".engram").join("run"))
+            .expect("create IPC runtime directory");
         std::fs::write(
             workspace.path().join(".git").join("HEAD"),
             "ref: refs/heads/main\n",
@@ -1804,6 +1806,8 @@ mod tests {
     async fn shutdown_request_flushes_exact_response_before_handler_quiescence() {
         let workspace = tempfile::tempdir().expect("workspace tempdir");
         std::fs::create_dir_all(workspace.path().join(".git")).expect("create git metadata");
+        std::fs::create_dir_all(workspace.path().join(".engram").join("run"))
+            .expect("create IPC runtime directory");
         std::fs::write(
             workspace.path().join(".git").join("HEAD"),
             "ref: refs/heads/main\n",

@@ -6,7 +6,7 @@ feature: 109-F
 task: 109.031-T
 branch: feat/109-single-authority-coordinator
 commit: 1edcc61f9d90296e16c7132c8fdd6ef3adc8f8b9
-current_candidate: be805eec36c4da8aa272e3638f1b059ead633adc
+current_candidate: "PR #319 remediation HEAD"
 surface: background-job
 mode: manual
 verdict: pass
@@ -25,6 +25,12 @@ The operator subsequently authorized the production lint repairs and any
 review-blocking remediation. Candidate
 `be805eec36c4da8aa272e3638f1b059ead633adc` clears both strict clippy variants
 and preserves queued heavy work after partial transferred-sync errors.
+
+PR #319 follow-up also corrected two review findings and one Linux CI fixture:
+plain full indexes again preserve hash skipping, forced full indexes retain
+their heavy retry mask, and every scan-progress publication is fenced to the
+exact current owner. The initial CI failure was test-only: two direct Unix
+listener fixtures omitted the production-created `.engram/run` directory.
 
 ## Environment Prechecks
 
@@ -129,6 +135,29 @@ the current candidate after lifecycle and daemon drivers reused the shared
 fail-closed fulfillment predicate. This is the smallest affected runtime
 scenario; the successful 15-minute IPC observation remains valid because its
 runtime surface was unchanged.
+
+### Scenario 6 — PR review and Linux CI remediation
+
+GitHub run `30888882626` failed only in the two direct accept-loop fixtures:
+Unix socket bind returned `ENOENT` because their private `.engram/run`
+directory was absent. Both fixtures now create the same runtime directory as
+production startup; the focused tests and exact all-target suite pass.
+
+Copilot review then exposed that a plain `index_workspace` request claimed
+`0b111`, converting the default hash-skipping path into a forced re-extraction.
+RED/GREEN Windows tests now prove:
+
+- plain full index: routine mask only, unchanged file is skipped;
+- forced full index: complete mask retained after a qualifying file error;
+- invalid request parameters are rejected before coordinator mutation;
+- delayed child and parent progress writes are rejected after owner terminal;
+- cancellation aborts and joins the progress child before permit completion.
+
+The scan-progress and mask changes affect only coordinator bookkeeping around
+the already-validated database operation. The smallest affected Windows
+contract, resilience, cancellation-matrix, and all-target scenarios passed;
+the earlier named-pipe observation, restart, and rollback evidence remains
+valid because no endpoint, process, schema, or persistence format changed.
 
 ## Ownership and Driver Invariants
 
