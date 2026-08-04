@@ -13,9 +13,11 @@ status: blocked
 
 ## Readiness
 
-**BLOCKED.** Do not create a PR from this gate evidence. The exact Windows
-all-target prerequisite is not clean, and current-HEAD named-pipe observation
-and full-unit rollback evidence are consequently absent.
+**BLOCKED.** Do not create a PR from this gate evidence. The test-isolation,
+exact Windows all-target, 15-minute named-pipe, restart/reconciliation, and
+full-unit rollback gates now pass. The remaining blocker is the repository
+clippy gate: it requires production-source lint repairs forbidden by this
+task's zero-production-file constraint.
 
 ## Invariants to Preserve
 
@@ -33,13 +35,14 @@ and full-unit rollback evidence are consequently absent.
 
 | Check | Result |
 |---|---|
-| Production files changed by `109.031-T` | PASS — zero |
+| Production files changed by this cycle | PASS — zero |
 | TEMP and Git discovery confined to repository | PASS |
-| Deterministic/contract fixtures reached by aggregate run | PASS before unrelated blocker |
-| Exact Windows all-target run | BLOCKED |
-| Current-HEAD 15-minute named-pipe observation | NOT STARTED |
-| Restart/reconciliation evidence | NOT STARTED |
-| Full-release-unit revert/restart | NOT STARTED |
+| Retrieval-eval RED then test-only GREEN | PASS |
+| Exact Windows all-target run | PASS — one post-fix run, exit 0 |
+| Current-HEAD 15-minute named-pipe observation | PASS — 16/16 probes |
+| Restart/reconciliation evidence | PASS — PID 26388 → PID 41812 |
+| Full-release-unit revert/restart | PASS — baseline `df2803e1`, PID 35352 |
+| Repository clippy gate | BLOCKED — nine production-source findings |
 | Schema or data rollback | Not applicable |
 
 ## Monitoring Plan
@@ -56,14 +59,16 @@ manual checks remain:
 | Old work after ack | Zero | Any old work/progress | Ship/operator |
 | Release baton | Finite one-owner progress | Stranded waiter or spin | Ship/operator |
 
-Validation window: 15 minutes after current-HEAD startup, owned by Ship, after
-the all-target prerequisite is green.
+Validation window: completed for 15 minutes on Windows, owned by Ship,
+`2026-08-04T02:01:45.8318676Z` through
+`2026-08-04T02:16:59.8654522Z`.
 
 ## Healthy and Failure Signals
 
-Healthy means stable named-pipe health, correct workspace identity, completed
-hydration/sync, no duplicate daemon, no driver overlap, and successful
-reconciliation after restart.
+Observed healthy signals were stable named-pipe health, constant disposable
+workspace identity, contained branch DB, completed watcher/sync work, no
+duplicate daemon, successful current-version reconciliation, and a healthy
+complete-unit baseline restart.
 
 Rollback triggers are missing/duplicate terminal behavior,
 successor-before-ack, active drivers above one, work after ack, a stuck
@@ -72,21 +77,24 @@ stranded waiters, or any IPC regression.
 
 ## Rollback Procedure
 
-Revert the complete coordinator release unit to baseline
-`df2803e1834728681288a2669c314dffea004307`, then restart the daemon against
-disposable state and verify hydration, reconciliation, workspace identity, and
-named-pipe health. Partial rollback is forbidden. No schema or data action is
-required.
+The procedure was exercised successfully: build the complete coordinator
+baseline `df2803e1834728681288a2669c314dffea004307` in a detached clean
+worktree, stop only the tracked current PID, start the baseline binary against
+disposable state, verify bind/status/sync, and stop only the tracked baseline
+PID. Partial rollback remains forbidden. No schema or data action is required.
 
 ## Risky Action Record
 
-Repository-contained test isolation was applied successfully. Timeout bypass
-was explicitly abandoned. Disposable daemon termination/restart was authorized
-by the operator but not executed because the aggregate prerequisite failed.
+Repository-contained test isolation was applied successfully without process
+environment mutation in the fixture. Timeout/assertion bypass and suite-wide
+serialization were explicitly abandoned. Operator-authorized runtime and
+rollback actions were applied only to PIDs `26388`, `41812`, and `35352`; the
+clean disposable rollback worktree was removed afterward.
 
 ## Next Gate
 
-Resolve the reproducible retrieval-evaluation test-state contamination and
-Windows Cozo lock artifact without product behavior changes, then repeat the
-all-target, 15-minute runtime, restart, monitoring, and full-unit rollback
-evidence. Keep `109.031-T` blocked and keep `104-S` active.
+Resolve the nine clippy findings in `src/daemon/ipc_server.rs` and
+`src/tools/write.rs` under separately authorized production scope, then rerun
+the clippy gate. The findings are `similar_names`, `let_and_return`,
+`unnecessary_semicolon`, `too_many_arguments`, `items_after_statements`, and
+`single_match`. Keep `109.031-T` blocked and keep `104-S` active.

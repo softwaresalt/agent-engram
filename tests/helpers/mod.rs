@@ -34,9 +34,44 @@
 #![allow(dead_code)]
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
+use std::sync::Arc;
 use std::time::Duration;
 
+use engram::models::config::WorkspaceConfig;
+use engram::server::state::{AppState, WorkspaceSnapshot};
 use tempfile::TempDir;
+
+/// Bind an in-process test state to workspace-local disposable storage.
+///
+/// Tests that dispatch library tools in-process cannot use
+/// [`Command::env_remove`] to suppress an ambient `ENGRAM_DATA_DIR`. Building
+/// the same explicit [`WorkspaceSnapshot`] used by other state-level fixtures
+/// keeps their Cozo database inside the owning temporary workspace without
+/// mutating process-global environment state.
+pub async fn bind_isolated_workspace(
+    state: &Arc<AppState>,
+    workspace: &Path,
+    branch: &str,
+    config: WorkspaceConfig,
+) {
+    let path = workspace.display().to_string();
+    let snapshot = WorkspaceSnapshot {
+        workspace_id: format!("test:{path}"),
+        workspace_uuid: format!("test:{path}"),
+        branch: branch.to_owned(),
+        data_dir: workspace.join(".engram"),
+        path,
+        last_flush: None,
+        stale_files: false,
+        connection_count: 0,
+        file_mtimes: std::collections::HashMap::new(),
+    };
+
+    state
+        .set_workspace_and_config(snapshot, Some(config))
+        .await
+        .expect("isolated test workspace must bind");
+}
 
 /// Compute the IPC endpoint path for a canonical workspace path.
 ///
