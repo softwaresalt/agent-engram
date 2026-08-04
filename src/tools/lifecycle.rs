@@ -524,25 +524,33 @@ async fn drive_transferred_sync(
                 None,
             )
             .await;
-            match &result {
-                Ok(result) => tracing::info!(
-                    files_added = result.files_added,
-                    files_modified = result.files_modified,
-                    revalidate,
-                    backfill_python,
-                    "transferred sync complete"
-                ),
-                Err(error) => tracing::warn!(
-                    %error,
-                    revalidate,
-                    backfill_python,
-                    "transferred sync failed"
-                ),
-            }
-            if result.is_ok() {
-                HandoffTerminal::Handled
-            } else {
-                HandoffTerminal::Failed
+            match result {
+                Ok(result) => {
+                    let unfulfilled_work_bits =
+                        crate::tools::write::unfulfilled_work_bits(&result.errors, work_mask);
+                    tracing::info!(
+                        files_added = result.files_added,
+                        files_modified = result.files_modified,
+                        revalidate,
+                        backfill_python,
+                        unfulfilled_work_bits,
+                        "transferred sync complete"
+                    );
+                    if unfulfilled_work_bits == 0 {
+                        HandoffTerminal::Handled
+                    } else {
+                        HandoffTerminal::Failed
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        revalidate,
+                        backfill_python,
+                        "transferred sync failed"
+                    );
+                    HandoffTerminal::Failed
+                }
             }
         };
 
@@ -1061,6 +1069,41 @@ mod tests {
             state.coordinator.test_pending_bits(),
             0b111,
             "a failed transferred sync must remain recoverable through armed Drop"
+        );
+    }
+
+    #[tokio::test]
+    async fn transferred_partial_file_errors_recover_full_mask() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("workspace");
+        let data_dir = temp.path().join("data");
+        std::fs::create_dir_all(&workspace).expect("create workspace");
+        std::fs::write(workspace.join("broken.py"), [0xff]).expect("write invalid UTF-8 fixture");
+        let state = Arc::new(AppState::new(1));
+        let _ = publish_test_binding(
+            &state,
+            WorkspaceSnapshot {
+                workspace_id: "id-transfer-partial".to_owned(),
+                workspace_uuid: "uuid-transfer-partial".to_owned(),
+                branch: "main".to_owned(),
+                data_dir,
+                path: workspace.display().to_string(),
+                last_flush: None,
+                stale_files: false,
+                connection_count: 0,
+                file_mtimes: std::collections::HashMap::new(),
+            },
+        )
+        .await;
+        let successor = transferred_successor(&state, 0b111);
+
+        drive_test_transferred_sync(&state, successor, None).await;
+
+        assert!(state.coordinator.test_is_idle());
+        assert_eq!(
+            state.coordinator.test_pending_bits(),
+            0b111,
+            "a partial transferred sync must retain heavy work for retry"
         );
     }
 

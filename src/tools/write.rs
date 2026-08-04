@@ -179,10 +179,12 @@ pub async fn index_workspace(
         begin_indexing_scan_progress(&state).await;
         let result = run_workspace_write(
             &state,
-            &ws_path,
-            &ctx.workspace.data_dir,
-            &ctx.workspace.branch,
-            ctx.config.code_graph.clone(),
+            WorkspaceWriteTarget {
+                path: &ws_path,
+                data_dir: &ctx.workspace.data_dir,
+                branch: &ctx.workspace.branch,
+                config: &ctx.config.code_graph,
+            },
             params,
             true,
             work_bits,
@@ -218,12 +220,21 @@ struct WorkspaceWriteOutcome {
     unfulfilled_work_bits: u8,
 }
 
+struct WorkspaceWriteTarget<'a> {
+    path: &'a Path,
+    data_dir: &'a Path,
+    branch: &'a str,
+    config: &'a CodeGraphConfig,
+}
+
+enum SyncAttempt {
+    BranchChanged(String),
+    Finished(Result<WorkspaceWriteOutcome, EngramError>),
+}
+
 async fn run_workspace_write(
     state: &SharedState,
-    ws_path: &std::path::Path,
-    data_dir: &std::path::Path,
-    branch: &str,
-    config: CodeGraphConfig,
+    target: WorkspaceWriteTarget<'_>,
     params: Option<Value>,
     full_index: bool,
     required_work_bits: u8,
@@ -261,10 +272,10 @@ async fn run_workspace_write(
                 ));
             };
             crate::services::code_graph::index_workspace_with_progress(
-                ws_path,
-                data_dir,
-                branch,
-                &config,
+                target.path,
+                target.data_dir,
+                target.branch,
+                target.config,
                 force,
                 Some(&mut progress_callback),
             )
@@ -290,10 +301,10 @@ async fn run_workspace_write(
                 ));
             };
             crate::services::code_graph::sync_workspace_with_progress(
-                ws_path,
-                data_dir,
-                branch,
-                &config,
+                target.path,
+                target.data_dir,
+                target.branch,
+                target.config,
                 parsed.backfill_python_canonical,
                 parsed.revalidate_code_graph,
                 Some(&mut progress_callback),
@@ -325,7 +336,7 @@ async fn run_workspace_write(
     })
 }
 
-fn unfulfilled_work_bits(
+pub(crate) fn unfulfilled_work_bits(
     errors: &[crate::services::code_graph::FileError],
     required_work_bits: u8,
 ) -> u8 {
@@ -418,11 +429,6 @@ pub async fn sync_workspace(
         };
         let work_bits = permit.work_bits();
 
-        enum SyncAttempt {
-            BranchChanged(String),
-            Finished(Result<WorkspaceWriteOutcome, EngramError>),
-        }
-
         let operation = async {
             let ws_path = PathBuf::from(&ctx.workspace.path);
             if let Ok(resolved_branch) = resolve_git_branch(&ws_path) {
@@ -434,10 +440,12 @@ pub async fn sync_workspace(
             begin_indexing_scan_progress(&state).await;
             let result = run_workspace_write(
                 &state,
-                &ws_path,
-                &ctx.workspace.data_dir,
-                &ctx.workspace.branch,
-                ctx.config.code_graph.clone(),
+                WorkspaceWriteTarget {
+                    path: &ws_path,
+                    data_dir: &ctx.workspace.data_dir,
+                    branch: &ctx.workspace.branch,
+                    config: &ctx.config.code_graph,
+                },
                 params.clone(),
                 false,
                 work_bits,
@@ -636,19 +644,16 @@ pub(crate) async fn prepare_branch_owner(
                     ClaimOutcome::Retained | ClaimOutcome::Missing => return Ok(None),
                     ClaimOutcome::Stale => {}
                 }
-            } else {
-                match admission.acquire_background(kind).await.map_err(|error| {
+            } else if let Some(next) =
+                admission.acquire_background(kind).await.map_err(|error| {
                     EngramError::System(SystemError::DatabaseError {
                         reason: format!("{kind:?} branch reacquisition failed: {error}"),
                     })
-                })? {
-                    Some(next) => {
-                        permit = next;
-                        ctx = current_ctx;
-                        break;
-                    }
-                    None => {}
-                }
+                })?
+            {
+                permit = next;
+                ctx = current_ctx;
+                break;
             }
         }
     }
@@ -676,10 +681,12 @@ async fn drive_transferred_sync(state: &SharedState, permit: OwnerPermit, ctx: &
             begin_indexing_scan_progress(state).await;
             let result = run_workspace_write(
                 state,
-                &ws_path,
-                &current_ctx.workspace.data_dir,
-                &current_ctx.workspace.branch,
-                current_ctx.config.code_graph.clone(),
+                WorkspaceWriteTarget {
+                    path: &ws_path,
+                    data_dir: &current_ctx.workspace.data_dir,
+                    branch: &current_ctx.workspace.branch,
+                    config: &current_ctx.config.code_graph,
+                },
                 Some(json!({
                     "revalidate_code_graph": work_bits & 0b010 != 0,
                     "backfill_python_canonical": work_bits & 0b100 != 0
@@ -1394,15 +1401,15 @@ mod tests {
         )
         .expect("write git HEAD");
         let state = Arc::new(AppState::new(1));
-        let mut stale = snapshot(
+        let mut stale_snapshot = snapshot(
             "branch-refresh",
             "uuid-branch-refresh",
             "id-stale-branch",
             &workspace,
             data_dir,
         );
-        stale.branch = "stale-branch".to_owned();
-        publish(&state, stale).await;
+        stale_snapshot.branch = "stale-branch".to_owned();
+        publish(&state, stale_snapshot).await;
         let old_admission = state.coordinator.admission();
         state.set_hydration_ready();
         let recovered = acquired(request(&state, WorkMask::from_bits(0b111), OwnerKind::Sync));
@@ -1572,15 +1579,15 @@ mod tests {
         .expect("write git HEAD");
 
         let state = Arc::new(AppState::new(1));
-        let mut stale = snapshot(
+        let mut stale_snapshot = snapshot(
             "transferred-branch",
             "uuid-transferred-branch",
             "id-transferred-stale",
             &workspace,
             data_dir.clone(),
         );
-        stale.branch = "stale-branch".to_owned();
-        publish(&state, stale.clone()).await;
+        stale_snapshot.branch = "stale-branch".to_owned();
+        publish(&state, stale_snapshot.clone()).await;
         let owner = acquired(request(&state, WorkMask::default(), OwnerKind::Index));
         assert!(matches!(
             request(&state, WorkMask::from_bits(0b111), OwnerKind::Sync),
@@ -1594,7 +1601,7 @@ mod tests {
             | CompletionOutcome::Stale => panic!("queued full mask must transfer"),
         };
         let context = DispatchSnapshot {
-            workspace: stale,
+            workspace: stale_snapshot,
             config: WorkspaceConfig::default(),
         };
 
@@ -1643,15 +1650,15 @@ mod tests {
             .expect("write invalid data path");
 
         let state = Arc::new(AppState::new(1));
-        let mut stale = snapshot(
+        let mut stale_snapshot = snapshot(
             "failed-branch",
             "uuid-failed-branch",
             "id-failed-stale",
             &workspace,
             invalid_data_dir,
         );
-        stale.branch = "stale-branch".to_owned();
-        publish(&state, stale).await;
+        stale_snapshot.branch = "stale-branch".to_owned();
+        publish(&state, stale_snapshot).await;
         state.set_hydration_ready();
 
         assert!(sync_workspace(Arc::clone(&state), None).await.is_err());

@@ -48,6 +48,10 @@ use tempfile::TempDir;
 /// the same explicit [`WorkspaceSnapshot`] used by other state-level fixtures
 /// keeps their Cozo database inside the owning temporary workspace without
 /// mutating process-global environment state.
+///
+/// # Panics
+///
+/// Panics if the isolated workspace snapshot cannot be bound to the test state.
 pub async fn bind_isolated_workspace(
     state: &Arc<AppState>,
     workspace: &Path,

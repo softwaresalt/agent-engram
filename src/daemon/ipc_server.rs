@@ -306,7 +306,7 @@ async fn process_request(line: &str, state: &SharedState) -> (IpcResponse, bool)
     // Safe to unwrap: validate() ensures id is Some.
     let id = request.id.clone().unwrap_or(Value::Null);
 
-    let response = match request.method.as_str() {
+    match request.method.as_str() {
         "_health" => {
             // Return "starting" while workspace hydration is in progress so
             // the shim keeps polling rather than treating the daemon as healthy
@@ -361,8 +361,7 @@ async fn process_request(line: &str, state: &SharedState) -> (IpcResponse, bool)
             },
             false,
         ),
-    };
-    response
+    }
 }
 
 // ── Daemon entry point ───────────────────────────────────────────────────────
@@ -1057,21 +1056,25 @@ async fn drive_daemon_transferred_syncs(
             .await;
             match &result {
                 Ok(result) => {
+                    let unfulfilled_work_bits =
+                        crate::tools::write::unfulfilled_work_bits(&result.errors, work_bits);
                     info!(
                         driver,
                         files_added = result.files_added,
                         files_modified = result.files_modified,
+                        unfulfilled_work_bits,
                         "daemon transferred sync complete"
                     );
                     if let Err(error) = flush_daemon_snapshot(&current_ctx.workspace).await {
                         warn!(%error, driver, "daemon transferred flush failed");
                     }
+                    unfulfilled_work_bits == 0
                 }
                 Err(error) => {
                     warn!(%error, driver, "daemon transferred sync failed");
+                    false
                 }
             }
-            result.is_ok()
         };
         if !matches!(successor.run_until_cancelled(operation).await, Some(true)) {
             return;
@@ -1244,7 +1247,7 @@ async fn run_watcher_driver(
                     "watcher",
                 )
                 .await;
-            };
+            }
             break 'reconcile_batch;
         }
     }
@@ -1674,15 +1677,15 @@ mod tests {
         )
         .expect("write git HEAD");
         let state = AppState::new(1);
-        let mut stale = coordinator_snapshot(
+        let mut stale_snapshot = coordinator_snapshot(
             "id-stale",
             "uuid-worktree",
             &workspace,
             temp.path().join("data"),
         );
-        stale.branch = "captured-before-checkout".to_owned();
+        stale_snapshot.branch = "captured-before-checkout".to_owned();
         let _ = state
-            .publish_workspace_generation(stale, Some(WorkspaceConfig::default()))
+            .publish_workspace_generation(stale_snapshot, Some(WorkspaceConfig::default()))
             .await
             .expect("publish stale capture");
         let (admission, workspace, config) = guarded_daemon_sync_context(&state)
@@ -1901,6 +1904,63 @@ mod tests {
 
         assert!(state.coordinator.test_is_idle());
         assert_eq!(state.coordinator.test_pending_bits(), 0b111);
+    }
+
+    #[tokio::test]
+    async fn daemon_transferred_partial_file_errors_recover_full_mask() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("workspace");
+        let data_dir = temp.path().join("data");
+        std::fs::create_dir_all(&workspace).expect("create workspace");
+        std::fs::write(workspace.join("broken.py"), [0xff]).expect("write invalid UTF-8 fixture");
+        let snapshot = coordinator_snapshot(
+            "id-transfer-partial",
+            "uuid-transfer-partial",
+            &workspace,
+            data_dir,
+        );
+        let config = WorkspaceConfig::default();
+        let state = AppState::new(1);
+        let _ = state
+            .publish_workspace_generation(snapshot.clone(), Some(config.clone()))
+            .await
+            .expect("publish binding");
+        let owner = match CoordinatorCell::request(
+            state.coordinator.admission(),
+            WorkMask::default(),
+            OwnerKind::Startup,
+        )
+        .expect("request startup owner")
+        {
+            RequestOutcome::Acquired(permit) => permit,
+            RequestOutcome::Waiting(_) | RequestOutcome::Enqueued | RequestOutcome::Stale => {
+                panic!("startup owner should acquire")
+            }
+        };
+        assert!(matches!(
+            CoordinatorCell::request(
+                state.coordinator.admission(),
+                WorkMask::from_bits(0b111),
+                OwnerKind::Sync,
+            ),
+            Ok(RequestOutcome::Enqueued)
+        ));
+        let successor = match CoordinatorCell::complete(owner) {
+            CompletionOutcome::Transferred(successor) => successor,
+            CompletionOutcome::Released
+            | CompletionOutcome::RetirementAcknowledged
+            | CompletionOutcome::SequenceExhausted(_)
+            | CompletionOutcome::Stale => panic!("full mask should transfer"),
+        };
+
+        drive_daemon_transferred_syncs(&state, &snapshot, &config, successor, "test").await;
+
+        assert!(state.coordinator.test_is_idle());
+        assert_eq!(
+            state.coordinator.test_pending_bits(),
+            0b111,
+            "a partial daemon transfer must retain heavy work for retry"
+        );
     }
 
     #[test]
