@@ -6,6 +6,7 @@ shipment: 104-S
 feature: 109-F
 pr: 319
 merge_commit: d8fba2c3c4538e061e2ac4f56da83f82801d78e9
+closure_pr: 320
 status: ready
 ---
 
@@ -51,7 +52,7 @@ from `origin/main`. Shipment `104-S` is archived at the same SHA. Feature
 The code path is merge-only; no migration, flag, schema action, reindex, or
 operator-workspace mutation is required. Repository closure artifacts are
 carried on `post-merge/104-S-closure` and require their own pull-request merge
-approval.
+approval. Closure PR #320 is open.
 
 ## Post-Deploy Checks
 
