@@ -56,6 +56,7 @@ remains blocked.
 - PASS: `uv run autoharness --help`.
 - PASS: `cargo fmt --all -- --check`.
 - PASS: `cargo clippy --all-targets -- -D warnings -D clippy::pedantic`.
+- PASS: `cargo dev-test` — 538 library tests.
 - PASS: `integration_calls_postpass_resolution` — 12 passed, 1 ignored; the
   live characterization was not run again.
 - PASS: `integration_stale_pid_recovery` — 5 passed.
