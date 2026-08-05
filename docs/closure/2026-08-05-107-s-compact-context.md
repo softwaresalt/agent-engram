@@ -15,7 +15,8 @@ P-020 compact-context was invoked with `target: all`.
 - Memory files compacted: 4
 - Plans consolidated into decided-plans: 1
 - Closure records compacted: 0
-- Active task checkpoints compacted: 0
+- Completed-work checkpoints resolved: 2
+- Active task checkpoints preserved: 0
 - Verbose originals deleted: 0
 - Compaction status: **done**
 

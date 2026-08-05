@@ -22,7 +22,8 @@ compaction_status: done
 
 **READY WITH CONDITIONS.** PR #321 merged by merge commit
 `ebc7f699bbee669009f2557246021d10f7084adc`, and that commit is reachable
-from `origin/main`. Shipment `107-S` and its explicit manifest are archived.
+from `origin/main`. Shipment `107-S` and its explicit manifest are archived;
+the shipment archive records the merge SHA for release traceability.
 
 The shipped release unit is investigation and characterization coverage, not a
 production fix. Its durable decision remains **PARTIAL**: the controlled
@@ -163,6 +164,8 @@ was already archived. No source or follow-up artifact required mutation.
 - Safe-close: `.backlogit/reconcile/107-S-safe-close-20260805T155200.md`
 - Post: `.backlogit/reconcile/107-S-post-20260805T155200.md`
 - Compaction: `docs/closure/2026-08-05-107-s-compact-context.md` — `done`
+- Checkpoints: two completed-work handoffs resolved; zero active shipment
+  checkpoints preserved
 
 ## Knowledge Graduation
 
