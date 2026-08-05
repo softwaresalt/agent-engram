@@ -294,13 +294,13 @@ impl DaemonHarness {
     pub async fn spawn(timeout: Duration) -> Result<Self, Box<dyn std::error::Error>> {
         let workspace = TempDir::new()?;
         let workspace_path = workspace.path().canonicalize()?;
-        verify_workspace_isolated_from_repository(&workspace_path)?;
 
         // Create a minimal `.git` directory so the daemon accepts this as a workspace.
         // `canonicalize_workspace()` rejects paths where `.git` is not a directory.
         let git_dir = workspace_path.join(".git");
         std::fs::create_dir_all(&git_dir)?;
         std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n")?;
+        verify_workspace_isolated_from_repository(&workspace_path)?;
         let ipc_path = ipc_path_for_workspace(&workspace_path);
 
         let workspace_str = workspace_path
@@ -448,11 +448,11 @@ impl DaemonHarness {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let workspace = TempDir::new()?;
         let workspace_path = workspace.path().canonicalize()?;
-        verify_workspace_isolated_from_repository(&workspace_path)?;
 
         let git_dir = workspace_path.join(".git");
         std::fs::create_dir_all(&git_dir)?;
         std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n")?;
+        verify_workspace_isolated_from_repository(&workspace_path)?;
         let ipc_path = ipc_path_for_workspace(&workspace_path);
 
         let workspace_str = workspace_path
