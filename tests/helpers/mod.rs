@@ -47,6 +47,46 @@ fn paths_overlap(left: &Path, right: &Path) -> bool {
     left == right || left.starts_with(right) || right.starts_with(left)
 }
 
+/// Read the repository-owned IPC endpoint without creating workspace state.
+///
+/// On Windows the endpoint is UUID-based, so an absent persisted identity
+/// yields `None` rather than calling the production create-on-read helper.
+///
+/// # Errors
+///
+/// Returns `Err` when the repository cannot be canonicalized, its persisted
+/// identity cannot be read, or that identity is malformed.
+pub fn repository_ipc_endpoint_if_known(
+    repository: &Path,
+) -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
+    let repository = repository.canonicalize()?;
+
+    #[cfg(windows)]
+    {
+        let id_path = repository.join(".engram").join(".workspace-id");
+        if !id_path.is_file() {
+            return Ok(None);
+        }
+        let raw = std::fs::read_to_string(id_path)?;
+        let workspace_id = uuid::Uuid::parse_str(raw.trim())?;
+        Ok(Some(PathBuf::from(format!(
+            r"\\.\pipe\engram-{workspace_id}"
+        ))))
+    }
+
+    #[cfg(unix)]
+    {
+        Ok(Some(
+            repository.join(".engram").join("run").join("engram.sock"),
+        ))
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        Ok(None)
+    }
+}
+
 /// Verify that a test workspace and its owned identities are disjoint from
 /// the repository daemon.
 ///
@@ -75,13 +115,14 @@ pub fn verify_workspace_isolated_from_repository(
     }
 
     let workspace_endpoint = PathBuf::from(engram::daemon::ipc_server::ipc_endpoint(&workspace)?);
-    let repository_endpoint = PathBuf::from(engram::daemon::ipc_server::ipc_endpoint(&repository)?);
-    if workspace_endpoint == repository_endpoint {
-        return Err(format!(
-            "test endpoint {} matches the repository-owned endpoint",
-            workspace_endpoint.display()
-        )
-        .into());
+    if let Some(repository_endpoint) = repository_ipc_endpoint_if_known(&repository)? {
+        if workspace_endpoint == repository_endpoint {
+            return Err(format!(
+                "test endpoint {} matches the repository-owned endpoint",
+                workspace_endpoint.display()
+            )
+            .into());
+        }
     }
 
     let workspace_data = workspace.join(".engram");
@@ -165,7 +206,7 @@ fn terminate_and_reap_child(child: &mut Child, timeout: Duration) -> std::io::Re
                 ),
             ));
         }
-        std::thread::yield_now();
+        std::thread::sleep(Duration::from_millis(10));
     }
 }
 

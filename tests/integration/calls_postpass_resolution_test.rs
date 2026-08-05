@@ -788,8 +788,8 @@ async fn characterize_daemon_index_runtime_boundaries(deadline: EndToEndDeadline
         .canonicalize()
         .expect("repository canonical path");
     let repository_data_identity = repository_root.join(".engram");
-    let repository_endpoint = engram::daemon::ipc_server::ipc_endpoint(&repository_root)
-        .expect("repository IPC endpoint");
+    let repository_endpoint = helpers::repository_ipc_endpoint_if_known(&repository_root)
+        .expect("read repository IPC identity without creating state");
     let repository_pid = PidFile::read(&repository_root).map(|pid| pid.pid);
 
     let baseline = tempfile::tempdir().expect("baseline tempdir");
@@ -797,9 +797,9 @@ async fn characterize_daemon_index_runtime_boundaries(deadline: EndToEndDeadline
         .path()
         .canonicalize()
         .expect("baseline canonical path");
+    init_git_workspace(&baseline_root);
     helpers::verify_workspace_isolated_from_repository(&baseline_root)
         .expect("baseline workspace must be disjoint from repository identities");
-    init_git_workspace(&baseline_root);
     write_frozen_corpus(&baseline_root);
     let (baseline_hash, baseline_file_hashes) = corpus_hashes(&baseline_root);
     let baseline_data = baseline_root.join(".engram");
@@ -833,13 +833,13 @@ async fn characterize_daemon_index_runtime_boundaries(deadline: EndToEndDeadline
 
     let daemon = tempfile::tempdir().expect("daemon tempdir");
     let daemon_root = daemon.path().canonicalize().expect("daemon canonical path");
+    init_git_workspace(&daemon_root);
     helpers::verify_workspace_isolated_from_repository(&daemon_root)
         .expect("daemon workspace must be disjoint from repository identities");
     assert_ne!(
         baseline_root, daemon_root,
         "baseline and daemon workspaces must be distinct"
     );
-    init_git_workspace(&daemon_root);
     let daemon_engram = daemon_root.join(".engram");
     assert_ne!(
         daemon_engram, repository_data_identity,
@@ -851,11 +851,14 @@ async fn characterize_daemon_index_runtime_boundaries(deadline: EndToEndDeadline
     );
     let expected_daemon_endpoint =
         engram::daemon::ipc_server::ipc_endpoint(&daemon_root).expect("owned daemon IPC endpoint");
-    assert_ne!(
-        normalized_path_text(&expected_daemon_endpoint),
-        normalized_path_text(&repository_endpoint),
-        "owned endpoint must differ from the repository-owned endpoint"
-    );
+    if let Some(repository_endpoint) = repository_endpoint.as_deref() {
+        let repository_endpoint = repository_endpoint.to_string_lossy();
+        assert_ne!(
+            normalized_path_text(&expected_daemon_endpoint),
+            normalized_path_text(&repository_endpoint),
+            "owned endpoint must differ from the repository-owned endpoint"
+        );
+    }
     fs::create_dir_all(&daemon_engram).expect("create daemon data directory");
     fs::write(
         daemon_engram.join("config.toml"),
@@ -897,11 +900,14 @@ buffer_size = 1024
         normalized_path_text(&expected_daemon_endpoint),
         "owned child must serve the endpoint derived for its isolated workspace"
     );
-    assert_ne!(
-        normalized_path_text(&endpoint),
-        normalized_path_text(&repository_endpoint),
-        "owned child endpoint must not alias the repository daemon"
-    );
+    if let Some(repository_endpoint) = repository_endpoint.as_deref() {
+        let repository_endpoint = repository_endpoint.to_string_lossy();
+        assert_ne!(
+            normalized_path_text(&endpoint),
+            normalized_path_text(&repository_endpoint),
+            "owned child endpoint must not alias the repository daemon"
+        );
+    }
     let owned_pid = harness.pid();
     if let Some(repository_pid) = repository_pid {
         assert_ne!(
