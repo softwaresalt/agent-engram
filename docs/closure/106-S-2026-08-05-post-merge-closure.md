@@ -7,6 +7,7 @@ date: 2026-08-05
 author: ship
 verdict: SHIPPED
 compaction_status: done
+closure_status: READY
 source_stash_id: "4CD6335D"
 findings_merge_commit: "fe6f5c4ba841f15a91dffe9e3eeba46c1e1222a9"
 closure_merge_commit: "41186ec774232e337ea1122e69244fae5f2169e0"
