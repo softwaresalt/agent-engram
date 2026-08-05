@@ -73,8 +73,7 @@ async fn shim_recovers_from_stale_pid_file() {
 /// `ensure_daemon_running` must start a fresh daemon without operator intervention.
 #[tokio::test]
 async fn shim_recovers_after_daemon_killed_leaves_stale_runtime_state() {
-    let workspace = tempfile::tempdir_in(std::env::current_dir().expect("current directory"))
-        .expect("workspace tempdir");
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
     let workspace_path = workspace.path().canonicalize().expect("canonicalize");
 
     let git_dir = workspace_path.join(".git");
