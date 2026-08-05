@@ -6,7 +6,8 @@ mode: post-merge
 date: 2026-08-05
 author: ship
 verdict: SHIPPED
-compaction_status: done
+compaction_status: degraded
+compaction_reason: "106-S closed before compaction evidence was required; no shipment-specific compaction artifact exists."
 closure_status: READY
 source_stash_id: "4CD6335D"
 findings_merge_commit: "fe6f5c4ba841f15a91dffe9e3eeba46c1e1222a9"
@@ -36,5 +37,5 @@ The full release-readiness, monitoring, rollback, containment, and validation
 record remains
 [`2026-08-02-106-S-sync-coordinator-spike-closure.md`](./2026-08-02-106-S-sync-coordinator-spike-closure.md).
 This continuity record supplies the canonical
-`{shipment_id}-*-post-merge-closure.md` path and completed compaction marker
-required by the lifecycle topology gate.
+`{shipment_id}-*-post-merge-closure.md` path, an explicit degraded compaction
+record, and the ready closure status required by the lifecycle topology gate.
