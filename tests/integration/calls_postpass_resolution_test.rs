@@ -18,8 +18,9 @@
 //!   7. re-running the post-pass on an UNCHANGED workspace reports zero newly
 //!      created edges (`resolved == 0`) — pre-existing singletons are not
 //!      recounted even though staged rows persist and are re-upserted
-//!   8. one owned daemon preserves the known-GREEN singleton across its index,
-//!      flush, same-endpoint query, timeout, and response-frame boundaries
+//!   8. ignored/opt-in: one owned daemon preserves the known-GREEN singleton
+//!      across its index, flush, same-endpoint query, timeout, and
+//!      response-frame boundaries
 
 #![allow(clippy::needless_raw_string_hashes)]
 #![allow(clippy::doc_markdown)]
@@ -308,13 +309,77 @@ async fn reresolve_reports_zero_new_edges_on_unchanged_rerun() {
 }
 
 const PROBE_LIMIT: Duration = Duration::from_secs(300);
+const CLEANUP_RESERVE: Duration = Duration::from_secs(12);
 const READY_LIMIT: Duration = Duration::from_secs(60);
 const IPC_LIMIT: Duration = Duration::from_secs(30);
+const FORCED_REAP_LIMIT: Duration = Duration::from_secs(5);
 const SHORT_TIMEOUT: Duration = Duration::from_millis(10);
 const CORPUS: [(&str, &str); 2] = [
     ("src/a.rs", "pub fn alpha() {\n    beta();\n}\n"),
     ("src/b.rs", "pub fn beta() {}\n"),
 ];
+
+#[derive(Clone, Copy)]
+struct EndToEndDeadline {
+    start: Instant,
+    work: Instant,
+    aggregate: Instant,
+}
+
+impl EndToEndDeadline {
+    fn start(limit: Duration) -> Self {
+        assert!(
+            limit > CLEANUP_RESERVE,
+            "probe limit must preserve a bounded child-cleanup reserve"
+        );
+        let start = Instant::now();
+        let aggregate = start
+            .checked_add(limit)
+            .unwrap_or_else(|| panic!("cannot represent aggregate probe deadline"));
+        let work = aggregate
+            .checked_sub(CLEANUP_RESERVE)
+            .unwrap_or_else(|| panic!("cannot represent probe cleanup reserve"));
+        Self {
+            start,
+            work,
+            aggregate,
+        }
+    }
+
+    fn remaining_work(self, cap: Duration, phase: &str) -> Duration {
+        let remaining = self.work.saturating_duration_since(Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "five-minute aggregate probe budget exhausted before {phase}"
+        );
+        remaining.min(cap)
+    }
+
+    fn remaining_cleanup(self, cap: Duration, phase: &str) -> Duration {
+        let remaining = self.aggregate.saturating_duration_since(Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "five-minute aggregate probe budget exhausted during {phase}"
+        );
+        remaining.min(cap)
+    }
+
+    fn phase_deadline(self, cap: Duration, phase: &str) -> Instant {
+        Instant::now()
+            .checked_add(self.remaining_work(cap, phase))
+            .unwrap_or(self.work)
+    }
+
+    fn remaining_in_phase(self, phase_deadline: Instant, cap: Duration, phase: &str) -> Duration {
+        let phase_remaining = phase_deadline.saturating_duration_since(Instant::now());
+        assert!(!phase_remaining.is_zero(), "{phase} deadline exhausted");
+        self.remaining_work(cap, phase).min(phase_remaining)
+    }
+
+    fn elapsed_ms(self) -> u64 {
+        elapsed_ms(self.start)
+    }
+}
 
 fn init_git_workspace(root: &Path) {
     let git = root.join(".git");
@@ -389,8 +454,14 @@ fn assert_response_id(request: &IpcRequest, response: &IpcResponse) {
     );
 }
 
-async fn send_ok(endpoint: &str, request: &IpcRequest, timeout: Duration) -> Value {
-    let response = send_request(endpoint, request, timeout)
+async fn send_ok(
+    endpoint: &str,
+    request: &IpcRequest,
+    timeout: Duration,
+    deadline: EndToEndDeadline,
+) -> Value {
+    let request_timeout = deadline.remaining_work(timeout, &request.method);
+    let response = send_request(endpoint, request, request_timeout)
         .await
         .unwrap_or_else(|error| panic!("{} IPC request failed: {error}", request.method));
     assert_response_id(request, &response);
@@ -417,8 +488,8 @@ fn empty_settled(status: &Value) -> bool {
     graph_empty && !scan_running
 }
 
-async fn wait_for_empty_daemon(endpoint: &str) -> (Value, u32) {
-    let deadline = Instant::now() + READY_LIMIT;
+async fn wait_for_empty_daemon(endpoint: &str, deadline: EndToEndDeadline) -> (Value, u32) {
+    let phase_deadline = deadline.phase_deadline(READY_LIMIT, "empty-daemon settlement");
     let mut prior_completion = None;
     let mut stable_observations = 0_u8;
     let mut attempt = 0_u32;
@@ -429,7 +500,8 @@ async fn wait_for_empty_daemon(endpoint: &str) -> (Value, u32) {
         let status = send_ok(
             endpoint,
             &correlated_request(&id, "get_workspace_status", json!({})),
-            IPC_LIMIT,
+            deadline.remaining_in_phase(phase_deadline, IPC_LIMIT, "empty-daemon status request"),
+            deadline,
         )
         .await;
         let completion = status
@@ -450,10 +522,15 @@ async fn wait_for_empty_daemon(endpoint: &str) -> (Value, u32) {
             return (status, attempt);
         }
         assert!(
-            Instant::now() < deadline,
+            Instant::now() < phase_deadline,
             "owned daemon did not settle on an empty graph within {READY_LIMIT:?}"
         );
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(deadline.remaining_in_phase(
+            phase_deadline,
+            Duration::from_millis(100),
+            "empty-daemon settlement delay",
+        ))
+        .await;
     }
 }
 
@@ -479,13 +556,17 @@ fn watcher_event_count(daemon_status: &Value) -> u64 {
         .unwrap_or_else(|| panic!("cannot parse watcher count from `{message}`"))
 }
 
-async fn wait_for_usage_record(root: &Path, correlation_id: &str) -> Value {
+async fn wait_for_usage_record(
+    root: &Path,
+    correlation_id: &str,
+    deadline: EndToEndDeadline,
+) -> Value {
     let usage_path = root
         .join(".engram")
         .join("metrics")
         .join("main")
         .join("usage.jsonl");
-    let deadline = Instant::now() + READY_LIMIT;
+    let phase_deadline = deadline.phase_deadline(READY_LIMIT, "usage telemetry persistence");
 
     loop {
         if let Ok(content) = tokio::fs::read_to_string(&usage_path).await {
@@ -498,10 +579,15 @@ async fn wait_for_usage_record(root: &Path, correlation_id: &str) -> Value {
             }
         }
         assert!(
-            Instant::now() < deadline,
+            Instant::now() < phase_deadline,
             "usage telemetry `{correlation_id}` did not persist within {READY_LIMIT:?}"
         );
-        tokio::time::sleep(Duration::from_millis(25)).await;
+        tokio::time::sleep(deadline.remaining_in_phase(
+            phase_deadline,
+            Duration::from_millis(25),
+            "usage telemetry poll delay",
+        ))
+        .await;
     }
 }
 
@@ -573,6 +659,14 @@ fn trace_lines(path: &Path) -> Vec<String> {
         .collect()
 }
 
+fn trace_event_indices(lines: &[String], marker: &str) -> Vec<usize> {
+    lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| line.contains(marker).then_some(index))
+        .collect()
+}
+
 fn trace_timestamp(lines: &[String], event_index: usize) -> String {
     let start = event_index.saturating_sub(2);
     lines[start..=event_index]
@@ -611,7 +705,9 @@ async fn wait_for_child_exit(
     harness: &mut helpers::HarnessWithoutOwnership,
     timeout: Duration,
 ) -> Option<ExitStatus> {
-    let deadline = Instant::now() + timeout;
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .unwrap_or_else(|| panic!("cannot represent child-exit deadline"));
     loop {
         match harness.try_wait() {
             Ok(Some(status)) => return Some(status),
@@ -625,16 +721,84 @@ async fn wait_for_child_exit(
     }
 }
 
+#[cfg(test)]
+mod trace_parser_fixture_tests {
+    use super::{frame_boundary, strip_ansi, trace_event_indices, trace_timestamp};
+
+    #[test]
+    fn synthetic_fixture_preserves_all_events_and_pretty_timestamps() {
+        // Synthetic cardinality exercises parser mechanics only; it is not
+        // runtime evidence about how many post-pass events a daemon emits.
+        let lines = [
+            "\u{1b}[2m2026-08-05T01:02:03.004Z\u{1b}[0m",
+            "code graph: resolved cross-file singleton calls edges",
+            "2026-08-05T01:02:04.005Z code graph: indexing complete",
+            "2026-08-05T01:02:05.006Z code graph: resolved cross-file singleton calls edges",
+        ]
+        .map(strip_ansi);
+
+        assert_eq!(
+            trace_event_indices(
+                &lines,
+                "code graph: resolved cross-file singleton calls edges"
+            ),
+            vec![1, 3]
+        );
+        assert_eq!(trace_timestamp(&lines, 1), "2026-08-05T01:02:03.004Z");
+        assert_eq!(trace_timestamp(&lines, 2), "2026-08-05T01:02:04.005Z");
+    }
+
+    #[test]
+    fn synthetic_fixture_bounds_frame_errors_before_connection_close() {
+        let lines = [
+            "2026-08-05T01:02:03.004Z code graph: indexing complete",
+            "2026-08-05T01:02:03.005Z failed to flush IPC response",
+            "2026-08-05T01:02:03.006Z ipc_connection_closed",
+            "2026-08-05T01:02:03.007Z failed to write IPC response",
+        ]
+        .map(str::to_owned);
+
+        let (close_index, error_index) = frame_boundary(&lines, 0);
+        assert_eq!(close_index, 2);
+        assert_eq!(error_index, Some(1));
+        assert_eq!(
+            trace_timestamp(&lines, close_index),
+            "2026-08-05T01:02:03.006Z"
+        );
+    }
+}
+
 // Scenario 8 / 107-S: characterize, rather than repair, the controlled daemon
 // persistence and IPC boundaries that were confounded in deliberation 015-D.
 #[test]
-#[allow(clippy::too_many_lines)]
+#[ignore = "107-S PARTIAL: opt-in only; two-run circuit cap exhausted before cold CLI request-ID/frame correlation"]
 async fn daemon_index_runtime_boundaries_characterized() {
+    let deadline = EndToEndDeadline::start(PROBE_LIMIT);
+    tokio::time::timeout(
+        deadline.remaining_work(PROBE_LIMIT, "controlled runtime characterization"),
+        characterize_daemon_index_runtime_boundaries(deadline),
+    )
+    .await
+    .expect("controlled runtime characterization exceeded the five-minute aggregate cap");
+}
+
+#[allow(clippy::too_many_lines)]
+async fn characterize_daemon_index_runtime_boundaries(deadline: EndToEndDeadline) {
+    let repository_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .canonicalize()
+        .expect("repository canonical path");
+    let repository_data_identity = repository_root.join(".engram");
+    let repository_endpoint = engram::daemon::ipc_server::ipc_endpoint(&repository_root)
+        .expect("repository IPC endpoint");
+    let repository_pid = PidFile::read(&repository_root).map(|pid| pid.pid);
+
     let baseline = tempfile::tempdir().expect("baseline tempdir");
     let baseline_root = baseline
         .path()
         .canonicalize()
         .expect("baseline canonical path");
+    helpers::verify_workspace_isolated_from_repository(&baseline_root)
+        .expect("baseline workspace must be disjoint from repository identities");
     init_git_workspace(&baseline_root);
     write_frozen_corpus(&baseline_root);
     let (baseline_hash, baseline_file_hashes) = corpus_hashes(&baseline_root);
@@ -644,7 +808,7 @@ async fn daemon_index_runtime_boundaries_characterized() {
     let baseline_started_at = now_timestamp();
     let baseline_started = Instant::now();
     let baseline_result = tokio::time::timeout(
-        PROBE_LIMIT,
+        deadline.remaining_work(PROBE_LIMIT, "known-GREEN baseline index"),
         code_graph::index_workspace(
             &baseline_root,
             &baseline_data,
@@ -669,19 +833,29 @@ async fn daemon_index_runtime_boundaries_characterized() {
 
     let daemon = tempfile::tempdir().expect("daemon tempdir");
     let daemon_root = daemon.path().canonicalize().expect("daemon canonical path");
-    let repository_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .canonicalize()
-        .expect("repository canonical path");
-    assert_ne!(
-        daemon_root, repository_root,
-        "circuit breaker: owned daemon must never bind the repository workspace"
-    );
+    helpers::verify_workspace_isolated_from_repository(&daemon_root)
+        .expect("daemon workspace must be disjoint from repository identities");
     assert_ne!(
         baseline_root, daemon_root,
         "baseline and daemon workspaces must be distinct"
     );
     init_git_workspace(&daemon_root);
     let daemon_engram = daemon_root.join(".engram");
+    assert_ne!(
+        daemon_engram, repository_data_identity,
+        "owned daemon data identity must differ from repository-owned data"
+    );
+    assert_ne!(
+        baseline_data, repository_data_identity,
+        "baseline data identity must differ from repository-owned data"
+    );
+    let expected_daemon_endpoint =
+        engram::daemon::ipc_server::ipc_endpoint(&daemon_root).expect("owned daemon IPC endpoint");
+    assert_ne!(
+        normalized_path_text(&expected_daemon_endpoint),
+        normalized_path_text(&repository_endpoint),
+        "owned endpoint must differ from the repository-owned endpoint"
+    );
     fs::create_dir_all(&daemon_engram).expect("create daemon data directory");
     fs::write(
         daemon_engram.join("config.toml"),
@@ -699,13 +873,15 @@ buffer_size = 1024
     )
     .expect("write watcher-hold config");
     let trace_path = daemon_engram.join("107s-daemon-trace.log");
+    let stderr_path = daemon_engram.join("107s-daemon-stderr.log");
 
     let cold_started_at = now_timestamp();
     let cold_started = Instant::now();
     let mut harness = helpers::DaemonHarness::spawn_for_workspace_with_trace_log(
         &daemon_root,
         &trace_path,
-        READY_LIMIT,
+        &stderr_path,
+        deadline.remaining_work(READY_LIMIT, "cold daemon readiness"),
     )
     .await
     .expect("one owned daemon must become ready");
@@ -716,12 +892,29 @@ buffer_size = 1024
         .to_str()
         .expect("UTF-8 endpoint")
         .to_owned();
+    assert_eq!(
+        normalized_path_text(&endpoint),
+        normalized_path_text(&expected_daemon_endpoint),
+        "owned child must serve the endpoint derived for its isolated workspace"
+    );
+    assert_ne!(
+        normalized_path_text(&endpoint),
+        normalized_path_text(&repository_endpoint),
+        "owned child endpoint must not alias the repository daemon"
+    );
     let owned_pid = harness.pid();
+    if let Some(repository_pid) = repository_pid {
+        assert_ne!(
+            owned_pid, repository_pid,
+            "owned child PID must differ from the repository daemon PID"
+        );
+    }
 
     let health = send_ok(
         &endpoint,
         &internal_request("107s-health-ready", "_health"),
         IPC_LIMIT,
+        deadline,
     )
     .await;
     assert_eq!(health["status"], "ready");
@@ -746,7 +939,7 @@ buffer_size = 1024
         "owned daemon PID must be live"
     );
 
-    let (settled_status, settle_attempts) = wait_for_empty_daemon(&endpoint).await;
+    let (settled_status, settle_attempts) = wait_for_empty_daemon(&endpoint, deadline).await;
     assert!(empty_settled(&settled_status));
     let settled_scan_completion = settled_status
         .pointer("/scan_status/last_completed_at")
@@ -765,6 +958,7 @@ buffer_size = 1024
         &endpoint,
         &correlated_request("107s-daemon-before", "get_daemon_status", json!({})),
         IPC_LIMIT,
+        deadline,
     )
     .await;
     assert_eq!(daemon_before["active_workspaces"].as_u64(), Some(1));
@@ -783,11 +977,15 @@ buffer_size = 1024
         daemon_file_hashes, baseline_file_hashes,
         "per-file corpus bytes drifted"
     );
-    tokio::time::sleep(Duration::from_millis(250)).await;
+    tokio::time::sleep(
+        deadline.remaining_work(Duration::from_millis(250), "post-seed watcher hold"),
+    )
+    .await;
     let seeded_status = send_ok(
         &endpoint,
         &correlated_request("107s-seeded-status", "get_workspace_status", json!({})),
         IPC_LIMIT,
+        deadline,
     )
     .await;
     assert!(
@@ -806,6 +1004,7 @@ buffer_size = 1024
         &endpoint,
         &correlated_request("107s-seeded-daemon-status", "get_daemon_status", json!({})),
         IPC_LIMIT,
+        deadline,
     )
     .await;
     assert_eq!(
@@ -821,7 +1020,7 @@ buffer_size = 1024
     );
     let primary_client_started_at = now_timestamp();
     let primary_client_started = Instant::now();
-    let primary_result = send_ok(&endpoint, &primary_request, PROBE_LIMIT).await;
+    let primary_result = send_ok(&endpoint, &primary_request, PROBE_LIMIT, deadline).await;
     let primary_client_elapsed_ms = elapsed_ms(primary_client_started);
     let primary_client_received_at = now_timestamp();
     assert_eq!(primary_result["files_parsed"].as_u64(), Some(2));
@@ -832,7 +1031,7 @@ buffer_size = 1024
         Some(3),
         "two defines edges plus the singleton calls edge must be reported"
     );
-    let primary_usage = wait_for_usage_record(&daemon_root, "107s-index-primary").await;
+    let primary_usage = wait_for_usage_record(&daemon_root, "107s-index-primary", deadline).await;
     assert_eq!(primary_usage["tool_name"], "index_workspace");
     assert_eq!(primary_usage["outcome"], "success");
     assert_eq!(
@@ -852,6 +1051,7 @@ buffer_size = 1024
             json!({ "symbol_name": "beta", "depth": 1, "max_nodes": 10 }),
         ),
         IPC_LIMIT,
+        deadline,
     )
     .await;
     let calls_before_flush = assert_singleton_visible(&pre_flush_map);
@@ -859,6 +1059,7 @@ buffer_size = 1024
         &endpoint,
         &correlated_request("107s-indexed-status", "get_workspace_status", json!({})),
         IPC_LIMIT,
+        deadline,
     )
     .await;
     assert_eq!(
@@ -881,6 +1082,7 @@ buffer_size = 1024
         &endpoint,
         &correlated_request("107s-flush-primary", "flush_state", json!({})),
         IPC_LIMIT,
+        deadline,
     )
     .await;
     let flush_timestamp = flush_result["flush_timestamp"]
@@ -895,6 +1097,7 @@ buffer_size = 1024
             json!({ "symbol_name": "beta", "depth": 1, "max_nodes": 10 }),
         ),
         IPC_LIMIT,
+        deadline,
     )
     .await;
     let calls_after_flush = assert_singleton_visible(&post_flush_map);
@@ -902,6 +1105,7 @@ buffer_size = 1024
         &endpoint,
         &correlated_request("107s-status-after-flush", "get_workspace_status", json!({})),
         IPC_LIMIT,
+        deadline,
     )
     .await;
     assert!(
@@ -922,6 +1126,7 @@ buffer_size = 1024
         &endpoint,
         &correlated_request("107s-daemon-after-primary", "get_daemon_status", json!({})),
         IPC_LIMIT,
+        deadline,
     )
     .await;
     let model_loaded_after = daemon_after_primary["model_loaded"]
@@ -946,7 +1151,12 @@ buffer_size = 1024
     );
     let negative_client_started_at = now_timestamp();
     let negative_client_started = Instant::now();
-    let negative_result = send_request(&endpoint, &negative_request, SHORT_TIMEOUT).await;
+    let negative_result = send_request(
+        &endpoint,
+        &negative_request,
+        deadline.remaining_work(SHORT_TIMEOUT, "short-timeout index request"),
+    )
+    .await;
     let negative_client_elapsed_ms = elapsed_ms(negative_client_started);
     let negative_client_finished_at = now_timestamp();
     let negative_outcome = match negative_result {
@@ -965,10 +1175,14 @@ buffer_size = 1024
         }
         Err(error) => panic!("unexpected short-timeout IPC result: {error}"),
     };
-    let negative_usage = wait_for_usage_record(&daemon_root, "107s-index-short-timeout").await;
+    let negative_usage =
+        wait_for_usage_record(&daemon_root, "107s-index-short-timeout", deadline).await;
     assert_eq!(negative_usage["tool_name"], "index_workspace");
     assert_eq!(negative_usage["outcome"], "success");
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(
+        deadline.remaining_work(Duration::from_millis(100), "post-timeout settlement"),
+    )
+    .await;
 
     let final_map = send_ok(
         &endpoint,
@@ -978,6 +1192,7 @@ buffer_size = 1024
             json!({ "symbol_name": "beta", "depth": 1, "max_nodes": 10 }),
         ),
         IPC_LIMIT,
+        deadline,
     )
     .await;
     let calls_after_timeout = assert_singleton_visible(&final_map);
@@ -985,6 +1200,7 @@ buffer_size = 1024
         &endpoint,
         &correlated_request("107s-flush-final", "flush_state", json!({})),
         IPC_LIMIT,
+        deadline,
     )
     .await;
     assert!(final_flush["flush_timestamp"].is_string());
@@ -992,6 +1208,7 @@ buffer_size = 1024
         &endpoint,
         &correlated_request("107s-daemon-final", "get_daemon_status", json!({})),
         IPC_LIMIT,
+        deadline,
     )
     .await;
     let final_watcher_events = watcher_event_count(&final_daemon_status);
@@ -1006,11 +1223,17 @@ buffer_size = 1024
         &endpoint,
         &internal_request("107s-owned-shutdown", "_shutdown"),
         IPC_LIMIT,
+        deadline,
     )
     .await;
     assert_eq!(shutdown_result["status"], "shutting_down");
-    let Some(exit_status) = wait_for_child_exit(&mut harness, IPC_LIMIT).await else {
-        let _ = harness.kill_and_wait();
+    let graceful_exit_limit =
+        deadline.remaining_cleanup(FORCED_REAP_LIMIT, "graceful child shutdown");
+    let Some(exit_status) = wait_for_child_exit(&mut harness, graceful_exit_limit).await else {
+        let forced_reap_limit = deadline.remaining_cleanup(FORCED_REAP_LIMIT, "forced child reap");
+        harness
+            .kill_and_wait_bounded(forced_reap_limit)
+            .unwrap_or_else(|error| panic!("failed to reap owned daemon: {error}"));
         panic!("owned daemon cleanup exceeded {IPC_LIMIT:?}");
     };
     let shutdown_elapsed_ms = elapsed_ms(shutdown_started);
@@ -1020,7 +1243,15 @@ buffer_size = 1024
         "owned daemon PID remained alive after cleanup"
     );
     assert!(
-        probe(&endpoint, Duration::from_millis(100)).await.is_err(),
+        probe(
+            &endpoint,
+            deadline.remaining_work(
+                Duration::from_millis(100),
+                "post-reap endpoint verification",
+            ),
+        )
+        .await
+        .is_err(),
         "owned endpoint remained reachable after cleanup"
     );
     drop(harness);
@@ -1032,6 +1263,9 @@ buffer_size = 1024
         "singleton must survive the negative case and graceful shutdown"
     );
     let lines = trace_lines(&trace_path);
+    let stderr_bytes = fs::read(&stderr_path)
+        .unwrap_or_else(|error| panic!("read daemon stderr {}: {error}", stderr_path.display()))
+        .len();
     assert_eq!(
         lines
             .iter()
@@ -1040,27 +1274,16 @@ buffer_size = 1024
         0,
         "trace confirms watcher ingestion remained held"
     );
-    let postpass_events: Vec<usize> = lines
-        .iter()
-        .enumerate()
-        .filter_map(|(index, line)| {
-            line.contains("code graph: resolved cross-file singleton calls edges")
-                .then_some(index)
-        })
-        .collect();
+    let postpass_events = trace_event_indices(
+        &lines,
+        "code graph: resolved cross-file singleton calls edges",
+    );
     assert_eq!(
         postpass_events.len(),
         1,
         "post-pass must resolve exactly once"
     );
-    let completions: Vec<usize> = lines
-        .iter()
-        .enumerate()
-        .filter_map(|(index, line)| {
-            line.contains("code graph: indexing complete")
-                .then_some(index)
-        })
-        .collect();
+    let completions = trace_event_indices(&lines, "code graph: indexing complete");
     assert_eq!(
         completions.len(),
         2,
@@ -1131,10 +1354,23 @@ buffer_size = 1024
         "daemon_identity": {
             "pid": owned_pid,
             "endpoint": endpoint,
+            "repository_endpoint_distinct": true,
+            "repository_data_identity_distinct": true,
+            "repository_pid_checked_when_available": repository_pid.is_some(),
             "settle_attempts": settle_attempts,
             "active_workspaces": 1,
             "duplicate_daemon_detected": 0,
             "watcher_events": final_watcher_events,
+        },
+        "aggregate_deadline": {
+            "limit_ms": u64::try_from(PROBE_LIMIT.as_millis()).unwrap_or(u64::MAX),
+            "cleanup_reserve_ms": u64::try_from(CLEANUP_RESERVE.as_millis()).unwrap_or(u64::MAX),
+            "elapsed_ms": deadline.elapsed_ms(),
+        },
+        "diagnostics": {
+            "stdout_trace_captured": true,
+            "stderr_captured_separately": true,
+            "stderr_bytes": stderr_bytes,
         },
         "u2": {
             "classification": "no current defect",
@@ -1147,7 +1383,8 @@ buffer_size = 1024
             "persisted_singletons_after_shutdown": persisted_singletons.len(),
         },
         "u3": {
-            "classification": "startup outside user request deadline",
+            "classification": "static contract finding: startup outside user request deadline",
+            "runtime_blocker": "missing cold CLI timeout/end-to-end request-ID frame correlation",
             "cold_start": {
                 "started_at": cold_started_at,
                 "ready_at": cold_ready_at,
@@ -1195,6 +1432,10 @@ buffer_size = 1024
             "repository_workspace_touched": false,
         },
     });
+    assert!(
+        deadline.elapsed_ms() <= u64::try_from(PROBE_LIMIT.as_millis()).unwrap_or(u64::MAX),
+        "controlled probe exceeded its five-minute aggregate deadline"
+    );
     println!(
         "107S_EVIDENCE={}",
         serde_json::to_string(&evidence).expect("serialize 107-S evidence")

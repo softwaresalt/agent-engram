@@ -32,6 +32,8 @@ stash_id: "5765BAAB"
 - Primary request/correlation ID: `107s-index-primary`. Negative request/
   correlation ID: `107s-index-short-timeout`. Every graph observation used that
   same endpoint.
+- Review-cycle remediation after these runs was static/non-live only. It does
+  not add runtime evidence to the observations below.
 
 The repository daemon remained observation-only. Preflight identified PID
 `13112`, workspace identity
@@ -68,9 +70,10 @@ The harness measured RFC3339 timestamps and elapsed milliseconds for every row,
 but its final evidence line was not emitted: the helper initially captured only
 stderr while `tracing_subscriber::fmt().pretty()` writes daemon events to
 stdout. A second bounded execution changed the parser but retained the wrong
-stream. This exhausted the two-equivalent-reproduction limit. The retained
-helper now captures the tracing stdout stream, but it was deliberately not run
-a third time.
+stream. This exhausted the two-equivalent-reproduction limit. Static review
+remediation now configures separate stdout trace and stderr diagnostic files,
+but the retained live test is explicitly ignored/opt-in and was deliberately
+not run a third time.
 
 | Phase | ID/deadline | Result |
 |---|---|---|
@@ -83,7 +86,7 @@ a third time.
 | Short negative | `107s-index-short-timeout`, 10 ms | server completed successfully and emitted correlated telemetry; the client outcome branch and exact timestamps were not retained |
 | Post-negative health | same endpoint | graph remained queryable, singleton remained present, child shut down cleanly |
 
-Source ordering is unambiguous:
+Static source ordering is unambiguous:
 `run_tool_dispatch` performs health probing and `ensure_daemon_running` before
 passing the user timeout to `send_request`; `send_request` then bounds connect,
 write/flush, read, and decode; the server dispatches, serializes, writes,
@@ -91,8 +94,13 @@ flushes, and logs connection close. The normal controlled response rules out a
 required frame failure, while the missing correlated frame timestamp prevents a
 fully measured read/write disposition.
 
-**U3 classification: startup outside the user request deadline**, with exact
-frame timing blocked. The smallest later contract surface is
+**U3 static contract finding: `startup-outside-deadline`.** This conclusion
+comes from source ordering, not a measured cold CLI request. The named runtime
+blocker remains **missing cold CLI timeout/end-to-end request-ID frame
+correlation**: no retained run starts before daemon startup and follows one CLI
+request ID through startup, dispatch, response write/flush/close, and client
+disposition under the same end-to-end timeout. The smallest later contract
+surface is
 `src/cli/runner.rs::run_tool_dispatch`: establish one deadline before health/
 startup and pass only its remaining budget into the request phase. No streaming
 or protocol redesign is justified by this evidence.
@@ -102,7 +110,7 @@ or protocol redesign is justified by this evidence.
 | Hypothesis | Disposition |
 |---|---|
 | H1 — singleton resolves but is not committed/flushed | Refuted at this revision: same-endpoint visibility preceded explicit flush and survived flush/shutdown. |
-| H2 — synchronous IPC/deadline boundary | Partially confirmed: startup is structurally outside the user deadline; warm request/response succeeded. Exact frame timestamps remain blocked. |
+| H2 — synchronous IPC/deadline boundary | Static contract finding only: startup is structurally outside the user deadline; the warm request/response succeeded. Cold CLI timeout/end-to-end request-ID frame correlation remains blocked. |
 | H3 — daemon routing skips the full-index path | Refuted for the controlled request: response accounting and persisted singleton match the in-process full-index baseline. |
 | H4 — staged singleton post-pass is not invoked | Refuted by the only valid path to the bare cross-file singleton plus exact persisted provenance; direct trace timestamp was not retained. |
 
@@ -122,14 +130,26 @@ Retained test-only surfaces:
 - `tests/integration/calls_postpass_resolution_test.rs::daemon_index_runtime_boundaries_characterized`
 - `tests/helpers/mod.rs::DaemonHarness::spawn_for_workspace_with_trace_log`
 
-The exact blocker is a missing successful correlated response-frame capture
-after the two-run circuit breaker. No production tracing, protocol, schema,
-release, or persistence behavior changed.
+The live test is ignored with a 107-S PARTIAL/two-run circuit-cap reason.
+Deterministic synthetic fixtures retain trace timestamp, event-cardinality, and
+response-frame parser coverage without asserting new runtime evidence. The
+probe now uses one five-minute aggregate deadline with remaining-budget calls,
+an explicit cleanup reserve, immediate RAII child ownership, bounded verified
+reaping, repository-root/identity separation checks, and separate stderr
+capture.
+
+The exact runtime blocker is the missing cold CLI timeout/end-to-end request-ID
+frame correlation after the two-run circuit breaker. No production tracing,
+protocol, schema, release, or persistence behavior changed.
 
 Both executions gracefully stopped and reaped only their owned child, verified
 the PID dead and endpoint unreachable, and removed baseline/daemon temporary
 state through `TempDir` cleanup. No repository daemon, workspace, endpoint, or
 persisted graph was mutated.
+
+Those cleanup statements describe the two historical executions only. The
+review-cycle harness changes received non-live verification and make no new
+runtime claim.
 
 ## Final decision
 
