@@ -76,9 +76,30 @@ pub fn repository_ipc_endpoint_if_known(
 
     #[cfg(unix)]
     {
-        Ok(Some(
-            repository.join(".engram").join("run").join("engram.sock"),
-        ))
+        let local_endpoint = repository.join(".engram").join("run").join("engram.sock");
+        let local_endpoint_text = local_endpoint.to_str().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "repository IPC endpoint is not valid UTF-8",
+            )
+        })?;
+        #[cfg(target_os = "macos")]
+        const MAX_UNIX_SOCKET_PATH_LEN: usize = 103;
+        #[cfg(not(target_os = "macos"))]
+        const MAX_UNIX_SOCKET_PATH_LEN: usize = 107;
+        if local_endpoint_text.len() <= MAX_UNIX_SOCKET_PATH_LEN {
+            return Ok(Some(local_endpoint));
+        }
+
+        let id_path = repository.join(".engram").join(".workspace-id");
+        if !id_path.is_file() {
+            return Ok(None);
+        }
+        let raw = std::fs::read_to_string(id_path)?;
+        let workspace_id = uuid::Uuid::parse_str(raw.trim())?;
+        Ok(Some(PathBuf::from(format!(
+            "/tmp/engram-{workspace_id}/engram.sock"
+        ))))
     }
 
     #[cfg(not(any(unix, windows)))]

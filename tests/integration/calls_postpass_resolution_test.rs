@@ -1251,7 +1251,7 @@ buffer_size = 1024
     assert!(
         probe(
             &endpoint,
-            deadline.remaining_work(
+            deadline.remaining_cleanup(
                 Duration::from_millis(100),
                 "post-reap endpoint verification",
             ),
