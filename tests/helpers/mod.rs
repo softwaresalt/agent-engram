@@ -33,7 +33,7 @@
 // Phase 3 tests (T020-T025) which do not exist yet.
 #![allow(dead_code)]
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -273,6 +273,64 @@ impl DaemonHarness {
         }
     }
 
+    /// Spawn a daemon for an owned workspace while capturing diagnostics.
+    ///
+    /// This focused variant is intended for boundary-characterization tests
+    /// that need to place server dispatch and response-frame events on one
+    /// timeline. Standard input and standard error are closed; tracing is
+    /// written only to `trace_log`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the workspace or log cannot be opened, the binary
+    /// cannot be spawned, or readiness is not reached before `ready_timeout`.
+    pub async fn spawn_for_workspace_with_trace_log(
+        workspace: &Path,
+        trace_log: &Path,
+        ready_timeout: Duration,
+    ) -> Result<HarnessWithoutOwnership, Box<dyn std::error::Error>> {
+        let workspace_path = workspace.canonicalize()?;
+        let ipc_path = ipc_path_for_workspace(&workspace_path);
+        let workspace_str = workspace_path
+            .to_str()
+            .ok_or("workspace path contains non-UTF-8 characters")?;
+        let stdout = std::fs::File::create(trace_log)?;
+
+        let child = Command::new(env!("CARGO_BIN_EXE_engram"))
+            .args(["daemon", "--workspace", workspace_str])
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(stdout))
+            .stderr(Stdio::null())
+            .env("RUST_LOG", "engram=debug,hyper=info")
+            .env_remove("ENGRAM_DATA_DIR")
+            .spawn()?;
+
+        let deadline = std::time::Instant::now() + ready_timeout;
+        let mut delay = Duration::from_millis(10);
+        let mut attempt: u32 = 0;
+
+        loop {
+            if ipc_ready(&ipc_path).await {
+                return Ok(HarnessWithoutOwnership { child, ipc_path });
+            }
+
+            attempt += 1;
+            if std::time::Instant::now() >= deadline {
+                let mut child = child;
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "daemon IPC endpoint did not become ready within {ready_timeout:?} \
+                     ({attempt} attempts)"
+                )
+                .into());
+            }
+
+            tokio::time::sleep(delay).await;
+            delay = (delay * 2).min(Duration::from_millis(500));
+        }
+    }
+
     /// Spawn a daemon with a short idle timeout (for TTL/lifecycle tests).
     ///
     /// Sets the `ENGRAM_IDLE_TIMEOUT_MS` environment variable so the daemon
@@ -360,6 +418,21 @@ impl HarnessWithoutOwnership {
     #[must_use]
     pub fn ipc_path(&self) -> &Path {
         &self.ipc_path
+    }
+
+    /// Return the exact process identifier of the owned daemon child.
+    #[must_use]
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
+    /// Poll for owned-daemon exit without blocking.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when the operating system cannot query the child.
+    pub fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        self.child.try_wait()
     }
 
     /// Kill the daemon, wait for it to exit, and return its exact process ID.
