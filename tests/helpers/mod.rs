@@ -42,6 +42,10 @@ use engram::server::state::{AppState, WorkspaceSnapshot};
 use tempfile::TempDir;
 
 const CHILD_REAP_LIMIT: Duration = Duration::from_secs(5);
+#[cfg(all(unix, target_os = "macos"))]
+const MAX_UNIX_SOCKET_PATH_LEN: usize = 103;
+#[cfg(all(unix, not(target_os = "macos")))]
+const MAX_UNIX_SOCKET_PATH_LEN: usize = 107;
 
 fn paths_overlap(left: &Path, right: &Path) -> bool {
     left == right || left.starts_with(right) || right.starts_with(left)
@@ -83,10 +87,6 @@ pub fn repository_ipc_endpoint_if_known(
                 "repository IPC endpoint is not valid UTF-8",
             )
         })?;
-        #[cfg(target_os = "macos")]
-        const MAX_UNIX_SOCKET_PATH_LEN: usize = 103;
-        #[cfg(not(target_os = "macos"))]
-        const MAX_UNIX_SOCKET_PATH_LEN: usize = 107;
         if local_endpoint_text.len() <= MAX_UNIX_SOCKET_PATH_LEN {
             return Ok(Some(local_endpoint));
         }
