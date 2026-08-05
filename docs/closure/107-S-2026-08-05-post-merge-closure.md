@@ -96,7 +96,7 @@ Healthy closure signals are:
 - the merge SHA remains reachable from `origin/main`;
 - `107-S` has `archived_status: shipped`;
 - all five explicit manifest members remain archived and terminal;
-- the PARTIAL decision and its three active follow-ups remain discoverable;
+- the PARTIAL decision and its four active follow-ups remain discoverable;
 - unrelated blocked work remains unchanged.
 
 Intervention is required if the decision is represented as FIX-READY, the
