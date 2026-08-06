@@ -115,15 +115,18 @@ proof recorded by `108-S`.
 ## Rollback Procedure
 
 If the merged observability change causes a repository regression, create a
-dedicated rollback branch from current `main` and run:
+dedicated rollback branch from current `main` and reverse only the capture/frame
+implementation and focused test registration:
 
 ```text
-git revert --no-edit -m 1 8e46559d1ed9a85cecd14e55e41c95bc6e473d50
+git diff 8e46559d1ed9a85cecd14e55e41c95bc6e473d50^1 8e46559d1ed9a85cecd14e55e41c95bc6e473d50 -- Cargo.toml src/bin/engram.rs src/daemon/ipc_server.rs src/shim/lifecycle.rs tests/integration/cold_cli_request_frame_correlation_test.rs | git apply --reverse
+git add -A -- Cargo.toml src/bin/engram.rs src/daemon/ipc_server.rs src/shim/lifecycle.rs tests/integration/cold_cli_request_frame_correlation_test.rs
+git commit -m "revert: remove 108-S observability seam"
 ```
 
-Push the complete-unit revert through a separately reviewed PR. Do not
-partially revert the harness and decision evidence. No schema or data rollback
-is required.
+Push the path-scoped revert through a separately reviewed PR. Preserve the
+decision, runtime, closure, memory, and backlog evidence from PR #323. No schema
+or data rollback is required.
 
 ## Risky Action Record
 
