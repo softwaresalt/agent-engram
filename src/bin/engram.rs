@@ -340,6 +340,15 @@ enum ReportCommand {
     RetryMetrics,
 }
 
+fn daemon_log_format() -> engram::config::LogFormat {
+    #[cfg(debug_assertions)]
+    if std::env::var_os("ENGRAM_TEST_CAPTURE_AUTOSPAWN_TRACE").is_some_and(|value| value == "1") {
+        return engram::config::LogFormat::Json;
+    }
+
+    engram::config::LogFormat::Pretty
+}
+
 #[allow(clippy::too_many_lines)]
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -352,7 +361,7 @@ async fn main() -> Result<()> {
             engram::shim::run(flags.workspace.as_deref()).await?;
         }
         Command::Daemon => {
-            engram::init_tracing(engram::config::LogFormat::Pretty);
+            engram::init_tracing(daemon_log_format());
             let workspace = flags
                 .workspace
                 .clone()

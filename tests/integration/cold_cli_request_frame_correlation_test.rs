@@ -325,8 +325,8 @@ mod windows_live {
     use tokio::task::JoinHandle;
 
     use super::{
-        CLIENT_EVENT, CORRELATION_ID, CleanupObservation, INDEX_TOOL, Observations,
-        OwnedDaemonIdentity, REQUEST_ID, correlate, validate_owned_cleanup,
+        CLIENT_EVENT, CORRELATION_ID, CleanupObservation, FRAME_EVENT, INDEX_TOOL, Observations,
+        OwnedDaemonIdentity, REQUEST_ID, correlate, event_text, validate_owned_cleanup,
     };
 
     const AGGREGATE_LIMIT: Duration = Duration::from_secs(5 * 60);
@@ -506,14 +506,37 @@ mod windows_live {
                         .with_context(|| format!("read observation file {}", path.display()));
                 }
             };
-            records.extend(
-                content
-                    .lines()
-                    .filter(|line| !line.trim().is_empty())
-                    .filter_map(|line| serde_json::from_str(line).ok()),
-            );
+            for (line_index, line) in content.lines().enumerate() {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let record = serde_json::from_str(line).with_context(|| {
+                    format!(
+                        "parse observation file {} line {}: {line}",
+                        path.display(),
+                        line_index + 1
+                    )
+                })?;
+                records.push(record);
+            }
         }
         Ok(records)
+    }
+
+    #[test]
+    fn malformed_capture_line_is_explicit_evidence_failure() {
+        let capture = tempfile::NamedTempFile::new().expect("capture file");
+        fs::write(
+            capture.path(),
+            "{\"fields\":{\"event_type\":\"response_frame_result\"}}\nnot-json\n",
+        )
+        .expect("write capture lines");
+
+        let error = read_json_lines(&[capture.path().to_path_buf()])
+            .expect_err("malformed capture line must not be discarded");
+        let message = format!("{error:#}");
+        assert!(message.contains("line 2"), "{message}");
+        assert!(message.contains("not-json"), "{message}");
     }
 
     async fn wait_for_usage(root: &Path, supervisor: Supervisor) -> Result<Vec<Value>> {
@@ -526,6 +549,25 @@ mod windows_live {
             let records = read_json_lines(std::slice::from_ref(&usage_path))?;
             if records.iter().any(|record| {
                 record["correlation_id"] == CORRELATION_ID && record["tool_name"] == INDEX_TOOL
+            }) || supervisor.remaining_work().is_zero()
+            {
+                return Ok(records);
+            }
+            tokio::time::sleep(supervisor.remaining_work().min(Duration::from_millis(50))).await;
+        }
+    }
+
+    async fn wait_for_frame(root: &Path, supervisor: Supervisor) -> Result<Vec<Value>> {
+        let paths = [
+            root.join(".engram").join(TRACE_STDOUT),
+            root.join(".engram").join(TRACE_STDERR),
+        ];
+        loop {
+            let records = read_json_lines(&paths)?;
+            if records.iter().any(|record| {
+                event_text(record, "event_type") == Some(FRAME_EVENT)
+                    && event_text(record, "response_id") == Some(REQUEST_ID)
+                    && event_text(record, "outcome").is_some()
             }) || supervisor.remaining_work().is_zero()
             {
                 return Ok(records);
@@ -703,13 +745,7 @@ mod windows_live {
 
         let owned_pid_file = wait_for_pid(&root, supervisor).await;
         let usage_result = wait_for_usage(&root, supervisor).await;
-        if !supervisor.remaining_work().is_zero() {
-            tokio::time::sleep(supervisor.remaining_work().min(Duration::from_millis(250))).await;
-        }
-        let frame_result = read_json_lines(&[
-            root.join(".engram").join(TRACE_STDOUT),
-            root.join(".engram").join(TRACE_STDERR),
-        ]);
+        let frame_result = wait_for_frame(&root, supervisor).await;
 
         let Some(pid_file) = owned_pid_file else {
             let endpoint_reachable = probe(&endpoint, Duration::from_millis(200)).await.is_ok();

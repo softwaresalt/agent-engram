@@ -60,15 +60,19 @@ open until explicit operator merge approval.
 | Action | Risk | Result |
 |---|---|---|
 | Debug-only contained capture and frame event | moderate | Implemented with fixed workspace-local paths |
-| Two bounded cold CLI attempts | moderate | Completed at 2/2; both owned daemons cleaned |
+| Two bounded cold CLI attempts | moderate | Completed at 2/2; both owned PIDs dead and pipes closed |
 | Force-terminate a surviving daemon | destructive | Not invoked |
 | Change production timeout or IPC architecture | high | Not performed; fresh Stage intake required |
+
+The elapsed samples bounded PID death and pipe closure only. Each `TempDir`
+remained live at sampling; unchecked Drop removal was observed externally after
+return.
 
 ### Healthy and failure signals
 
 Healthy signals are green deterministic tests and CI, unchanged release stdio,
-unchanged wire behavior, one exact response ID in synthetic frame coverage, and
-no owned process after the bounded runs.
+unchanged wire behavior, exact response-ID types in production frame-event
+serialization coverage, and no owned process after the bounded runs.
 
 Failure signals are release capture activation, capture outside `.engram`,
 wire-response changes, a stale exact-HEAD review, failed CI, unresolved review
@@ -78,7 +82,8 @@ proof.
 ### Monitoring and rollback
 
 - Monitoring: PR CI, exact-HEAD local review, Copilot review, thread inventory,
-  and the focused deterministic integration target.
+  the focused deterministic integration target, and the production frame-event
+  unit test.
 - Rollback trigger: any regression in release behavior, response framing, or
   workspace containment.
 - Rollback procedure: revert the two source-file observability commit and the
@@ -90,10 +95,10 @@ proof.
 ### Releasability evidence
 
 The shipment's investigation DoD explicitly permits one concrete blocker in
-place of a complete ID chain. That condition is met, cleanup is proven, and no
-production timeout change is present. The PR may be prepared with the runtime
-blocker and non-live-only remediation called out. Merge must remain conditional
-on exact-current-HEAD review, green CI, completed Copilot review, zero unresolved
-threads, clean PR state, and explicit operator approval.
+place of a complete ID chain. That condition is met, PID/pipe cleanup is proven,
+and no production timeout change is present. The PR may be prepared with the
+runtime blocker and non-live-only remediation called out. Merge must remain
+conditional on exact-current-HEAD review, green CI, completed Copilot review,
+zero unresolved threads, clean PR state, and explicit operator approval.
 
 Readiness: READY_WITH_CONDITIONS

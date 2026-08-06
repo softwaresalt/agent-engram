@@ -35,15 +35,17 @@ Commits:
 
 The hard live cap is exhausted at `2/2`.
 
-1. RED: 8,438 ms aggregate; PID `16360`; pipe
+1. RED: 8,438 ms through PID death and pipe closure; PID `16360`; pipe
    `\\.\pipe\engram-9d8bcb92-ec0c-4b25-85a3-7d87314baaf8`; frame records 0.
-2. Post-seam: 7,770 ms aggregate; PID `29700`; pipe
+2. Post-seam: 7,770 ms through PID death and pipe closure; PID `29700`; pipe
    `\\.\pipe\engram-994b0a45-ad68-44f2-b69f-ef62b2862088`; frame records 0
    because pretty tracing was not JSON-decodable.
 
-Both exact PIDs are dead, both pipes are unreachable, both temporary workspaces
-were removed, and no force-kill was used. Repository daemon PID `16084`
-remained healthy and observation-only.
+Both exact PIDs are dead, both pipes are unreachable, and no force-kill was
+used. Each `aggregate_elapsed` sample was taken while its `TempDir` remained
+live; Drop removal was unchecked by the harness, and both removals were
+observed externally after return. Repository daemon PID `16084` remained
+healthy and observation-only.
 
 ### Durable result
 
