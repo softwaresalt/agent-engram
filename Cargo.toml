@@ -746,6 +746,11 @@ path = "tests/integration/cli_direct_usage_emit.rs"
 name = "integration_cli_regression"
 path = "tests/integration/cli_regression_test.rs"
 
+[[test]]
+name = "cold_cli_request_frame_correlation_test"
+path = "tests/integration/cold_cli_request_frame_correlation_test.rs"
+required-features = ["cozo-backend", "embeddings"]
+
 # ── 044-F: Indexing resilience (SQLITE_BUSY + sync timeout) ──────────────────
 
 [[test]]
