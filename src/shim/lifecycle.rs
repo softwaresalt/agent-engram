@@ -289,18 +289,50 @@ fn spawn_daemon(workspace: &Path) -> Result<(), EngramError> {
     // workspace — to share the same CozoDB, which is incorrect.  Users who need
     // a non-default data location should configure it via the daemon's own
     // environment (service manager unit, wrapper script, etc.).
-    tokio::process::Command::new(&current_exe)
+    let mut command = tokio::process::Command::new(&current_exe);
+    command
         .args(["daemon", "--workspace", workspace_str])
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .env_remove("ENGRAM_DATA_DIR")
-        .spawn()
-        .map_err(|e| {
+        .env_remove("ENGRAM_DATA_DIR");
+
+    #[cfg(debug_assertions)]
+    if std::env::var_os("ENGRAM_TEST_CAPTURE_AUTOSPAWN_TRACE").is_some_and(|value| value == "1") {
+        let trace_dir = workspace.join(".engram");
+        let stdout_path = trace_dir.join("test-autospawn.stdout.log");
+        let stderr_path = trace_dir.join("test-autospawn.stderr.log");
+        let stdout = std::fs::File::create(&stdout_path).map_err(|e| {
             EngramError::Daemon(DaemonError::SpawnFailed {
-                reason: format!("failed to spawn daemon: {e}"),
+                reason: format!(
+                    "failed to create test daemon stdout trace {}: {e}",
+                    stdout_path.display()
+                ),
             })
         })?;
+        let stderr = std::fs::File::create(&stderr_path).map_err(|e| {
+            EngramError::Daemon(DaemonError::SpawnFailed {
+                reason: format!(
+                    "failed to create test daemon stderr trace {}: {e}",
+                    stderr_path.display()
+                ),
+            })
+        })?;
+        command.stdout(stdout).stderr(stderr);
+    } else {
+        command
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+    }
+
+    #[cfg(not(debug_assertions))]
+    command
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+
+    command.spawn().map_err(|e| {
+        EngramError::Daemon(DaemonError::SpawnFailed {
+            reason: format!("failed to spawn daemon: {e}"),
+        })
+    })?;
 
     Ok(())
 }

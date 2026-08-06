@@ -271,18 +271,68 @@ async fn handle_connection(
     };
 
     let shutdown_requested = response.1;
-    match response.0.to_line() {
+    let response_id = response.0.id.clone();
+    let response_id_text = response_id
+        .as_str()
+        .map_or_else(|| response_id.to_string(), str::to_owned);
+    let frame_outcome = match response.0.to_line() {
         Ok(line_str) => {
             if let Err(e) = send_half.write_all(line_str.as_bytes()).await {
                 error!(error = %e, "failed to write IPC response");
+                "write_error"
             } else if let Err(e) = send_half.flush().await {
                 error!(error = %e, "failed to flush IPC response");
+                "flush_error"
+            } else {
+                "flushed"
             }
         }
         Err(e) => {
             error!(error = %e, "failed to serialize IPC response");
+            "serialize_error"
         }
+    };
+
+    #[cfg(debug_assertions)]
+    if std::env::var_os("ENGRAM_TEST_CAPTURE_AUTOSPAWN_TRACE").is_some_and(|value| value == "1") {
+        let event = json!({
+            "event_type": "response_frame_result",
+            "connection_id": connection_id,
+            "response_id": response_id,
+            "outcome": frame_outcome,
+        });
+        match serde_json::to_vec(&event) {
+            Ok(mut bytes) => {
+                bytes.push(b'\n');
+                let mut stderr = tokio::io::stderr();
+                if let Err(e) = stderr.write_all(&bytes).await {
+                    error!(error = %e, "failed to write test response-frame trace");
+                } else if let Err(e) = stderr.flush().await {
+                    error!(error = %e, "failed to flush test response-frame trace");
+                }
+            }
+            Err(e) => {
+                error!(error = %e, "failed to serialize test response-frame trace");
+            }
+        }
+    } else {
+        info!(
+            event_type = "response_frame_result",
+            connection_id = %connection_id,
+            response_id = %response_id_text,
+            outcome = frame_outcome,
+            "response_frame_result"
+        );
     }
+
+    #[cfg(not(debug_assertions))]
+    info!(
+        event_type = "response_frame_result",
+        connection_id = %connection_id,
+        response_id = %response_id_text,
+        outcome = frame_outcome,
+        "response_frame_result"
+    );
 
     debug!(connection_id = %connection_id, "ipc_connection_closed");
     if shutdown_requested {
