@@ -271,25 +271,72 @@ async fn handle_connection(
     };
 
     let shutdown_requested = response.1;
-    match response.0.to_line() {
+    let frame_outcome = match response.0.to_line() {
         Ok(line_str) => {
             if let Err(e) = send_half.write_all(line_str.as_bytes()).await {
                 error!(error = %e, "failed to write IPC response");
+                "write_error"
             } else if let Err(e) = send_half.flush().await {
                 error!(error = %e, "failed to flush IPC response");
+                "flush_error"
+            } else {
+                "flushed"
             }
         }
         Err(e) => {
             error!(error = %e, "failed to serialize IPC response");
+            "serialize_error"
         }
-    }
+    };
 
+    emit_response_frame_result(&connection_id, &response.0.id, frame_outcome);
     debug!(connection_id = %connection_id, "ipc_connection_closed");
     if shutdown_requested {
         // Signal only after the shutdown response has been fully attempted.
         // The accept loop may now abort/join every tracked handler, including
         // this one, without truncating the required response or self-joining.
         let _ = shutdown_tx.send(true);
+    }
+}
+
+/// Emit the single terminal response-frame event through the configured tracing
+/// subscriber.
+///
+/// JSON-RPC string, integer, floating-point, and Boolean IDs retain their JSON
+/// scalar type in JSON tracing output. Null and composite IDs fall back to
+/// their JSON text because `tracing` fields do not support those value types.
+fn emit_response_frame_result(connection_id: &str, response_id: &Value, outcome: &str) {
+    macro_rules! emit {
+        ($response_id:expr) => {{
+            info!(
+                event_type = "response_frame_result",
+                connection_id,
+                response_id = $response_id,
+                outcome,
+                "response_frame_result"
+            )
+        }};
+    }
+
+    match response_id {
+        Value::String(response_id) => emit!(response_id.as_str()),
+        Value::Number(response_id) => {
+            if let Some(response_id) = response_id.as_i64() {
+                emit!(response_id);
+            } else if let Some(response_id) = response_id.as_u64() {
+                emit!(response_id);
+            } else if let Some(response_id) = response_id.as_f64() {
+                emit!(response_id);
+            } else {
+                let response_id = response_id.to_string();
+                emit!(response_id.as_str());
+            }
+        }
+        Value::Bool(response_id) => emit!(*response_id),
+        Value::Null | Value::Array(_) | Value::Object(_) => {
+            let response_id = response_id.to_string();
+            emit!(response_id.as_str());
+        }
     }
 }
 
@@ -1405,6 +1452,67 @@ mod tests {
     };
     #[cfg(unix)]
     use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+
+    #[derive(Clone, Default)]
+    struct CapturedJson(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for CapturedJson {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .expect("capture lock")
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'writer> tracing_subscriber::fmt::MakeWriter<'writer> for CapturedJson {
+        type Writer = Self;
+
+        fn make_writer(&'writer self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    #[test]
+    fn response_frame_capture_exercises_production_event_and_preserves_id_types() {
+        let captured = CapturedJson::default();
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .with_writer(captured.clone())
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, || {
+            emit_response_frame_result("connection-string", &json!("62046B37-cold-1"), "flushed");
+            emit_response_frame_result("connection-number", &json!(62_046), "write_error");
+        });
+
+        let bytes = captured.0.lock().expect("capture lock").clone();
+        let records = String::from_utf8(bytes)
+            .expect("capture is UTF-8")
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).expect("capture line is JSON"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(records.len(), 2);
+        assert_eq!(
+            records[0]["fields"],
+            json!({
+                "event_type": "response_frame_result",
+                "connection_id": "connection-string",
+                "response_id": "62046B37-cold-1",
+                "outcome": "flushed",
+                "message": "response_frame_result",
+            })
+        );
+        assert_eq!(records[1]["fields"]["response_id"], json!(62_046));
+        assert_eq!(records[1]["fields"]["outcome"], "write_error");
+    }
 
     #[cfg(unix)]
     async fn connect_test_stream(endpoint: &str) -> Stream {

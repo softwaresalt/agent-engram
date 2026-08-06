@@ -340,6 +340,30 @@ enum ReportCommand {
     RetryMetrics,
 }
 
+fn daemon_log_format() -> engram::config::LogFormat {
+    #[cfg(debug_assertions)]
+    {
+        daemon_log_format_for_capture(
+            std::env::var_os("ENGRAM_TEST_CAPTURE_AUTOSPAWN_TRACE")
+                .is_some_and(|value| value == "1"),
+        )
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        engram::config::LogFormat::Pretty
+    }
+}
+
+#[cfg(any(debug_assertions, test))]
+fn daemon_log_format_for_capture(capture_enabled: bool) -> engram::config::LogFormat {
+    if capture_enabled {
+        engram::config::LogFormat::Json
+    } else {
+        engram::config::LogFormat::Pretty
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -351,8 +375,9 @@ async fn main() -> Result<()> {
         Command::Shim => {
             engram::shim::run(flags.workspace.as_deref()).await?;
         }
+
         Command::Daemon => {
-            engram::init_tracing(engram::config::LogFormat::Pretty);
+            engram::init_tracing(daemon_log_format());
             let workspace = flags
                 .workspace
                 .clone()
@@ -575,4 +600,21 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::daemon_log_format_for_capture;
+
+    #[test]
+    fn daemon_capture_switch_selects_json_without_changing_default() {
+        assert!(matches!(
+            daemon_log_format_for_capture(false),
+            engram::config::LogFormat::Pretty
+        ));
+        assert!(matches!(
+            daemon_log_format_for_capture(true),
+            engram::config::LogFormat::Json
+        ));
+    }
 }

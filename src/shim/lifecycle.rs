@@ -264,6 +264,95 @@ async fn ensure_daemon_running_inner(
     poll_until_ready(&endpoint).await
 }
 
+/// Build a daemon-spawn error for the debug-only capture seam.
+#[cfg(any(debug_assertions, test))]
+fn test_capture_spawn_error(reason: impl Into<String>) -> EngramError {
+    EngramError::Daemon(DaemonError::SpawnFailed {
+        reason: reason.into(),
+    })
+}
+
+#[cfg(any(debug_assertions, test))]
+fn validate_test_trace_dir(workspace: &Path, trace_dir: &Path) -> Result<(), EngramError> {
+    let expected = workspace.join(".engram");
+    if trace_dir != expected {
+        return Err(test_capture_spawn_error(format!(
+            "test daemon trace directory {} is not the fixed owned directory {}",
+            trace_dir.display(),
+            expected.display()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(any(debug_assertions, test))]
+fn create_new_test_trace_file(path: &Path) -> Result<std::fs::File, EngramError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => {
+            return Err(test_capture_spawn_error(format!(
+                "refusing to replace existing test daemon trace {}",
+                path.display()
+            )));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(test_capture_spawn_error(format!(
+                "failed to inspect test daemon trace {}: {error}",
+                path.display()
+            )));
+        }
+    }
+
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| {
+            test_capture_spawn_error(format!(
+                "failed to exclusively create test daemon trace {}: {error}",
+                path.display()
+            ))
+        })
+}
+
+#[cfg(any(debug_assertions, test))]
+fn open_test_autospawn_trace_files(
+    workspace: &Path,
+) -> Result<(std::fs::File, std::fs::File), EngramError> {
+    let canonical_workspace = workspace.canonicalize().map_err(|error| {
+        test_capture_spawn_error(format!(
+            "failed to canonicalize test daemon workspace {}: {error}",
+            workspace.display()
+        ))
+    })?;
+    let requested_trace_dir = canonical_workspace.join(".engram");
+    let metadata = std::fs::symlink_metadata(&requested_trace_dir).map_err(|error| {
+        test_capture_spawn_error(format!(
+            "failed to inspect fixed test daemon trace directory {}: {error}",
+            requested_trace_dir.display()
+        ))
+    })?;
+    if metadata.file_type().is_symlink() {
+        return Err(test_capture_spawn_error(format!(
+            "refusing symlinked test daemon trace directory {}",
+            requested_trace_dir.display()
+        )));
+    }
+    let canonical_trace_dir = requested_trace_dir.canonicalize().map_err(|error| {
+        test_capture_spawn_error(format!(
+            "failed to canonicalize fixed test daemon trace directory {}: {error}",
+            requested_trace_dir.display()
+        ))
+    })?;
+    validate_test_trace_dir(&canonical_workspace, &canonical_trace_dir)?;
+
+    let stdout =
+        create_new_test_trace_file(&canonical_trace_dir.join("test-autospawn.stdout.log"))?;
+    let stderr =
+        create_new_test_trace_file(&canonical_trace_dir.join("test-autospawn.stderr.log"))?;
+    Ok((stdout, stderr))
+}
+
 /// Spawn the daemon as a detached child process for the given workspace.
 fn spawn_daemon(workspace: &Path) -> Result<(), EngramError> {
     let workspace_str = workspace.to_str().ok_or_else(|| {
@@ -289,18 +378,32 @@ fn spawn_daemon(workspace: &Path) -> Result<(), EngramError> {
     // workspace — to share the same CozoDB, which is incorrect.  Users who need
     // a non-default data location should configure it via the daemon's own
     // environment (service manager unit, wrapper script, etc.).
-    tokio::process::Command::new(&current_exe)
+    let mut command = tokio::process::Command::new(&current_exe);
+    command
         .args(["daemon", "--workspace", workspace_str])
         .stdin(std::process::Stdio::null())
+        .env_remove("ENGRAM_DATA_DIR");
+
+    #[cfg(debug_assertions)]
+    if std::env::var_os("ENGRAM_TEST_CAPTURE_AUTOSPAWN_TRACE").is_some_and(|value| value == "1") {
+        let (stdout, stderr) = open_test_autospawn_trace_files(workspace)?;
+        command.stdout(stdout).stderr(stderr);
+    } else {
+        command
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+    }
+
+    #[cfg(not(debug_assertions))]
+    command
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .env_remove("ENGRAM_DATA_DIR")
-        .spawn()
-        .map_err(|e| {
-            EngramError::Daemon(DaemonError::SpawnFailed {
-                reason: format!("failed to spawn daemon: {e}"),
-            })
-        })?;
+        .stderr(std::process::Stdio::null());
+
+    command.spawn().map_err(|e| {
+        EngramError::Daemon(DaemonError::SpawnFailed {
+            reason: format!("failed to spawn daemon: {e}"),
+        })
+    })?;
 
     Ok(())
 }
@@ -459,6 +562,14 @@ async fn poll_until_ready(endpoint: &str) -> Result<(), EngramError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write as _;
+
+    fn create_capture_workspace() -> tempfile::TempDir {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        std::fs::create_dir(workspace.path().join(".git")).expect("create git metadata");
+        std::fs::create_dir(workspace.path().join(".engram")).expect("create .engram");
+        workspace
+    }
 
     /// Default timeout is 30 000 ms when no env var value is provided.
     #[test]
@@ -479,6 +590,67 @@ mod tests {
         assert_eq!(
             parse_timeout_ms(Some("not_a_number")),
             DEFAULT_READY_TIMEOUT_MS
+        );
+    }
+
+    #[test]
+    fn capture_parent_must_be_exact_canonical_owned_engram() {
+        let workspace = std::path::PathBuf::from("owned-workspace");
+        assert!(validate_test_trace_dir(&workspace, &workspace.join(".engram")).is_ok());
+        assert!(validate_test_trace_dir(&workspace, &workspace.join("redirected")).is_err());
+    }
+
+    #[test]
+    fn fixed_capture_creation_never_truncates_existing_leaf() {
+        let workspace = create_capture_workspace();
+
+        let (mut stdout, stderr) =
+            open_test_autospawn_trace_files(workspace.path()).expect("create fixed capture files");
+        stdout.write_all(b"sentinel\n").expect("write sentinel");
+        drop(stdout);
+        drop(stderr);
+
+        assert!(
+            open_test_autospawn_trace_files(workspace.path()).is_err(),
+            "a concurrent capture creator must not reopen or truncate fixed files"
+        );
+        assert_eq!(
+            std::fs::read(workspace.path().join(".engram/test-autospawn.stdout.log"))
+                .expect("read existing capture"),
+            b"sentinel\n"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn capture_rejects_symlinked_parent_and_leaf() {
+        use std::os::windows::fs::{symlink_dir, symlink_file};
+
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        std::fs::create_dir(workspace.path().join(".git")).expect("create git metadata");
+        let outside = tempfile::tempdir().expect("outside tempdir");
+        symlink_dir(outside.path(), workspace.path().join(".engram"))
+            .expect("create parent symlink");
+        assert!(
+            open_test_autospawn_trace_files(workspace.path()).is_err(),
+            "a symlinked .engram parent must be rejected"
+        );
+
+        let workspace = create_capture_workspace();
+        let outside_leaf = workspace.path().join("outside.log");
+        std::fs::write(&outside_leaf, b"sentinel\n").expect("write outside leaf");
+        symlink_file(
+            &outside_leaf,
+            workspace.path().join(".engram/test-autospawn.stdout.log"),
+        )
+        .expect("create leaf symlink");
+        assert!(
+            open_test_autospawn_trace_files(workspace.path()).is_err(),
+            "a symlinked fixed leaf must be rejected"
+        );
+        assert_eq!(
+            std::fs::read(outside_leaf).expect("read outside leaf"),
+            b"sentinel\n"
         );
     }
 }
