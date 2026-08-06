@@ -67,4 +67,3 @@ archived and exhausted at `2/2`.
    state.
 4. Leave the PR open and the branch retained. Do not merge without explicit
    operator approval.
-

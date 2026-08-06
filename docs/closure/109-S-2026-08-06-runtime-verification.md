@@ -9,7 +9,7 @@ adapter: command
 verdict: PASS
 classification: CORRELATED-COMPLETION
 source_revision: "27d3d3a482cc4beae94ce200893d3d11ceaf908d"
-compaction_status: pending
+compaction_status: done
 ---
 
 # Shipment 109-S Final JSON Cold CLI Runtime Verification
