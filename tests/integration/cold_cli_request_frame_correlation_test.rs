@@ -816,9 +816,6 @@ mod windows_live {
 
         let Some(pid_file) = owned_pid_file else {
             let endpoint_reachable = probe(&endpoint, Duration::from_millis(200)).await.is_ok();
-            if endpoint_reachable {
-                request_graceful_shutdown(&endpoint, supervisor).await;
-            }
             let error = preserve_blocked_workspace(
                 workspace,
                 &format!(

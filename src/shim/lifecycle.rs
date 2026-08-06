@@ -265,14 +265,14 @@ async fn ensure_daemon_running_inner(
 }
 
 /// Build a daemon-spawn error for the debug-only capture seam.
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, test))]
 fn test_capture_spawn_error(reason: impl Into<String>) -> EngramError {
     EngramError::Daemon(DaemonError::SpawnFailed {
         reason: reason.into(),
     })
 }
 
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, test))]
 fn validate_test_trace_dir(workspace: &Path, trace_dir: &Path) -> Result<(), EngramError> {
     let expected = workspace.join(".engram");
     if trace_dir != expected {
@@ -285,7 +285,7 @@ fn validate_test_trace_dir(workspace: &Path, trace_dir: &Path) -> Result<(), Eng
     Ok(())
 }
 
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, test))]
 fn create_new_test_trace_file(path: &Path) -> Result<std::fs::File, EngramError> {
     match std::fs::symlink_metadata(path) {
         Ok(_) => {
@@ -315,7 +315,7 @@ fn create_new_test_trace_file(path: &Path) -> Result<std::fs::File, EngramError>
         })
 }
 
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, test))]
 fn open_test_autospawn_trace_files(
     workspace: &Path,
 ) -> Result<(std::fs::File, std::fs::File), EngramError> {
