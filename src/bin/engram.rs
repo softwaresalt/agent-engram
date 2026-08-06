@@ -355,7 +355,7 @@ fn daemon_log_format() -> engram::config::LogFormat {
     }
 }
 
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, test))]
 fn daemon_log_format_for_capture(capture_enabled: bool) -> engram::config::LogFormat {
     if capture_enabled {
         engram::config::LogFormat::Json
