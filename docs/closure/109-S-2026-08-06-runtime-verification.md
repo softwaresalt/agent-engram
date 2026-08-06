@@ -164,4 +164,3 @@ live scenario: the new-unit allowance is exhausted at `1/1`.
 - ActionResult: applied successfully.
 - Destructive fallback actions: abandoned; no force termination or preserved
   workspace deletion was needed.
-
