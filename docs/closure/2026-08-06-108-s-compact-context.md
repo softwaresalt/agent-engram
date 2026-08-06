@@ -1,8 +1,8 @@
 ---
 title: "108-S compact-context report"
 date: 2026-08-06
-shipment_id: 108-S
-feature_id: 112-F
+shipment_id: "108-S"
+feature_id: "112-F"
 status: done
 ---
 
