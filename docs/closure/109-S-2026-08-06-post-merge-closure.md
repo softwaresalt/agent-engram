@@ -74,7 +74,7 @@ capture in one separately reviewed release unit.
 | Copilot exact-HEAD review | PASS |
 | Copilot requested reviewer | PASS — absent |
 | Review threads | PASS — two total, zero unresolved |
-| Hosted checks | None required or reported |
+| Hosted checks | No required CI checks; separate `copilot-pull-request-reviewer` check completed successfully |
 | Merge confirmation | PASS — PR state `MERGED`; merge SHA in `origin/main` |
 | Merge topology | PASS — parents `024a654d…` and `0fafaf45…` |
 | Shipment reconciliation | PASS — pre, safe-close, and post reports completed |
