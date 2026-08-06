@@ -30,6 +30,8 @@ Commits:
 - `92b47c6a` — `test: add cold CLI correlation harness (112.001-T)`
 - `ca398bd6` — `feat: add cold CLI frame correlation seam (112.002-T)`
 - `a34d7052` — `docs: publish cold CLI correlation decision (112.003-T)`
+- `e45b61c1` — `chore: record shipment 108-S execution state`
+- `5c9140a9` — `fix: harden cold CLI correlation evidence`
 
 ### Live attempts and cleanup
 
@@ -53,12 +55,24 @@ The final classification is recorded in
 `docs/decisions/2026-08-05-cold-cli-request-frame-correlation-follow-up.md`.
 The final JSON-format remediation is non-live verified only. No third run is
 permitted. Any timeout-contract change or fresh live proof requires a new Stage
-intake.
+intake. Follow-up stash `9D943A6F` records that fresh validation boundary.
+
+### Validation and review
+
+- Formatting, pedantic Clippy, focused deterministic tests, frame-serializer
+  units, release compilation, and `cargo build --all-targets` passed.
+- The full local suite failed twice on the existing out-of-scope S072
+  zero-function fixture (`12418607`); no third recurrence or S072 change was
+  attempted.
+- `cargo audit` reported the existing `lz4_flex 0.10.0` advisory; audit work
+  remains separate.
+- Review cycle one findings were remediated without a live run. Review cycle
+  two returned `READY_WITH_FOLLOWUPS` with no P0-P3 findings at `5c9140a9`.
 
 ### Next steps
 
-1. Commit backlog, plan, closure, and continuity artifacts.
-2. Run full quality gates and exact-current-HEAD report-only review.
+1. Commit the follow-up and continuity update.
+2. Run the final exact-current-HEAD report-only review.
 3. Push and create a PR with requested reviewers set to none.
 4. Require successful CI, completed Copilot review, zero unresolved threads,
    and clean PR state.
