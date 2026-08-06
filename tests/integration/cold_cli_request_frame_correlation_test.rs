@@ -263,8 +263,8 @@ fn validate_owned_cleanup(
     Ok(())
 }
 
-#[test]
-fn synthetic_cleanup_state_requires_owned_pid_death_and_closed_endpoint() {
+#[tokio::test]
+async fn synthetic_cleanup_state_requires_owned_pid_death_and_closed_endpoint() {
     let owner = OwnedDaemonIdentity {
         pid: 62_046,
         endpoint: r"\\.\pipe\engram-62046B37".to_owned(),
@@ -297,6 +297,18 @@ fn synthetic_cleanup_state_requires_owned_pid_death_and_closed_endpoint() {
         validate_owned_cleanup(&owner, &reachable),
         Err(CleanupError::EndpointStillReachable(owner.endpoint))
     );
+
+    #[cfg(windows)]
+    {
+        let mut endpoint_states = [true, true, false].into_iter();
+        let endpoint_reachable = windows_live::poll_endpoint_until_unreachable(
+            std::time::Instant::now() + std::time::Duration::from_secs(1),
+            |_| std::future::ready(endpoint_states.next().unwrap_or(true)),
+        )
+        .await;
+        assert!(!endpoint_reachable);
+        assert_eq!(endpoint_states.next(), None);
+    }
 }
 
 #[cfg(windows)]
@@ -306,7 +318,8 @@ mod windows_live {
     #![allow(clippy::duration_suboptimal_units)]
 
     use std::fs;
-    use std::io;
+    use std::future::Future;
+    use std::io::{self, Write as _};
     use std::path::{Path, PathBuf};
     use std::process::{ExitStatus, Stdio};
     use std::time::{Duration, Instant};
@@ -498,7 +511,7 @@ mod windows_live {
     fn read_json_lines(paths: &[PathBuf]) -> Result<Vec<Value>> {
         let mut records = Vec::new();
         for path in paths {
-            let content = match fs::read_to_string(path) {
+            let content = match fs::read(path) {
                 Ok(content) => content,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
                 Err(error) => {
@@ -506,7 +519,21 @@ mod windows_live {
                         .with_context(|| format!("read observation file {}", path.display()));
                 }
             };
-            for (line_index, line) in content.lines().enumerate() {
+            let completed_len = content
+                .iter()
+                .rposition(|byte| *byte == b'\n')
+                .map_or(0, |index| index + 1);
+            for (line_index, line) in content[..completed_len]
+                .split(|byte| *byte == b'\n')
+                .enumerate()
+            {
+                let line = std::str::from_utf8(line).with_context(|| {
+                    format!(
+                        "decode observation file {} line {} as UTF-8",
+                        path.display(),
+                        line_index + 1
+                    )
+                })?;
                 if line.trim().is_empty() {
                     continue;
                 }
@@ -524,18 +551,36 @@ mod windows_live {
     }
 
     #[test]
-    fn malformed_capture_line_is_explicit_evidence_failure() {
-        let capture = tempfile::NamedTempFile::new().expect("capture file");
-        fs::write(
-            capture.path(),
-            "{\"fields\":{\"event_type\":\"response_frame_result\"}}\nnot-json\n",
-        )
-        .expect("write capture lines");
+    fn capture_polling_defers_partial_tail_and_rejects_completed_malformed_line() {
+        let mut capture = tempfile::NamedTempFile::new().expect("capture file");
+        capture
+            .write_all(
+                b"{\"fields\":{\"event_type\":\"response_frame_result\"}}\n\
+                  {\"message\":\"\xF0\x9F",
+            )
+            .expect("write complete record and partial UTF-8 tail");
+
+        let records =
+            read_json_lines(&[capture.path().to_path_buf()]).expect("read completed capture lines");
+        assert_eq!(records.len(), 1);
+        assert_eq!(event_text(&records[0], "event_type"), Some(FRAME_EVENT));
+
+        capture
+            .write_all(b"\x98\x80\"}\n")
+            .expect("finish partial UTF-8 record");
+        let records =
+            read_json_lines(&[capture.path().to_path_buf()]).expect("read appended capture lines");
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[1]["message"], "\u{1f600}");
+
+        capture
+            .write_all(b"not-json\n")
+            .expect("append malformed completed line");
 
         let error = read_json_lines(&[capture.path().to_path_buf()])
             .expect_err("malformed capture line must not be discarded");
         let message = format!("{error:#}");
-        assert!(message.contains("line 2"), "{message}");
+        assert!(message.contains("line 3"), "{message}");
         assert!(message.contains("not-json"), "{message}");
     }
 
@@ -659,17 +704,14 @@ mod windows_live {
             .await;
         };
 
-        let endpoint_reachable = if supervisor.remaining_cleanup().is_zero() {
+        let endpoint_reachable = if pid_alive {
             true
         } else {
-            probe(
-                &owner.endpoint,
-                supervisor
-                    .remaining_cleanup()
-                    .min(Duration::from_millis(200)),
-            )
+            poll_endpoint_until_unreachable(supervisor.aggregate_deadline, |timeout| {
+                let endpoint = &owner.endpoint;
+                async move { probe(endpoint, timeout).await.is_ok() }
+            })
             .await
-            .is_ok()
         };
         Ok(CleanupObservation {
             pid: owner.pid,
@@ -677,6 +719,31 @@ mod windows_live {
             pid_alive,
             endpoint_reachable,
         })
+    }
+
+    pub(super) async fn poll_endpoint_until_unreachable<Probe, ProbeFuture>(
+        aggregate_deadline: Instant,
+        mut endpoint_is_reachable: Probe,
+    ) -> bool
+    where
+        Probe: FnMut(Duration) -> ProbeFuture,
+        ProbeFuture: Future<Output = bool>,
+    {
+        loop {
+            let remaining = aggregate_deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return true;
+            }
+            if !endpoint_is_reachable(remaining.min(Duration::from_millis(200))).await {
+                return false;
+            }
+
+            let remaining = aggregate_deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return true;
+            }
+            tokio::time::sleep(remaining.min(Duration::from_millis(50))).await;
+        }
     }
 
     async fn finish_capture(
