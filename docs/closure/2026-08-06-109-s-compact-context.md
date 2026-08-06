@@ -39,5 +39,6 @@ The shipment memories were consolidated into
 `docs/memory/compacted/2026-08-06-109-s-113-f-compacted.md`. The reviewed plan
 was consolidated into
 `docs/exec-plans/2026-08-06-final-json-cold-cli-validation-decided-plan.md`.
-All verbose sources are retained under `docs/archive/`; a compact pointer
-remains at the original plan path so archived Backlogit references stay valid.
+All verbose sources are retained under `docs/archive/`; compact pointers remain
+at the original plan and persisted Stage-memory paths so archived Backlogit
+references stay valid.
