@@ -1,7 +1,8 @@
 ---
 title: "Cold CLI request/frame correlation plan pointer"
 type: plan-pointer
-date: 2026-08-06
+date: 2026-08-05
+compacted_at: 2026-08-06
 status: compacted
 ---
 
