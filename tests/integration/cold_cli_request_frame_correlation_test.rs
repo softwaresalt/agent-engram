@@ -779,9 +779,9 @@ mod windows_live {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[ignore = "U1 attempt 1 only: Windows cold real-CLI request/frame characterization"]
+    #[ignore = "opt-in bounded Windows cold real-CLI request/frame characterization"]
     #[allow(clippy::too_many_lines)]
-    async fn windows_cold_cli_request_frame_correlation_attempt_1() -> Result<()> {
+    async fn windows_cold_cli_request_frame_correlation() -> Result<()> {
         let (workspace, root, corpus_hash) = prepare_workspace()?;
         let pid_path = PidFile::path(&root);
         ensure!(
@@ -892,7 +892,7 @@ mod windows_live {
         let correlation = correlate(&observations);
 
         let evidence = json!({
-            "attempt": 1,
+            "run_label": "bounded-cold-cli-characterization",
             "command": command,
             "cli_started_at": cli_started_at,
             "cli_finished_at": cli_finished_at,
@@ -920,12 +920,12 @@ mod windows_live {
 
         if let Err(error) = correlation {
             bail!(
-                "U1_ATTEMPT_1_RED missing-observability: {error}; evidence={}",
+                "COLD_CLI_CORRELATION_BLOCKED missing-observability: {error}; evidence={}",
                 serde_json::to_string(&evidence).context("serialize RED evidence")?
             );
         }
         println!(
-            "U1_ATTEMPT_1_CORRELATED={}",
+            "COLD_CLI_CORRELATION_RESULT={}",
             serde_json::to_string(&evidence).context("serialize correlated evidence")?
         );
         Ok(())

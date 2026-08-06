@@ -86,8 +86,9 @@ proof.
   unit test.
 - Rollback trigger: any regression in release behavior, response framing, or
   workspace containment.
-- Rollback procedure: revert the two source-file observability commit and the
-  focused test registration together; preserve the decision evidence.
+- Rollback procedure: revert the capture selector in `src/bin/engram.rs`, the
+  launch/frame observability changes, and the focused test registration
+  together; preserve the decision evidence.
 - Validation window: through PR merge approval and confirmed merge into
   `origin/main`.
 - Owner: Ship until merge; operator for merge approval.

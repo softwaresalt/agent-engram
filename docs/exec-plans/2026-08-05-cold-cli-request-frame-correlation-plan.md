@@ -72,6 +72,14 @@ Out of scope: changes to `run_tool_dispatch` deadline behavior, streaming or asy
 - Atomic exit: one fresh Windows evidence packet gives an exact request-ID/frame disposition or names one concrete blocker, with no owned process left behind on successful completion.
 - Budget: <= 2 hours.
 
+Execution deviation after the final live attempt: review remediation added
+`src/bin/engram.rs` as a third production file so the existing daemon tracing
+subscriber selects JSON only under the same debug-only boolean capture switch.
+This avoided awaited capture I/O in `handle_connection` and preserved shutdown
+ordering. A pure selector unit test covers pretty-default and JSON-capture
+selection. The change was not live-executed because the `2/2` cap was already
+exhausted and makes no additional runtime claim.
+
 ### U3 — Publish the characterization decision and future gate
 
 - Posture: documentation-only width.
