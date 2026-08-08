@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use serde_json::{Value, json};
+use serial_test::serial;
 
 use engram::server::state::AppState;
 use engram::tools;
@@ -22,6 +23,7 @@ use engram::tools;
 /// Red phase: field is present (serialised as `false`) — this test may pass in
 /// red phase but the _value_ test below confirms it stays red until WS-6 ships.
 #[tokio::test]
+#[serial]
 async fn contract_set_workspace_returns_pending_scan_field() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
@@ -47,6 +49,7 @@ async fn contract_set_workspace_returns_pending_scan_field() {
 ///
 /// Red phase: stub always returns `false` → assertion fails.
 #[tokio::test]
+#[serial]
 async fn contract_set_workspace_pending_scan_true_when_offline_changes_exist() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
@@ -84,6 +87,7 @@ async fn contract_set_workspace_pending_scan_true_when_offline_changes_exist() {
 /// Red phase: timing passes (the stub is fast), but this is the standing SLA
 /// that must be maintained through all green-phase implementation.
 #[tokio::test]
+#[serial]
 async fn contract_set_workspace_returns_within_bind_sla() {
     // Production SLA: 500 ms. Relaxed for debug-build CI.
     let sla_ms: u128 = if cfg!(debug_assertions) { 2_000 } else { 500 };
@@ -116,6 +120,7 @@ async fn contract_set_workspace_returns_within_bind_sla() {
 /// to the JSON key with value `null`, the key IS present and this test passes
 /// in red phase. The next test checks for an _active_ scan value and fails.
 #[tokio::test]
+#[serial]
 async fn contract_get_workspace_status_includes_scan_status_field() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
@@ -149,6 +154,7 @@ async fn contract_get_workspace_status_includes_scan_status_field() {
 ///
 /// Red phase: `scan_status` is `null` — assertion fails.
 #[tokio::test]
+#[serial]
 async fn contract_get_workspace_status_scan_status_reflects_queued_scan() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");

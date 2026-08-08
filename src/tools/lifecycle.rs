@@ -848,6 +848,21 @@ mod tests {
             .0
     }
 
+    async fn publish_test_binding_with_disabled_metrics(
+        state: &AppState,
+        snapshot: WorkspaceSnapshot,
+        metrics_guard: &tokio::sync::MutexGuard<'static, ()>,
+    ) -> u64 {
+        crate::services::metrics::configure_test_disabled_writer(
+            metrics_guard,
+            std::path::Path::new(&snapshot.path),
+            &snapshot.branch,
+        )
+        .await
+        .expect("configure disabled metrics writer");
+        publish_test_binding(state, snapshot).await
+    }
+
     fn request_empty(
         state: &AppState,
         kind: OwnerKind,
@@ -1144,7 +1159,7 @@ mod tests {
 
     #[tokio::test]
     async fn hydration_refreshes_head_before_its_first_io_boundary() {
-        let _metrics_guard = crate::services::metrics::test_writer_guard().await;
+        let metrics_guard = crate::services::metrics::test_writer_guard().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace_path = temp.path().join("workspace");
         std::fs::create_dir_all(workspace_path.join(".git")).expect("create git metadata");
@@ -1159,7 +1174,12 @@ mod tests {
         stale_snapshot.path = workspace_path.to_string_lossy().into_owned();
         stale_snapshot.data_dir = temp.path().join("data");
         stale_snapshot.branch = "captured-before-checkout".to_owned();
-        let _ = publish_test_binding(&state, stale_snapshot.clone()).await;
+        let _ = publish_test_binding_with_disabled_metrics(
+            &state,
+            stale_snapshot.clone(),
+            &metrics_guard,
+        )
+        .await;
         let old_admission = state.coordinator.admission();
         let admission = state.coordinator.admission();
         let (probe, io_starts, _) = probe(HydrationProbeExit::DbFailure, None);
@@ -1190,13 +1210,18 @@ mod tests {
 
     #[tokio::test]
     async fn spawned_hydration_rebind_is_supervised_until_quiescent_ack() {
-        let _metrics_guard = crate::services::metrics::test_writer_guard().await;
+        let metrics_guard = crate::services::metrics::test_writer_guard().await;
         for (same_binding, abort_task) in
             [(true, false), (true, true), (false, false), (false, true)]
         {
             let state = Arc::new(AppState::new(2));
             let old_snapshot = coordinator_snapshot("old", "old");
-            let _ = publish_test_binding(&state, old_snapshot.clone()).await;
+            let _ = publish_test_binding_with_disabled_metrics(
+                &state,
+                old_snapshot.clone(),
+                &metrics_guard,
+            )
+            .await;
             let admission = state.coordinator.admission();
             let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
             let (probe, _io_starts, active_io) =
@@ -1249,14 +1274,19 @@ mod tests {
 
     #[tokio::test]
     async fn hydration_db_failure_and_early_return_use_exact_terminals() {
-        let _metrics_guard = crate::services::metrics::test_writer_guard().await;
+        let metrics_guard = crate::services::metrics::test_writer_guard().await;
         for exit in [
             HydrationProbeExit::DbFailure,
             HydrationProbeExit::EarlyReturn,
         ] {
             let state = Arc::new(AppState::new(1));
             let snapshot = coordinator_snapshot("terminal", "terminal");
-            let _ = publish_test_binding(&state, snapshot.clone()).await;
+            let _ = publish_test_binding_with_disabled_metrics(
+                &state,
+                snapshot.clone(),
+                &metrics_guard,
+            )
+            .await;
             let admission = state.coordinator.admission();
             let (probe, io_starts, active_io) = probe(exit, None);
 
@@ -1285,9 +1315,14 @@ mod tests {
 
     #[tokio::test]
     async fn transferred_full_mask_executes_once_under_one_successor() {
-        let _metrics_guard = crate::services::metrics::test_writer_guard().await;
+        let metrics_guard = crate::services::metrics::test_writer_guard().await;
         let state = Arc::new(AppState::new(1));
-        let _ = publish_test_binding(&state, coordinator_snapshot("handoff", "handoff")).await;
+        let _ = publish_test_binding_with_disabled_metrics(
+            &state,
+            coordinator_snapshot("handoff", "handoff"),
+            &metrics_guard,
+        )
+        .await;
         let successor = transferred_successor(&state, 0b111);
         let (probe, runs, mask_bits, active_io, owner_active) =
             handoff_probe(&state, HandoffProbeExit::Handled, None);
@@ -1308,7 +1343,7 @@ mod tests {
 
     #[tokio::test]
     async fn failed_transferred_hydration_sync_recovers_its_full_mask() {
-        let _metrics_guard = crate::services::metrics::test_writer_guard().await;
+        let metrics_guard = crate::services::metrics::test_writer_guard().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace = temp.path().join("workspace");
         std::fs::create_dir_all(&workspace).expect("create workspace");
@@ -1316,7 +1351,7 @@ mod tests {
         std::fs::write(&invalid_data_dir, b"file blocks database directory")
             .expect("create invalid data path");
         let state = Arc::new(AppState::new(1));
-        let _ = publish_test_binding(
+        let _ = publish_test_binding_with_disabled_metrics(
             &state,
             WorkspaceSnapshot {
                 workspace_id: "id-transfer-failure".to_owned(),
@@ -1329,6 +1364,7 @@ mod tests {
                 connection_count: 0,
                 file_mtimes: std::collections::HashMap::new(),
             },
+            &metrics_guard,
         )
         .await;
         let successor = transferred_successor(&state, 0b111);
@@ -1345,14 +1381,14 @@ mod tests {
 
     #[tokio::test]
     async fn transferred_partial_file_errors_recover_full_mask() {
-        let _metrics_guard = crate::services::metrics::test_writer_guard().await;
+        let metrics_guard = crate::services::metrics::test_writer_guard().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace = temp.path().join("workspace");
         let data_dir = temp.path().join("data");
         std::fs::create_dir_all(&workspace).expect("create workspace");
         std::fs::write(workspace.join("broken.py"), [0xff]).expect("write invalid UTF-8 fixture");
         let state = Arc::new(AppState::new(1));
-        let _ = publish_test_binding(
+        let _ = publish_test_binding_with_disabled_metrics(
             &state,
             WorkspaceSnapshot {
                 workspace_id: "id-transfer-partial".to_owned(),
@@ -1365,6 +1401,7 @@ mod tests {
                 connection_count: 0,
                 file_mtimes: std::collections::HashMap::new(),
             },
+            &metrics_guard,
         )
         .await;
         let successor = transferred_successor(&state, 0b111);
@@ -1381,13 +1418,13 @@ mod tests {
 
     #[tokio::test]
     async fn hydration_handoff_supervises_a_second_transferred_successor() {
-        let _metrics_guard = crate::services::metrics::test_writer_guard().await;
+        let metrics_guard = crate::services::metrics::test_writer_guard().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace = temp.path().join("workspace");
         let data_dir = temp.path().join("data");
         std::fs::create_dir_all(&workspace).expect("create workspace");
         let state = Arc::new(AppState::new(1));
-        let _ = publish_test_binding(
+        let _ = publish_test_binding_with_disabled_metrics(
             &state,
             WorkspaceSnapshot {
                 workspace_id: "id-second-transfer".to_owned(),
@@ -1400,6 +1437,7 @@ mod tests {
                 connection_count: 0,
                 file_mtimes: std::collections::HashMap::new(),
             },
+            &metrics_guard,
         )
         .await;
         let successor = transferred_successor(&state, 0b001);
@@ -1427,16 +1465,19 @@ mod tests {
 
     #[tokio::test]
     async fn lost_transferred_successor_republishes_once_for_one_recovery() {
-        let _metrics_guard = crate::services::metrics::test_writer_guard().await;
+        let metrics_guard = crate::services::metrics::test_writer_guard().await;
         for mode in [
             HandoffProbeExit::EarlyReturn,
             HandoffProbeExit::AwaitCancellation,
             HandoffProbeExit::Handled,
         ] {
             let state = Arc::new(AppState::new(1));
-            let _ =
-                publish_test_binding(&state, coordinator_snapshot("handoff-loss", "handoff-loss"))
-                    .await;
+            let _ = publish_test_binding_with_disabled_metrics(
+                &state,
+                coordinator_snapshot("handoff-loss", "handoff-loss"),
+                &metrics_guard,
+            )
+            .await;
             let successor = transferred_successor(&state, 0b111);
             let is_early = matches!(mode, HandoffProbeExit::EarlyReturn);
             let is_abort = matches!(mode, HandoffProbeExit::Handled);
@@ -1506,7 +1547,7 @@ mod tests {
     // assertions below then fail.
     #[tokio::test]
     async fn queued_backfill_python_runs_gated_sync_on_drain() {
-        let _metrics_guard = crate::services::metrics::test_writer_guard().await;
+        let metrics_guard = crate::services::metrics::test_writer_guard().await;
         let tmp = tempfile::tempdir().expect("tempdir");
         let ws = tmp.path().join("ws");
         let data_dir = tmp.path().join("data");
@@ -1568,6 +1609,9 @@ mod tests {
         state
             .set_workspace_config(Some(WorkspaceConfig::default()))
             .await;
+        crate::services::metrics::configure_test_disabled_writer(&metrics_guard, &ws, branch)
+            .await
+            .expect("configure disabled metrics writer");
 
         // Queue exactly the routine + Python-backfill work bits behind a
         // hydration owner, then drive the move-only transferred successor.

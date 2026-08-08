@@ -1111,6 +1111,21 @@ mod tests {
         }
     }
 
+    async fn publish_with_disabled_metrics(
+        state: &AppState,
+        snapshot: WorkspaceSnapshot,
+        metrics_guard: &tokio::sync::MutexGuard<'static, ()>,
+    ) {
+        crate::services::metrics::configure_test_disabled_writer(
+            metrics_guard,
+            std::path::Path::new(&snapshot.path),
+            &snapshot.branch,
+        )
+        .await
+        .expect("configure disabled metrics writer");
+        publish(state, snapshot).await;
+    }
+
     fn acquired(outcome: RequestOutcome) -> OwnerPermit {
         match outcome {
             RequestOutcome::Acquired(permit) => permit,
@@ -1474,13 +1489,13 @@ mod tests {
 
     #[tokio::test]
     async fn busy_sync_publishes_full_mask_before_exact_queued_response() {
-        let _metrics_guard = reset_metrics_writer().await;
+        let metrics_guard = reset_metrics_writer().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let invalid_data_dir = temp.path().join("not-a-directory");
         std::fs::write(&invalid_data_dir, b"file blocks database directory")
             .expect("create invalid data path");
         let state = Arc::new(AppState::new(1));
-        publish(
+        publish_with_disabled_metrics(
             &state,
             snapshot(
                 "busy",
@@ -1489,6 +1504,7 @@ mod tests {
                 temp.path(),
                 invalid_data_dir,
             ),
+            &metrics_guard,
         )
         .await;
         let owner = acquired(request(
@@ -1520,7 +1536,7 @@ mod tests {
 
     #[tokio::test]
     async fn direct_sync_executes_recovered_backfill_mask_not_only_request_params() {
-        let _metrics_guard = reset_metrics_writer().await;
+        let metrics_guard = reset_metrics_writer().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace = temp.path().join("workspace");
         let data_dir = temp.path().join("data");
@@ -1556,7 +1572,7 @@ mod tests {
         }
 
         let state = Arc::new(AppState::new(1));
-        publish(
+        publish_with_disabled_metrics(
             &state,
             snapshot(
                 "recovered",
@@ -1565,6 +1581,7 @@ mod tests {
                 &workspace,
                 data_dir.clone(),
             ),
+            &metrics_guard,
         )
         .await;
         let abandoned = acquired(request(&state, WorkMask::from_bits(0b101), OwnerKind::Sync));
@@ -1589,7 +1606,7 @@ mod tests {
 
     #[tokio::test]
     async fn sync_branch_refresh_rebinds_coordinator_before_writing_new_branch() {
-        let _metrics_guard = reset_metrics_writer().await;
+        let metrics_guard = reset_metrics_writer().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace = temp.path().join("workspace");
         let data_dir = temp.path().join("data");
@@ -1608,7 +1625,7 @@ mod tests {
             data_dir,
         );
         stale_snapshot.branch = "stale-branch".to_owned();
-        publish(&state, stale_snapshot).await;
+        publish_with_disabled_metrics(&state, stale_snapshot, &metrics_guard).await;
         let old_admission = state.coordinator.admission();
         state.set_hydration_ready();
         let recovered = acquired(request(&state, WorkMask::from_bits(0b111), OwnerKind::Sync));
@@ -1761,7 +1778,7 @@ mod tests {
 
     #[tokio::test]
     async fn plain_full_index_preserves_hash_skip_without_pending_heavy_work() {
-        let _metrics_guard = reset_metrics_writer().await;
+        let metrics_guard = reset_metrics_writer().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace = temp.path().join("workspace");
         let data_dir = temp.path().join("data");
@@ -1769,7 +1786,7 @@ mod tests {
         std::fs::write(workspace.join("lib.rs"), "pub fn unchanged() {}\n").expect("write source");
 
         let state = Arc::new(AppState::new(1));
-        publish(
+        publish_with_disabled_metrics(
             &state,
             snapshot(
                 "plain-full",
@@ -1778,6 +1795,7 @@ mod tests {
                 &workspace,
                 data_dir,
             ),
+            &metrics_guard,
         )
         .await;
 
@@ -1797,7 +1815,7 @@ mod tests {
 
     #[tokio::test]
     async fn full_index_fulfills_recovered_heavy_work_before_success() {
-        let _metrics_guard = reset_metrics_writer().await;
+        let metrics_guard = reset_metrics_writer().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace = temp.path().join("workspace");
         let data_dir = temp.path().join("data");
@@ -1825,7 +1843,7 @@ mod tests {
         }
 
         let state = Arc::new(AppState::new(1));
-        publish(
+        publish_with_disabled_metrics(
             &state,
             snapshot(
                 "full-heavy",
@@ -1834,6 +1852,7 @@ mod tests {
                 &workspace,
                 data_dir.clone(),
             ),
+            &metrics_guard,
         )
         .await;
         let recovered = acquired(request(
@@ -1868,7 +1887,7 @@ mod tests {
 
     #[tokio::test]
     async fn plain_full_index_does_not_invent_heavy_work_for_file_errors() {
-        let _metrics_guard = reset_metrics_writer().await;
+        let metrics_guard = reset_metrics_writer().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace = temp.path().join("workspace");
         let data_dir = temp.path().join("data");
@@ -1876,7 +1895,7 @@ mod tests {
         std::fs::write(workspace.join("invalid.py"), [0xff]).expect("write invalid UTF-8 source");
 
         let state = Arc::new(AppState::new(1));
-        publish(
+        publish_with_disabled_metrics(
             &state,
             snapshot(
                 "full-error",
@@ -1885,6 +1904,7 @@ mod tests {
                 &workspace,
                 data_dir,
             ),
+            &metrics_guard,
         )
         .await;
 
@@ -1906,7 +1926,7 @@ mod tests {
 
     #[tokio::test]
     async fn forced_full_index_retains_heavy_work_for_file_errors() {
-        let _metrics_guard = reset_metrics_writer().await;
+        let metrics_guard = reset_metrics_writer().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace = temp.path().join("workspace");
         let data_dir = temp.path().join("data");
@@ -1914,7 +1934,7 @@ mod tests {
         std::fs::write(workspace.join("invalid.py"), [0xff]).expect("write invalid UTF-8 source");
 
         let state = Arc::new(AppState::new(1));
-        publish(
+        publish_with_disabled_metrics(
             &state,
             snapshot(
                 "forced-error",
@@ -1923,6 +1943,7 @@ mod tests {
                 &workspace,
                 data_dir,
             ),
+            &metrics_guard,
         )
         .await;
 
@@ -1944,7 +1965,7 @@ mod tests {
 
     #[tokio::test]
     async fn transferred_sync_refreshes_branch_before_any_database_write() {
-        let _metrics_guard = reset_metrics_writer().await;
+        let metrics_guard = reset_metrics_writer().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace = temp.path().join("workspace");
         let data_dir = temp.path().join("data");
@@ -1964,7 +1985,7 @@ mod tests {
             data_dir.clone(),
         );
         stale_snapshot.branch = "stale-branch".to_owned();
-        publish(&state, stale_snapshot.clone()).await;
+        publish_with_disabled_metrics(&state, stale_snapshot.clone(), &metrics_guard).await;
         let owner = acquired(request(&state, WorkMask::default(), OwnerKind::Index));
         assert!(matches!(
             request(&state, WorkMask::from_bits(0b111), OwnerKind::Sync),
@@ -2019,7 +2040,7 @@ mod tests {
 
     #[tokio::test]
     async fn failed_branch_initialization_does_not_restore_readiness() {
-        let _metrics_guard = reset_metrics_writer().await;
+        let metrics_guard = reset_metrics_writer().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace = temp.path().join("workspace");
         std::fs::create_dir_all(workspace.join(".git")).expect("create git metadata");
@@ -2041,7 +2062,7 @@ mod tests {
             invalid_data_dir,
         );
         stale_snapshot.branch = "stale-branch".to_owned();
-        publish(&state, stale_snapshot).await;
+        publish_with_disabled_metrics(&state, stale_snapshot, &metrics_guard).await;
         state.set_hydration_ready();
 
         assert!(sync_workspace(Arc::clone(&state), None).await.is_err());

@@ -1,3 +1,6 @@
+#[path = "../helpers/mod.rs"]
+mod helpers;
+
 use std::sync::Arc;
 
 use serde_json::json;
@@ -292,12 +295,16 @@ async fn contract_impact_analysis_symbol_not_found() {
 // partial results are returned instead of an error.
 
 #[test]
+#[serial_test::serial(metrics_writer)]
 async fn contract_read_tools_remain_available_during_public_sync() {
     let state = Arc::new(AppState::new(10));
-    state
-        .set_workspace(test_snapshot("reads_during_sync"))
-        .await
-        .expect("set workspace");
+    let snapshot = test_snapshot("reads_during_sync");
+    helpers::configure_disabled_metrics_writer(
+        std::path::Path::new(&snapshot.path),
+        &snapshot.branch,
+    )
+    .await;
+    state.set_workspace(snapshot).await.expect("set workspace");
 
     // Polling the owner first makes permit acquisition deterministic without a
     // test-only ownership seam or timing delay.

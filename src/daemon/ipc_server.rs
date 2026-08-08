@@ -1824,6 +1824,7 @@ mod tests {
 
     #[tokio::test]
     async fn startup_prepares_current_head_before_database_or_file_mutation() {
+        let metrics_guard = crate::services::metrics::test_writer_guard().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace = temp.path().join("workspace");
         std::fs::create_dir_all(workspace.join(".git")).expect("create git metadata");
@@ -1840,6 +1841,13 @@ mod tests {
             temp.path().join("data"),
         );
         stale_snapshot.branch = "captured-before-checkout".to_owned();
+        crate::services::metrics::configure_test_disabled_writer(
+            &metrics_guard,
+            &workspace,
+            &stale_snapshot.branch,
+        )
+        .await
+        .expect("configure disabled startup metrics");
         let _ = state
             .publish_workspace_generation(stale_snapshot, Some(WorkspaceConfig::default()))
             .await
@@ -1876,6 +1884,9 @@ mod tests {
             "main",
             "the refreshed branch must be coherently published"
         );
+        crate::services::metrics::shutdown()
+            .await
+            .expect("reset startup metrics");
     }
 
     #[tokio::test]

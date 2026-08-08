@@ -204,6 +204,12 @@ fn writer_changed_error() -> EngramError {
     })
 }
 
+fn writer_unavailable_error() -> EngramError {
+    EngramError::Metrics(MetricsError::WriteFailed {
+        reason: "metrics writer is unavailable for branch control".to_owned(),
+    })
+}
+
 pub(crate) fn writer_control_token(
     workspace_path: &Path,
     branch: &str,
@@ -227,10 +233,7 @@ pub(crate) fn writer_control_token(
                 expected_writer: Some(expected_writer),
             })
         }
-        WriterAvailability::Unavailable => Ok(WriterControlToken {
-            generation: state.generation,
-            expected_writer: Some(expected_writer),
-        }),
+        WriterAvailability::Unavailable => Err(writer_unavailable_error()),
     }
 }
 
@@ -256,6 +259,23 @@ pub(crate) async fn test_writer_guard() -> tokio::sync::MutexGuard<'static, ()> 
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
         .await
+}
+
+#[cfg(test)]
+pub(crate) async fn configure_test_disabled_writer(
+    _guard: &tokio::sync::MutexGuard<'static, ()>,
+    workspace_path: &Path,
+    branch: &str,
+) -> Result<(), EngramError> {
+    initialize(
+        workspace_path,
+        branch,
+        &MetricsConfig {
+            enabled: false,
+            ..MetricsConfig::default()
+        },
+    )
+    .await
 }
 
 fn metrics_dir(workspace_path: &Path, branch: &str) -> PathBuf {
@@ -692,7 +712,7 @@ async fn switch_branch_inner(
             return Err(writer_changed_error());
         }
         match &mut state.availability {
-            WriterAvailability::Unavailable => return Ok(()),
+            WriterAvailability::Unavailable => return Err(writer_unavailable_error()),
             WriterAvailability::Disabled(identity) => {
                 if control.expected_writer.as_ref() != Some(identity) {
                     return Err(writer_changed_error());
@@ -1094,6 +1114,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unavailable_metrics_rejects_branch_control() {
+        let _test_guard = test_writer_guard().await;
+        shutdown().await.expect("reset metrics writer");
+
+        let switch_error = tokio::time::timeout(
+            BRANCH_CONTROL_TIMEOUT,
+            switch_branch("feature__unavailable".to_owned()),
+        )
+        .await
+        .expect("unavailable branch control must remain bounded")
+        .expect_err("unavailable metrics must reject branch control");
+        assert!(
+            matches!(
+                &switch_error,
+                EngramError::Metrics(MetricsError::WriteFailed { reason })
+                    if reason.contains("unavailable")
+            ),
+            "unexpected unavailable-writer error: {switch_error}"
+        );
+
+        let token_error = writer_control_token(Path::new("unavailable-writer"), "main")
+            .expect_err("unavailable metrics must reject writer control acquisition");
+        assert!(
+            matches!(
+                &token_error,
+                EngramError::Metrics(MetricsError::WriteFailed { reason })
+                    if reason.contains("unavailable")
+            ),
+            "unexpected unavailable-token error: {token_error}"
+        );
+    }
+
+    #[tokio::test]
     async fn enabled_missing_or_stalled_writer_returns_an_explicit_error() {
         let _test_guard = test_writer_guard().await;
         shutdown().await.expect("reset metrics writer");
@@ -1281,9 +1334,21 @@ mod tests {
         drop(receiver);
         shutdown().await.expect("clean failed replacement state");
 
-        assert!(unavailable, "failed replacement must disable metrics");
+        assert!(
+            unavailable,
+            "failed replacement must leave metrics unavailable"
+        );
         assert!(!sender_present);
-        switch_result.expect("unavailable metrics must not require a writer");
+        let switch_error =
+            switch_result.expect_err("unavailable metrics must reject branch control");
+        assert!(
+            matches!(
+                &switch_error,
+                EngramError::Metrics(MetricsError::WriteFailed { reason })
+                    if reason.contains("unavailable")
+            ),
+            "unexpected unavailable-writer error: {switch_error}"
+        );
     }
 
     #[tokio::test]

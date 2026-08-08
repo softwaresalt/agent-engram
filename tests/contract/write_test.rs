@@ -115,8 +115,13 @@ async fn contract_busy_writes_preserve_public_responses_and_complete_mask() {
     fs::write(engram_dir.join(".version"), SCHEMA_VERSION).expect("write .version");
 
     let state = Arc::new(AppState::new(10));
-    helpers::bind_isolated_workspace(&state, workspace.path(), "main", WorkspaceConfig::default())
-        .await;
+    helpers::bind_isolated_workspace_with_disabled_metrics(
+        &state,
+        workspace.path(),
+        "main",
+        WorkspaceConfig::default(),
+    )
+    .await;
 
     // Idle control: the public Index tool acquires and completes normally.
     let idle = tools::dispatch(Arc::clone(&state), "index_workspace", Some(json!({})))
