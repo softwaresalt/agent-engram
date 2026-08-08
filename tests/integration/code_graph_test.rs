@@ -1868,6 +1868,18 @@ async fn ordinary_index_without_prior_snapshot_retries_failed_descendant_once() 
             .is_none(),
         "a failed first pass must leave the canonical snapshot relation absent"
     );
+    assert_eq!(
+        q.python_extraction_version()
+            .expect("read Python marker after failed first pass"),
+        None,
+        "a failed first pass must not publish the Python extraction marker"
+    );
+    assert_eq!(
+        q.code_graph_extraction_generation()
+            .expect("read code-graph marker after failed first pass"),
+        None,
+        "a failed first pass must not publish the code-graph generation marker"
+    );
 
     fs::write(ws.join("p/mod.py"), source.as_bytes()).expect("restore valid descendant");
     let retry = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
@@ -1894,6 +1906,18 @@ async fn ordinary_index_without_prior_snapshot_retries_failed_descendant_once() 
             .expect("load published snapshot")
             .is_some(),
         "the clean retry must publish the first canonical snapshot"
+    );
+    assert_eq!(
+        q.python_extraction_version()
+            .expect("read Python marker after clean retry"),
+        Some("1".to_owned()),
+        "the clean retry must publish the Python extraction marker"
+    );
+    assert_eq!(
+        q.code_graph_extraction_generation()
+            .expect("read code-graph marker after clean retry"),
+        Some("1".to_owned()),
+        "the clean retry must publish the code-graph generation marker"
     );
 
     let clean = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)

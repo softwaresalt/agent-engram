@@ -9,6 +9,7 @@ use engram::tools;
 
 /// Assert `get_daemon_status` includes a `health` field covering all 8 failure modes.
 #[tokio::test]
+#[serial_test::serial(metrics_writer)]
 async fn contract_get_daemon_status_includes_health_field() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
@@ -45,10 +46,14 @@ async fn contract_get_daemon_status_includes_health_field() {
          workspace_identity, pipe_reachability, registry_validity, offline_scan, \
          session_resume, telemetry_health"
     );
+    engram::services::metrics::shutdown()
+        .await
+        .expect("shutdown metrics writer");
 }
 
 /// Assert each required check name is present in the health report.
 #[tokio::test]
+#[serial_test::serial(metrics_writer)]
 async fn contract_health_report_covers_required_check_names() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
@@ -93,10 +98,14 @@ async fn contract_health_report_covers_required_check_names() {
             "health report missing required check: {required}"
         );
     }
+    engram::services::metrics::shutdown()
+        .await
+        .expect("shutdown metrics writer");
 }
 
 /// Assert each check has a valid `status` field.
 #[tokio::test]
+#[serial_test::serial(metrics_writer)]
 async fn contract_health_checks_have_valid_status_values() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
@@ -136,6 +145,9 @@ async fn contract_health_checks_have_valid_status_values() {
             "check {check_name} has invalid status: {check_status}"
         );
     }
+    engram::services::metrics::shutdown()
+        .await
+        .expect("shutdown metrics writer");
 }
 
 /// Unit test: `HealthReport` type structure compiles and has expected API.

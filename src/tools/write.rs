@@ -161,6 +161,10 @@ pub async fn index_workspace(
         .guarded_dispatch_context()
         .await
         .ok_or(EngramError::Workspace(WorkspaceError::NotSet))?;
+    let mut metrics_control = crate::services::metrics::writer_control_token(
+        Path::new(&ctx.workspace.path),
+        &ctx.workspace.branch,
+    )?;
     let requested = WorkMask::from_bits(if parsed.force { 0b111 } else { 0b001 });
     let permit = match CoordinatorCell::request(admission, requested, OwnerKind::Index) {
         Ok(RequestOutcome::Acquired(permit)) => permit,
@@ -178,8 +182,14 @@ pub async fn index_workspace(
             }));
         }
     };
-    let Some((mut permit, ctx)) =
-        prepare_branch_owner(&state, permit, ctx, OwnerKind::Index).await?
+    let Some((mut permit, ctx)) = prepare_branch_owner_with_control(
+        &state,
+        permit,
+        ctx,
+        OwnerKind::Index,
+        &mut metrics_control,
+    )
+    .await?
     else {
         return Err(EngramError::System(SystemError::DatabaseError {
             reason: "index branch preparation was superseded".to_owned(),
@@ -218,7 +228,7 @@ pub async fn index_workspace(
     let _ = state.set_hydration_ready_for_permit(&permit);
     let value = result.value;
     if let CompletionOutcome::Transferred(successor) = CoordinatorCell::complete(permit) {
-        drive_transferred_sync(&state, successor, &ctx).await;
+        drive_transferred_sync(&state, successor, &ctx, metrics_control).await;
     }
     Ok(value)
 }
@@ -434,13 +444,17 @@ pub async fn sync_workspace(
     }));
     let mut next_owner = None;
     loop {
-        let (mut permit, ctx) = if let Some(owner) = next_owner.take() {
+        let (mut permit, ctx, mut metrics_control) = if let Some(owner) = next_owner.take() {
             owner
         } else {
             let (admission, ctx) = state
                 .guarded_dispatch_context()
                 .await
                 .ok_or(EngramError::Workspace(WorkspaceError::NotSet))?;
+            let metrics_control = crate::services::metrics::writer_control_token(
+                Path::new(&ctx.workspace.path),
+                &ctx.workspace.branch,
+            )?;
             let permit = match CoordinatorCell::request(admission, requested, OwnerKind::Sync) {
                 Ok(RequestOutcome::Acquired(permit)) => permit,
                 Ok(RequestOutcome::Enqueued) => {
@@ -465,7 +479,7 @@ pub async fn sync_workspace(
                     }));
                 }
             };
-            (permit, ctx)
+            (permit, ctx, metrics_control)
         };
         let work_bits = permit.work_bits();
         let ws_path = PathBuf::from(&ctx.workspace.path);
@@ -484,6 +498,11 @@ pub async fn sync_workspace(
         let attempt = if let Some(branch) = branch_change {
             SyncAttempt::BranchChanged(branch)
         } else {
+            crate::services::metrics::switch_branch_for(
+                &mut metrics_control,
+                ctx.workspace.branch.clone(),
+            )
+            .await?;
             let Some(result) = run_guarded_workspace_write(
                 &state,
                 &mut permit,
@@ -534,13 +553,18 @@ pub async fn sync_workspace(
                     })
                 })? {
                     ClaimOutcome::Acquired(next) => {
-                        crate::services::metrics::switch_branch(workspace.branch.clone()).await?;
+                        crate::services::metrics::switch_branch_for(
+                            &mut metrics_control,
+                            workspace.branch.clone(),
+                        )
+                        .await?;
                         next_owner = Some((
                             next,
                             DispatchSnapshot {
                                 workspace,
                                 config: ctx.config,
                             },
+                            metrics_control,
                         ));
                     }
                     ClaimOutcome::Retained => {
@@ -572,7 +596,7 @@ pub async fn sync_workspace(
                 let value = result.value;
                 if let CompletionOutcome::Transferred(successor) = CoordinatorCell::complete(permit)
                 {
-                    drive_transferred_sync(&state, successor, &ctx).await;
+                    drive_transferred_sync(&state, successor, &ctx, metrics_control).await;
                 }
                 return Ok(value);
             }
@@ -602,9 +626,23 @@ pub(crate) async fn prepare_transferred_sync(
 /// empty Startup/Watcher owners publish no inherited work.
 pub(crate) async fn prepare_branch_owner(
     state: &AppState,
+    permit: OwnerPermit,
+    ctx: DispatchSnapshot,
+    kind: OwnerKind,
+) -> Result<Option<(OwnerPermit, DispatchSnapshot)>, EngramError> {
+    let mut metrics_control = crate::services::metrics::writer_control_token(
+        Path::new(&ctx.workspace.path),
+        &ctx.workspace.branch,
+    )?;
+    prepare_branch_owner_with_control(state, permit, ctx, kind, &mut metrics_control).await
+}
+
+async fn prepare_branch_owner_with_control(
+    state: &AppState,
     mut permit: OwnerPermit,
     mut ctx: DispatchSnapshot,
     kind: OwnerKind,
+    metrics_control: &mut crate::services::metrics::WriterControlToken,
 ) -> Result<Option<(OwnerPermit, DispatchSnapshot)>, EngramError> {
     let workspace_path = ctx.workspace.path.clone();
     let workspace_uuid = ctx.workspace.workspace_uuid.clone();
@@ -619,6 +657,11 @@ pub(crate) async fn prepare_branch_owner(
             return Ok(Some((permit, ctx)));
         };
         if resolved_branch == ctx.workspace.branch {
+            crate::services::metrics::switch_branch_for(
+                metrics_control,
+                ctx.workspace.branch.clone(),
+            )
+            .await?;
             return Ok(Some((permit, ctx)));
         }
 
@@ -661,14 +704,22 @@ pub(crate) async fn prepare_branch_owner(
                 })
             })? {
                 ClaimOutcome::Acquired(next) => {
-                    crate::services::metrics::switch_branch(published_ctx.workspace.branch.clone())
-                        .await?;
+                    crate::services::metrics::switch_branch_for(
+                        metrics_control,
+                        published_ctx.workspace.branch.clone(),
+                    )
+                    .await?;
                     Ok(Some((next, published_ctx)))
                 }
                 ClaimOutcome::Retained | ClaimOutcome::Missing | ClaimOutcome::Stale => Ok(None),
             };
         }
         drop(publication_admission);
+        crate::services::metrics::switch_branch_for(
+            metrics_control,
+            published_ctx.workspace.branch.clone(),
+        )
+        .await?;
         if !matches!(
             CoordinatorCell::complete(permit),
             CompletionOutcome::RetirementAcknowledged
@@ -695,8 +746,6 @@ pub(crate) async fn prepare_branch_owner(
                     reason: format!("{kind:?} branch reacquisition failed: {error}"),
                 })
             })? {
-                crate::services::metrics::switch_branch(current_ctx.workspace.branch.clone())
-                    .await?;
                 permit = next;
                 ctx = current_ctx;
                 break;
@@ -705,11 +754,23 @@ pub(crate) async fn prepare_branch_owner(
     }
 }
 
-async fn drive_transferred_sync(state: &SharedState, permit: OwnerPermit, ctx: &DispatchSnapshot) {
+async fn drive_transferred_sync(
+    state: &SharedState,
+    permit: OwnerPermit,
+    ctx: &DispatchSnapshot,
+    mut metrics_control: crate::services::metrics::WriterControlToken,
+) {
     let mut permit = permit;
     let mut current_ctx = ctx.clone();
     loop {
-        let prepared = prepare_transferred_sync(state, permit, current_ctx).await;
+        let prepared = prepare_branch_owner_with_control(
+            state,
+            permit,
+            current_ctx,
+            OwnerKind::Sync,
+            &mut metrics_control,
+        )
+        .await;
         let Some((prepared_permit, prepared_ctx)) = (match prepared {
             Ok(prepared) => prepared,
             Err(error) => {
@@ -1450,6 +1511,7 @@ mod tests {
 
     #[tokio::test]
     async fn direct_sync_executes_recovered_backfill_mask_not_only_request_params() {
+        let _metrics_guard = crate::services::metrics::test_writer_guard().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace = temp.path().join("workspace");
         let data_dir = temp.path().join("data");
@@ -1518,6 +1580,7 @@ mod tests {
 
     #[tokio::test]
     async fn sync_branch_refresh_rebinds_coordinator_before_writing_new_branch() {
+        let _metrics_guard = crate::services::metrics::test_writer_guard().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace = temp.path().join("workspace");
         let data_dir = temp.path().join("data");
@@ -1595,6 +1658,7 @@ mod tests {
 
     #[tokio::test]
     async fn index_branch_refresh_rebinds_coordinator_and_preserves_full_work() {
+        let _metrics_guard = crate::services::metrics::test_writer_guard().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace = temp.path().join("workspace");
         let data_dir = temp.path().join("data");
@@ -1903,8 +1967,13 @@ mod tests {
             workspace: stale_snapshot,
             config: WorkspaceConfig::default(),
         };
+        let metrics_control = crate::services::metrics::writer_control_token(
+            workspace.as_path(),
+            &context.workspace.branch,
+        )
+        .expect("capture transferred writer");
 
-        drive_transferred_sync(&state, successor, &context).await;
+        drive_transferred_sync(&state, successor, &context, metrics_control).await;
 
         let active = state
             .snapshot_workspace()

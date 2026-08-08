@@ -6,31 +6,256 @@
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader};
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::errors::{EngramError, MetricsError};
-use crate::models::metrics::{MetricsConfig, MetricsMessage, MetricsSummary, UsageEvent};
+use crate::models::metrics::{MetricsConfig, MetricsSummary, UsageEvent};
 
 const RECENT_EVENTS_LIMIT: usize = 256;
+#[cfg(not(test))]
+const BRANCH_CONTROL_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(test)]
+const BRANCH_CONTROL_TIMEOUT: Duration = Duration::from_millis(100);
+
+#[derive(Debug)]
+enum MetricsMessage {
+    Event(Box<UsageEvent>),
+    SwitchBranch {
+        branch: String,
+        generation: u64,
+        acknowledged: tokio::sync::oneshot::Sender<()>,
+    },
+    Shutdown,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct WriterIdentity {
+    workspace_path: PathBuf,
+    branch: String,
+}
+
+#[derive(Debug, Default)]
+enum WriterAvailability {
+    #[default]
+    Unavailable,
+    Disabled(WriterIdentity),
+    Enabled(WriterIdentity),
+}
+
+#[derive(Debug, Default)]
+struct WriterState {
+    generation: u64,
+    availability: WriterAvailability,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct WriterControlToken {
+    generation: u64,
+    expected_writer: Option<WriterIdentity>,
+}
+
+#[derive(Clone, Debug)]
+struct WriterTaskGuard {
+    handle: Arc<tokio::sync::Mutex<Option<JoinHandle<()>>>>,
+}
+
+impl WriterTaskGuard {
+    fn new(handle: JoinHandle<()>) -> Self {
+        Self {
+            handle: Arc::new(tokio::sync::Mutex::new(Some(handle))),
+        }
+    }
+
+    async fn join(&self) -> Result<(), tokio::task::JoinError> {
+        let mut handle_guard = self.handle.lock().await;
+        let Some(handle) = handle_guard.as_mut() else {
+            return Ok(());
+        };
+        let result = handle.await;
+        let _ = handle_guard.take();
+        result
+    }
+
+    async fn abort_and_join(&self) -> Result<(), tokio::task::JoinError> {
+        let mut handle_guard = self.handle.lock().await;
+        let Some(handle) = handle_guard.as_mut() else {
+            return Ok(());
+        };
+        handle.abort();
+        let result = handle.await;
+        let _ = handle_guard.take();
+        result
+    }
+
+    fn owns_same_task(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.handle, &other.handle)
+    }
+}
 
 static METRICS_SENDER: OnceLock<Mutex<Option<mpsc::Sender<MetricsMessage>>>> = OnceLock::new();
-static METRICS_HANDLE: OnceLock<Mutex<Option<JoinHandle<()>>>> = OnceLock::new();
+static METRICS_HANDLE: OnceLock<Mutex<Option<WriterTaskGuard>>> = OnceLock::new();
 static RECENT_EVENTS: OnceLock<Mutex<VecDeque<UsageEvent>>> = OnceLock::new();
+static WRITER_STATE: OnceLock<Mutex<WriterState>> = OnceLock::new();
+static METRICS_LIFECYCLE: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+static BRANCH_CONTROL: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+#[cfg(test)]
+static METRICS_TEST: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
 fn sender_slot() -> &'static Mutex<Option<mpsc::Sender<MetricsMessage>>> {
     METRICS_SENDER.get_or_init(|| Mutex::new(None))
 }
 
-fn handle_slot() -> &'static Mutex<Option<JoinHandle<()>>> {
+fn handle_slot() -> &'static Mutex<Option<WriterTaskGuard>> {
     METRICS_HANDLE.get_or_init(|| Mutex::new(None))
 }
 
 fn recent_events_slot() -> &'static Mutex<VecDeque<UsageEvent>> {
     RECENT_EVENTS.get_or_init(|| Mutex::new(VecDeque::new()))
+}
+
+fn writer_state_slot() -> &'static Mutex<WriterState> {
+    WRITER_STATE.get_or_init(|| Mutex::new(WriterState::default()))
+}
+
+fn lifecycle_lock() -> &'static tokio::sync::Mutex<()> {
+    METRICS_LIFECYCLE.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+fn branch_control_lock() -> &'static tokio::sync::Mutex<()> {
+    BRANCH_CONTROL.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+async fn lock_with_timeout(
+    lock: &'static tokio::sync::Mutex<()>,
+    name: &str,
+) -> Result<tokio::sync::MutexGuard<'static, ()>, EngramError> {
+    tokio::time::timeout(BRANCH_CONTROL_TIMEOUT, lock.lock())
+        .await
+        .map_err(|_| {
+            EngramError::Metrics(MetricsError::WriteFailed {
+                reason: format!(
+                    "metrics {name} lock timed out after {} ms",
+                    BRANCH_CONTROL_TIMEOUT.as_millis()
+                ),
+            })
+        })
+}
+
+fn next_generation(generation: u64) -> Result<u64, EngramError> {
+    generation.checked_add(1).ok_or_else(|| {
+        EngramError::Metrics(MetricsError::WriteFailed {
+            reason: "metrics writer generation exhausted".to_owned(),
+        })
+    })
+}
+
+fn make_writer_unavailable() -> Result<(), EngramError> {
+    let mut state = writer_state_slot()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    state.availability = WriterAvailability::Unavailable;
+    state.generation = next_generation(state.generation)?;
+    Ok(())
+}
+
+fn reserve_writer_generation() -> Result<u64, EngramError> {
+    let state = writer_state_slot()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    next_generation(state.generation)
+}
+
+fn configure_writer(workspace_path: &Path, branch: &str, enabled: bool, generation: u64) {
+    let mut state = writer_state_slot()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let identity = WriterIdentity {
+        workspace_path: workspace_path.to_path_buf(),
+        branch: branch.to_owned(),
+    };
+    state.generation = generation;
+    state.availability = if enabled {
+        WriterAvailability::Enabled(identity)
+    } else {
+        WriterAvailability::Disabled(identity)
+    };
+}
+
+fn acknowledge_writer_branch(generation: u64, branch: &str) {
+    let mut state = writer_state_slot()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if state.generation != generation {
+        return;
+    }
+    if let WriterAvailability::Enabled(identity) = &mut state.availability {
+        branch.clone_into(&mut identity.branch);
+    }
+}
+
+fn writer_changed_error() -> EngramError {
+    EngramError::Metrics(MetricsError::WriteFailed {
+        reason: "metrics writer changed while branch control was pending".to_owned(),
+    })
+}
+
+pub(crate) fn writer_control_token(
+    workspace_path: &Path,
+    branch: &str,
+) -> Result<WriterControlToken, EngramError> {
+    let state = writer_state_slot()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let expected_writer = WriterIdentity {
+        workspace_path: workspace_path.to_path_buf(),
+        branch: branch.to_owned(),
+    };
+    match &state.availability {
+        WriterAvailability::Enabled(identity) | WriterAvailability::Disabled(identity)
+            if identity != &expected_writer =>
+        {
+            Err(writer_changed_error())
+        }
+        WriterAvailability::Enabled(_) | WriterAvailability::Disabled(_) => {
+            Ok(WriterControlToken {
+                generation: state.generation,
+                expected_writer: Some(expected_writer),
+            })
+        }
+        WriterAvailability::Unavailable => Ok(WriterControlToken {
+            generation: state.generation,
+            expected_writer: Some(expected_writer),
+        }),
+    }
+}
+
+fn current_writer_control_token() -> WriterControlToken {
+    let state = writer_state_slot()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let expected_writer = match &state.availability {
+        WriterAvailability::Enabled(identity) | WriterAvailability::Disabled(identity) => {
+            Some(identity.clone())
+        }
+        WriterAvailability::Unavailable => None,
+    };
+    WriterControlToken {
+        generation: state.generation,
+        expected_writer,
+    }
+}
+
+#[cfg(test)]
+pub(crate) async fn test_writer_guard() -> tokio::sync::MutexGuard<'static, ()> {
+    METRICS_TEST
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await
 }
 
 fn metrics_dir(workspace_path: &Path, branch: &str) -> PathBuf {
@@ -311,10 +536,12 @@ async fn writer_loop(
             }
             MetricsMessage::SwitchBranch {
                 branch,
+                generation,
                 acknowledged,
             } => {
                 tracing::info!(branch, "metrics branch switched");
                 active_branch = branch;
+                acknowledge_writer_branch(generation, &active_branch);
                 let _ = acknowledged.send(());
             }
             MetricsMessage::Shutdown => {
@@ -335,10 +562,12 @@ async fn writer_loop(
                         }
                         MetricsMessage::SwitchBranch {
                             branch,
+                            generation,
                             acknowledged,
                         } => {
                             tracing::info!(branch, "metrics branch switched during shutdown");
                             active_branch = branch;
+                            acknowledge_writer_branch(generation, &active_branch);
                             let _ = acknowledged.send(());
                         }
                         MetricsMessage::Shutdown => {}
@@ -358,12 +587,17 @@ pub async fn initialize(
     branch: &str,
     config: &MetricsConfig,
 ) -> Result<(), EngramError> {
-    shutdown().await?;
+    let _lifecycle = lock_with_timeout(lifecycle_lock(), "lifecycle").await?;
+    let _branch_control = lock_with_timeout(branch_control_lock(), "branch-control").await?;
+    shutdown_inner().await?;
 
     if !config.enabled {
+        let generation = reserve_writer_generation()?;
+        configure_writer(workspace_path, branch, false, generation);
         return Ok(());
     }
 
+    let generation = reserve_writer_generation()?;
     // Clamp to >= 1: `tokio::sync::mpsc::channel` panics on a zero buffer.
     // `validate_config` also rejects `buffer_size == 0`, so this is
     // defense-in-depth against a config that bypasses validation.
@@ -385,8 +619,9 @@ pub async fn initialize(
         let mut handle_guard = handle_slot()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *handle_guard = Some(handle);
+        *handle_guard = Some(WriterTaskGuard::new(handle));
     }
+    configure_writer(workspace_path, branch, true, generation);
 
     Ok(())
 }
@@ -424,6 +659,55 @@ pub fn record(event: UsageEvent) {
 /// Returns only after the writer has adopted the branch. Metrics-disabled
 /// operation is a no-op; a closed writer is reported explicitly.
 pub async fn switch_branch(branch: String) -> Result<(), EngramError> {
+    let mut control = current_writer_control_token();
+    switch_branch_for(&mut control, branch).await
+}
+
+pub(crate) async fn switch_branch_for(
+    control: &mut WriterControlToken,
+    branch: String,
+) -> Result<(), EngramError> {
+    tokio::time::timeout(BRANCH_CONTROL_TIMEOUT, switch_branch_inner(control, branch))
+        .await
+        .map_err(|_| {
+            EngramError::Metrics(MetricsError::WriteFailed {
+                reason: format!(
+                    "metrics branch control timed out after {} ms",
+                    BRANCH_CONTROL_TIMEOUT.as_millis()
+                ),
+            })
+        })?
+}
+
+async fn switch_branch_inner(
+    control: &mut WriterControlToken,
+    branch: String,
+) -> Result<(), EngramError> {
+    let _control = branch_control_lock().lock().await;
+    {
+        let mut state = writer_state_slot()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.generation != control.generation {
+            return Err(writer_changed_error());
+        }
+        match &mut state.availability {
+            WriterAvailability::Unavailable => return Ok(()),
+            WriterAvailability::Disabled(identity) => {
+                if control.expected_writer.as_ref() != Some(identity) {
+                    return Err(writer_changed_error());
+                }
+                identity.branch.clone_from(&branch);
+                control.expected_writer = Some(identity.clone());
+                return Ok(());
+            }
+            WriterAvailability::Enabled(identity) => {
+                if control.expected_writer.as_ref() != Some(identity) {
+                    return Err(writer_changed_error());
+                }
+            }
+        }
+    }
     let sender = {
         let sender_guard = sender_slot()
             .lock()
@@ -432,12 +716,27 @@ pub async fn switch_branch(branch: String) -> Result<(), EngramError> {
     };
 
     let Some(sender) = sender else {
-        return Ok(());
+        return Err(EngramError::Metrics(MetricsError::WriteFailed {
+            reason: "metrics enabled but branch-control writer is unavailable".to_owned(),
+        }));
     };
+    if sender.is_closed() {
+        return Err(EngramError::Metrics(MetricsError::WriteFailed {
+            reason: "metrics enabled but branch-control writer is closed".to_owned(),
+        }));
+    }
+    if control
+        .expected_writer
+        .as_ref()
+        .is_some_and(|identity| identity.branch == branch)
+    {
+        return Ok(());
+    }
     let (acknowledged, acknowledgment) = tokio::sync::oneshot::channel();
     sender
         .send(MetricsMessage::SwitchBranch {
-            branch,
+            branch: branch.clone(),
+            generation: control.generation,
             acknowledged,
         })
         .await
@@ -450,7 +749,28 @@ pub async fn switch_branch(branch: String) -> Result<(), EngramError> {
         EngramError::Metrics(MetricsError::WriteFailed {
             reason: format!("metrics branch-control acknowledgment dropped: {error}"),
         })
-    })
+    })?;
+    let state = writer_state_slot()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if state.generation != control.generation {
+        return Err(writer_changed_error());
+    }
+    let WriterAvailability::Enabled(identity) = &state.availability else {
+        return Err(writer_changed_error());
+    };
+    if identity.workspace_path
+        != control
+            .expected_writer
+            .as_ref()
+            .ok_or_else(writer_changed_error)?
+            .workspace_path
+        || identity.branch != branch
+    {
+        return Err(writer_changed_error());
+    }
+    control.expected_writer = Some(identity.clone());
+    Ok(())
 }
 
 /// Return the most recently recorded usage events kept in-memory for inspection.
@@ -472,6 +792,13 @@ pub fn clear_recent_events() {
 
 /// Shut down the background metrics writer, draining queued messages first.
 pub async fn shutdown() -> Result<(), EngramError> {
+    let _lifecycle = lock_with_timeout(lifecycle_lock(), "lifecycle").await?;
+    let _branch_control = lock_with_timeout(branch_control_lock(), "branch-control").await?;
+    shutdown_inner().await
+}
+
+async fn shutdown_inner() -> Result<(), EngramError> {
+    let state_error = make_writer_unavailable().err();
     let sender = {
         let mut sender_guard = sender_slot()
             .lock()
@@ -479,33 +806,70 @@ pub async fn shutdown() -> Result<(), EngramError> {
         sender_guard.take()
     };
 
+    let mut shutdown_error = None;
     if let Some(sender) = sender {
-        let _ = sender.send(MetricsMessage::Shutdown).await;
-    }
-
-    let handle = {
-        let mut handle_guard = handle_slot()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        handle_guard.take()
-    };
-
-    if let Some(handle) = handle {
-        match handle.await {
-            Ok(()) => {}
-            Err(error) if error.is_cancelled() => {
-                // Task was cancelled by runtime shutdown or test cleanup — not an error.
-                tracing::debug!("metrics writer task cancelled during shutdown");
+        match tokio::time::timeout(
+            BRANCH_CONTROL_TIMEOUT,
+            sender.send(MetricsMessage::Shutdown),
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                tracing::debug!(%error, "metrics writer channel already closed during shutdown");
             }
-            Err(error) => {
-                return Err(EngramError::Metrics(MetricsError::WriteFailed {
-                    reason: format!("metrics writer task failed to join: {error}"),
-                }));
+            Err(_) => {
+                shutdown_error = Some(format!(
+                    "metrics shutdown send timed out after {} ms",
+                    BRANCH_CONTROL_TIMEOUT.as_millis()
+                ));
             }
         }
     }
 
-    Ok(())
+    let handle = {
+        let handle_guard = handle_slot()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        handle_guard.clone()
+    };
+
+    if let Some(handle) = handle {
+        match tokio::time::timeout(BRANCH_CONTROL_TIMEOUT, handle.join()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) if error.is_cancelled() => {
+                tracing::debug!("metrics writer task cancelled during shutdown");
+            }
+            Ok(Err(error)) => {
+                shutdown_error = Some(format!("metrics writer task failed to join: {error}"));
+            }
+            Err(_) => {
+                let _ = handle.abort_and_join().await;
+                shutdown_error = Some(format!(
+                    "metrics writer shutdown timed out after {} ms",
+                    BRANCH_CONTROL_TIMEOUT.as_millis()
+                ));
+            }
+        }
+
+        let mut handle_guard = handle_slot()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if handle_guard
+            .as_ref()
+            .is_some_and(|current| current.owns_same_task(&handle))
+        {
+            handle_guard.take();
+        }
+    }
+
+    if let Some(error) = state_error {
+        Err(error)
+    } else if let Some(reason) = shutdown_error {
+        Err(EngramError::Metrics(MetricsError::WriteFailed { reason }))
+    } else {
+        Ok(())
+    }
 }
 
 /// Compute a `MetricsSummary` from the `usage.jsonl` file on disk.
@@ -621,6 +985,16 @@ pub async fn compute_and_write_summary(
 mod tests {
     use super::*;
 
+    struct DropNotice(Option<tokio::sync::oneshot::Sender<()>>);
+
+    impl Drop for DropNotice {
+        fn drop(&mut self) {
+            if let Some(notice) = self.0.take() {
+                let _ = notice.send(());
+            }
+        }
+    }
+
     fn empty_branch_event(tool_name: &str) -> UsageEvent {
         UsageEvent {
             tool_name: tool_name.to_owned(),
@@ -630,8 +1004,19 @@ mod tests {
         }
     }
 
+    fn force_enabled_writer(workspace_path: &Path, branch: &str) {
+        let mut state = writer_state_slot()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.availability = WriterAvailability::Enabled(WriterIdentity {
+            workspace_path: workspace_path.to_path_buf(),
+            branch: branch.to_owned(),
+        });
+    }
+
     #[tokio::test]
     async fn full_channel_branch_switch_is_acknowledged_before_following_event() {
+        let _test_guard = test_writer_guard().await;
         shutdown().await.expect("reset metrics writer");
         let workspace = tempfile::tempdir().expect("metrics workspace");
         let config = MetricsConfig {
@@ -645,17 +1030,19 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             *sender_guard = Some(sender.clone());
         }
+        force_enabled_writer(workspace.path(), "main");
         sender
             .try_send(MetricsMessage::Event(Box::new(empty_branch_event(
                 "before_switch",
             ))))
             .expect("fill the event channel");
 
-        let switch =
+        let mut switch =
             tokio::spawn(async { switch_branch("feature__acknowledged".to_owned()).await });
-        tokio::task::yield_now().await;
         assert!(
-            !switch.is_finished(),
+            tokio::time::timeout(Duration::from_millis(20), &mut switch)
+                .await
+                .is_err(),
             "branch control must wait rather than drop when the channel is full"
         );
 
@@ -669,7 +1056,7 @@ mod tests {
             let mut handle_guard = handle_slot()
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            *handle_guard = Some(handle);
+            *handle_guard = Some(WriterTaskGuard::new(handle));
         }
 
         switch
@@ -686,5 +1073,252 @@ mod tests {
         assert_eq!(main[0].tool_name, "before_switch");
         assert_eq!(switched.len(), 1);
         assert_eq!(switched[0].tool_name, "after_switch");
+    }
+
+    #[tokio::test]
+    async fn disabled_metrics_branch_switch_is_a_no_op() {
+        let _test_guard = test_writer_guard().await;
+        shutdown().await.expect("reset metrics writer");
+        let workspace = tempfile::tempdir().expect("metrics workspace");
+        let config = MetricsConfig {
+            enabled: false,
+            ..MetricsConfig::default()
+        };
+        initialize(workspace.path(), "main", &config)
+            .await
+            .expect("disable metrics");
+        switch_branch("feature__disabled".to_owned())
+            .await
+            .expect("disabled metrics must not require a writer");
+        shutdown().await.expect("reset disabled metrics");
+    }
+
+    #[tokio::test]
+    async fn enabled_missing_or_stalled_writer_returns_an_explicit_error() {
+        let _test_guard = test_writer_guard().await;
+        shutdown().await.expect("reset metrics writer");
+        force_enabled_writer(Path::new("missing-writer"), "main");
+
+        let unavailable = switch_branch("feature__missing".to_owned())
+            .await
+            .expect_err("enabled metrics without a writer must fail");
+        assert!(
+            unavailable.to_string().contains("writer is unavailable"),
+            "unexpected unavailable-writer error: {unavailable}"
+        );
+
+        let (closed_sender, closed_receiver) = mpsc::channel(1);
+        drop(closed_receiver);
+        {
+            let mut sender_guard = sender_slot()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *sender_guard = Some(closed_sender);
+        }
+        let closed = switch_branch("feature__closed".to_owned())
+            .await
+            .expect_err("acknowledged branch with a closed writer must fail");
+        assert!(
+            closed.to_string().contains("writer is closed"),
+            "unexpected closed-writer error: {closed}"
+        );
+
+        let (sender, receiver) = mpsc::channel(1);
+        sender
+            .try_send(MetricsMessage::Event(Box::new(empty_branch_event(
+                "fill_stalled_writer",
+            ))))
+            .expect("fill stalled channel");
+        {
+            let mut sender_guard = sender_slot()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *sender_guard = Some(sender);
+        }
+        let stalled = switch_branch("feature__stalled".to_owned())
+            .await
+            .expect_err("stalled metrics writer must time out");
+        assert!(
+            stalled.to_string().contains("timed out"),
+            "unexpected stalled-writer error: {stalled}"
+        );
+
+        {
+            let mut sender_guard = sender_slot()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            sender_guard.take();
+        }
+        drop(receiver);
+        shutdown().await.expect("reset stalled metrics state");
+    }
+
+    #[tokio::test]
+    async fn cancelling_shutdown_cannot_detach_the_writer_task() {
+        let _test_guard = test_writer_guard().await;
+        shutdown().await.expect("reset metrics writer");
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel();
+        let handle = tokio::spawn(async move {
+            let _drop_notice = DropNotice(Some(dropped_tx));
+            let _ = started_tx.send(());
+            std::future::pending::<()>().await;
+        });
+        let abort_handle = handle.abort_handle();
+        {
+            let mut handle_guard = handle_slot()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *handle_guard = Some(WriterTaskGuard::new(handle));
+        }
+        started_rx.await.expect("writer task must start");
+
+        let registered_handle = handle_slot()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .cloned()
+            .expect("writer handle must be registered");
+        let shutdown_task = tokio::spawn(shutdown());
+        let mut join_started = false;
+        for _ in 0..100 {
+            join_started = registered_handle.handle.try_lock().is_err();
+            if join_started {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(join_started, "shutdown must begin joining the writer");
+        shutdown_task.abort();
+        let _ = shutdown_task.await;
+
+        assert!(
+            handle_slot()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_some(),
+            "cancelled shutdown must leave the live writer registered"
+        );
+        let mut dropped_rx = dropped_rx;
+        let writer_was_detached = tokio::time::timeout(Duration::from_millis(20), &mut dropped_rx)
+            .await
+            .is_ok();
+        assert!(
+            !writer_was_detached,
+            "cancelling shutdown must not detach or abort the registered writer"
+        );
+
+        let workspace = tempfile::tempdir().expect("replacement workspace");
+        let disabled = MetricsConfig {
+            enabled: false,
+            ..MetricsConfig::default()
+        };
+        initialize(workspace.path(), "replacement", &disabled)
+            .await
+            .expect_err("replacement must wait for and reject a stalled predecessor");
+        tokio::time::timeout(BRANCH_CONTROL_TIMEOUT, dropped_rx)
+            .await
+            .expect("replacement shutdown must reap the predecessor")
+            .expect("predecessor drop notice");
+        assert!(
+            handle_slot()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_none(),
+            "reaped predecessor must be removed before any replacement"
+        );
+        assert!(
+            abort_handle.is_finished(),
+            "predecessor task must be finished"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_replacement_shutdown_leaves_metrics_cleanly_unavailable() {
+        let _test_guard = test_writer_guard().await;
+        shutdown().await.expect("reset metrics writer");
+        let (sender, receiver) = mpsc::channel(1);
+        sender
+            .try_send(MetricsMessage::Event(Box::new(empty_branch_event(
+                "block_shutdown",
+            ))))
+            .expect("fill stalled writer channel");
+        {
+            let mut sender_guard = sender_slot()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *sender_guard = Some(sender);
+        }
+        {
+            let mut handle_guard = handle_slot()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *handle_guard = Some(WriterTaskGuard::new(tokio::spawn(std::future::pending())));
+        }
+        force_enabled_writer(Path::new("stalled-writer"), "stale");
+
+        let workspace = tempfile::tempdir().expect("replacement workspace");
+        let disabled = MetricsConfig {
+            enabled: false,
+            ..MetricsConfig::default()
+        };
+        initialize(workspace.path(), "replacement", &disabled)
+            .await
+            .expect_err("stalled shutdown must reject replacement");
+
+        let unavailable = matches!(
+            writer_state_slot()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .availability,
+            WriterAvailability::Unavailable
+        );
+        let sender_present = sender_slot()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some();
+        let switch_result = switch_branch("replacement".to_owned()).await;
+        drop(receiver);
+        shutdown().await.expect("clean failed replacement state");
+
+        assert!(unavailable, "failed replacement must disable metrics");
+        assert!(!sender_present);
+        switch_result.expect("unavailable metrics must not require a writer");
+    }
+
+    #[tokio::test]
+    async fn stale_writer_control_cannot_relabel_a_replacement_writer() {
+        let _test_guard = test_writer_guard().await;
+        shutdown().await.expect("reset metrics writer");
+        let original = tempfile::tempdir().expect("original workspace");
+        let replacement = tempfile::tempdir().expect("replacement workspace");
+        let config = MetricsConfig::default();
+        initialize(original.path(), "main", &config)
+            .await
+            .expect("initialize original writer");
+        let mut stale_control =
+            writer_control_token(original.path(), "main").expect("capture original writer");
+
+        initialize(replacement.path(), "main", &config)
+            .await
+            .expect("initialize replacement writer");
+        let stale_error =
+            switch_branch_for(&mut stale_control, "feature__stale_dispatch".to_owned())
+                .await
+                .expect_err("stale control must not relabel the replacement writer");
+        assert!(
+            stale_error.to_string().contains("writer changed"),
+            "unexpected stale-control error: {stale_error}"
+        );
+
+        record(empty_branch_event("replacement_event"));
+        shutdown().await.expect("drain replacement writer");
+        let events = load_events(replacement.path(), "main").expect("replacement branch events");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].tool_name, "replacement_event");
+        assert!(matches!(
+            load_events(replacement.path(), "feature__stale_dispatch"),
+            Err(EngramError::Metrics(MetricsError::NotFound { .. }))
+        ));
     }
 }

@@ -30,6 +30,7 @@ async fn contract_flush_state_requires_workspace() {
 }
 
 #[test]
+#[serial_test::serial(metrics_writer)]
 async fn contract_flush_state_response_shape() {
     // Set up a real workspace with .git/
     let workspace = tempfile::tempdir().expect("workspace tempdir");
@@ -59,6 +60,9 @@ async fn contract_flush_state_response_shape() {
 
     let warnings = result.get("warnings").expect("warnings field");
     assert!(warnings.is_array(), "warnings should be array");
+    engram::services::metrics::shutdown()
+        .await
+        .expect("shutdown metrics writer");
 
     let ts = result
         .get("flush_timestamp")
@@ -93,7 +97,11 @@ async fn contract_index_workspace_requires_workspace() {
 }
 
 #[test]
+#[serial_test::serial(metrics_writer)]
 async fn contract_busy_writes_preserve_public_responses_and_complete_mask() {
+    engram::services::metrics::shutdown()
+        .await
+        .expect("reset metrics writer");
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
     fs::write(
@@ -137,47 +145,60 @@ async fn contract_busy_writes_preserve_public_responses_and_complete_mask() {
         .expect("set stale code-graph marker");
     drop(queries);
 
-    // Poll the routine Sync owner first. The competing public calls then
-    // observe a real guarded owner without tokenless fixture mutation.
-    let active_sync = tools::write::sync_workspace(Arc::clone(&state), Some(json!({})));
-    let competing_calls = async {
-        assert!(
-            state.is_indexing(),
-            "public sync must own coordinator admission"
-        );
+    // Poll the routine Sync only until it yields while holding admission, then
+    // stop polling it until every competing call has observed that owner.
+    let mut active_sync = std::pin::pin!(tools::write::sync_workspace(
+        Arc::clone(&state),
+        Some(json!({}))
+    ));
+    let completed_before_admission =
+        std::future::poll_fn(|cx| match active_sync.as_mut().poll(cx) {
+            std::task::Poll::Pending if state.is_indexing() => std::task::Poll::Ready(None),
+            std::task::Poll::Pending => std::task::Poll::Pending,
+            std::task::Poll::Ready(result) => std::task::Poll::Ready(Some(result)),
+        })
+        .await;
+    assert!(
+        completed_before_admission.is_none(),
+        "public sync must yield while owning coordinator admission"
+    );
+    assert!(
+        state.is_indexing(),
+        "acquisition barrier must retain the routine sync owner"
+    );
 
-        let index_error = tools::dispatch(Arc::clone(&state), "index_workspace", Some(json!({})))
-            .await
-            .expect_err("busy index_workspace must reject");
-        assert_eq!(index_error.to_response().error.code, INDEX_IN_PROGRESS);
-
-        let flush_error = tools::dispatch(Arc::clone(&state), "flush_state", Some(json!({})))
-            .await
-            .expect_err("busy flush_state must reject");
-        assert_eq!(flush_error.to_response().error.code, INDEX_IN_PROGRESS);
-
-        let queued = tools::dispatch(
-            Arc::clone(&state),
-            "sync_workspace",
-            Some(json!({
-                "backfill_python_canonical": true,
-                "revalidate_code_graph": true
-            })),
-        )
+    let index_error = tools::dispatch(Arc::clone(&state), "index_workspace", Some(json!({})))
         .await
-        .expect("busy sync_workspace must return queued status");
-        assert_eq!(
-            queued,
-            json!({
-                "status": "queued",
-                "message": "Sync queued; will run after current indexing completes"
-            }),
-            "queued MCP response must remain exact"
-        );
-    };
+        .expect_err("busy index_workspace must reject");
+    assert_eq!(index_error.to_response().error.code, INDEX_IN_PROGRESS);
 
-    let (sync_result, ()) = tokio::join!(biased; active_sync, competing_calls);
-    let sync_value = sync_result.expect("routine owner and transferred sync should complete");
+    let flush_error = tools::dispatch(Arc::clone(&state), "flush_state", Some(json!({})))
+        .await
+        .expect_err("busy flush_state must reject");
+    assert_eq!(flush_error.to_response().error.code, INDEX_IN_PROGRESS);
+
+    let queued = tools::dispatch(
+        Arc::clone(&state),
+        "sync_workspace",
+        Some(json!({
+            "backfill_python_canonical": true,
+            "revalidate_code_graph": true
+        })),
+    )
+    .await
+    .expect("busy sync_workspace must return queued status");
+    assert_eq!(
+        queued,
+        json!({
+            "status": "queued",
+            "message": "Sync queued; will run after current indexing completes"
+        }),
+        "queued MCP response must remain exact"
+    );
+
+    let sync_value = active_sync
+        .await
+        .expect("routine owner and transferred sync should complete");
     assert!(
         sync_value.get("files_modified").is_some(),
         "control sync must own admission rather than queue behind a background driver"
