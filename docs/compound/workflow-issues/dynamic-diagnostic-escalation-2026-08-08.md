@@ -12,7 +12,7 @@ file_path: "logs/111-s-cargo-test-all-targets.log"
 citations:
   - "docs/memory/2026-08-08/circuit-break-cargo-test-all-targets.md"
   - "shipment 111-S"
-  - "docs/closure/2026-08-08-111-s-index-coordinator-observability-reliability.md"
+  - "docs/memory/2026-08-08/111-s-audit-gate-blocked.md"
 tags:
   - "cargo-test"
   - "diagnostics"
