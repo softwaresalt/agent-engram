@@ -89,9 +89,64 @@ pub struct CodeGraphStats {
     pub edges: u64,
 }
 
+#[derive(Default)]
+struct WorkspaceAdmissionProbe {
+    #[cfg(test)]
+    passed_precheck: Option<tokio::sync::oneshot::Sender<()>>,
+    #[cfg(test)]
+    resume: Option<tokio::sync::oneshot::Receiver<()>>,
+}
+
+impl WorkspaceAdmissionProbe {
+    fn after_precheck(&mut self) -> impl std::future::Future<Output = ()> + '_ {
+        #[cfg(test)]
+        {
+            async move {
+                if let Some(passed_precheck) = self.passed_precheck.take() {
+                    let _ = passed_precheck.send(());
+                }
+                if let Some(resume) = self.resume.take() {
+                    let _ = resume.await;
+                }
+            }
+        }
+        #[cfg(not(test))]
+        {
+            let _ = self;
+            std::future::ready(())
+        }
+    }
+}
+
 pub async fn set_workspace(
     state: Arc<AppState>,
     path: String,
+) -> Result<WorkspaceBinding, EngramError> {
+    set_workspace_with_probe(state, path, WorkspaceAdmissionProbe::default()).await
+}
+
+#[cfg(test)]
+async fn set_workspace_after_precheck(
+    state: Arc<AppState>,
+    path: String,
+    passed_precheck: tokio::sync::oneshot::Sender<()>,
+    resume: tokio::sync::oneshot::Receiver<()>,
+) -> Result<WorkspaceBinding, EngramError> {
+    set_workspace_with_probe(
+        state,
+        path,
+        WorkspaceAdmissionProbe {
+            passed_precheck: Some(passed_precheck),
+            resume: Some(resume),
+        },
+    )
+    .await
+}
+
+async fn set_workspace_with_probe(
+    state: Arc<AppState>,
+    path: String,
+    mut admission_probe: WorkspaceAdmissionProbe,
 ) -> Result<WorkspaceBinding, EngramError> {
     validate_workspace_path(&path)?;
 
@@ -126,6 +181,7 @@ pub async fn set_workspace(
             limit: state.max_workspaces(),
         }));
     }
+    admission_probe.after_precheck().await;
 
     // Fast metadata hydration: reads .engram/ files but does not open the DB.
     let hydration = hydrate_workspace(&canonical).await?;
@@ -148,6 +204,17 @@ pub async fn set_workspace(
                 .reliability_counters()
                 .inc_registry_validation_failure();
         }
+    }
+
+    // The first capacity check is only a fast path. Recheck while owning the
+    // async admission guard, then retain it through metrics replacement and
+    // binding publication so a stale concurrent bind cannot replace the active
+    // workspace's process-global writer before losing publication.
+    let workspace_admission = state.acquire_workspace_admission().await;
+    if !state.can_bind_workspace(&workspace_id).await {
+        return Err(EngramError::Workspace(WorkspaceError::LimitReached {
+            limit: state.max_workspaces(),
+        }));
     }
 
     // Initialise metrics sink (spawns a channel + background writer, no DB).
@@ -182,6 +249,7 @@ pub async fn set_workspace(
                 EngramError::Workspace(WorkspaceError::LimitReached { limit })
             }
         })?;
+    drop(workspace_admission);
     crate::services::query_stats::reset_timing();
 
     // Queue a background scan immediately. The DB connect + hydrate +
@@ -745,9 +813,11 @@ mod tests {
     use super::{
         HandoffProbe, HandoffProbeExit, HydrationProbe, HydrationProbeExit,
         background_db_hydration, drive_transferred_sync, get_daemon_status, set_hydration_progress,
+        set_workspace_after_precheck,
     };
     use crate::db::connect_db;
     use crate::db::queries::CodeGraphQueries;
+    use crate::errors::{EngramError, WorkspaceError};
     use crate::models::config::{CodeGraphConfig, WorkspaceConfig};
     use crate::models::health::ScanProgress;
     use crate::server::state::{
@@ -912,7 +982,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_bind_loser_cannot_replace_active_metrics_writer() {
+        let _metrics_guard = crate::services::metrics::test_writer_guard().await;
+        crate::services::metrics::shutdown()
+            .await
+            .expect("reset metrics writer");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let first_workspace = temp.path().join("first");
+        let second_workspace = temp.path().join("second");
+        for workspace in [&first_workspace, &second_workspace] {
+            std::fs::create_dir_all(workspace.join(".git")).expect("create git metadata");
+            std::fs::write(
+                workspace.join(".git").join("HEAD"),
+                "ref: refs/heads/main\n",
+            )
+            .expect("write git HEAD");
+            std::fs::write(workspace.join("lib.rs"), "pub fn indexed() {}\n")
+                .expect("write source");
+        }
+
+        let state = Arc::new(AppState::new(1));
+        let (first_passed_tx, first_passed_rx) = tokio::sync::oneshot::channel();
+        let (resume_first_tx, resume_first_rx) = tokio::sync::oneshot::channel();
+        let first_state = Arc::clone(&state);
+        let first_path = first_workspace.display().to_string();
+        let first = tokio::spawn(async move {
+            set_workspace_after_precheck(first_state, first_path, first_passed_tx, resume_first_rx)
+                .await
+        });
+
+        let (second_passed_tx, second_passed_rx) = tokio::sync::oneshot::channel();
+        let (resume_second_tx, resume_second_rx) = tokio::sync::oneshot::channel();
+        let second_state = Arc::clone(&state);
+        let second_path = second_workspace.display().to_string();
+        let second = tokio::spawn(async move {
+            set_workspace_after_precheck(
+                second_state,
+                second_path,
+                second_passed_tx,
+                resume_second_rx,
+            )
+            .await
+        });
+
+        first_passed_rx
+            .await
+            .expect("first bind must pass the initial capacity check");
+        second_passed_rx
+            .await
+            .expect("second bind must pass the same stale capacity check");
+
+        resume_first_tx.send(()).expect("release first bind");
+        first
+            .await
+            .expect("first bind task must join")
+            .expect("first bind must publish");
+        if let Some(driver) = state.take_hydration_driver() {
+            driver.join().await.expect("first hydration must join");
+        }
+
+        resume_second_tx.send(()).expect("release losing bind");
+        let losing_error = second
+            .await
+            .expect("losing bind task must join")
+            .expect_err("second workspace must lose admission");
+        assert!(matches!(
+            losing_error,
+            EngramError::Workspace(WorkspaceError::LimitReached { limit: 1 })
+        ));
+
+        crate::tools::write::index_workspace(Arc::clone(&state), None)
+            .await
+            .expect("active workspace must retain its metrics writer after losing bind");
+        crate::services::metrics::shutdown()
+            .await
+            .expect("reset metrics writer");
+    }
+
+    #[tokio::test]
     async fn hydration_waiting_and_stale_admission_never_reaches_io() {
+        let _metrics_guard = crate::services::metrics::test_writer_guard().await;
         for held_owner in [true, false] {
             let state = Arc::new(AppState::new(2));
             let old_snapshot = coordinator_snapshot("old", "old");
@@ -995,6 +1144,7 @@ mod tests {
 
     #[tokio::test]
     async fn hydration_refreshes_head_before_its_first_io_boundary() {
+        let _metrics_guard = crate::services::metrics::test_writer_guard().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace_path = temp.path().join("workspace");
         std::fs::create_dir_all(workspace_path.join(".git")).expect("create git metadata");
@@ -1040,6 +1190,7 @@ mod tests {
 
     #[tokio::test]
     async fn spawned_hydration_rebind_is_supervised_until_quiescent_ack() {
+        let _metrics_guard = crate::services::metrics::test_writer_guard().await;
         for (same_binding, abort_task) in
             [(true, false), (true, true), (false, false), (false, true)]
         {
@@ -1098,6 +1249,7 @@ mod tests {
 
     #[tokio::test]
     async fn hydration_db_failure_and_early_return_use_exact_terminals() {
+        let _metrics_guard = crate::services::metrics::test_writer_guard().await;
         for exit in [
             HydrationProbeExit::DbFailure,
             HydrationProbeExit::EarlyReturn,
@@ -1133,6 +1285,7 @@ mod tests {
 
     #[tokio::test]
     async fn transferred_full_mask_executes_once_under_one_successor() {
+        let _metrics_guard = crate::services::metrics::test_writer_guard().await;
         let state = Arc::new(AppState::new(1));
         let _ = publish_test_binding(&state, coordinator_snapshot("handoff", "handoff")).await;
         let successor = transferred_successor(&state, 0b111);
@@ -1155,6 +1308,7 @@ mod tests {
 
     #[tokio::test]
     async fn failed_transferred_hydration_sync_recovers_its_full_mask() {
+        let _metrics_guard = crate::services::metrics::test_writer_guard().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace = temp.path().join("workspace");
         std::fs::create_dir_all(&workspace).expect("create workspace");
@@ -1191,6 +1345,7 @@ mod tests {
 
     #[tokio::test]
     async fn transferred_partial_file_errors_recover_full_mask() {
+        let _metrics_guard = crate::services::metrics::test_writer_guard().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace = temp.path().join("workspace");
         let data_dir = temp.path().join("data");
@@ -1226,6 +1381,7 @@ mod tests {
 
     #[tokio::test]
     async fn hydration_handoff_supervises_a_second_transferred_successor() {
+        let _metrics_guard = crate::services::metrics::test_writer_guard().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace = temp.path().join("workspace");
         let data_dir = temp.path().join("data");
@@ -1271,6 +1427,7 @@ mod tests {
 
     #[tokio::test]
     async fn lost_transferred_successor_republishes_once_for_one_recovery() {
+        let _metrics_guard = crate::services::metrics::test_writer_guard().await;
         for mode in [
             HandoffProbeExit::EarlyReturn,
             HandoffProbeExit::AwaitCancellation,
@@ -1349,6 +1506,7 @@ mod tests {
     // assertions below then fail.
     #[tokio::test]
     async fn queued_backfill_python_runs_gated_sync_on_drain() {
+        let _metrics_guard = crate::services::metrics::test_writer_guard().await;
         let tmp = tempfile::tempdir().expect("tempdir");
         let ws = tmp.path().join("ws");
         let data_dir = tmp.path().join("data");

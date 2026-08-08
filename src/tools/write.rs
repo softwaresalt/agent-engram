@@ -1127,6 +1127,14 @@ mod tests {
         }
     }
 
+    async fn reset_metrics_writer() -> tokio::sync::MutexGuard<'static, ()> {
+        let guard = crate::services::metrics::test_writer_guard().await;
+        crate::services::metrics::shutdown()
+            .await
+            .expect("reset metrics writer");
+        guard
+    }
+
     async fn run_guarded_write_probe(
         state: Arc<AppState>,
         mut permit: OwnerPermit,
@@ -1466,6 +1474,7 @@ mod tests {
 
     #[tokio::test]
     async fn busy_sync_publishes_full_mask_before_exact_queued_response() {
+        let _metrics_guard = reset_metrics_writer().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let invalid_data_dir = temp.path().join("not-a-directory");
         std::fs::write(&invalid_data_dir, b"file blocks database directory")
@@ -1511,7 +1520,7 @@ mod tests {
 
     #[tokio::test]
     async fn direct_sync_executes_recovered_backfill_mask_not_only_request_params() {
-        let _metrics_guard = crate::services::metrics::test_writer_guard().await;
+        let _metrics_guard = reset_metrics_writer().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace = temp.path().join("workspace");
         let data_dir = temp.path().join("data");
@@ -1580,7 +1589,7 @@ mod tests {
 
     #[tokio::test]
     async fn sync_branch_refresh_rebinds_coordinator_before_writing_new_branch() {
-        let _metrics_guard = crate::services::metrics::test_writer_guard().await;
+        let _metrics_guard = reset_metrics_writer().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace = temp.path().join("workspace");
         let data_dir = temp.path().join("data");
@@ -1658,7 +1667,7 @@ mod tests {
 
     #[tokio::test]
     async fn index_branch_refresh_rebinds_coordinator_and_preserves_full_work() {
-        let _metrics_guard = crate::services::metrics::test_writer_guard().await;
+        let _metrics_guard = reset_metrics_writer().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace = temp.path().join("workspace");
         let data_dir = temp.path().join("data");
@@ -1752,6 +1761,7 @@ mod tests {
 
     #[tokio::test]
     async fn plain_full_index_preserves_hash_skip_without_pending_heavy_work() {
+        let _metrics_guard = reset_metrics_writer().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace = temp.path().join("workspace");
         let data_dir = temp.path().join("data");
@@ -1787,6 +1797,7 @@ mod tests {
 
     #[tokio::test]
     async fn full_index_fulfills_recovered_heavy_work_before_success() {
+        let _metrics_guard = reset_metrics_writer().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace = temp.path().join("workspace");
         let data_dir = temp.path().join("data");
@@ -1857,6 +1868,7 @@ mod tests {
 
     #[tokio::test]
     async fn plain_full_index_does_not_invent_heavy_work_for_file_errors() {
+        let _metrics_guard = reset_metrics_writer().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace = temp.path().join("workspace");
         let data_dir = temp.path().join("data");
@@ -1894,6 +1906,7 @@ mod tests {
 
     #[tokio::test]
     async fn forced_full_index_retains_heavy_work_for_file_errors() {
+        let _metrics_guard = reset_metrics_writer().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace = temp.path().join("workspace");
         let data_dir = temp.path().join("data");
@@ -1931,6 +1944,7 @@ mod tests {
 
     #[tokio::test]
     async fn transferred_sync_refreshes_branch_before_any_database_write() {
+        let _metrics_guard = reset_metrics_writer().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace = temp.path().join("workspace");
         let data_dir = temp.path().join("data");
@@ -2005,6 +2019,7 @@ mod tests {
 
     #[tokio::test]
     async fn failed_branch_initialization_does_not_restore_readiness() {
+        let _metrics_guard = reset_metrics_writer().await;
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace = temp.path().join("workspace");
         std::fs::create_dir_all(workspace.join(".git")).expect("create git metadata");

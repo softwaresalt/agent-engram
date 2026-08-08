@@ -17,8 +17,9 @@
 //   compile-time net.
 // - Connection and tool-call counts use `AtomicUsize` / `AtomicU64` which
 //   need no locking at all.
-// - No lock is held across an I/O operation; the only await performed while a
-//   guard is held is the paired lock acquisition described above.
+// - `workspace_admission` is a Tokio mutex intentionally held across metrics
+//   replacement and binding publication. This serializes the asynchronous
+//   lifecycle transaction without holding a synchronous mutex across `.await`.
 // Verdict: no deadlock potential identified.
 
 use std::collections::{HashMap, VecDeque};
@@ -966,6 +967,7 @@ pub struct AppState {
     active_connections: AtomicUsize,
     active_workspace: RwLock<Option<WorkspaceSnapshot>>,
     workspace_config: RwLock<Option<WorkspaceConfig>>,
+    workspace_admission: tokio::sync::Mutex<()>,
     max_workspaces: usize,
     stale_strategy: StaleStrategy,
     connection_registry: ConnectionRegistry,
@@ -1014,6 +1016,7 @@ impl AppState {
             active_connections: AtomicUsize::new(0),
             active_workspace: RwLock::new(None),
             workspace_config: RwLock::new(None),
+            workspace_admission: tokio::sync::Mutex::new(()),
             max_workspaces,
             stale_strategy,
             connection_registry: ConnectionRegistry::new(),
@@ -1047,6 +1050,11 @@ impl AppState {
 
     pub async fn snapshot_workspace(&self) -> Option<WorkspaceSnapshot> {
         self.active_workspace.read().await.clone()
+    }
+
+    /// Serialize admission through publication for workspace lifecycle binds.
+    pub(crate) async fn acquire_workspace_admission(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.workspace_admission.lock().await
     }
 
     /// Atomically snapshot the active workspace binding and loaded config.
