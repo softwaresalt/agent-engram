@@ -152,13 +152,23 @@ pub async fn ingest_all_sources(
         // Power BI sources use the dedicated PBIP/JSON indexer.
         if source.content_type == "powerbi" {
             use crate::services::powerbi_indexer::{
-                index_powerbi_source, sweep_deleted_powerbi_files,
+                index_powerbi_source_with_snapshot, sweep_deleted_powerbi_files_from_snapshot,
             };
 
-            let result =
-                index_powerbi_source(source, workspace_root, queries, config.max_file_size_bytes)
-                    .await?;
-            let removed = sweep_deleted_powerbi_files(source, workspace_root, queries).await?;
+            let (result, collected) = index_powerbi_source_with_snapshot(
+                source,
+                workspace_root,
+                queries,
+                config.max_file_size_bytes,
+            )
+            .await?;
+            let removed = sweep_deleted_powerbi_files_from_snapshot(
+                source,
+                workspace_root,
+                queries,
+                &collected,
+            )
+            .await?;
             total_summary.ingested += result.ingested;
             total_summary.unchanged += result.unchanged;
             total_summary.removed += removed;

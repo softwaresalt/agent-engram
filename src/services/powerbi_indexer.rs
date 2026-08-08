@@ -36,7 +36,8 @@ use crate::services::ingestion::{compute_hash, content_record_identity_seed};
 use crate::services::powerbi_extract::{extract_report, extract_semantic_model};
 use crate::services::powerbi_tmdl::{canonical_tmdl_model_path, extract_tmdl_semantic_model};
 use crate::services::source_traversal::{
-    collect_files_in_workspace, collect_files_in_workspace_checked, reconcile_deleted_paths,
+    CollectedFiles, collect_files_in_workspace, collect_files_in_workspace_checked,
+    reconcile_deleted_paths,
 };
 use powerbi_tmdl_parser::{DaxColumnRef, extract_dax_references};
 
@@ -1272,6 +1273,20 @@ pub async fn index_powerbi_source(
     queries: &CodeGraphQueries,
     max_file_size: u64,
 ) -> Result<PowerBiIndexResult, EngramError> {
+    let (result, _) =
+        index_powerbi_source_with_snapshot(source, workspace_root, queries, max_file_size).await?;
+    Ok(result)
+}
+
+/// Index Power BI files and return the checked collection that authorized the
+/// operation. Ingestion carries this snapshot into the deletion sweep so alias
+/// selection cannot change between indexing and reconciliation.
+pub(crate) async fn index_powerbi_source_with_snapshot(
+    source: &ContentSource,
+    workspace_root: &Path,
+    queries: &CodeGraphQueries,
+    max_file_size: u64,
+) -> Result<(PowerBiIndexResult, CollectedFiles), EngramError> {
     let mut result = PowerBiIndexResult::default();
 
     let source_dir = workspace_root.join(&source.path);
@@ -1280,17 +1295,25 @@ pub async fn index_powerbi_source(
             path = %source.path,
             "Power BI source directory does not exist — skipping"
         );
-        return Ok(result);
+        return Ok((
+            result,
+            CollectedFiles {
+                files: Vec::new(),
+                complete: false,
+            },
+        ));
     }
 
-    let files = collect_powerbi_files_in_workspace(&source_dir, workspace_root);
+    let collected =
+        collect_files_in_workspace_checked(&source_dir, workspace_root, is_powerbi_file);
+    let files = collected.files.as_slice();
     result.total_files = files.len();
 
     // Pre-pass: union every `.tmdl` file into a per-model-scope schema so DAX
     // references that cross sibling files (e.g. a measure in `Sales.tmdl` using
     // `'Date'[Date]`) resolve against the whole model rather than the single
     // file currently being indexed (P3).
-    let model_scope_schemas = build_model_scope_schemas(&files, workspace_root, max_file_size);
+    let model_scope_schemas = build_model_scope_schemas(files, workspace_root, max_file_size);
 
     // 087.006-T (Unit D): source the hash-skip map from the durable completion
     // marker (`powerbi_file_index_state`), NOT the content rows. A file counts
@@ -1306,7 +1329,7 @@ pub async fn index_powerbi_source(
     // changed on this pass so unchanged siblings are reprocessed and their
     // cross-file reference edges re-resolve against the current schema.
     let dirty_scopes =
-        compute_dirty_model_scopes(&files, workspace_root, &existing_hashes, max_file_size);
+        compute_dirty_model_scopes(files, workspace_root, &existing_hashes, max_file_size);
 
     // Pre-delete every previously-indexed `.tmdl` artifact belonging to a dirty
     // scope BEFORE rebuilding any sibling (all-deletes-before-all-builds). Node
@@ -1335,7 +1358,7 @@ pub async fn index_powerbi_source(
         }
     }
 
-    for file_path in &files {
+    for file_path in files {
         let Ok(metadata) = file_path.metadata() else {
             continue;
         };
@@ -1564,7 +1587,7 @@ pub async fn index_powerbi_source(
         "Power BI indexing complete"
     );
 
-    Ok(result)
+    Ok((result, collected))
 }
 
 /// Remove content records for Power BI files that no longer exist on disk.
@@ -1580,6 +1603,20 @@ pub async fn sweep_deleted_powerbi_files(
     source: &ContentSource,
     workspace_root: &Path,
     queries: &CodeGraphQueries,
+) -> Result<usize, EngramError> {
+    let source_dir = workspace_root.join(&source.path);
+    let collected =
+        collect_files_in_workspace_checked(&source_dir, workspace_root, is_powerbi_file);
+    sweep_deleted_powerbi_files_from_snapshot(source, workspace_root, queries, &collected).await
+}
+
+/// Sweep Power BI records using the checked collection from the matching index
+/// operation. Marker-first deletion ordering remains unchanged below.
+pub(crate) async fn sweep_deleted_powerbi_files_from_snapshot(
+    source: &ContentSource,
+    workspace_root: &Path,
+    queries: &CodeGraphQueries,
+    collected: &CollectedFiles,
 ) -> Result<usize, EngramError> {
     // Fail-closed source-root guard (INV-2/INV-3): a missing or unreadable
     // source root is indistinguishable from a fully-emptied tree by physical
@@ -1608,19 +1645,10 @@ pub async fn sweep_deleted_powerbi_files(
         .into_iter()
         .collect();
 
-    let deleted = {
-        // 100-S Unit C: reconcile stored Power BI records against a
-        // completeness-aware collection of the source tree. Deletion is gated
-        // on an authoritative-complete full-index traversal (fail-closed): a
-        // stored record is swept only when it is physically absent, or
-        // superseded by a collected alias path on a `complete` pass. A partial
-        // pass (an unreadable/unresolvable subtree) degrades to
-        // physical-absence-only, so an alias-stale record is retained rather
-        // than wrongly deleted.
-        let collected =
-            collect_files_in_workspace_checked(&source_dir, workspace_root, is_powerbi_file);
-        reconcile_deleted_paths(&known_paths, &collected, workspace_root)
-    };
+    // Reconcile against the checked snapshot from the matching index pass. A
+    // partial collection degrades to physical-absence-only sweeping; no second
+    // traversal can select a different alias winner.
+    let deleted = reconcile_deleted_paths(&known_paths, collected, workspace_root);
     let mut removed = 0_usize;
 
     for path in &deleted {
@@ -2396,6 +2424,82 @@ table Sales
             remaining_powerbi_paths(&queries, &source.path).await,
             vec!["pbi/z/model.bim".to_string()],
             "the collected (real-dir) path survives; the alias-stale duplicate is swept"
+        );
+    }
+
+    /// 110-S U5: Power BI deletion consumes the same checked snapshot as the
+    /// matching index operation. An alias-winner change after indexing cannot
+    /// delete the just-indexed path or its completion marker.
+    #[tokio::test]
+    async fn carried_powerbi_snapshot_survives_alias_winner_change() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let source_dir = workspace.path().join("pbi");
+        let alias_dir = source_dir.join("a");
+        std::fs::create_dir_all(&alias_dir).expect("create alias dir");
+        let model_json =
+            serde_json::to_string(&model_bim_with_rel_and_ds()).expect("serialize model");
+        std::fs::write(alias_dir.join("model.bim"), model_json).expect("write model.bim");
+
+        let db_dir = tempfile::tempdir().expect("db tempdir");
+        let db = crate::db::connect_db(db_dir.path(), "pbi-carried-snapshot")
+            .await
+            .expect("open test db");
+        let queries = CodeGraphQueries::new(db);
+        let source = powerbi_source("pbi");
+
+        let (result, collected) = index_powerbi_source_with_snapshot(
+            &source,
+            workspace.path(),
+            &queries,
+            10 * 1024 * 1024,
+        )
+        .await
+        .expect("index powerbi with snapshot");
+        assert_eq!(result.ingested, 1, "fixture model must be indexed");
+
+        let indexed_path = "pbi/a/model.bim";
+        assert!(
+            queries
+                .select_powerbi_index_state(&source.path)
+                .await
+                .expect("completion markers")
+                .contains_key(indexed_path),
+            "the index pass must write its completion marker"
+        );
+
+        let real_dir = source_dir.join("z");
+        std::fs::rename(&alias_dir, &real_dir).expect("rename alias winner");
+        if !create_symlink_dir(&real_dir, &alias_dir) {
+            return; // unprivileged Windows — directory symlink unsupported
+        }
+
+        let removed = sweep_deleted_powerbi_files_from_snapshot(
+            &source,
+            workspace.path(),
+            &queries,
+            &collected,
+        )
+        .await
+        .expect("sweep with carried snapshot");
+
+        assert_eq!(
+            removed, 0,
+            "the carried index snapshot must retain its just-indexed alias path"
+        );
+        assert!(
+            remaining_powerbi_paths(&queries, &source.path)
+                .await
+                .iter()
+                .any(|path| path == indexed_path),
+            "the just-indexed record must survive"
+        );
+        assert!(
+            queries
+                .select_powerbi_index_state(&source.path)
+                .await
+                .expect("completion markers after sweep")
+                .contains_key(indexed_path),
+            "the marker-first contract must retain the live path marker"
         );
     }
 
