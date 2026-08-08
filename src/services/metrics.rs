@@ -309,9 +309,13 @@ async fn writer_loop(
                     tracing::warn!(error = %error, branch, "failed to persist metrics event");
                 }
             }
-            MetricsMessage::SwitchBranch(branch) => {
+            MetricsMessage::SwitchBranch {
+                branch,
+                acknowledged,
+            } => {
                 tracing::info!(branch, "metrics branch switched");
                 active_branch = branch;
+                let _ = acknowledged.send(());
             }
             MetricsMessage::Shutdown => {
                 while let Ok(pending) = receiver.try_recv() {
@@ -329,9 +333,13 @@ async fn writer_loop(
                                 tracing::warn!(error = %error, branch, "failed to persist drained metrics event");
                             }
                         }
-                        MetricsMessage::SwitchBranch(branch) => {
+                        MetricsMessage::SwitchBranch {
+                            branch,
+                            acknowledged,
+                        } => {
                             tracing::info!(branch, "metrics branch switched during shutdown");
                             active_branch = branch;
+                            let _ = acknowledged.send(());
                         }
                         MetricsMessage::Shutdown => {}
                     }
@@ -412,7 +420,10 @@ pub fn record(event: UsageEvent) {
 }
 
 /// Notify the background writer that the active branch changed.
-pub fn switch_branch(branch: String) {
+///
+/// Returns only after the writer has adopted the branch. Metrics-disabled
+/// operation is a no-op; a closed writer is reported explicitly.
+pub async fn switch_branch(branch: String) -> Result<(), EngramError> {
     let sender = {
         let sender_guard = sender_slot()
             .lock()
@@ -420,9 +431,26 @@ pub fn switch_branch(branch: String) {
         sender_guard.clone()
     };
 
-    if let Some(sender) = sender {
-        let _ = sender.try_send(MetricsMessage::SwitchBranch(branch));
-    }
+    let Some(sender) = sender else {
+        return Ok(());
+    };
+    let (acknowledged, acknowledgment) = tokio::sync::oneshot::channel();
+    sender
+        .send(MetricsMessage::SwitchBranch {
+            branch,
+            acknowledged,
+        })
+        .await
+        .map_err(|error| {
+            EngramError::Metrics(MetricsError::WriteFailed {
+                reason: format!("metrics branch-control channel closed: {error}"),
+            })
+        })?;
+    acknowledgment.await.map_err(|error| {
+        EngramError::Metrics(MetricsError::WriteFailed {
+            reason: format!("metrics branch-control acknowledgment dropped: {error}"),
+        })
+    })
 }
 
 /// Return the most recently recorded usage events kept in-memory for inspection.
@@ -587,4 +615,76 @@ pub async fn compute_and_write_summary(
     .await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_branch_event(tool_name: &str) -> UsageEvent {
+        UsageEvent {
+            tool_name: tool_name.to_owned(),
+            timestamp: "2026-08-08T00:00:00Z".to_owned(),
+            branch: String::new(),
+            ..UsageEvent::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn full_channel_branch_switch_is_acknowledged_before_following_event() {
+        shutdown().await.expect("reset metrics writer");
+        let workspace = tempfile::tempdir().expect("metrics workspace");
+        let config = MetricsConfig {
+            buffer_size: 1,
+            ..MetricsConfig::default()
+        };
+        let (sender, receiver) = mpsc::channel(1);
+        {
+            let mut sender_guard = sender_slot()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *sender_guard = Some(sender.clone());
+        }
+        sender
+            .try_send(MetricsMessage::Event(Box::new(empty_branch_event(
+                "before_switch",
+            ))))
+            .expect("fill the event channel");
+
+        let switch =
+            tokio::spawn(async { switch_branch("feature__acknowledged".to_owned()).await });
+        tokio::task::yield_now().await;
+        assert!(
+            !switch.is_finished(),
+            "branch control must wait rather than drop when the channel is full"
+        );
+
+        let handle = tokio::spawn(writer_loop(
+            workspace.path().to_path_buf(),
+            "main".to_owned(),
+            receiver,
+            config,
+        ));
+        {
+            let mut handle_guard = handle_slot()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *handle_guard = Some(handle);
+        }
+
+        switch
+            .await
+            .expect("switch task must join")
+            .expect("writer must acknowledge branch control");
+        record(empty_branch_event("after_switch"));
+        shutdown().await.expect("drain metrics writer");
+
+        let main = load_events(workspace.path(), "main").expect("main branch events");
+        let switched =
+            load_events(workspace.path(), "feature__acknowledged").expect("switched branch events");
+        assert_eq!(main.len(), 1);
+        assert_eq!(main[0].tool_name, "before_switch");
+        assert_eq!(switched.len(), 1);
+        assert_eq!(switched[0].tool_name, "after_switch");
+    }
 }

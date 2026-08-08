@@ -1836,6 +1836,77 @@ async fn ordinary_index_read_error_retains_topology_snapshot_for_retry() {
     );
 }
 
+/// 117.002-T — when the first ordinary index has no canonical snapshot and a
+/// descendant cannot be read, the failed pass must not publish a partial
+/// snapshot. Restoring the descendant must parse it once, publish the complete
+/// snapshot, and let the following unchanged pass hash-skip normally.
+#[test]
+async fn ordinary_index_without_prior_snapshot_retries_failed_descendant_once() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    let config = CodeGraphConfig::default();
+    let (data_dir, branch) = test_db_params(ws);
+    let source = "def cf():\n    return 1\n";
+
+    write_sample_file(ws, "p/__init__.py", "# package marker\n");
+    fs::write(ws.join("p/mod.py"), [0xff_u8, 0xfe, 0x00, b'x'])
+        .expect("write invalid UTF-8 descendant");
+
+    let failed = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("ordinary index should return targeted per-file errors");
+    assert_eq!(failed.errors.len(), 1);
+    assert_eq!(failed.errors[0].file, "p/mod.py");
+    let db = connect_db(&data_dir, &branch)
+        .await
+        .expect("db reconnect after failed initial index");
+    let q = CodeGraphQueries::new(db);
+    assert!(
+        q.load_index_canonical_workspace_snapshot()
+            .await
+            .expect("load absent snapshot")
+            .is_none(),
+        "a failed first pass must leave the canonical snapshot relation absent"
+    );
+
+    fs::write(ws.join("p/mod.py"), source.as_bytes()).expect("restore valid descendant");
+    let retry = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("restored ordinary index should succeed");
+    assert!(retry.errors.is_empty());
+    assert_eq!(
+        retry.files_parsed, 2,
+        "without a prior snapshot, the clean retry must reparse the complete package baseline before publication"
+    );
+    let db = connect_db(&data_dir, &branch)
+        .await
+        .expect("db reconnect after restored index");
+    let q = CodeGraphQueries::new(db);
+    assert_eq!(
+        q.canonical_paths_for_function_name("cf")
+            .await
+            .expect("query restored canonical path"),
+        vec!["p.mod.cf".to_owned()]
+    );
+    assert!(
+        q.load_index_canonical_workspace_snapshot()
+            .await
+            .expect("load published snapshot")
+            .is_some(),
+        "the clean retry must publish the first canonical snapshot"
+    );
+
+    let clean = code_graph::index_workspace(ws, &data_dir, &branch, &config, false)
+        .await
+        .expect("unchanged control index should succeed");
+    assert!(clean.errors.is_empty());
+    assert_eq!(clean.files_parsed, 0);
+    assert_eq!(
+        clean.files_skipped, 2,
+        "the package marker and restored descendant must both hash-skip"
+    );
+}
+
 /// 108.002-T (R2 regression) — a staged Python source read failure in the canonical
 /// post-pass must propagate without clearing the prior topology snapshot or
 /// retracting the caller's existing canonical edge.

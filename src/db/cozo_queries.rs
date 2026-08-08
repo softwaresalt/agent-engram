@@ -3464,35 +3464,27 @@ stale[from, to] :=
     pub async fn count_functions(&self) -> Result<u64, EngramError> {
         let script = "?[count(id)] := *function_meta { id }";
         let result = self
-            .db
-            .run_script(script, BTreeMap::new(), ScriptMutability::Immutable)
-            .map_err(|e| map_db_err(e.to_string()))?;
+            .run_script_busy_retry_immutable(script, BTreeMap::new())
+            .await?;
         Ok(extract_count(&result))
     }
 
     /// Return the total number of class records indexed.
     pub async fn count_classes(&self) -> Result<u64, EngramError> {
         let result = self
-            .db
-            .run_script(
-                "?[count(id)] := *class_meta { id }",
-                BTreeMap::new(),
-                ScriptMutability::Immutable,
-            )
-            .map_err(|e| map_db_err(e.to_string()))?;
+            .run_script_busy_retry_immutable("?[count(id)] := *class_meta { id }", BTreeMap::new())
+            .await?;
         Ok(extract_count(&result))
     }
 
     /// Return the total number of interface records indexed.
     pub async fn count_interfaces(&self) -> Result<u64, EngramError> {
         let result = self
-            .db
-            .run_script(
+            .run_script_busy_retry_immutable(
                 "?[count(id)] := *interface_meta { id }",
                 BTreeMap::new(),
-                ScriptMutability::Immutable,
             )
-            .map_err(|e| map_db_err(e.to_string()))?;
+            .await?;
         Ok(extract_count(&result))
     }
 
@@ -3509,9 +3501,8 @@ stale[from, to] :=
         ] {
             let script = format!("?[count(from)] := *{tbl} {{ from }}");
             let r = self
-                .db
-                .run_script(&script, BTreeMap::new(), ScriptMutability::Immutable)
-                .map_err(|e| map_db_err(e.to_string()))?;
+                .run_script_busy_retry_immutable(&script, BTreeMap::new())
+                .await?;
             total += extract_count(&r);
         }
         Ok(total)

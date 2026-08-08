@@ -511,7 +511,7 @@ pub async fn sync_workspace(
                 let mut workspace = ctx.workspace;
                 workspace.workspace_id = workspace_hash(Path::new(&workspace.path), &branch);
                 workspace.branch = branch.clone();
-                let _ = state
+                let (_, publication_admission) = state
                     .publish_workspace_generation_with_reissue(
                         workspace.clone(),
                         Some(ctx.config.clone()),
@@ -523,52 +523,42 @@ pub async fn sync_workspace(
                             reason: format!("sync branch publication failed: {error}"),
                         })
                     })?;
-                if !matches!(
-                    CoordinatorCell::complete(permit),
-                    CompletionOutcome::RetirementAcknowledged
-                ) {
-                    return Err(EngramError::System(SystemError::DatabaseError {
-                        reason: "sync branch publication lost retirement acknowledgment".to_owned(),
-                    }));
-                }
-                loop {
-                    let next_guarded = state.guarded_dispatch_context().await.ok_or_else(|| {
-                        EngramError::System(SystemError::DatabaseError {
-                            reason: "sync branch publication lost its dispatch context".to_owned(),
-                        })
-                    })?;
-                    if next_guarded.1.workspace.workspace_uuid != workspace.workspace_uuid
-                        || next_guarded.1.workspace.workspace_id != workspace.workspace_id
-                    {
+                match CoordinatorCell::acknowledge_and_claim_reissued(
+                    permit,
+                    publication_admission,
+                    OwnerKind::Sync,
+                )
+                .map_err(|error| {
+                    EngramError::System(SystemError::DatabaseError {
+                        reason: format!("sync atomic branch claim failed: {error}"),
+                    })
+                })? {
+                    ClaimOutcome::Acquired(next) => {
+                        crate::services::metrics::switch_branch(workspace.branch.clone()).await?;
+                        next_owner = Some((
+                            next,
+                            DispatchSnapshot {
+                                workspace,
+                                config: ctx.config,
+                            },
+                        ));
+                    }
+                    ClaimOutcome::Retained => {
+                        return Ok(
+                            json!({ "status": "queued", "message": "Sync queued; will run after current indexing completes" }),
+                        );
+                    }
+                    ClaimOutcome::Missing => {
+                        return Err(EngramError::System(SystemError::DatabaseError {
+                            reason: "sync branch reissue was superseded before acquisition"
+                                .to_owned(),
+                        }));
+                    }
+                    ClaimOutcome::Stale => {
                         return Err(EngramError::System(SystemError::DatabaseError {
                             reason: "sync branch publication was superseded by a distinct binding"
                                 .to_owned(),
                         }));
-                    }
-                    match CoordinatorCell::claim_reissued_sync(next_guarded.0).map_err(|error| {
-                        EngramError::System(SystemError::DatabaseError {
-                            reason: format!("sync branch claim failed: {error}"),
-                        })
-                    })? {
-                        ClaimOutcome::Acquired(next) => {
-                            crate::services::metrics::switch_branch(
-                                next_guarded.1.workspace.branch.clone(),
-                            );
-                            next_owner = Some((next, next_guarded.1));
-                            break;
-                        }
-                        ClaimOutcome::Retained => {
-                            return Ok(
-                                json!({ "status": "queued", "message": "Sync queued; will run after current indexing completes" }),
-                            );
-                        }
-                        ClaimOutcome::Missing => {
-                            return Err(EngramError::System(SystemError::DatabaseError {
-                                reason: "sync branch reissue was superseded before acquisition"
-                                    .to_owned(),
-                            }));
-                        }
-                        ClaimOutcome::Stale => {}
                     }
                 }
             }
@@ -671,7 +661,8 @@ pub(crate) async fn prepare_branch_owner(
                 })
             })? {
                 ClaimOutcome::Acquired(next) => {
-                    crate::services::metrics::switch_branch(published_ctx.workspace.branch.clone());
+                    crate::services::metrics::switch_branch(published_ctx.workspace.branch.clone())
+                        .await?;
                     Ok(Some((next, published_ctx)))
                 }
                 ClaimOutcome::Retained | ClaimOutcome::Missing | ClaimOutcome::Stale => Ok(None),
@@ -704,7 +695,8 @@ pub(crate) async fn prepare_branch_owner(
                     reason: format!("{kind:?} branch reacquisition failed: {error}"),
                 })
             })? {
-                crate::services::metrics::switch_branch(current_ctx.workspace.branch.clone());
+                crate::services::metrics::switch_branch(current_ctx.workspace.branch.clone())
+                    .await?;
                 permit = next;
                 ctx = current_ctx;
                 break;
@@ -1549,6 +1541,7 @@ mod tests {
         state.set_hydration_ready();
         let recovered = acquired(request(&state, WorkMask::from_bits(0b111), OwnerKind::Sync));
         drop(recovered);
+        let notifications_before_sync = state.coordinator.test_notification_calls();
 
         sync_workspace(Arc::clone(&state), None)
             .await
@@ -1569,6 +1562,12 @@ mod tests {
         ));
         assert!(state.coordinator.test_is_idle());
         assert_eq!(state.coordinator.test_pending_bits(), 0);
+        assert_eq!(
+            state.coordinator.test_notification_calls(),
+            notifications_before_sync + 1,
+            "branch refresh must install the reissued owner without notifying waiters; only the \
+             final owner completion may notify"
+        );
         assert!(
             state.is_hydration_ready(),
             "successful branch initialization must restore readiness"
