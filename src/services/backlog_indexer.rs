@@ -18,7 +18,10 @@ use crate::models::backlog_graph::{
 };
 use crate::models::registry::ContentSource;
 use crate::services::parsing::frontmatter;
-use crate::services::source_traversal::{collect_files_in_workspace, is_regular_file_in_workspace};
+use crate::services::source_traversal::{
+    collect_files_in_workspace, collect_files_in_workspace_checked, is_regular_file_in_workspace,
+    reconcile_deleted_paths,
+};
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -404,11 +407,22 @@ pub async fn sweep_deleted_backlog_files(
     workspace_root: &Path,
     queries: &CodeGraphQueries,
 ) -> Result<usize, EngramError> {
+    let source_dir = workspace_root.join(&source.path);
+    if !source_dir.is_dir() {
+        debug!(
+            path = %source.path,
+            "backlog source directory does not exist — skipping deletion sweep (fail-closed)"
+        );
+        return Ok(0);
+    }
+
     let existing = queries.select_backlog_nodes(Some(&source.path)).await?;
 
     let known_paths: Vec<String> = existing.iter().map(|n| n.file_path.clone()).collect();
 
-    let deleted = compute_deleted_paths(&known_paths, workspace_root);
+    let collected =
+        collect_files_in_workspace_checked(&source_dir, workspace_root, is_backlog_file);
+    let deleted = reconcile_deleted_paths(&known_paths, &collected, workspace_root);
     let mut removed = 0_usize;
 
     for rel in &deleted {
