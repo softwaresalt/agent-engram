@@ -566,11 +566,8 @@ mod tests {
         let outside = TempDir::new().expect("outside tempdir");
         fs::write(outside.path().join("live.ipynb"), "{}").expect("write outside notebook");
 
-        let collected = super::collect_files_in_workspace_checked(
-            outside.path(),
-            workspace.path(),
-            is_ipynb,
-        );
+        let collected =
+            super::collect_files_in_workspace_checked(outside.path(), workspace.path(), is_ipynb);
 
         assert!(
             collected.files.is_empty(),

@@ -119,8 +119,7 @@ pub async fn ingest_all_sources(
         // Notebook sources use the dedicated Jupyter notebook indexer.
         if source.content_type == "notebook" {
             use crate::services::notebook_indexer::{
-                index_notebook_source_with_snapshot,
-                sweep_deleted_notebook_files_from_snapshot,
+                index_notebook_source_with_snapshot, sweep_deleted_notebook_files_from_snapshot,
             };
 
             // U1b: build the trusted-authority context from the registry's

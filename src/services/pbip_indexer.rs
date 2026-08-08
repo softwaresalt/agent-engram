@@ -881,8 +881,7 @@ pub async fn sweep_deleted_pbip_files(
         .into_iter()
         .collect();
 
-    let collected =
-        collect_files_in_workspace_checked(&source_dir, workspace_root, is_pbip_file);
+    let collected = collect_files_in_workspace_checked(&source_dir, workspace_root, is_pbip_file);
     let deleted = reconcile_deleted_paths(&known_paths, &collected, workspace_root);
     let mut removed = 0_usize;
 

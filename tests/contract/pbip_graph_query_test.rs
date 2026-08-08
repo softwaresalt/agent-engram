@@ -352,8 +352,11 @@ async fn sweep_deleted_pbip_files_retains_records_when_source_root_is_unavailabl
         .expect("records before unavailable root");
     assert!(!before.is_empty(), "fixture must create PBIP records");
 
-    fs::rename(root.path().join("proj"), root.path().join("proj-unavailable"))
-        .expect("make source root unavailable");
+    fs::rename(
+        root.path().join("proj"),
+        root.path().join("proj-unavailable"),
+    )
+    .expect("make source root unavailable");
 
     let removed = sweep_deleted_pbip_files(&source, root.path(), &queries)
         .await
@@ -379,7 +382,11 @@ async fn sweep_deleted_pbip_files_retains_records_when_source_root_is_unavailabl
 #[tokio::test]
 async fn sweep_deleted_pbip_files_removes_alias_superseded_on_complete_pass() {
     let root = TempDir::new().expect("tempdir");
-    write(root.path(), "proj/a/live.pbip", r#"{"version":"1.0","artifacts":[]}"#);
+    write(
+        root.path(),
+        "proj/a/live.pbip",
+        r#"{"version":"1.0","artifacts":[]}"#,
+    );
 
     let db = connect_db(&root.path().join("data"), "pbip-sweep-alias")
         .await
@@ -404,7 +411,9 @@ async fn sweep_deleted_pbip_files_removes_alias_superseded_on_complete_pass() {
     let real_dir = root.path().join("proj/z");
     fs::rename(root.path().join("proj/a"), &real_dir).expect("rename alias winner");
     if let Err(error) = symlink_dir(&real_dir, &root.path().join("proj/a")) {
-        eprintln!("skipping alias-supersession assertion: cannot create directory symlink: {error}");
+        eprintln!(
+            "skipping alias-supersession assertion: cannot create directory symlink: {error}"
+        );
         return;
     }
 

@@ -238,9 +238,8 @@ async fn deletion_sweep_retains_nodes_when_source_root_is_unavailable() {
         "feature",
     );
 
-    let config =
-        parse_registry_yaml("sources:\n  - type: backlog\n    path: .backlogit/queue\n")
-            .expect("parse registry");
+    let config = parse_registry_yaml("sources:\n  - type: backlog\n    path: .backlogit/queue\n")
+        .expect("parse registry");
     let db = connect_db(dir.path(), "backlog-sweep-missing-root")
         .await
         .expect("connect_db");
@@ -280,9 +279,7 @@ async fn deletion_sweep_retains_nodes_when_source_root_is_unavailable() {
 async fn deletion_sweep_removes_alias_superseded_on_complete_pass() {
     use engram::db::connect_db;
     use engram::db::queries::CodeGraphQueries;
-    use engram::services::backlog_indexer::{
-        index_backlog_source, sweep_deleted_backlog_files,
-    };
+    use engram::services::backlog_indexer::{index_backlog_source, sweep_deleted_backlog_files};
     use engram::services::registry::parse_registry_yaml;
 
     let dir = TempDir::new().expect("tempdir");
@@ -297,28 +294,24 @@ async fn deletion_sweep_removes_alias_superseded_on_complete_pass() {
         "feature",
     );
 
-    let config =
-        parse_registry_yaml("sources:\n  - type: backlog\n    path: .backlogit/queue\n")
-            .expect("parse registry");
+    let config = parse_registry_yaml("sources:\n  - type: backlog\n    path: .backlogit/queue\n")
+        .expect("parse registry");
     let source = &config.sources[0];
     let db = connect_db(dir.path(), "backlog-sweep-alias")
         .await
         .expect("connect_db");
     let queries = CodeGraphQueries::new(db);
 
-    index_backlog_source(
-        source,
-        dir.path(),
-        &queries,
-        config.max_file_size_bytes,
-    )
-    .await
-    .expect("index alias path");
+    index_backlog_source(source, dir.path(), &queries, config.max_file_size_bytes)
+        .await
+        .expect("index alias path");
 
     let real_dir = queue_dir.join("z");
     fs::rename(&alias_dir, &real_dir).expect("rename alias winner");
     if let Err(error) = symlink_dir(&real_dir, &alias_dir) {
-        eprintln!("skipping alias-supersession assertion: cannot create directory symlink: {error}");
+        eprintln!(
+            "skipping alias-supersession assertion: cannot create directory symlink: {error}"
+        );
         return;
     }
 
