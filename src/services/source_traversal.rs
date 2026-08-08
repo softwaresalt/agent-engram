@@ -269,46 +269,65 @@ fn entry_rank(file_type: &FileType) -> u8 {
     }
 }
 
-/// Fail-closed physical-absence oracle for the shared deletion reconciler.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PhysicalState {
+    Present,
+    Absent,
+    Unknown,
+}
+
+/// Fail-closed physical-state oracle for the shared deletion reconciler.
 ///
-/// Returns `true` only when the stored path is *provably* gone: a `NotFound`
+/// Returns [`PhysicalState::Absent`] only when the stored path is *provably* gone: a `NotFound`
 /// from `symlink_metadata`/`canonicalize`, a path that now resolves to a
 /// non-file, or one whose real target escapes the workspace. A transient error
 /// (`PermissionDenied`, other I/O) cannot prove absence — an unreadable parent
-/// directory still contains a live file — so the record is retained (`false`).
+/// directory still contains a live file — so it produces
+/// [`PhysicalState::Unknown`].
 /// The safety floor forbids deleting a live record we merely failed to stat.
 ///
 /// This is the shared physical-absence primitive used by all deletion
 /// reconciliation paths; transient errors always retain the stored record.
-fn is_physically_absent(path: &Path, canonical_root: &Path) -> bool {
+fn physical_state(path: &Path, canonical_root: &Path) -> PhysicalState {
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return PhysicalState::Absent;
+        }
         Err(error) => {
             warn!(
                 path = %path.display(),
                 %error,
                 "retaining stored record: cannot stat path to prove absence (fail-closed)"
             );
-            return false;
+            return PhysicalState::Unknown;
         }
     };
     if !metadata.file_type().is_file() {
         // The path exists but is no longer the regular file we stored (e.g. it
         // was replaced by a directory): the original file is genuinely gone.
-        return true;
+        return PhysicalState::Absent;
     }
     match path.canonicalize() {
-        Ok(canonical) => !canonical.starts_with(canonical_root),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Ok(canonical) if canonical.starts_with(canonical_root) => PhysicalState::Present,
+        Ok(_) => PhysicalState::Absent,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => PhysicalState::Absent,
         Err(error) => {
             warn!(
                 path = %path.display(),
                 %error,
                 "retaining stored record: cannot canonicalize present path (fail-closed)"
             );
-            false
+            PhysicalState::Unknown
         }
+    }
+}
+
+fn should_delete(state: PhysicalState, collection_complete: bool) -> bool {
+    match state {
+        PhysicalState::Absent => true,
+        PhysicalState::Present => collection_complete,
+        PhysicalState::Unknown => false,
     }
 }
 
@@ -397,12 +416,14 @@ pub(crate) fn reconcile_deleted_paths(
                 return None;
             }
             let candidate = workspace_root.join(relative_path);
-            let physically_absent = is_physically_absent(&candidate, &canonical_root);
+            let state = physical_state(&candidate, &canonical_root);
             // INV-1/INV-2: an alias-stale record (still physically present) is
             // reconciled away only when the collection was
             // authoritative-complete; a partial pass retains it (fail-closed).
-            let stale = physically_absent || (collected.complete && not_collected);
-            stale.then(|| stored.clone())
+            // Unknown inspection state is never deletion evidence, including
+            // after an otherwise complete traversal.
+            let should_remove = should_delete(state, collected.complete);
+            should_remove.then(|| stored.clone())
         })
         .collect()
 }
@@ -414,10 +435,16 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::{CollectedFiles, reconcile_deleted_paths};
+    use super::{CollectedFiles, PhysicalState, reconcile_deleted_paths, should_delete};
 
     fn stored(paths: &[&str]) -> Vec<String> {
         paths.iter().map(|p| (*p).to_owned()).collect()
+    }
+
+    #[test]
+    fn unknown_physical_state_never_authorizes_deletion() {
+        assert!(!should_delete(PhysicalState::Unknown, true));
+        assert!(!should_delete(PhysicalState::Unknown, false));
     }
 
     /// INV-1 (alias-stale): the stored path is still physically present (its real

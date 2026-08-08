@@ -140,7 +140,7 @@ pub(crate) async fn index_notebook_source_with_snapshot(
     let mut result = NotebookIndexResult::default();
 
     let source_dir = workspace_root.join(&source.path);
-    let collected =
+    let mut collected =
         collect_files_in_workspace_checked(&source_dir, workspace_root, is_notebook_file);
     if !collected.complete && collected.files.is_empty() {
         debug!(
@@ -150,7 +150,7 @@ pub(crate) async fn index_notebook_source_with_snapshot(
         return Ok((result, collected));
     }
 
-    let files = &collected.files;
+    let files = collected.files.clone();
     result.total_files = files.len();
 
     let existing_hashes: HashMap<String, String> = queries
@@ -161,8 +161,9 @@ pub(crate) async fn index_notebook_source_with_snapshot(
         .map(|record| (record.file_path, record.content_hash))
         .collect();
 
-    for file_path in files {
+    for file_path in &files {
         let Ok(metadata) = file_path.metadata() else {
+            collected.complete = false;
             continue;
         };
 
@@ -171,13 +172,16 @@ pub(crate) async fn index_notebook_source_with_snapshot(
                 path = %file_path.display(),
                 "Notebook file exceeds max_file_size — skipping"
             );
+            collected.complete = false;
             continue;
         }
 
         let Ok(content_bytes) = std::fs::read(file_path) else {
+            collected.complete = false;
             continue;
         };
         let Ok(content_text) = std::str::from_utf8(&content_bytes) else {
+            collected.complete = false;
             continue;
         };
 
@@ -208,6 +212,7 @@ pub(crate) async fn index_notebook_source_with_snapshot(
 
         let Some(extracted) = extract_notebook(content_text, &rel_path) else {
             debug!(path = %rel_path, "malformed notebook JSON — skipping file");
+            collected.complete = false;
             continue;
         };
 
@@ -734,6 +739,65 @@ mod tests {
                 .iter()
                 .any(|path| path == "nb/a/live.ipynb"),
             "the path indexed from the authoritative snapshot must survive"
+        );
+    }
+
+    #[tokio::test]
+    async fn incomplete_notebook_materialization_retains_existing_record() {
+        let workspace = TempDir::new().expect("workspace tempdir");
+        let source_dir = workspace.path().join("nb");
+        fs::create_dir_all(&source_dir).expect("create notebook source");
+        let notebook_path = source_dir.join("live.ipynb");
+        fs::write(
+            &notebook_path,
+            r#"{"cells":[],"metadata":{},"nbformat":4,"nbformat_minor":5}"#,
+        )
+        .expect("write notebook");
+
+        let db_dir = TempDir::new().expect("db tempdir");
+        let db = crate::db::connect_db(db_dir.path(), "nb-incomplete-materialization")
+            .await
+            .expect("open test db");
+        let queries = CodeGraphQueries::new(db);
+        let source = notebook_source("nb");
+        let authority = crate::models::lineage::LineageAuthorityContext::empty();
+
+        super::index_notebook_source(&source, workspace.path(), &queries, 1_048_576, &authority)
+            .await
+            .expect("initial notebook index");
+        assert_eq!(
+            remaining_notebook_paths(&queries, &source.path).await,
+            vec!["nb/live.ipynb".to_string()]
+        );
+
+        fs::write(&notebook_path, [0xff, 0xfe]).expect("replace with invalid UTF-8");
+        let (_, collected) = super::index_notebook_source_with_snapshot(
+            &source,
+            workspace.path(),
+            &queries,
+            1_048_576,
+            &authority,
+        )
+        .await
+        .expect("partial notebook index");
+        assert!(
+            !collected.complete,
+            "a collected file that cannot be materialized must make the pass non-authoritative"
+        );
+
+        let removed = super::sweep_deleted_notebook_files_from_snapshot(
+            &source,
+            workspace.path(),
+            &queries,
+            &collected,
+        )
+        .await
+        .expect("sweep partial notebook snapshot");
+        assert_eq!(removed, 0);
+        assert_eq!(
+            remaining_notebook_paths(&queries, &source.path).await,
+            vec!["nb/live.ipynb".to_string()],
+            "last-known-good notebook data must survive incomplete materialization"
         );
     }
 

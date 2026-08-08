@@ -120,6 +120,18 @@ fn is_powerbi_file(path: &Path) -> bool {
         })
 }
 
+enum MaterializedPowerBiContent {
+    Json(serde_json::Value),
+    Tmdl(Box<crate::models::powerbi::PowerBiSemanticModel>),
+}
+
+struct MaterializedPowerBiFile {
+    rel_path: String,
+    content_hash: String,
+    file_size: u64,
+    content: MaterializedPowerBiContent,
+}
+
 // ── Entity summary extraction ─────────────────────────────────────────────
 
 /// Classify `json` as a semantic model or report and dispatch to the appropriate
@@ -1133,60 +1145,20 @@ fn resolve_reference(
 }
 
 /// Build one [`ModelScopeSchema`] per Power BI model scope by unioning the
-/// tables / columns / measures of every `.tmdl` file, keyed by
-/// `canonical_tmdl_model_path`. Non-TMDL, unreadable, and oversized
-/// (`> max_file_size`) files are skipped so the schema only reflects files the
-/// main indexing loop actually materialises.
+/// tables / columns / measures of every materialized `.tmdl` file, keyed by
+/// `canonical_tmdl_model_path`.
 fn build_model_scope_schemas(
-    files: &[PathBuf],
-    workspace_root: &Path,
-    max_file_size: u64,
-) -> (HashMap<String, ModelScopeSchema>, bool) {
+    files: &[MaterializedPowerBiFile],
+) -> HashMap<String, ModelScopeSchema> {
     let mut schemas: HashMap<String, ModelScopeSchema> = HashMap::new();
-    let mut complete = true;
-    for file_path in files {
-        let is_tmdl = file_path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("tmdl"));
-        if !is_tmdl {
-            continue;
-        }
-        // Skip oversized files so an over-limit sibling never contributes columns
-        // to resolution: the main indexing loop skips it too, so resolving a
-        // reference against it would emit a `pbi_uses_field` edge to a node that
-        // is never upserted (a dangling edge) while bypassing `max_file_size`.
-        match file_path.metadata() {
-            Ok(metadata) if metadata.len() > max_file_size => {
-                complete = false;
-                continue;
-            }
-            Ok(_) => {}
-            Err(_) => {
-                complete = false;
-                continue;
-            }
-        }
-        let Ok(content_bytes) = std::fs::read(file_path) else {
-            complete = false;
+    for file in files {
+        let MaterializedPowerBiContent::Tmdl(model) = &file.content else {
             continue;
         };
-        let Ok(content_str) = std::str::from_utf8(&content_bytes) else {
-            complete = false;
-            continue;
-        };
-        let rel_path = file_path
-            .strip_prefix(workspace_root)
-            .unwrap_or(file_path)
-            .to_string_lossy()
-            .replace('\\', "/");
-        let Some(model) = extract_tmdl_semantic_model(content_str, &rel_path) else {
-            continue;
-        };
-        let scope = canonical_tmdl_model_path(&rel_path);
-        schemas.entry(scope).or_default().add_model(&model);
+        let scope = canonical_tmdl_model_path(&file.rel_path);
+        schemas.entry(scope).or_default().add_model(model.as_ref());
     }
-    (schemas, complete)
+    schemas
 }
 
 /// Return `true` when `rel_path` names a `.tmdl` file (case-insensitive).
@@ -1211,50 +1183,22 @@ fn is_tmdl_rel_path(rel_path: &str) -> bool {
 /// reprocessed so its references re-resolve against the current model-scope
 /// schema — even if the sibling's own bytes did not change.
 fn compute_dirty_model_scopes(
-    files: &[PathBuf],
-    workspace_root: &Path,
+    files: &[MaterializedPowerBiFile],
     existing_hashes: &HashMap<String, String>,
-    max_file_size: u64,
-) -> (HashSet<String>, bool) {
+) -> HashSet<String> {
     let mut dirty: HashSet<String> = HashSet::new();
     let mut seen_tmdl_rel_paths: HashSet<String> = HashSet::new();
-    let mut complete = true;
 
-    for file_path in files {
-        if !file_path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("tmdl"))
-        {
+    for file in files {
+        if !matches!(file.content, MaterializedPowerBiContent::Tmdl(_)) {
             continue;
         }
-        let Ok(metadata) = file_path.metadata() else {
-            complete = false;
-            continue;
-        };
-        if metadata.len() > max_file_size {
-            complete = false;
-            continue;
-        }
-        let Ok(content_bytes) = std::fs::read(file_path) else {
-            complete = false;
-            continue;
-        };
-        if std::str::from_utf8(&content_bytes).is_err() {
-            complete = false;
-            continue;
-        }
-        let rel_path = file_path
-            .strip_prefix(workspace_root)
-            .unwrap_or(file_path)
-            .to_string_lossy()
-            .replace('\\', "/");
-        seen_tmdl_rel_paths.insert(rel_path.clone());
+        seen_tmdl_rel_paths.insert(file.rel_path.clone());
 
-        let hash = compute_tmdl_dax_index_hash(&content_bytes);
-        let unchanged = existing_hashes.get(&rel_path).map(String::as_str) == Some(hash.as_str());
+        let unchanged = existing_hashes.get(&file.rel_path).map(String::as_str)
+            == Some(file.content_hash.as_str());
         if !unchanged {
-            dirty.insert(canonical_tmdl_model_path(&rel_path));
+            dirty.insert(canonical_tmdl_model_path(&file.rel_path));
         }
     }
 
@@ -1266,7 +1210,7 @@ fn compute_dirty_model_scopes(
         }
     }
 
-    (dirty, complete)
+    dirty
 }
 
 // ── Async indexer ─────────────────────────────────────────────────────────
@@ -1314,15 +1258,80 @@ pub(crate) async fn index_powerbi_source_with_snapshot(
         return Ok((result, collected));
     }
 
-    let files = collected.files.as_slice();
-    result.total_files = files.len();
+    let collected_paths = collected.files.clone();
+    result.total_files = collected_paths.len();
+
+    // Materialize and parse every collected file exactly once before any
+    // marker/content/graph deletion. The resulting immutable snapshot is the
+    // sole authority for schema construction, dirty-scope calculation, and
+    // indexing, eliminating the validation-to-build read race.
+    let mut files = Vec::with_capacity(collected_paths.len());
+    for file_path in &collected_paths {
+        let Ok(metadata) = file_path.metadata() else {
+            collected.complete = false;
+            continue;
+        };
+        if metadata.len() > max_file_size {
+            debug!(
+                path = %file_path.display(),
+                "Power BI file exceeds max_file_size — skipping"
+            );
+            collected.complete = false;
+            continue;
+        }
+        let Ok(content_bytes) = std::fs::read(file_path) else {
+            collected.complete = false;
+            continue;
+        };
+        let Ok(content_str) = std::str::from_utf8(&content_bytes) else {
+            collected.complete = false;
+            continue;
+        };
+        let Ok(relative) = file_path.strip_prefix(workspace_root) else {
+            collected.complete = false;
+            continue;
+        };
+        let rel_path = relative.to_string_lossy().replace('\\', "/");
+        let is_tmdl = is_tmdl_rel_path(&rel_path);
+        let (content_hash, content) = if is_tmdl {
+            let Some(model) = extract_tmdl_semantic_model(content_str, &rel_path) else {
+                collected.complete = false;
+                continue;
+            };
+            (
+                compute_tmdl_dax_index_hash(&content_bytes),
+                MaterializedPowerBiContent::Tmdl(Box::new(model)),
+            )
+        } else {
+            let Ok(json) = serde_json::from_str::<serde_json::Value>(content_str) else {
+                collected.complete = false;
+                continue;
+            };
+            (
+                compute_file_hash(&content_bytes),
+                MaterializedPowerBiContent::Json(json),
+            )
+        };
+        files.push(MaterializedPowerBiFile {
+            rel_path,
+            content_hash,
+            file_size: metadata.len(),
+            content,
+        });
+    }
+    if !collected.complete {
+        warn!(
+            path = %source.path,
+            "Power BI source materialization incomplete — retaining last-known-good index"
+        );
+        return Ok((result, collected));
+    }
 
     // Pre-pass: union every `.tmdl` file into a per-model-scope schema so DAX
     // references that cross sibling files (e.g. a measure in `Sales.tmdl` using
     // `'Date'[Date]`) resolve against the whole model rather than the single
     // file currently being indexed (P3).
-    let (model_scope_schemas, schemas_complete) =
-        build_model_scope_schemas(files, workspace_root, max_file_size);
+    let model_scope_schemas = build_model_scope_schemas(&files);
 
     // 087.006-T (Unit D): source the hash-skip map from the durable completion
     // marker (`powerbi_file_index_state`), NOT the content rows. A file counts
@@ -1337,16 +1346,7 @@ pub(crate) async fn index_powerbi_source_with_snapshot(
     // P3b (`085.008-T`): model-scope invalidation. Determine which model scopes
     // changed on this pass so unchanged siblings are reprocessed and their
     // cross-file reference edges re-resolve against the current schema.
-    let (dirty_scopes, dirty_scopes_complete) =
-        compute_dirty_model_scopes(files, workspace_root, &existing_hashes, max_file_size);
-    if !schemas_complete || !dirty_scopes_complete {
-        collected.complete = false;
-        warn!(
-            path = %source.path,
-            "Power BI source materialization incomplete — retaining last-known-good index"
-        );
-        return Ok((result, collected));
-    }
+    let dirty_scopes = compute_dirty_model_scopes(&files, &existing_hashes);
 
     // Pre-delete every previously-indexed `.tmdl` artifact belonging to a dirty
     // scope BEFORE rebuilding any sibling (all-deletes-before-all-builds). Node
@@ -1375,47 +1375,13 @@ pub(crate) async fn index_powerbi_source_with_snapshot(
         }
     }
 
-    for file_path in files {
-        let Ok(metadata) = file_path.metadata() else {
-            continue;
-        };
-
-        if metadata.len() > max_file_size {
-            debug!(
-                path = %file_path.display(),
-                "Power BI file exceeds max_file_size — skipping"
-            );
-            continue;
-        }
-
-        let Ok(content_bytes) = std::fs::read(file_path) else {
-            continue;
-        };
-
-        // Skip binary files.
-        let Ok(content_str) = std::str::from_utf8(&content_bytes) else {
-            continue;
-        };
-
-        let rel_path = file_path
-            .strip_prefix(workspace_root)
-            .unwrap_or(file_path)
-            .to_string_lossy()
-            .replace('\\', "/");
-
+    for file in &files {
+        let rel_path = file.rel_path.clone();
         // Skip unchanged files — unless the file is a `.tmdl` in a dirty model
         // scope, in which case it must be reprocessed so its cross-file
         // reference edges re-resolve against the updated schema (P3b).
-        let is_tmdl = file_path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .map(|ext| ext.eq_ignore_ascii_case("tmdl"))
-            .unwrap_or(false);
-        let hash = if is_tmdl {
-            compute_tmdl_dax_index_hash(&content_bytes)
-        } else {
-            compute_file_hash(&content_bytes)
-        };
+        let is_tmdl = matches!(file.content, MaterializedPowerBiContent::Tmdl(_));
+        let hash = &file.content_hash;
         let unchanged = existing_hashes.get(&rel_path).map(String::as_str) == Some(hash.as_str());
         if unchanged && !(is_tmdl && dirty_scopes.contains(&canonical_tmdl_model_path(&rel_path))) {
             result.unchanged += 1;
@@ -1423,16 +1389,15 @@ pub(crate) async fn index_powerbi_source_with_snapshot(
         }
 
         if is_tmdl {
-            let Some(model) = extract_tmdl_semantic_model(content_str, &rel_path) else {
-                debug!(path = %rel_path, "no TMDL semantic model entities found — skipping file");
-                continue;
+            let MaterializedPowerBiContent::Tmdl(model) = &file.content else {
+                unreachable!("TMDL classification must match materialized content");
             };
 
             // Stale artifacts for dirty-scope `.tmdl` files were already removed
             // by the pre-delete pass above (all-deletes-before-all-builds), so
             // no per-file delete is needed here.
-            let summaries = extract_model_summaries_from_model(&model);
-            let file_size = metadata.len();
+            let summaries = extract_model_summaries_from_model(model.as_ref());
+            let file_size = file.file_size;
             let now = Utc::now();
 
             let mut tmdl_records = Vec::with_capacity(summaries.len());
@@ -1450,7 +1415,7 @@ pub(crate) async fn index_powerbi_source_with_snapshot(
                     id: record_id,
                     content_type: "powerbi".to_string(),
                     file_path: rel_path.clone(),
-                    content_hash: hash.clone(),
+                    content_hash: hash.to_owned(),
                     content: format!(
                         "Kind: {object_kind}. Name: {object_name}. \
                          Context: {parent_context}. {content_text}"
@@ -1475,11 +1440,11 @@ pub(crate) async fn index_powerbi_source_with_snapshot(
 
             let identity_scope = canonical_tmdl_model_path(&rel_path);
             let (graph_nodes, graph_edges) = build_powerbi_graph_data_from_model(
-                &model,
+                model.as_ref(),
                 &identity_scope,
                 &rel_path,
                 &source.path,
-                &hash,
+                hash,
                 model_scope_schemas.get(&identity_scope),
             );
             if !graph_nodes.is_empty() {
@@ -1497,17 +1462,15 @@ pub(crate) async fn index_powerbi_source_with_snapshot(
             // in any prior write leaves the marker absent ⇒ the next run
             // recomputes `unchanged == false` and reprocesses (fail-closed).
             queries
-                .upsert_powerbi_index_state(&rel_path, &source.path, &hash)
+                .upsert_powerbi_index_state(&rel_path, &source.path, hash)
                 .await?;
 
             result.ingested += 1;
             continue;
         }
 
-        // Parse JSON once; both summary extraction and graph building consume it.
-        let Ok(json) = serde_json::from_str::<serde_json::Value>(content_str) else {
-            debug!(path = %rel_path, "not valid JSON — skipping file");
-            continue;
+        let MaterializedPowerBiContent::Json(json) = &file.content else {
+            unreachable!("JSON classification must match materialized content");
         };
 
         // Delete stale records whenever the hash changed (even if the new content
@@ -1525,13 +1488,13 @@ pub(crate) async fn index_powerbi_source_with_snapshot(
             queries.delete_powerbi_nodes_by_file_path(&rel_path).await?;
         }
 
-        let summaries = extract_entity_summaries_from_value(&json, &rel_path);
+        let summaries = extract_entity_summaries_from_value(json, &rel_path);
         if summaries.is_empty() {
             debug!(path = %rel_path, "no Power BI entities found — skipping file");
             continue;
         }
 
-        let file_size = metadata.len();
+        let file_size = file.file_size;
         let now = Utc::now();
 
         for (object_kind, object_name, parent_context, content_text) in &summaries {
@@ -1548,7 +1511,7 @@ pub(crate) async fn index_powerbi_source_with_snapshot(
                 id: record_id,
                 content_type: "powerbi".to_string(),
                 file_path: rel_path.clone(),
-                content_hash: hash.clone(),
+                content_hash: hash.to_owned(),
                 content: format!(
                     "Kind: {object_kind}. Name: {object_name}. \
                      Context: {parent_context}. {content_text}"
@@ -1573,7 +1536,7 @@ pub(crate) async fn index_powerbi_source_with_snapshot(
 
         // Build and persist Power BI graph nodes and edges for this file.
         let (graph_nodes, graph_edges) =
-            build_powerbi_graph_data(&json, &rel_path, &source.path, &hash);
+            build_powerbi_graph_data(json, &rel_path, &source.path, hash);
         if !graph_nodes.is_empty() {
             queries.upsert_powerbi_nodes(&graph_nodes).await?;
             debug!(
@@ -1590,7 +1553,7 @@ pub(crate) async fn index_powerbi_source_with_snapshot(
         // 087.006-T: write the completion marker LAST for the non-TMDL branch,
         // after every content record + graph write for this file succeeded.
         queries
-            .upsert_powerbi_index_state(&rel_path, &source.path, &hash)
+            .upsert_powerbi_index_state(&rel_path, &source.path, hash)
             .await?;
 
         result.ingested += 1;
@@ -2402,6 +2365,62 @@ table Sales
                 .expect("markers after partial pass")
                 .contains_key(rel_path),
             "a partial TMDL pass must retain the completion marker"
+        );
+    }
+
+    #[tokio::test]
+    async fn incomplete_json_materialization_retains_marker_and_content() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let model_dir = workspace.path().join("models").join("Sales.SemanticModel");
+        std::fs::create_dir_all(&model_dir).expect("create model dir");
+        let rel_path = "models/Sales.SemanticModel/model.bim";
+        let model_json =
+            serde_json::to_string(&model_bim_with_rel_and_ds()).expect("serialize model");
+        std::fs::write(workspace.path().join(rel_path), model_json).expect("write model.bim");
+
+        let db_dir = tempfile::tempdir().expect("db tempdir");
+        let db = crate::db::connect_db(db_dir.path(), "pbi-incomplete-json")
+            .await
+            .expect("open test db");
+        let queries = CodeGraphQueries::new(db);
+        let source = powerbi_source("models");
+
+        index_powerbi_source(&source, workspace.path(), &queries, 1_048_576)
+            .await
+            .expect("initial Power BI index");
+        let before = queries
+            .select_content_records(Some("powerbi"))
+            .await
+            .expect("Power BI records before invalid JSON");
+        assert!(!before.is_empty(), "fixture must create Power BI records");
+
+        std::fs::write(workspace.path().join(rel_path), b"{not-json")
+            .expect("replace with invalid JSON");
+        let (_, collected) =
+            index_powerbi_source_with_snapshot(&source, workspace.path(), &queries, 1_048_576)
+                .await
+                .expect("partial Power BI index");
+
+        assert!(
+            !collected.complete,
+            "invalid JSON materialization must make the pass non-authoritative"
+        );
+        assert_eq!(
+            queries
+                .select_content_records(Some("powerbi"))
+                .await
+                .expect("Power BI records after invalid JSON")
+                .len(),
+            before.len(),
+            "invalid JSON must retain last-known-good content"
+        );
+        assert!(
+            queries
+                .select_powerbi_index_state(&source.path)
+                .await
+                .expect("markers after invalid JSON")
+                .contains_key(rel_path),
+            "invalid JSON must retain the completion marker"
         );
     }
 
