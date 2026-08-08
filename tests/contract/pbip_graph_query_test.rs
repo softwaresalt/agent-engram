@@ -44,6 +44,16 @@ fn write(root: &Path, rel: &str, content: &str) {
     fs::write(&path, content).expect("write fixture file");
 }
 
+#[cfg(unix)]
+fn symlink_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(src, dst)
+}
+
+#[cfg(windows)]
+fn symlink_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_dir(src, dst)
+}
+
 /// Lay out a minimal but complete PBIP project under `<root>/proj`:
 /// one report with one page and one visual, plus a TMDL semantic model with a
 /// `Sales` table carrying an `Amount` column and a `Total Sales` measure that
@@ -317,6 +327,111 @@ async fn sweep_deleted_pbip_files_prunes_removed_files() {
             .iter()
             .any(|r| r.file_path.ends_with("Page1/visuals/v1/visual.json")),
         "swept visual record should be gone"
+    );
+}
+
+/// 110-S U2: an unavailable PBIP source root cannot certify a mass deletion.
+/// Records remain intact until a later authoritative pass or source removal.
+#[tokio::test]
+async fn sweep_deleted_pbip_files_retains_records_when_source_root_is_unavailable() {
+    let root = TempDir::new().expect("tempdir");
+    write_project(root.path());
+
+    let db = connect_db(&root.path().join("data"), "pbip-sweep-missing-root")
+        .await
+        .expect("connect_db");
+    let queries = CodeGraphQueries::new(db);
+    let source = pbip_source("proj");
+
+    index_pbip_source(&source, root.path(), &queries, MAX_FILE_SIZE)
+        .await
+        .expect("index pbip source");
+    let before = queries
+        .select_content_records(Some("pbip"))
+        .await
+        .expect("records before unavailable root");
+    assert!(!before.is_empty(), "fixture must create PBIP records");
+
+    fs::rename(
+        root.path().join("proj"),
+        root.path().join("proj-unavailable"),
+    )
+    .expect("make source root unavailable");
+
+    let removed = sweep_deleted_pbip_files(&source, root.path(), &queries)
+        .await
+        .expect("sweep unavailable source");
+    assert_eq!(
+        removed, 0,
+        "an unavailable source root must suppress the deletion sweep"
+    );
+
+    let after = queries
+        .select_content_records(Some("pbip"))
+        .await
+        .expect("records after unavailable root");
+    assert_eq!(
+        after.len(),
+        before.len(),
+        "all PBIP records must survive a non-authoritative source pass"
+    );
+}
+
+/// 110-S U2: when a complete traversal chooses a real directory over a
+/// physically-live alias, the prior alias path is stale deletion evidence.
+#[tokio::test]
+async fn sweep_deleted_pbip_files_removes_alias_superseded_on_complete_pass() {
+    let root = TempDir::new().expect("tempdir");
+    write(
+        root.path(),
+        "proj/a/live.pbip",
+        r#"{"version":"1.0","artifacts":[]}"#,
+    );
+
+    let db = connect_db(&root.path().join("data"), "pbip-sweep-alias")
+        .await
+        .expect("connect_db");
+    let queries = CodeGraphQueries::new(db);
+    let source = pbip_source("proj");
+
+    index_pbip_source(&source, root.path(), &queries, MAX_FILE_SIZE)
+        .await
+        .expect("index alias path");
+    let alias_path = "proj/a/live.pbip";
+    assert!(
+        queries
+            .select_content_records(Some("pbip"))
+            .await
+            .expect("records before alias replacement")
+            .iter()
+            .any(|record| record.file_path == alias_path),
+        "fixture must index the original alias path"
+    );
+
+    let real_dir = root.path().join("proj/z");
+    fs::rename(root.path().join("proj/a"), &real_dir).expect("rename alias winner");
+    if let Err(error) = symlink_dir(&real_dir, &root.path().join("proj/a")) {
+        eprintln!(
+            "skipping alias-supersession assertion: cannot create directory symlink: {error}"
+        );
+        return;
+    }
+
+    let removed = sweep_deleted_pbip_files(&source, root.path(), &queries)
+        .await
+        .expect("sweep stale alias");
+    assert_eq!(
+        removed, 1,
+        "the complete pass must remove the superseded alias path"
+    );
+    assert!(
+        !queries
+            .select_content_records(Some("pbip"))
+            .await
+            .expect("records after alias replacement")
+            .iter()
+            .any(|record| record.file_path == alias_path),
+        "the superseded alias record must be removed"
     );
 }
 

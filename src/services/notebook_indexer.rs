@@ -18,7 +18,8 @@ use crate::models::registry::ContentSource;
 use crate::services::ingestion::{compute_hash, content_record_identity_seed};
 use crate::services::notebook_extract::{extract_notebook, route_notebook_lineage};
 use crate::services::source_traversal::{
-    collect_files_in_workspace, collect_files_in_workspace_checked, reconcile_deleted_paths,
+    CollectedFiles, collect_files_in_workspace, collect_files_in_workspace_checked,
+    reconcile_deleted_paths,
 };
 
 /// Notebook lineage extraction seam (095-F, Unit U1b / AR-04/G6).
@@ -115,18 +116,41 @@ pub async fn index_notebook_source(
     max_file_size: u64,
     authority_ctx: &LineageAuthorityContext,
 ) -> Result<NotebookIndexResult, EngramError> {
+    let (result, _) = index_notebook_source_with_snapshot(
+        source,
+        workspace_root,
+        queries,
+        max_file_size,
+        authority_ctx,
+    )
+    .await?;
+    Ok(result)
+}
+
+/// Index notebooks and return the checked file collection that authorized the
+/// operation. Ingestion carries this snapshot into its deletion sweep so one
+/// pass has exactly one file-set authority.
+pub(crate) async fn index_notebook_source_with_snapshot(
+    source: &ContentSource,
+    workspace_root: &Path,
+    queries: &CodeGraphQueries,
+    max_file_size: u64,
+    authority_ctx: &LineageAuthorityContext,
+) -> Result<(NotebookIndexResult, CollectedFiles), EngramError> {
     let mut result = NotebookIndexResult::default();
 
     let source_dir = workspace_root.join(&source.path);
-    if !source_dir.exists() {
+    let mut collected =
+        collect_files_in_workspace_checked(&source_dir, workspace_root, is_notebook_file);
+    if !collected.complete && collected.files.is_empty() {
         debug!(
             path = %source.path,
-            "Notebook source directory does not exist — skipping"
+            "Notebook source collection is unavailable — skipping"
         );
-        return Ok(result);
+        return Ok((result, collected));
     }
 
-    let files = collect_notebook_files_in_workspace(&source_dir, workspace_root);
+    let files = collected.files.clone();
     result.total_files = files.len();
 
     let existing_hashes: HashMap<String, String> = queries
@@ -139,6 +163,7 @@ pub async fn index_notebook_source(
 
     for file_path in &files {
         let Ok(metadata) = file_path.metadata() else {
+            collected.complete = false;
             continue;
         };
 
@@ -147,13 +172,16 @@ pub async fn index_notebook_source(
                 path = %file_path.display(),
                 "Notebook file exceeds max_file_size — skipping"
             );
+            collected.complete = false;
             continue;
         }
 
         let Ok(content_bytes) = std::fs::read(file_path) else {
+            collected.complete = false;
             continue;
         };
         let Ok(content_text) = std::str::from_utf8(&content_bytes) else {
+            collected.complete = false;
             continue;
         };
 
@@ -184,6 +212,7 @@ pub async fn index_notebook_source(
 
         let Some(extracted) = extract_notebook(content_text, &rel_path) else {
             debug!(path = %rel_path, "malformed notebook JSON — skipping file");
+            collected.complete = false;
             continue;
         };
 
@@ -268,7 +297,7 @@ pub async fn index_notebook_source(
         "Notebook indexing complete"
     );
 
-    Ok(result)
+    Ok((result, collected))
 }
 
 /// Route a notebook's cells to the Spark-lineage extractors and persist the
@@ -371,6 +400,20 @@ pub async fn sweep_deleted_notebook_files(
     workspace_root: &Path,
     queries: &CodeGraphQueries,
 ) -> Result<usize, EngramError> {
+    let source_dir = workspace_root.join(&source.path);
+    let collected =
+        collect_files_in_workspace_checked(&source_dir, workspace_root, is_notebook_file);
+    sweep_deleted_notebook_files_from_snapshot(source, workspace_root, queries, &collected).await
+}
+
+/// Sweep notebook records using the checked collection from the matching index
+/// operation rather than traversing the source tree again.
+pub(crate) async fn sweep_deleted_notebook_files_from_snapshot(
+    source: &ContentSource,
+    workspace_root: &Path,
+    queries: &CodeGraphQueries,
+    collected: &CollectedFiles,
+) -> Result<usize, EngramError> {
     // Fail-closed source-root guard (INV-2/INV-3): a missing or unreadable
     // source root is indistinguishable from a fully-emptied tree by physical
     // absence alone, so suppress the sweep entirely rather than risk
@@ -378,8 +421,7 @@ pub async fn sweep_deleted_notebook_files(
     // an unmounted share). Legitimate source removal is handled by source
     // de-registration, not the per-file sweep. Mirrors index_notebook_source's
     // graceful skip so the indexer and sweep stay consistent.
-    let source_dir = workspace_root.join(&source.path);
-    if !source_dir.is_dir() {
+    if !collected.complete && collected.files.is_empty() {
         debug!(
             path = %source.path,
             "notebook source directory does not exist — skipping deletion sweep (fail-closed)"
@@ -396,18 +438,11 @@ pub async fn sweep_deleted_notebook_files(
         .into_iter()
         .collect();
 
-    let deleted = {
-        // 100-S Unit B: reconcile stored records against a completeness-aware
-        // collection of the source tree. Deletion is gated on an
-        // authoritative-complete full-index traversal (fail-closed): a stored
-        // record is swept only when it is physically absent, or superseded by a
-        // collected alias path on a `complete` pass. A partial pass (an
-        // unreadable/unresolvable subtree) degrades to physical-absence-only,
-        // so an alias-stale record is retained rather than wrongly deleted.
-        let collected =
-            collect_files_in_workspace_checked(&source_dir, workspace_root, is_notebook_file);
-        reconcile_deleted_paths(&known_paths, &collected, workspace_root)
-    };
+    // Reconcile against the completeness-aware snapshot produced by the
+    // matching index pass. A partial collection degrades to
+    // physical-absence-only sweeping; no second traversal can choose a
+    // different alias winner between indexing and deletion.
+    let deleted = reconcile_deleted_paths(&known_paths, collected, workspace_root);
     let mut removed = 0_usize;
 
     for path in &deleted {
@@ -642,6 +677,127 @@ mod tests {
             remaining_notebook_paths(&queries, &source.path).await,
             vec!["nb/z/shared.ipynb".to_string()],
             "the collected (real-dir) path survives; the alias-stale duplicate is swept"
+        );
+    }
+
+    /// 110-S U4: the checked file set used for notebook indexing remains the
+    /// sole deletion authority for that operation. If the alias winner changes
+    /// after indexing, sweeping with the carried snapshot cannot delete the
+    /// path that was just indexed.
+    #[tokio::test]
+    async fn carried_notebook_snapshot_survives_alias_winner_change() {
+        let workspace = TempDir::new().expect("workspace tempdir");
+        let source_dir = workspace.path().join("nb");
+        let alias_dir = source_dir.join("a");
+        fs::create_dir_all(&alias_dir).expect("create alias dir");
+        fs::write(
+            alias_dir.join("live.ipynb"),
+            r#"{"cells":[],"metadata":{},"nbformat":4,"nbformat_minor":5}"#,
+        )
+        .expect("write notebook");
+
+        let db_dir = TempDir::new().expect("db tempdir");
+        let db = crate::db::connect_db(db_dir.path(), "nb-carried-snapshot")
+            .await
+            .expect("open test db");
+        let queries = CodeGraphQueries::new(db);
+        let source = notebook_source("nb");
+
+        let (result, collected) = super::index_notebook_source_with_snapshot(
+            &source,
+            workspace.path(),
+            &queries,
+            1_048_576,
+            &crate::models::lineage::LineageAuthorityContext::empty(),
+        )
+        .await
+        .expect("index notebook with snapshot");
+        assert_eq!(result.ingested, 1, "fixture notebook must be indexed");
+
+        let real_dir = source_dir.join("z");
+        fs::rename(&alias_dir, &real_dir).expect("rename alias winner");
+        if !create_symlink_dir(&real_dir, &alias_dir) {
+            return; // unprivileged Windows — directory symlink unsupported
+        }
+
+        let removed = super::sweep_deleted_notebook_files_from_snapshot(
+            &source,
+            workspace.path(),
+            &queries,
+            &collected,
+        )
+        .await
+        .expect("sweep with carried snapshot");
+
+        assert_eq!(
+            removed, 0,
+            "the carried index snapshot must retain its just-indexed alias path"
+        );
+        assert!(
+            remaining_notebook_paths(&queries, &source.path)
+                .await
+                .iter()
+                .any(|path| path == "nb/a/live.ipynb"),
+            "the path indexed from the authoritative snapshot must survive"
+        );
+    }
+
+    #[tokio::test]
+    async fn incomplete_notebook_materialization_retains_existing_record() {
+        let workspace = TempDir::new().expect("workspace tempdir");
+        let source_dir = workspace.path().join("nb");
+        fs::create_dir_all(&source_dir).expect("create notebook source");
+        let notebook_path = source_dir.join("live.ipynb");
+        fs::write(
+            &notebook_path,
+            r#"{"cells":[],"metadata":{},"nbformat":4,"nbformat_minor":5}"#,
+        )
+        .expect("write notebook");
+
+        let db_dir = TempDir::new().expect("db tempdir");
+        let db = crate::db::connect_db(db_dir.path(), "nb-incomplete-materialization")
+            .await
+            .expect("open test db");
+        let queries = CodeGraphQueries::new(db);
+        let source = notebook_source("nb");
+        let authority = crate::models::lineage::LineageAuthorityContext::empty();
+
+        super::index_notebook_source(&source, workspace.path(), &queries, 1_048_576, &authority)
+            .await
+            .expect("initial notebook index");
+        assert_eq!(
+            remaining_notebook_paths(&queries, &source.path).await,
+            vec!["nb/live.ipynb".to_string()]
+        );
+
+        fs::write(&notebook_path, [0xff, 0xfe]).expect("replace with invalid UTF-8");
+        let (_, collected) = super::index_notebook_source_with_snapshot(
+            &source,
+            workspace.path(),
+            &queries,
+            1_048_576,
+            &authority,
+        )
+        .await
+        .expect("partial notebook index");
+        assert!(
+            !collected.complete,
+            "a collected file that cannot be materialized must make the pass non-authoritative"
+        );
+
+        let removed = super::sweep_deleted_notebook_files_from_snapshot(
+            &source,
+            workspace.path(),
+            &queries,
+            &collected,
+        )
+        .await
+        .expect("sweep partial notebook snapshot");
+        assert_eq!(removed, 0);
+        assert_eq!(
+            remaining_notebook_paths(&queries, &source.path).await,
+            vec!["nb/live.ipynb".to_string()],
+            "last-known-good notebook data must survive incomplete materialization"
         );
     }
 

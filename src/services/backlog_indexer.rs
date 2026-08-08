@@ -6,7 +6,7 @@
 //! registry source has `content_type == "backlog"`.
 
 use std::collections::HashMap;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 use tracing::{debug, info, warn};
@@ -18,7 +18,10 @@ use crate::models::backlog_graph::{
 };
 use crate::models::registry::ContentSource;
 use crate::services::parsing::frontmatter;
-use crate::services::source_traversal::{collect_files_in_workspace, is_regular_file_in_workspace};
+use crate::services::source_traversal::{
+    CollectedFiles, collect_files_in_workspace, collect_files_in_workspace_checked,
+    reconcile_deleted_paths,
+};
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -47,45 +50,11 @@ pub fn compute_file_hash(content: &[u8]) -> String {
 /// remains under `workspace_root`.
 #[must_use]
 pub fn compute_deleted_paths(known_paths: &[String], workspace_root: &Path) -> Vec<String> {
-    let Ok(canonical_root) = workspace_root.canonicalize() else {
-        return known_paths.to_vec();
+    let collected = CollectedFiles {
+        files: Vec::new(),
+        complete: false,
     };
-
-    known_paths
-        .iter()
-        .filter_map(|raw| {
-            let Some(relative) = workspace_relative_path(raw) else {
-                warn!(
-                    path = %raw,
-                    "skipping backlog deletion sweep path that escapes the workspace root"
-                );
-                return None;
-            };
-            let candidate = workspace_root.join(relative);
-            let is_deleted = !is_regular_file_in_workspace(&candidate, &canonical_root);
-            is_deleted.then(|| raw.clone())
-        })
-        .collect()
-}
-
-/// Reject paths that cannot name a live in-workspace file.
-///
-/// Mirrors the Power BI, PBIP, and notebook indexers: absolute paths,
-/// root-relative paths (`\foo` / `/foo` on Windows), `..` traversal, and drive
-/// prefixes are refused so the deletion sweep never probes outside the
-/// workspace root.
-fn workspace_relative_path(rel_path: &str) -> Option<PathBuf> {
-    let path = Path::new(rel_path);
-    if path.is_absolute()
-        || path.has_root()
-        || path.components().any(|component| {
-            component == Component::ParentDir || matches!(component, Component::Prefix(_))
-        })
-    {
-        return None;
-    }
-
-    Some(path.to_path_buf())
+    reconcile_deleted_paths(known_paths, &collected, workspace_root)
 }
 
 /// Collect all backlog markdown files under `dir` recursively, sorted by path.
@@ -295,8 +264,31 @@ pub async fn index_backlog_source(
     queries: &CodeGraphQueries,
     max_file_size_bytes: u64,
 ) -> Result<BacklogIndexResult, EngramError> {
+    let (result, _) =
+        index_backlog_source_with_snapshot(source, workspace_root, queries, max_file_size_bytes)
+            .await?;
+    Ok(result)
+}
+
+/// Index backlog files and return the checked collection that authorized the
+/// operation so ingestion can reconcile without a second traversal.
+pub(crate) async fn index_backlog_source_with_snapshot(
+    source: &ContentSource,
+    workspace_root: &Path,
+    queries: &CodeGraphQueries,
+    max_file_size_bytes: u64,
+) -> Result<(BacklogIndexResult, CollectedFiles), EngramError> {
     let source_dir = workspace_root.join(&source.path);
     let source_path = &source.path;
+    let mut collected =
+        collect_files_in_workspace_checked(&source_dir, workspace_root, is_backlog_file);
+    if !collected.complete && collected.files.is_empty() {
+        warn!(
+            path = %source_dir.display(),
+            "backlog source collection is unavailable — skipping"
+        );
+        return Ok((BacklogIndexResult::default(), collected));
+    }
 
     // Load existing nodes for this source to build a hash-map for change detection.
     let existing_nodes = queries.select_backlog_nodes(Some(source_path)).await?;
@@ -306,28 +298,26 @@ pub async fn index_backlog_source(
         .collect();
 
     let mut result = BacklogIndexResult::default();
-
-    if !source_dir.exists() {
-        warn!(
-            path = %source_dir.display(),
-            "backlog source directory does not exist — skipping"
-        );
-        return Ok(result);
-    }
-
-    let files = collect_backlog_files_in_workspace(&source_dir, workspace_root);
+    let files = collected.files.clone();
     result.total_files = files.len();
 
     for file_path in &files {
         // Skip files that exceed the configured size limit.
-        if let Ok(meta) = std::fs::metadata(file_path) {
-            if meta.len() > max_file_size_bytes {
+        match std::fs::metadata(file_path) {
+            Ok(meta) if meta.len() > max_file_size_bytes => {
                 warn!(
                     path = %file_path.display(),
                     size = meta.len(),
                     limit = max_file_size_bytes,
                     "backlog file exceeds size limit — skipped"
                 );
+                collected.complete = false;
+                continue;
+            }
+            Ok(_) => {}
+            Err(error) => {
+                warn!(path = %file_path.display(), %error, "failed to stat backlog file");
+                collected.complete = false;
                 continue;
             }
         }
@@ -337,6 +327,7 @@ pub async fn index_backlog_source(
             Ok(b) => b,
             Err(e) => {
                 warn!(path = %file_path.display(), error = %e, "failed to read backlog file");
+                collected.complete = false;
                 continue;
             }
         };
@@ -373,8 +364,13 @@ pub async fn index_backlog_source(
                 .await?;
 
             result.ingested += 1;
+        } else {
+            warn!(
+                path = %file_path.display(),
+                "backlog file could not be extracted — retaining last-known-good index"
+            );
+            collected.complete = false;
         }
-        // else: file skipped (no id / no frontmatter) — not counted.
     }
 
     info!(
@@ -385,7 +381,7 @@ pub async fn index_backlog_source(
         "backlog source indexed"
     );
 
-    Ok(result)
+    Ok((result, collected))
 }
 
 /// Remove backlog nodes (and their content records) for files that no longer
@@ -404,11 +400,33 @@ pub async fn sweep_deleted_backlog_files(
     workspace_root: &Path,
     queries: &CodeGraphQueries,
 ) -> Result<usize, EngramError> {
+    let source_dir = workspace_root.join(&source.path);
+    let collected =
+        collect_files_in_workspace_checked(&source_dir, workspace_root, is_backlog_file);
+    sweep_deleted_backlog_files_from_snapshot(source, workspace_root, queries, &collected).await
+}
+
+/// Sweep backlog rows using the checked collection from the matching index
+/// pass.
+pub(crate) async fn sweep_deleted_backlog_files_from_snapshot(
+    source: &ContentSource,
+    workspace_root: &Path,
+    queries: &CodeGraphQueries,
+    collected: &CollectedFiles,
+) -> Result<usize, EngramError> {
+    if !collected.complete && collected.files.is_empty() {
+        debug!(
+            path = %source.path,
+            "backlog source directory does not exist — skipping deletion sweep (fail-closed)"
+        );
+        return Ok(0);
+    }
+
     let existing = queries.select_backlog_nodes(Some(&source.path)).await?;
 
     let known_paths: Vec<String> = existing.iter().map(|n| n.file_path.clone()).collect();
 
-    let deleted = compute_deleted_paths(&known_paths, workspace_root);
+    let deleted = reconcile_deleted_paths(&known_paths, collected, workspace_root);
     let mut removed = 0_usize;
 
     for rel in &deleted {
@@ -423,4 +441,128 @@ pub async fn sweep_deleted_backlog_files(
     }
 
     Ok(removed)
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use std::fs;
+
+    use tempfile::TempDir;
+
+    use super::*;
+
+    /// 110-S review: backlog ingestion and deletion share one checked
+    /// collection. Moving the just-indexed path after collection cannot delete
+    /// its node/content pair in that same operation.
+    #[tokio::test]
+    async fn carried_backlog_snapshot_retains_path_moved_after_collection() {
+        let workspace = TempDir::new().expect("workspace tempdir");
+        let alias_dir = workspace.path().join("queue").join("a");
+        fs::create_dir_all(&alias_dir).expect("create backlog source");
+        fs::write(
+            alias_dir.join("116-F.md"),
+            "---\nid: 116-F\ntitle: Snapshot control\nartifact_type: feature\nstatus: active\n---\n",
+        )
+        .expect("write backlog file");
+
+        let db_dir = TempDir::new().expect("db tempdir");
+        let db = crate::db::connect_db(db_dir.path(), "backlog-carried-snapshot")
+            .await
+            .expect("open test db");
+        let queries = CodeGraphQueries::new(db);
+        let source = ContentSource {
+            content_type: "backlog".to_string(),
+            language: None,
+            path: "queue".to_string(),
+            pattern: None,
+            optional: false,
+            status: crate::models::registry::ContentSourceStatus::default(),
+        };
+
+        let (result, collected) =
+            index_backlog_source_with_snapshot(&source, workspace.path(), &queries, 1_048_576)
+                .await
+                .expect("index backlog with snapshot");
+        assert_eq!(result.ingested, 1, "fixture backlog file must be indexed");
+
+        fs::rename(&alias_dir, workspace.path().join("queue").join("z"))
+            .expect("move collected path");
+        let removed = sweep_deleted_backlog_files_from_snapshot(
+            &source,
+            workspace.path(),
+            &queries,
+            &collected,
+        )
+        .await
+        .expect("sweep with carried backlog snapshot");
+
+        assert_eq!(
+            removed, 0,
+            "the matching snapshot must retain the just-indexed backlog path"
+        );
+        assert!(
+            queries
+                .select_backlog_nodes(Some(&source.path))
+                .await
+                .expect("backlog nodes after carried sweep")
+                .iter()
+                .any(|node| node.id == "116-F"),
+            "the just-indexed node must survive until the next pass"
+        );
+    }
+
+    #[tokio::test]
+    async fn incomplete_backlog_extraction_retains_existing_node() {
+        let workspace = TempDir::new().expect("workspace tempdir");
+        let source_dir = workspace.path().join("queue");
+        fs::create_dir_all(&source_dir).expect("create backlog source");
+        let backlog_path = source_dir.join("116-F.md");
+        fs::write(
+            &backlog_path,
+            "---\nid: 116-F\ntitle: Snapshot control\nartifact_type: feature\nstatus: active\n---\n",
+        )
+        .expect("write backlog file");
+
+        let db_dir = TempDir::new().expect("db tempdir");
+        let db = crate::db::connect_db(db_dir.path(), "backlog-incomplete-extraction")
+            .await
+            .expect("open test db");
+        let queries = CodeGraphQueries::new(db);
+        let source = ContentSource {
+            content_type: "backlog".to_string(),
+            language: None,
+            path: "queue".to_string(),
+            pattern: None,
+            optional: false,
+            status: crate::models::registry::ContentSourceStatus::default(),
+        };
+
+        index_backlog_source(&source, workspace.path(), &queries, 1_048_576)
+            .await
+            .expect("initial backlog index");
+        fs::write(
+            &backlog_path,
+            "---\ntitle: Missing identity\nartifact_type: feature\nstatus: active\n---\n",
+        )
+        .expect("replace with unextractable backlog file");
+
+        let (_, collected) =
+            index_backlog_source_with_snapshot(&source, workspace.path(), &queries, 1_048_576)
+                .await
+                .expect("partial backlog index");
+
+        assert!(
+            !collected.complete,
+            "an unextractable collected file must make the pass non-authoritative"
+        );
+        assert!(
+            queries
+                .select_backlog_nodes(Some(&source.path))
+                .await
+                .expect("backlog nodes after partial pass")
+                .iter()
+                .any(|node| node.id == "116-F"),
+            "last-known-good backlog node must survive incomplete extraction"
+        );
+    }
 }

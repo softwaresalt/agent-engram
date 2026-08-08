@@ -102,13 +102,23 @@ pub async fn ingest_all_sources(
         // Backlog sources use the dedicated backlog indexer.
         if source.content_type == "backlog" {
             use crate::services::backlog_indexer::{
-                index_backlog_source, sweep_deleted_backlog_files,
+                index_backlog_source_with_snapshot, sweep_deleted_backlog_files_from_snapshot,
             };
 
-            let result =
-                index_backlog_source(source, workspace_root, queries, config.max_file_size_bytes)
-                    .await?;
-            let removed = sweep_deleted_backlog_files(source, workspace_root, queries).await?;
+            let (result, collected) = index_backlog_source_with_snapshot(
+                source,
+                workspace_root,
+                queries,
+                config.max_file_size_bytes,
+            )
+            .await?;
+            let removed = sweep_deleted_backlog_files_from_snapshot(
+                source,
+                workspace_root,
+                queries,
+                &collected,
+            )
+            .await?;
             total_summary.ingested += result.ingested;
             total_summary.unchanged += result.unchanged;
             total_summary.removed += removed;
@@ -119,14 +129,14 @@ pub async fn ingest_all_sources(
         // Notebook sources use the dedicated Jupyter notebook indexer.
         if source.content_type == "notebook" {
             use crate::services::notebook_indexer::{
-                index_notebook_source, sweep_deleted_notebook_files,
+                index_notebook_source_with_snapshot, sweep_deleted_notebook_files_from_snapshot,
             };
 
             // U1b: build the trusted-authority context from the registry's
             // `[lineage]` config and thread it into the live indexer. Absent
             // config yields an empty context ⇒ fail-closed (no lineage edges).
             let authority_ctx = config.lineage.to_authority_context();
-            let result = index_notebook_source(
+            let (result, collected) = index_notebook_source_with_snapshot(
                 source,
                 workspace_root,
                 queries,
@@ -134,7 +144,13 @@ pub async fn ingest_all_sources(
                 &authority_ctx,
             )
             .await?;
-            let removed = sweep_deleted_notebook_files(source, workspace_root, queries).await?;
+            let removed = sweep_deleted_notebook_files_from_snapshot(
+                source,
+                workspace_root,
+                queries,
+                &collected,
+            )
+            .await?;
             total_summary.ingested += result.ingested;
             total_summary.unchanged += result.unchanged;
             total_summary.removed += removed;
@@ -145,13 +161,23 @@ pub async fn ingest_all_sources(
         // Power BI sources use the dedicated PBIP/JSON indexer.
         if source.content_type == "powerbi" {
             use crate::services::powerbi_indexer::{
-                index_powerbi_source, sweep_deleted_powerbi_files,
+                index_powerbi_source_with_snapshot, sweep_deleted_powerbi_files_from_snapshot,
             };
 
-            let result =
-                index_powerbi_source(source, workspace_root, queries, config.max_file_size_bytes)
-                    .await?;
-            let removed = sweep_deleted_powerbi_files(source, workspace_root, queries).await?;
+            let (result, collected) = index_powerbi_source_with_snapshot(
+                source,
+                workspace_root,
+                queries,
+                config.max_file_size_bytes,
+            )
+            .await?;
+            let removed = sweep_deleted_powerbi_files_from_snapshot(
+                source,
+                workspace_root,
+                queries,
+                &collected,
+            )
+            .await?;
             total_summary.ingested += result.ingested;
             total_summary.unchanged += result.unchanged;
             total_summary.removed += removed;
@@ -163,12 +189,20 @@ pub async fn ingest_all_sources(
         // Kept distinct from `powerbi` so the legacy JSON/BIM path stays stable
         // while the newer project-definition contract evolves under 062-F.
         if source.content_type == "pbip" {
-            use crate::services::pbip_indexer::{index_pbip_source, sweep_deleted_pbip_files};
+            use crate::services::pbip_indexer::{
+                index_pbip_source_with_snapshot, sweep_deleted_pbip_files_from_snapshot,
+            };
 
-            let result =
-                index_pbip_source(source, workspace_root, queries, config.max_file_size_bytes)
+            let (result, collected) = index_pbip_source_with_snapshot(
+                source,
+                workspace_root,
+                queries,
+                config.max_file_size_bytes,
+            )
+            .await?;
+            let removed =
+                sweep_deleted_pbip_files_from_snapshot(source, workspace_root, queries, &collected)
                     .await?;
-            let removed = sweep_deleted_pbip_files(source, workspace_root, queries).await?;
             total_summary.ingested += result.ingested;
             total_summary.unchanged += result.unchanged;
             total_summary.removed += removed;

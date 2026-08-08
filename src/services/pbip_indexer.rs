@@ -28,7 +28,7 @@
 //!   records and graph nodes for files removed from disk.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use tracing::{debug, info, warn};
@@ -48,7 +48,10 @@ use crate::services::powerbi_indexer::{
     build_powerbi_graph_data_from_model, compute_file_hash, extract_model_summaries_from_model,
     make_node_id,
 };
-use crate::services::source_traversal::{collect_files_in_workspace, is_regular_file_in_workspace};
+use crate::services::source_traversal::{
+    CollectedFiles, collect_files_in_workspace, collect_files_in_workspace_checked,
+    reconcile_deleted_paths,
+};
 
 /// File extensions that belong to the PBIP project-definition layout.
 ///
@@ -113,42 +116,11 @@ pub fn compute_deleted_paths(
     workspace_relative_paths: &[String],
     workspace_root: &Path,
 ) -> Vec<String> {
-    let Ok(canonical_root) = workspace_root.canonicalize() else {
-        return workspace_relative_paths.to_vec();
+    let collected = CollectedFiles {
+        files: Vec::new(),
+        complete: false,
     };
-
-    workspace_relative_paths
-        .iter()
-        .filter_map(|rel| {
-            let Some(relative_path) = workspace_relative_path(rel) else {
-                warn!(
-                    path = %rel,
-                    "skipping PBIP deletion sweep path that escapes the workspace root"
-                );
-                return None;
-            };
-            let candidate = workspace_root.join(relative_path);
-            let is_deleted = !is_regular_file_in_workspace(&candidate, &canonical_root);
-            is_deleted.then(|| rel.clone())
-        })
-        .collect()
-}
-
-fn workspace_relative_path(rel_path: &str) -> Option<PathBuf> {
-    let path = Path::new(rel_path);
-    // `has_root()` catches both Windows-style absolute paths (`C:\...`) and
-    // forward-slash absolute paths (`/etc/passwd`) on Windows, where
-    // `is_absolute()` requires a drive prefix and would otherwise let
-    // `/etc/passwd` slip through.
-    if path.is_absolute()
-        || path.has_root()
-        || path.components().any(|component| {
-            component == Component::ParentDir || matches!(component, Component::Prefix(_))
-        })
-    {
-        return None;
-    }
-    Some(path.to_path_buf())
+    reconcile_deleted_paths(workspace_relative_paths, &collected, workspace_root)
 }
 
 // ── Async indexer ─────────────────────────────────────────────────────────
@@ -658,34 +630,53 @@ pub async fn index_pbip_source(
     queries: &CodeGraphQueries,
     max_file_size: u64,
 ) -> Result<PbipIndexResult, EngramError> {
+    let (result, _) =
+        index_pbip_source_with_snapshot(source, workspace_root, queries, max_file_size).await?;
+    Ok(result)
+}
+
+/// Index PBIP files and return the checked collection that authorized the
+/// operation so ingestion can reconcile without a second traversal.
+pub(crate) async fn index_pbip_source_with_snapshot(
+    source: &ContentSource,
+    workspace_root: &Path,
+    queries: &CodeGraphQueries,
+    max_file_size: u64,
+) -> Result<(PbipIndexResult, CollectedFiles), EngramError> {
     let mut result = PbipIndexResult::default();
 
     let source_dir = workspace_root.join(&source.path);
-    if !source_dir.exists() {
+    let mut collected =
+        collect_files_in_workspace_checked(&source_dir, workspace_root, is_pbip_file);
+    if !collected.complete && collected.files.is_empty() {
         debug!(
             path = %source.path,
-            "PBIP source directory does not exist — skipping"
+            "PBIP source collection is unavailable — skipping"
         );
-        return Ok(result);
+        return Ok((result, collected));
     }
 
-    let files = collect_pbip_files_in_workspace(&source_dir, workspace_root);
+    let files = collected.files.clone();
     result.total_files = files.len();
 
     // Snapshot every collected, in-bounds, UTF-8 file.
     let mut file_data: BTreeMap<String, FileData> = BTreeMap::new();
     for path in &files {
         let Ok(metadata) = path.metadata() else {
+            collected.complete = false;
             continue;
         };
         if metadata.len() > max_file_size {
             debug!(path = %path.display(), "PBIP file exceeds max_file_size — skipping");
+            collected.complete = false;
             continue;
         }
         let Ok(bytes) = std::fs::read(path) else {
+            collected.complete = false;
             continue;
         };
         let Ok(text) = std::str::from_utf8(&bytes) else {
+            collected.complete = false;
             continue;
         };
         let Some(rel_path) = snapshot_relative_path(path, workspace_root) else {
@@ -693,6 +684,7 @@ pub async fn index_pbip_source(
                 path = %path.display(),
                 "skipping PBIP file that cannot be made workspace-relative"
             );
+            collected.complete = false;
             continue;
         };
         file_data.insert(
@@ -732,7 +724,15 @@ pub async fn index_pbip_source(
             total_files = result.total_files,
             "PBIP source unchanged — skipping re-index"
         );
-        return Ok(result);
+        return Ok((result, collected));
+    }
+
+    if !collected.complete && !existing.is_empty() {
+        warn!(
+            path = %source.path,
+            "PBIP source materialization incomplete — retaining last-known-good index"
+        );
+        return Ok((result, collected));
     }
 
     // Full rebuild: clear existing records and graph for this source. Scope the
@@ -842,7 +842,7 @@ pub async fn index_pbip_source(
         "PBIP indexing complete"
     );
 
-    Ok(result)
+    Ok((result, collected))
 }
 
 /// Sweep deleted PBIP project-definition files from the index.
@@ -859,6 +859,26 @@ pub async fn sweep_deleted_pbip_files(
     workspace_root: &Path,
     queries: &CodeGraphQueries,
 ) -> Result<usize, EngramError> {
+    let source_dir = workspace_root.join(&source.path);
+    let collected = collect_files_in_workspace_checked(&source_dir, workspace_root, is_pbip_file);
+    sweep_deleted_pbip_files_from_snapshot(source, workspace_root, queries, &collected).await
+}
+
+/// Sweep PBIP rows using the checked collection from the matching index pass.
+pub(crate) async fn sweep_deleted_pbip_files_from_snapshot(
+    source: &ContentSource,
+    workspace_root: &Path,
+    queries: &CodeGraphQueries,
+    collected: &CollectedFiles,
+) -> Result<usize, EngramError> {
+    if !collected.complete && collected.files.is_empty() {
+        debug!(
+            path = %source.path,
+            "PBIP source directory does not exist — skipping deletion sweep (fail-closed)"
+        );
+        return Ok(0);
+    }
+
     let records = queries.select_content_records(Some("pbip")).await?;
 
     let known_paths: Vec<String> = records
@@ -869,7 +889,7 @@ pub async fn sweep_deleted_pbip_files(
         .into_iter()
         .collect();
 
-    let deleted = compute_deleted_paths(&known_paths, workspace_root);
+    let deleted = reconcile_deleted_paths(&known_paths, collected, workspace_root);
     let mut removed = 0_usize;
 
     for path in &deleted {
@@ -1004,6 +1024,17 @@ mod tests {
 
     fn build(files: &BTreeMap<String, FileData>) -> PbipEmission {
         EmissionBuilder::new(files, "proj", Path::new(".")).build()
+    }
+
+    fn pbip_test_source(path: &str) -> ContentSource {
+        ContentSource {
+            content_type: "pbip".to_string(),
+            language: None,
+            path: path.to_string(),
+            pattern: None,
+            optional: false,
+            status: crate::models::registry::ContentSourceStatus::default(),
+        }
     }
 
     /// S-PIDX-01: report→page→visual contains edges are emitted, and the node
@@ -1220,6 +1251,101 @@ mod tests {
             snapshot_relative_path(&outside, &root),
             None,
             "a path outside the workspace root is rejected"
+        );
+    }
+
+    /// 110-S review: a live PBIP file that cannot be materialized under the
+    /// current size policy makes the pass non-authoritative. A source-wide
+    /// rebuild must retain the last-known-good records rather than replace them
+    /// from a partial snapshot.
+    #[tokio::test]
+    async fn incomplete_pbip_materialization_retains_existing_records() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let source_dir = workspace.path().join("proj");
+        std::fs::create_dir_all(&source_dir).expect("create PBIP source");
+        std::fs::write(
+            source_dir.join("live.pbip"),
+            r#"{"version":"1.0","artifacts":[]}"#,
+        )
+        .expect("write PBIP file");
+
+        let db_dir = tempfile::tempdir().expect("db tempdir");
+        let db = crate::db::connect_db(db_dir.path(), "pbip-incomplete-materialization")
+            .await
+            .expect("open test db");
+        let queries = CodeGraphQueries::new(db);
+        let source = pbip_test_source("proj");
+
+        index_pbip_source(&source, workspace.path(), &queries, 1_048_576)
+            .await
+            .expect("initial PBIP index");
+        let before = queries
+            .select_content_records(Some("pbip"))
+            .await
+            .expect("PBIP records before partial pass");
+        assert!(!before.is_empty(), "fixture must create PBIP records");
+
+        index_pbip_source(&source, workspace.path(), &queries, 1)
+            .await
+            .expect("partial PBIP index");
+        let after = queries
+            .select_content_records(Some("pbip"))
+            .await
+            .expect("PBIP records after partial pass");
+
+        assert_eq!(
+            after.len(),
+            before.len(),
+            "a partial materialization must retain last-known-good PBIP records"
+        );
+    }
+
+    /// 110-S review: PBIP ingestion carries its checked snapshot into the
+    /// sweep. Moving the just-indexed path after collection cannot delete its
+    /// record in that same operation.
+    #[tokio::test]
+    async fn carried_pbip_snapshot_retains_path_moved_after_collection() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let alias_dir = workspace.path().join("proj").join("a");
+        std::fs::create_dir_all(&alias_dir).expect("create PBIP source");
+        std::fs::write(
+            alias_dir.join("live.pbip"),
+            r#"{"version":"1.0","artifacts":[]}"#,
+        )
+        .expect("write PBIP file");
+
+        let db_dir = tempfile::tempdir().expect("db tempdir");
+        let db = crate::db::connect_db(db_dir.path(), "pbip-carried-snapshot")
+            .await
+            .expect("open test db");
+        let queries = CodeGraphQueries::new(db);
+        let source = pbip_test_source("proj");
+
+        let (result, collected) =
+            index_pbip_source_with_snapshot(&source, workspace.path(), &queries, 1_048_576)
+                .await
+                .expect("index PBIP with snapshot");
+        assert_eq!(result.ingested, 1, "fixture PBIP file must be indexed");
+
+        std::fs::rename(&alias_dir, workspace.path().join("proj").join("z"))
+            .expect("move collected path");
+        let removed =
+            sweep_deleted_pbip_files_from_snapshot(&source, workspace.path(), &queries, &collected)
+                .await
+                .expect("sweep with carried PBIP snapshot");
+
+        assert_eq!(
+            removed, 0,
+            "the matching snapshot must retain the just-indexed PBIP path"
+        );
+        assert!(
+            queries
+                .select_content_records(Some("pbip"))
+                .await
+                .expect("PBIP records after carried sweep")
+                .iter()
+                .any(|record| record.file_path == "proj/a/live.pbip"),
+            "the just-indexed PBIP record must survive until the next pass"
         );
     }
 

@@ -4,6 +4,7 @@
 //! `query_memory` returns backlog content, deletion sweep, performance.
 
 use std::fs;
+use std::path::Path;
 use tempfile::TempDir;
 
 fn write_backlog_file(dir: &std::path::Path, name: &str, id: &str, title: &str, kind: &str) {
@@ -11,6 +12,16 @@ fn write_backlog_file(dir: &std::path::Path, name: &str, id: &str, title: &str, 
         "---\nid: {id}\ntitle: {title}\nartifact_type: {kind}\nstatus: queued\n---\n\n## Description\n\nThis is the description for {title}.\n"
     );
     fs::write(dir.join(name), content).expect("write backlog file");
+}
+
+#[cfg(unix)]
+fn symlink_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(src, dst)
+}
+
+#[cfg(windows)]
+fn symlink_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_dir(src, dst)
 }
 
 /// S-BH-01: Registry with backlog source is parsed and recognized.
@@ -203,6 +214,123 @@ async fn deletion_sweep_cleans_stale_nodes() {
         .expect("select after sweep");
     assert_eq!(remaining.len(), 1, "only 061-F should remain");
     assert_eq!(remaining[0].id, "061-F");
+}
+
+/// 110-S U3: an unavailable backlog source root is non-authoritative and must
+/// retain the paired graph/content rows from the last successful pass.
+#[cfg(feature = "cozo-backend")]
+#[tokio::test]
+async fn deletion_sweep_retains_nodes_when_source_root_is_unavailable() {
+    use engram::db::connect_db;
+    use engram::db::queries::CodeGraphQueries;
+    use engram::services::backlog_indexer::sweep_deleted_backlog_files;
+    use engram::services::ingestion::ingest_all_sources;
+    use engram::services::registry::parse_registry_yaml;
+
+    let dir = TempDir::new().expect("tempdir");
+    let queue_dir = dir.path().join(".backlogit").join("queue");
+    fs::create_dir_all(&queue_dir).expect("create queue dir");
+    write_backlog_file(
+        &queue_dir,
+        "062-F.md",
+        "062-F",
+        "Retained during outage",
+        "feature",
+    );
+
+    let config = parse_registry_yaml("sources:\n  - type: backlog\n    path: .backlogit/queue\n")
+        .expect("parse registry");
+    let db = connect_db(dir.path(), "backlog-sweep-missing-root")
+        .await
+        .expect("connect_db");
+    let queries = CodeGraphQueries::new(db);
+
+    ingest_all_sources(&config, dir.path(), &queries)
+        .await
+        .expect("ingest");
+    fs::rename(
+        &queue_dir,
+        dir.path().join(".backlogit").join("queue-unavailable"),
+    )
+    .expect("make source root unavailable");
+
+    let removed = sweep_deleted_backlog_files(&config.sources[0], dir.path(), &queries)
+        .await
+        .expect("deletion sweep");
+    assert_eq!(
+        removed, 0,
+        "an unavailable source root must suppress the deletion sweep"
+    );
+    assert!(
+        queries
+            .select_backlog_nodes(None)
+            .await
+            .expect("nodes after unavailable root")
+            .iter()
+            .any(|node| node.id == "062-F"),
+        "the live control node must be retained"
+    );
+}
+
+/// 110-S U3: a complete traversal may retire a physically-live stale alias
+/// when the canonical directory winner changes within the workspace.
+#[cfg(feature = "cozo-backend")]
+#[tokio::test]
+async fn deletion_sweep_removes_alias_superseded_on_complete_pass() {
+    use engram::db::connect_db;
+    use engram::db::queries::CodeGraphQueries;
+    use engram::services::backlog_indexer::{index_backlog_source, sweep_deleted_backlog_files};
+    use engram::services::registry::parse_registry_yaml;
+
+    let dir = TempDir::new().expect("tempdir");
+    let queue_dir = dir.path().join(".backlogit").join("queue");
+    let alias_dir = queue_dir.join("a");
+    fs::create_dir_all(&alias_dir).expect("create alias dir");
+    write_backlog_file(
+        &alias_dir,
+        "063-F.md",
+        "063-F",
+        "Superseded alias",
+        "feature",
+    );
+
+    let config = parse_registry_yaml("sources:\n  - type: backlog\n    path: .backlogit/queue\n")
+        .expect("parse registry");
+    let source = &config.sources[0];
+    let db = connect_db(dir.path(), "backlog-sweep-alias")
+        .await
+        .expect("connect_db");
+    let queries = CodeGraphQueries::new(db);
+
+    index_backlog_source(source, dir.path(), &queries, config.max_file_size_bytes)
+        .await
+        .expect("index alias path");
+
+    let real_dir = queue_dir.join("z");
+    fs::rename(&alias_dir, &real_dir).expect("rename alias winner");
+    if let Err(error) = symlink_dir(&real_dir, &alias_dir) {
+        eprintln!(
+            "skipping alias-supersession assertion: cannot create directory symlink: {error}"
+        );
+        return;
+    }
+
+    let removed = sweep_deleted_backlog_files(source, dir.path(), &queries)
+        .await
+        .expect("deletion sweep");
+    assert_eq!(
+        removed, 1,
+        "the complete pass must remove the superseded alias path"
+    );
+    assert!(
+        !queries
+            .select_backlog_nodes(None)
+            .await
+            .expect("nodes after alias replacement")
+            .iter()
+            .any(|node| node.id == "063-F"),
+        "the stale alias node must be removed with its content row"
+    );
 }
 
 /// S-BH-06: Performance — 100+ items indexed in under 5 seconds.

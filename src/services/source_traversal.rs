@@ -59,6 +59,51 @@ pub(crate) fn collect_files_in_workspace_checked(
             complete: false,
         };
     };
+    let relative_dir = match dir.strip_prefix(workspace_root) {
+        Ok(relative)
+            if !relative.components().any(|component| {
+                matches!(
+                    component,
+                    Component::ParentDir | Component::RootDir | Component::Prefix(_)
+                )
+            }) =>
+        {
+            relative
+        }
+        _ => {
+            warn!(
+                dir = %dir.display(),
+                workspace_root = %workspace_root.display(),
+                "rejecting traversal root outside workspace before filesystem access"
+            );
+            return CollectedFiles {
+                files,
+                complete: false,
+            };
+        }
+    };
+    debug_assert!(
+        relative_dir.components().all(|component| !matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )),
+        "validated traversal root must remain workspace-relative"
+    );
+    let Ok(canonical_dir) = dir.canonicalize() else {
+        return CollectedFiles {
+            files,
+            complete: false,
+        };
+    };
+    if !canonical_dir.starts_with(&canonical_root) {
+        // The requested traversal root is outside the workspace authority
+        // bound. Reject it before recursion so an out-of-workspace tree can
+        // never certify an authoritative empty pass.
+        return CollectedFiles {
+            files,
+            complete: false,
+        };
+    }
     let mut visited = HashSet::new();
     let mut complete = true;
     collect_recursive(
@@ -72,24 +117,6 @@ pub(crate) fn collect_files_in_workspace_checked(
     files.sort();
     files.dedup();
     CollectedFiles { files, complete }
-}
-
-/// Return true when `path` is a physical regular file whose canonical target
-/// remains under `canonical_root`.
-///
-/// The final path component is inspected with `symlink_metadata`, so a file
-/// symlink is not treated as live. Intermediate directory symlinks still work
-/// when their resolved target remains inside the workspace.
-#[must_use]
-pub(crate) fn is_regular_file_in_workspace(path: &Path, canonical_root: &Path) -> bool {
-    let Ok(metadata) = std::fs::symlink_metadata(path) else {
-        return false;
-    };
-    if !metadata.file_type().is_file() {
-        return false;
-    }
-    path.canonicalize()
-        .is_ok_and(|canonical| canonical.starts_with(canonical_root))
 }
 
 fn collect_recursive(
@@ -242,48 +269,65 @@ fn entry_rank(file_type: &FileType) -> u8 {
     }
 }
 
-/// Fail-closed physical-absence oracle for the shared deletion reconciler.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PhysicalState {
+    Present,
+    Absent,
+    Unknown,
+}
+
+/// Fail-closed physical-state oracle for the shared deletion reconciler.
 ///
-/// Returns `true` only when the stored path is *provably* gone: a `NotFound`
+/// Returns [`PhysicalState::Absent`] only when the stored path is *provably* gone: a `NotFound`
 /// from `symlink_metadata`/`canonicalize`, a path that now resolves to a
 /// non-file, or one whose real target escapes the workspace. A transient error
 /// (`PermissionDenied`, other I/O) cannot prove absence — an unreadable parent
-/// directory still contains a live file — so the record is retained (`false`).
+/// directory still contains a live file — so it produces
+/// [`PhysicalState::Unknown`].
 /// The safety floor forbids deleting a live record we merely failed to stat.
 ///
-/// This is intentionally distinct from the shared
-/// [`is_regular_file_in_workspace`], which the out-of-scope backlog/pbip
-/// `compute_deleted_paths` still call with their historical fail-open on
-/// transient errors (tracked as a separate follow-up).
-fn is_physically_absent(path: &Path, canonical_root: &Path) -> bool {
+/// This is the shared physical-absence primitive used by all deletion
+/// reconciliation paths; transient errors always retain the stored record.
+fn physical_state(path: &Path, canonical_root: &Path) -> PhysicalState {
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return PhysicalState::Absent;
+        }
         Err(error) => {
             warn!(
                 path = %path.display(),
                 %error,
                 "retaining stored record: cannot stat path to prove absence (fail-closed)"
             );
-            return false;
+            return PhysicalState::Unknown;
         }
     };
     if !metadata.file_type().is_file() {
         // The path exists but is no longer the regular file we stored (e.g. it
         // was replaced by a directory): the original file is genuinely gone.
-        return true;
+        return PhysicalState::Absent;
     }
     match path.canonicalize() {
-        Ok(canonical) => !canonical.starts_with(canonical_root),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Ok(canonical) if canonical.starts_with(canonical_root) => PhysicalState::Present,
+        Ok(_) => PhysicalState::Absent,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => PhysicalState::Absent,
         Err(error) => {
             warn!(
                 path = %path.display(),
                 %error,
                 "retaining stored record: cannot canonicalize present path (fail-closed)"
             );
-            false
+            PhysicalState::Unknown
         }
+    }
+}
+
+fn should_delete(state: PhysicalState, collection_complete: bool) -> bool {
+    match state {
+        PhysicalState::Absent => true,
+        PhysicalState::Present => collection_complete,
+        PhysicalState::Unknown => false,
     }
 }
 
@@ -364,14 +408,22 @@ pub(crate) fn reconcile_deleted_paths(
                 );
                 return None;
             };
+            let not_collected = !collected_rel.contains(stored);
+            if !not_collected {
+                // A path present in this pass's authoritative snapshot cannot
+                // become deletion evidence because the filesystem changed
+                // after collection. Reconcile that change on the next pass.
+                return None;
+            }
             let candidate = workspace_root.join(relative_path);
-            let physically_absent = is_physically_absent(&candidate, &canonical_root);
+            let state = physical_state(&candidate, &canonical_root);
             // INV-1/INV-2: an alias-stale record (still physically present) is
             // reconciled away only when the collection was
             // authoritative-complete; a partial pass retains it (fail-closed).
-            let not_collected = !collected_rel.contains(stored);
-            let stale = physically_absent || (collected.complete && not_collected);
-            stale.then(|| stored.clone())
+            // Unknown inspection state is never deletion evidence, including
+            // after an otherwise complete traversal.
+            let should_remove = should_delete(state, collected.complete);
+            should_remove.then(|| stored.clone())
         })
         .collect()
 }
@@ -383,10 +435,16 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::{CollectedFiles, reconcile_deleted_paths};
+    use super::{CollectedFiles, PhysicalState, reconcile_deleted_paths, should_delete};
 
     fn stored(paths: &[&str]) -> Vec<String> {
         paths.iter().map(|p| (*p).to_owned()).collect()
+    }
+
+    #[test]
+    fn unknown_physical_state_never_authorizes_deletion() {
+        assert!(!should_delete(PhysicalState::Unknown, true));
+        assert!(!should_delete(PhysicalState::Unknown, false));
     }
 
     /// INV-1 (alias-stale): the stored path is still physically present (its real
@@ -437,6 +495,30 @@ mod tests {
         assert!(
             deleted.is_empty(),
             "a live, collected record must never be deleted; got {deleted:?}"
+        );
+    }
+
+    /// 110-S review: once a path was present in the carried index snapshot, a
+    /// later filesystem change cannot turn that same operation into deletion
+    /// authority. The next checked pass may reconcile it, but this pass retains
+    /// the just-indexed record.
+    #[test]
+    fn path_present_in_snapshot_is_retained_if_removed_after_collection() {
+        let workspace = TempDir::new().expect("workspace tempdir");
+        let live = workspace.path().join("live.ipynb");
+        fs::write(&live, "{}").expect("write live notebook");
+        let collected = CollectedFiles {
+            files: vec![live.clone()],
+            complete: true,
+        };
+
+        fs::remove_file(live).expect("remove after collection");
+        let deleted =
+            reconcile_deleted_paths(&stored(&["live.ipynb"]), &collected, workspace.path());
+
+        assert!(
+            deleted.is_empty(),
+            "the carried snapshot must retain its just-indexed path; got {deleted:?}"
         );
     }
 
@@ -534,6 +616,34 @@ mod tests {
 
         let via_wrapper = super::collect_files_in_workspace(&dir, workspace.path(), is_ipynb);
         assert_eq!(via_wrapper.len(), collected.files.len());
+    }
+
+    /// 110-S U1: a traversal root outside the workspace cannot certify an
+    /// authoritative empty pass. The guard must reject it before recursion so
+    /// no out-of-workspace file is collected or treated as deletion evidence.
+    #[test]
+    fn checked_collector_rejects_out_of_workspace_root_as_non_authoritative() {
+        fn is_ipynb(path: &std::path::Path) -> bool {
+            path.extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("ipynb"))
+        }
+
+        let workspace = TempDir::new().expect("workspace tempdir");
+        let outside = TempDir::new().expect("outside tempdir");
+        fs::write(outside.path().join("live.ipynb"), "{}").expect("write outside notebook");
+
+        let collected =
+            super::collect_files_in_workspace_checked(outside.path(), workspace.path(), is_ipynb);
+
+        assert!(
+            collected.files.is_empty(),
+            "an out-of-workspace traversal root must yield no files"
+        );
+        assert!(
+            !collected.complete,
+            "an out-of-workspace traversal root must be non-authoritative"
+        );
     }
 
     /// 100-S review P1-A (fail-closed): a subdirectory whose entries can be
