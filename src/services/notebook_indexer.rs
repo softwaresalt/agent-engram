@@ -140,22 +140,16 @@ pub(crate) async fn index_notebook_source_with_snapshot(
     let mut result = NotebookIndexResult::default();
 
     let source_dir = workspace_root.join(&source.path);
-    if !source_dir.exists() {
-        debug!(
-            path = %source.path,
-            "Notebook source directory does not exist — skipping"
-        );
-        return Ok((
-            result,
-            CollectedFiles {
-                files: Vec::new(),
-                complete: false,
-            },
-        ));
-    }
-
     let collected =
         collect_files_in_workspace_checked(&source_dir, workspace_root, is_notebook_file);
+    if !collected.complete && collected.files.is_empty() {
+        debug!(
+            path = %source.path,
+            "Notebook source collection is unavailable — skipping"
+        );
+        return Ok((result, collected));
+    }
+
     let files = &collected.files;
     result.total_files = files.len();
 
@@ -422,8 +416,7 @@ pub(crate) async fn sweep_deleted_notebook_files_from_snapshot(
     // an unmounted share). Legitimate source removal is handled by source
     // de-registration, not the per-file sweep. Mirrors index_notebook_source's
     // graceful skip so the indexer and sweep stay consistent.
-    let source_dir = workspace_root.join(&source.path);
-    if !source_dir.is_dir() {
+    if !collected.complete && collected.files.is_empty() {
         debug!(
             path = %source.path,
             "notebook source directory does not exist — skipping deletion sweep (fail-closed)"

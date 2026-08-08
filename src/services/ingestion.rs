@@ -102,13 +102,23 @@ pub async fn ingest_all_sources(
         // Backlog sources use the dedicated backlog indexer.
         if source.content_type == "backlog" {
             use crate::services::backlog_indexer::{
-                index_backlog_source, sweep_deleted_backlog_files,
+                index_backlog_source_with_snapshot, sweep_deleted_backlog_files_from_snapshot,
             };
 
-            let result =
-                index_backlog_source(source, workspace_root, queries, config.max_file_size_bytes)
-                    .await?;
-            let removed = sweep_deleted_backlog_files(source, workspace_root, queries).await?;
+            let (result, collected) = index_backlog_source_with_snapshot(
+                source,
+                workspace_root,
+                queries,
+                config.max_file_size_bytes,
+            )
+            .await?;
+            let removed = sweep_deleted_backlog_files_from_snapshot(
+                source,
+                workspace_root,
+                queries,
+                &collected,
+            )
+            .await?;
             total_summary.ingested += result.ingested;
             total_summary.unchanged += result.unchanged;
             total_summary.removed += removed;
@@ -179,12 +189,20 @@ pub async fn ingest_all_sources(
         // Kept distinct from `powerbi` so the legacy JSON/BIM path stays stable
         // while the newer project-definition contract evolves under 062-F.
         if source.content_type == "pbip" {
-            use crate::services::pbip_indexer::{index_pbip_source, sweep_deleted_pbip_files};
+            use crate::services::pbip_indexer::{
+                index_pbip_source_with_snapshot, sweep_deleted_pbip_files_from_snapshot,
+            };
 
-            let result =
-                index_pbip_source(source, workspace_root, queries, config.max_file_size_bytes)
+            let (result, collected) = index_pbip_source_with_snapshot(
+                source,
+                workspace_root,
+                queries,
+                config.max_file_size_bytes,
+            )
+            .await?;
+            let removed =
+                sweep_deleted_pbip_files_from_snapshot(source, workspace_root, queries, &collected)
                     .await?;
-            let removed = sweep_deleted_pbip_files(source, workspace_root, queries).await?;
             total_summary.ingested += result.ingested;
             total_summary.unchanged += result.unchanged;
             total_summary.removed += removed;

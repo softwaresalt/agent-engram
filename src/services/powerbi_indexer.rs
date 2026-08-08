@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 use sha2::{Digest, Sha256};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::db::queries::CodeGraphQueries;
 use crate::errors::EngramError;
@@ -1141,8 +1141,9 @@ fn build_model_scope_schemas(
     files: &[PathBuf],
     workspace_root: &Path,
     max_file_size: u64,
-) -> HashMap<String, ModelScopeSchema> {
+) -> (HashMap<String, ModelScopeSchema>, bool) {
     let mut schemas: HashMap<String, ModelScopeSchema> = HashMap::new();
+    let mut complete = true;
     for file_path in files {
         let is_tmdl = file_path
             .extension()
@@ -1156,14 +1157,22 @@ fn build_model_scope_schemas(
         // reference against it would emit a `pbi_uses_field` edge to a node that
         // is never upserted (a dangling edge) while bypassing `max_file_size`.
         match file_path.metadata() {
-            Ok(metadata) if metadata.len() > max_file_size => continue,
+            Ok(metadata) if metadata.len() > max_file_size => {
+                complete = false;
+                continue;
+            }
             Ok(_) => {}
-            Err(_) => continue,
+            Err(_) => {
+                complete = false;
+                continue;
+            }
         }
         let Ok(content_bytes) = std::fs::read(file_path) else {
+            complete = false;
             continue;
         };
         let Ok(content_str) = std::str::from_utf8(&content_bytes) else {
+            complete = false;
             continue;
         };
         let rel_path = file_path
@@ -1177,7 +1186,7 @@ fn build_model_scope_schemas(
         let scope = canonical_tmdl_model_path(&rel_path);
         schemas.entry(scope).or_default().add_model(&model);
     }
-    schemas
+    (schemas, complete)
 }
 
 /// Return `true` when `rel_path` names a `.tmdl` file (case-insensitive).
@@ -1206,9 +1215,10 @@ fn compute_dirty_model_scopes(
     workspace_root: &Path,
     existing_hashes: &HashMap<String, String>,
     max_file_size: u64,
-) -> HashSet<String> {
+) -> (HashSet<String>, bool) {
     let mut dirty: HashSet<String> = HashSet::new();
     let mut seen_tmdl_rel_paths: HashSet<String> = HashSet::new();
+    let mut complete = true;
 
     for file_path in files {
         if !file_path
@@ -1219,15 +1229,19 @@ fn compute_dirty_model_scopes(
             continue;
         }
         let Ok(metadata) = file_path.metadata() else {
+            complete = false;
             continue;
         };
         if metadata.len() > max_file_size {
+            complete = false;
             continue;
         }
         let Ok(content_bytes) = std::fs::read(file_path) else {
+            complete = false;
             continue;
         };
         if std::str::from_utf8(&content_bytes).is_err() {
+            complete = false;
             continue;
         }
         let rel_path = file_path
@@ -1252,7 +1266,7 @@ fn compute_dirty_model_scopes(
         }
     }
 
-    dirty
+    (dirty, complete)
 }
 
 // ── Async indexer ─────────────────────────────────────────────────────────
@@ -1290,22 +1304,16 @@ pub(crate) async fn index_powerbi_source_with_snapshot(
     let mut result = PowerBiIndexResult::default();
 
     let source_dir = workspace_root.join(&source.path);
-    if !source_dir.is_dir() {
+    let mut collected =
+        collect_files_in_workspace_checked(&source_dir, workspace_root, is_powerbi_file);
+    if !collected.complete {
         debug!(
             path = %source.path,
-            "Power BI source directory does not exist — skipping"
+            "Power BI source collection is non-authoritative — skipping"
         );
-        return Ok((
-            result,
-            CollectedFiles {
-                files: Vec::new(),
-                complete: false,
-            },
-        ));
+        return Ok((result, collected));
     }
 
-    let collected =
-        collect_files_in_workspace_checked(&source_dir, workspace_root, is_powerbi_file);
     let files = collected.files.as_slice();
     result.total_files = files.len();
 
@@ -1313,7 +1321,8 @@ pub(crate) async fn index_powerbi_source_with_snapshot(
     // references that cross sibling files (e.g. a measure in `Sales.tmdl` using
     // `'Date'[Date]`) resolve against the whole model rather than the single
     // file currently being indexed (P3).
-    let model_scope_schemas = build_model_scope_schemas(files, workspace_root, max_file_size);
+    let (model_scope_schemas, schemas_complete) =
+        build_model_scope_schemas(files, workspace_root, max_file_size);
 
     // 087.006-T (Unit D): source the hash-skip map from the durable completion
     // marker (`powerbi_file_index_state`), NOT the content rows. A file counts
@@ -1328,8 +1337,16 @@ pub(crate) async fn index_powerbi_source_with_snapshot(
     // P3b (`085.008-T`): model-scope invalidation. Determine which model scopes
     // changed on this pass so unchanged siblings are reprocessed and their
     // cross-file reference edges re-resolve against the current schema.
-    let dirty_scopes =
+    let (dirty_scopes, dirty_scopes_complete) =
         compute_dirty_model_scopes(files, workspace_root, &existing_hashes, max_file_size);
+    if !schemas_complete || !dirty_scopes_complete {
+        collected.complete = false;
+        warn!(
+            path = %source.path,
+            "Power BI source materialization incomplete — retaining last-known-good index"
+        );
+        return Ok((result, collected));
+    }
 
     // Pre-delete every previously-indexed `.tmdl` artifact belonging to a dirty
     // scope BEFORE rebuilding any sibling (all-deletes-before-all-builds). Node
@@ -1625,8 +1642,7 @@ pub(crate) async fn sweep_deleted_powerbi_files_from_snapshot(
     // an unmounted share). Legitimate source removal is handled by source
     // de-registration, not the per-file sweep. Mirrors index_powerbi_source's
     // graceful skip so the indexer and sweep stay consistent.
-    let source_dir = workspace_root.join(&source.path);
-    if !source_dir.is_dir() {
+    if !collected.complete && collected.files.is_empty() {
         debug!(
             path = %source.path,
             "Power BI source directory does not exist — skipping deletion sweep (fail-closed)"
@@ -2323,6 +2339,69 @@ table Sales
         assert_eq!(
             second.unchanged, 1,
             "unchanged file is hash-skipped via the completion marker"
+        );
+    }
+
+    /// 110-S review: a collected TMDL file that cannot be materialized under
+    /// the current size policy makes the pass non-authoritative. Dirty-scope
+    /// invalidation must retain its marker/content rather than pre-deleting a
+    /// live scope from incomplete evidence.
+    #[tokio::test]
+    async fn incomplete_tmdl_materialization_retains_marker_and_content() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let model_dir = workspace.path().join("models").join("Sales.SemanticModel");
+        std::fs::create_dir_all(&model_dir).expect("create model dir");
+        let rel_path = "models/Sales.SemanticModel/model.tmdl";
+        std::fs::write(
+            workspace.path().join(rel_path),
+            "model Sales\n\nref table Sales\n",
+        )
+        .expect("write model.tmdl");
+
+        let db_dir = tempfile::tempdir().expect("db tempdir");
+        let db = crate::db::connect_db(db_dir.path(), "pbi-incomplete-tmdl")
+            .await
+            .expect("open test db");
+        let queries = CodeGraphQueries::new(db);
+        let source = powerbi_source("models");
+
+        index_powerbi_source(&source, workspace.path(), &queries, 1_048_576)
+            .await
+            .expect("initial Power BI index");
+        let before = queries
+            .select_content_records(Some("powerbi"))
+            .await
+            .expect("Power BI records before partial pass");
+        assert!(!before.is_empty(), "fixture must create Power BI records");
+        assert!(
+            queries
+                .select_powerbi_index_state(&source.path)
+                .await
+                .expect("markers before partial pass")
+                .contains_key(rel_path),
+            "initial pass must create a completion marker"
+        );
+
+        index_powerbi_source(&source, workspace.path(), &queries, 1)
+            .await
+            .expect("partial Power BI index");
+
+        assert_eq!(
+            queries
+                .select_content_records(Some("powerbi"))
+                .await
+                .expect("Power BI records after partial pass")
+                .len(),
+            before.len(),
+            "a partial TMDL pass must retain last-known-good content"
+        );
+        assert!(
+            queries
+                .select_powerbi_index_state(&source.path)
+                .await
+                .expect("markers after partial pass")
+                .contains_key(rel_path),
+            "a partial TMDL pass must retain the completion marker"
         );
     }
 

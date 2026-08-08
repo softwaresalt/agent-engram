@@ -59,6 +59,36 @@ pub(crate) fn collect_files_in_workspace_checked(
             complete: false,
         };
     };
+    let relative_dir = match dir.strip_prefix(workspace_root) {
+        Ok(relative)
+            if !relative.components().any(|component| {
+                matches!(
+                    component,
+                    Component::ParentDir | Component::RootDir | Component::Prefix(_)
+                )
+            }) =>
+        {
+            relative
+        }
+        _ => {
+            warn!(
+                dir = %dir.display(),
+                workspace_root = %workspace_root.display(),
+                "rejecting traversal root outside workspace before filesystem access"
+            );
+            return CollectedFiles {
+                files,
+                complete: false,
+            };
+        }
+    };
+    debug_assert!(
+        relative_dir.components().all(|component| !matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )),
+        "validated traversal root must remain workspace-relative"
+    );
     let Ok(canonical_dir) = dir.canonicalize() else {
         return CollectedFiles {
             files,
@@ -87,24 +117,6 @@ pub(crate) fn collect_files_in_workspace_checked(
     files.sort();
     files.dedup();
     CollectedFiles { files, complete }
-}
-
-/// Return true when `path` is a physical regular file whose canonical target
-/// remains under `canonical_root`.
-///
-/// The final path component is inspected with `symlink_metadata`, so a file
-/// symlink is not treated as live. Intermediate directory symlinks still work
-/// when their resolved target remains inside the workspace.
-#[must_use]
-pub(crate) fn is_regular_file_in_workspace(path: &Path, canonical_root: &Path) -> bool {
-    let Ok(metadata) = std::fs::symlink_metadata(path) else {
-        return false;
-    };
-    if !metadata.file_type().is_file() {
-        return false;
-    }
-    path.canonicalize()
-        .is_ok_and(|canonical| canonical.starts_with(canonical_root))
 }
 
 fn collect_recursive(
@@ -266,10 +278,8 @@ fn entry_rank(file_type: &FileType) -> u8 {
 /// directory still contains a live file — so the record is retained (`false`).
 /// The safety floor forbids deleting a live record we merely failed to stat.
 ///
-/// This is intentionally distinct from the shared
-/// [`is_regular_file_in_workspace`], which the out-of-scope backlog/pbip
-/// `compute_deleted_paths` still call with their historical fail-open on
-/// transient errors (tracked as a separate follow-up).
+/// This is the shared physical-absence primitive used by all deletion
+/// reconciliation paths; transient errors always retain the stored record.
 fn is_physically_absent(path: &Path, canonical_root: &Path) -> bool {
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
@@ -379,12 +389,18 @@ pub(crate) fn reconcile_deleted_paths(
                 );
                 return None;
             };
+            let not_collected = !collected_rel.contains(stored);
+            if !not_collected {
+                // A path present in this pass's authoritative snapshot cannot
+                // become deletion evidence because the filesystem changed
+                // after collection. Reconcile that change on the next pass.
+                return None;
+            }
             let candidate = workspace_root.join(relative_path);
             let physically_absent = is_physically_absent(&candidate, &canonical_root);
             // INV-1/INV-2: an alias-stale record (still physically present) is
             // reconciled away only when the collection was
             // authoritative-complete; a partial pass retains it (fail-closed).
-            let not_collected = !collected_rel.contains(stored);
             let stale = physically_absent || (collected.complete && not_collected);
             stale.then(|| stored.clone())
         })
@@ -452,6 +468,30 @@ mod tests {
         assert!(
             deleted.is_empty(),
             "a live, collected record must never be deleted; got {deleted:?}"
+        );
+    }
+
+    /// 110-S review: once a path was present in the carried index snapshot, a
+    /// later filesystem change cannot turn that same operation into deletion
+    /// authority. The next checked pass may reconcile it, but this pass retains
+    /// the just-indexed record.
+    #[test]
+    fn path_present_in_snapshot_is_retained_if_removed_after_collection() {
+        let workspace = TempDir::new().expect("workspace tempdir");
+        let live = workspace.path().join("live.ipynb");
+        fs::write(&live, "{}").expect("write live notebook");
+        let collected = CollectedFiles {
+            files: vec![live.clone()],
+            complete: true,
+        };
+
+        fs::remove_file(live).expect("remove after collection");
+        let deleted =
+            reconcile_deleted_paths(&stored(&["live.ipynb"]), &collected, workspace.path());
+
+        assert!(
+            deleted.is_empty(),
+            "the carried snapshot must retain its just-indexed path; got {deleted:?}"
         );
     }
 
