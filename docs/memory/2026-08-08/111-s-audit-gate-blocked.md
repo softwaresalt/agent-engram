@@ -3,7 +3,7 @@ type: ship-checkpoint
 timestamp: 2026-08-08T02:11:00-07:00
 shipment: 111-S
 branch: feat/111-s-index-coordinator-observability-reliability
-status: resumed
+status: ready-for-pr-review
 blocker: none
 ---
 
@@ -65,9 +65,19 @@ the dependency source or advisory surface. Follow-up stash: `27F691AE`.
   `docs/compound/workflow-issues/dynamic-diagnostic-escalation-2026-08-08.md`
 - Formal circuit-breaker policy follow-up stash: `241B503F`
 
-## Resume steps
+## Structured review and delivery
 
-1. Run the structured review gate and bounded fixes.
-2. Complete commits, push, PR review, merge-commit verification, runtime
-   verification, shipment reconciliation, and closure.
-3. Keep 112-S through 114-S queued.
+Three bounded structured review/fix cycles completed with no remaining P0/P1.
+The final remediations make metrics-writer shutdown cancellation-safe, preserve
+registered task ownership until join or abort-and-join completes, validate
+writer identity at the dispatch boundary, serialize process-global fixtures,
+and deterministically prove coordinator admission before busy responses.
+
+PR #329 carries the reviewed shipment. Ship/operator owns the seven-day
+observation window through 2026-08-15 for coordinator stale/missing outcomes,
+metrics-control timeouts, SQLITE_BUSY retries, and persistent zero graph
+counts. Duplicate owners, lost routine work, a metrics-writer stall, or
+persistent zero counts require a reviewed merge-commit revert.
+
+After exact-HEAD review and hosted CI pass, merge by merge commit only, verify
+runtime behavior, archive exactly 111-S, and keep 112-S through 114-S queued.

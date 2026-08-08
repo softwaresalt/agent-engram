@@ -13,6 +13,7 @@ citations:
   - "docs/memory/2026-08-08/circuit-break-cargo-test-all-targets.md"
   - "shipment 111-S"
   - "docs/memory/2026-08-08/111-s-audit-gate-blocked.md"
+  - "https://github.com/softwaresalt/agent-engram/pull/329"
 tags:
   - "cargo-test"
   - "diagnostics"
@@ -74,3 +75,5 @@ Diagnostic handling MUST adapt to the failure's observability:
 
 Formal circuit-breaker wording should adopt this escalation/de-escalation rule
 through a separately reviewed follow-up rather than widening shipment 111-S.
+Shipment implementation and review evidence is carried by PR #329; its
+post-merge closure artifact will provide the final release citation.
