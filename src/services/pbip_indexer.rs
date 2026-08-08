@@ -706,14 +706,6 @@ pub(crate) async fn index_pbip_source_with_snapshot(
         .map(|record| (record.file_path, record.content_hash))
         .collect();
 
-    if !collected.complete && !existing.is_empty() {
-        warn!(
-            path = %source.path,
-            "PBIP source materialization incomplete — retaining last-known-good index"
-        );
-        return Ok((result, collected));
-    }
-
     let current: HashMap<String, String> = file_data
         .iter()
         .map(|(path, data)| (path.clone(), data.hash.clone()))
@@ -731,6 +723,14 @@ pub(crate) async fn index_pbip_source_with_snapshot(
             considered = result.unchanged,
             total_files = result.total_files,
             "PBIP source unchanged — skipping re-index"
+        );
+        return Ok((result, collected));
+    }
+
+    if !collected.complete && !existing.is_empty() {
+        warn!(
+            path = %source.path,
+            "PBIP source materialization incomplete — retaining last-known-good index"
         );
         return Ok((result, collected));
     }
