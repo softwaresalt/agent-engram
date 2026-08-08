@@ -364,8 +364,13 @@ pub(crate) async fn index_backlog_source_with_snapshot(
                 .await?;
 
             result.ingested += 1;
+        } else {
+            warn!(
+                path = %file_path.display(),
+                "backlog file could not be extracted — retaining last-known-good index"
+            );
+            collected.complete = false;
         }
-        // else: file skipped (no id / no frontmatter) — not counted.
     }
 
     info!(
@@ -503,6 +508,61 @@ mod snapshot_tests {
                 .iter()
                 .any(|node| node.id == "116-F"),
             "the just-indexed node must survive until the next pass"
+        );
+    }
+
+    #[tokio::test]
+    async fn incomplete_backlog_extraction_retains_existing_node() {
+        let workspace = TempDir::new().expect("workspace tempdir");
+        let source_dir = workspace.path().join("queue");
+        fs::create_dir_all(&source_dir).expect("create backlog source");
+        let backlog_path = source_dir.join("116-F.md");
+        fs::write(
+            &backlog_path,
+            "---\nid: 116-F\ntitle: Snapshot control\nartifact_type: feature\nstatus: active\n---\n",
+        )
+        .expect("write backlog file");
+
+        let db_dir = TempDir::new().expect("db tempdir");
+        let db = crate::db::connect_db(db_dir.path(), "backlog-incomplete-extraction")
+            .await
+            .expect("open test db");
+        let queries = CodeGraphQueries::new(db);
+        let source = ContentSource {
+            content_type: "backlog".to_string(),
+            language: None,
+            path: "queue".to_string(),
+            pattern: None,
+            optional: false,
+            status: crate::models::registry::ContentSourceStatus::default(),
+        };
+
+        index_backlog_source(&source, workspace.path(), &queries, 1_048_576)
+            .await
+            .expect("initial backlog index");
+        fs::write(
+            &backlog_path,
+            "---\ntitle: Missing identity\nartifact_type: feature\nstatus: active\n---\n",
+        )
+        .expect("replace with unextractable backlog file");
+
+        let (_, collected) =
+            index_backlog_source_with_snapshot(&source, workspace.path(), &queries, 1_048_576)
+                .await
+                .expect("partial backlog index");
+
+        assert!(
+            !collected.complete,
+            "an unextractable collected file must make the pass non-authoritative"
+        );
+        assert!(
+            queries
+                .select_backlog_nodes(Some(&source.path))
+                .await
+                .expect("backlog nodes after partial pass")
+                .iter()
+                .any(|node| node.id == "116-F"),
+            "last-known-good backlog node must survive incomplete extraction"
         );
     }
 }
