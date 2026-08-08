@@ -48,7 +48,10 @@ use crate::services::powerbi_indexer::{
     build_powerbi_graph_data_from_model, compute_file_hash, extract_model_summaries_from_model,
     make_node_id,
 };
-use crate::services::source_traversal::{collect_files_in_workspace, is_regular_file_in_workspace};
+use crate::services::source_traversal::{
+    collect_files_in_workspace, collect_files_in_workspace_checked, is_regular_file_in_workspace,
+    reconcile_deleted_paths,
+};
 
 /// File extensions that belong to the PBIP project-definition layout.
 ///
@@ -859,6 +862,15 @@ pub async fn sweep_deleted_pbip_files(
     workspace_root: &Path,
     queries: &CodeGraphQueries,
 ) -> Result<usize, EngramError> {
+    let source_dir = workspace_root.join(&source.path);
+    if !source_dir.is_dir() {
+        debug!(
+            path = %source.path,
+            "PBIP source directory does not exist — skipping deletion sweep (fail-closed)"
+        );
+        return Ok(0);
+    }
+
     let records = queries.select_content_records(Some("pbip")).await?;
 
     let known_paths: Vec<String> = records
@@ -869,7 +881,9 @@ pub async fn sweep_deleted_pbip_files(
         .into_iter()
         .collect();
 
-    let deleted = compute_deleted_paths(&known_paths, workspace_root);
+    let collected =
+        collect_files_in_workspace_checked(&source_dir, workspace_root, is_pbip_file);
+    let deleted = reconcile_deleted_paths(&known_paths, &collected, workspace_root);
     let mut removed = 0_usize;
 
     for path in &deleted {
