@@ -1,0 +1,6 @@
+[advisories]
+# swapvec 0.3.0 (required by cozo 0.7.6) constrains lz4_flex to ^0.10.
+# Engram does not expose swapvec's decompressor to untrusted compressed input:
+# Cozo reads only process-local swap blocks that it previously compressed.
+# Remove this exception when Cozo/swapvec accepts lz4_flex >=0.11.6.
+ignore = ["RUSTSEC-2026-0041"]
