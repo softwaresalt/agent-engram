@@ -119,14 +119,15 @@ pub async fn ingest_all_sources(
         // Notebook sources use the dedicated Jupyter notebook indexer.
         if source.content_type == "notebook" {
             use crate::services::notebook_indexer::{
-                index_notebook_source, sweep_deleted_notebook_files,
+                index_notebook_source_with_snapshot,
+                sweep_deleted_notebook_files_from_snapshot,
             };
 
             // U1b: build the trusted-authority context from the registry's
             // `[lineage]` config and thread it into the live indexer. Absent
             // config yields an empty context ⇒ fail-closed (no lineage edges).
             let authority_ctx = config.lineage.to_authority_context();
-            let result = index_notebook_source(
+            let (result, collected) = index_notebook_source_with_snapshot(
                 source,
                 workspace_root,
                 queries,
@@ -134,7 +135,13 @@ pub async fn ingest_all_sources(
                 &authority_ctx,
             )
             .await?;
-            let removed = sweep_deleted_notebook_files(source, workspace_root, queries).await?;
+            let removed = sweep_deleted_notebook_files_from_snapshot(
+                source,
+                workspace_root,
+                queries,
+                &collected,
+            )
+            .await?;
             total_summary.ingested += result.ingested;
             total_summary.unchanged += result.unchanged;
             total_summary.removed += removed;
