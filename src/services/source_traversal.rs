@@ -59,6 +59,21 @@ pub(crate) fn collect_files_in_workspace_checked(
             complete: false,
         };
     };
+    let Ok(canonical_dir) = dir.canonicalize() else {
+        return CollectedFiles {
+            files,
+            complete: false,
+        };
+    };
+    if !canonical_dir.starts_with(&canonical_root) {
+        // The requested traversal root is outside the workspace authority
+        // bound. Reject it before recursion so an out-of-workspace tree can
+        // never certify an authoritative empty pass.
+        return CollectedFiles {
+            files,
+            complete: false,
+        };
+    }
     let mut visited = HashSet::new();
     let mut complete = true;
     collect_recursive(
@@ -534,6 +549,37 @@ mod tests {
 
         let via_wrapper = super::collect_files_in_workspace(&dir, workspace.path(), is_ipynb);
         assert_eq!(via_wrapper.len(), collected.files.len());
+    }
+
+    /// 110-S U1: a traversal root outside the workspace cannot certify an
+    /// authoritative empty pass. The guard must reject it before recursion so
+    /// no out-of-workspace file is collected or treated as deletion evidence.
+    #[test]
+    fn checked_collector_rejects_out_of_workspace_root_as_non_authoritative() {
+        fn is_ipynb(path: &std::path::Path) -> bool {
+            path.extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("ipynb"))
+        }
+
+        let workspace = TempDir::new().expect("workspace tempdir");
+        let outside = TempDir::new().expect("outside tempdir");
+        fs::write(outside.path().join("live.ipynb"), "{}").expect("write outside notebook");
+
+        let collected = super::collect_files_in_workspace_checked(
+            outside.path(),
+            workspace.path(),
+            is_ipynb,
+        );
+
+        assert!(
+            collected.files.is_empty(),
+            "an out-of-workspace traversal root must yield no files"
+        );
+        assert!(
+            !collected.complete,
+            "an out-of-workspace traversal root must be non-authoritative"
+        );
     }
 
     /// 100-S review P1-A (fail-closed): a subdirectory whose entries can be
