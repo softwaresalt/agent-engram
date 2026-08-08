@@ -16,8 +16,6 @@ closure_status: READY
 compaction_status: done
 ---
 
-# 110-S Fail-Closed Source Reconciliation Post-Merge Closure
-
 ## Readiness
 
 **READY.** PR #327 merged by merge commit

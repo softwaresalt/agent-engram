@@ -14,8 +14,6 @@ pr: 327
 severity: high
 ---
 
-# Destructive Reconciliation Needs a Materialized Snapshot
-
 ## Problem
 
 A directory walk may be authoritative about names while still being

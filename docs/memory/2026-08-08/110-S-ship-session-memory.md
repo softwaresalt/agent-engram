@@ -9,8 +9,6 @@ pr: 327
 status: closed
 ---
 
-# 110-S Ship Session Memory
-
 ## Intake
 
 Ship revalidated `110-S` as the unique lowest-order queued member of batch
@@ -62,4 +60,3 @@ items. Shipments `111-S` through `114-S` remain queued.
 The observation window for removed-count deltas and fail-closed warning rate
 ends 2026-08-15. Rollback is a reviewed revert; no automatic operator-workspace
 reindex or repair is authorized.
-

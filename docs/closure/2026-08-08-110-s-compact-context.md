@@ -7,8 +7,6 @@ shipment_id: "110-S"
 status: done
 ---
 
-# 110-S Compacted Closure Context
-
 Shipment `110-S` released feature `116-F` and tasks `116.001-T` through
 `116.005-T` in PR #327. Approved HEAD
 `fb0fc89b0e5a3e1d28c7b8f3c0b2f1a9cc435319` merged as two-parent commit
