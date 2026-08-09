@@ -12,7 +12,7 @@ use crate::db::workspace::{
     canonicalize_workspace, load_or_create_workspace_id, resolve_data_dir, resolve_git_branch,
     workspace_hash,
 };
-use crate::errors::{EngramError, SystemError, WorkspaceError};
+use crate::errors::{EngramError, MetricsError, SystemError, WorkspaceError};
 use crate::models::health::{HealthReport, ScanProgress};
 use crate::server::state::CoordinatorCell;
 use crate::server::state::{
@@ -95,6 +95,12 @@ struct WorkspaceAdmissionProbe {
     passed_precheck: Option<tokio::sync::oneshot::Sender<()>>,
     #[cfg(test)]
     resume: Option<tokio::sync::oneshot::Receiver<()>>,
+    #[cfg(test)]
+    metrics_replaced: Option<tokio::sync::oneshot::Sender<()>>,
+    #[cfg(test)]
+    resume_after_metrics: Option<tokio::sync::oneshot::Receiver<()>>,
+    #[cfg(test)]
+    fail_publication: bool,
 }
 
 impl WorkspaceAdmissionProbe {
@@ -116,6 +122,152 @@ impl WorkspaceAdmissionProbe {
             std::future::ready(())
         }
     }
+
+    fn after_metrics_replacement(&mut self) -> impl std::future::Future<Output = ()> + '_ {
+        #[cfg(test)]
+        {
+            async move {
+                if let Some(metrics_replaced) = self.metrics_replaced.take() {
+                    let _ = metrics_replaced.send(());
+                }
+                if let Some(resume) = self.resume_after_metrics.take() {
+                    let _ = resume.await;
+                }
+            }
+        }
+        #[cfg(not(test))]
+        {
+            let _ = self;
+            std::future::ready(())
+        }
+    }
+
+    const fn fail_publication(&self) -> bool {
+        #[cfg(test)]
+        {
+            self.fail_publication
+        }
+        #[cfg(not(test))]
+        {
+            let _ = self;
+            false
+        }
+    }
+}
+
+struct WorkspaceLifecycleTransaction {
+    admission: Option<tokio::sync::OwnedMutexGuard<()>>,
+    prior_metrics: Option<WorkspaceMetricsConfiguration>,
+    armed: bool,
+}
+
+struct WorkspaceMetricsConfiguration {
+    path: PathBuf,
+    branch: String,
+    config: crate::models::metrics::MetricsConfig,
+}
+
+impl WorkspaceMetricsConfiguration {
+    fn from_dispatch(dispatch: DispatchSnapshot) -> Self {
+        Self {
+            path: PathBuf::from(dispatch.workspace.path),
+            branch: dispatch.workspace.branch,
+            config: dispatch.config.metrics,
+        }
+    }
+
+    async fn restore(self) -> Result<(), EngramError> {
+        crate::services::metrics::initialize(&self.path, &self.branch, &self.config).await
+    }
+}
+
+impl WorkspaceLifecycleTransaction {
+    fn new(
+        admission: tokio::sync::OwnedMutexGuard<()>,
+        prior_metrics: Option<WorkspaceMetricsConfiguration>,
+    ) -> Self {
+        Self {
+            admission: Some(admission),
+            prior_metrics,
+            armed: true,
+        }
+    }
+
+    fn commit(mut self) {
+        self.armed = false;
+        let _ = self.admission.take();
+    }
+
+    async fn rollback(mut self) -> Result<(), EngramError> {
+        let restoration = restore_prior_metrics(self.prior_metrics.take()).await;
+        self.armed = false;
+        let _ = self.admission.take();
+        restoration
+    }
+}
+
+impl Drop for WorkspaceLifecycleTransaction {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let Some(admission) = self.admission.take() else {
+            return;
+        };
+        let prior_metrics = self.prior_metrics.take();
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            mark_metrics_unavailable("workspace lifecycle rollback lost its async runtime");
+            drop(admission);
+            return;
+        };
+        mark_metrics_unavailable("cancelled workspace bind is awaiting metrics restoration");
+        // Detaching is intentional: the task owns the admission guard, so later
+        // workspace binds use that lock as the restoration completion barrier.
+        let _rollback = runtime.spawn(async move {
+            if let Err(error) = restore_prior_metrics_from_unavailable(prior_metrics).await {
+                tracing::error!(
+                    error = %bounded_error(&error),
+                    "cancelled workspace bind could not restore prior metrics; metrics left unavailable"
+                );
+            }
+            drop(admission);
+        });
+    }
+}
+
+async fn restore_prior_metrics(
+    prior_metrics: Option<WorkspaceMetricsConfiguration>,
+) -> Result<(), EngramError> {
+    mark_metrics_unavailable("workspace bind rollback is awaiting metrics restoration");
+    restore_prior_metrics_from_unavailable(prior_metrics).await
+}
+
+async fn restore_prior_metrics_from_unavailable(
+    prior_metrics: Option<WorkspaceMetricsConfiguration>,
+) -> Result<(), EngramError> {
+    let restoration = match prior_metrics {
+        Some(prior) => prior.restore().await,
+        None => crate::services::metrics::shutdown().await,
+    };
+    if restoration.is_err() {
+        mark_metrics_unavailable("workspace bind rollback restoration failed");
+    }
+    restoration
+}
+
+fn mark_metrics_unavailable(context: &str) {
+    if let Err(error) = crate::services::metrics::mark_writer_unavailable() {
+        tracing::error!(
+            error = %bounded_error(&error),
+            context,
+            "failed to advance unavailable metrics identity during workspace rollback"
+        );
+    }
+}
+
+fn bounded_error(error: &impl std::fmt::Display) -> String {
+    const MAX_ERROR_CHARS: usize = 512;
+    error.to_string().chars().take(MAX_ERROR_CHARS).collect()
 }
 
 pub async fn set_workspace(
@@ -138,6 +290,28 @@ async fn set_workspace_after_precheck(
         WorkspaceAdmissionProbe {
             passed_precheck: Some(passed_precheck),
             resume: Some(resume),
+            ..WorkspaceAdmissionProbe::default()
+        },
+    )
+    .await
+}
+
+#[cfg(test)]
+async fn set_workspace_after_metrics_replacement(
+    state: Arc<AppState>,
+    path: String,
+    metrics_replaced: tokio::sync::oneshot::Sender<()>,
+    resume_after_metrics: tokio::sync::oneshot::Receiver<()>,
+    fail_publication: bool,
+) -> Result<WorkspaceBinding, EngramError> {
+    set_workspace_with_probe(
+        state,
+        path,
+        WorkspaceAdmissionProbe {
+            metrics_replaced: Some(metrics_replaced),
+            resume_after_metrics: Some(resume_after_metrics),
+            fail_publication,
+            ..WorkspaceAdmissionProbe::default()
         },
     )
     .await
@@ -216,9 +390,16 @@ async fn set_workspace_with_probe(
             limit: state.max_workspaces(),
         }));
     }
+    let prior_metrics = state
+        .snapshot_dispatch_context()
+        .await
+        .map(WorkspaceMetricsConfiguration::from_dispatch);
 
     // Initialise metrics sink (spawns a channel + background writer, no DB).
     crate::services::metrics::initialize(&canonical, &branch, &ws_config.metrics).await?;
+    let lifecycle_transaction =
+        WorkspaceLifecycleTransaction::new(workspace_admission, prior_metrics);
+    admission_probe.after_metrics_replacement().await;
 
     let snapshot = WorkspaceSnapshot {
         workspace_id: workspace_id.clone(),
@@ -236,20 +417,40 @@ async fn set_workspace_with_probe(
         config: ws_config.clone(),
     };
 
-    let (binding_generation, admission) = state
-        .publish_workspace_generation(snapshot, Some(ws_config.clone()))
-        .await
-        .map_err(|error| match error {
-            CoordinatorError::SequenceExhausted => {
-                EngramError::System(SystemError::InvalidParams {
-                    reason: error.to_string(),
-                })
+    let publication = if admission_probe.fail_publication() {
+        Err(CoordinatorError::SequenceExhausted)
+    } else {
+        state
+            .publish_workspace_generation(snapshot, Some(ws_config.clone()))
+            .await
+    };
+    let (binding_generation, admission) = match publication {
+        Ok(committed) => committed,
+        Err(error) => {
+            let publication_error = match error {
+                CoordinatorError::SequenceExhausted => {
+                    EngramError::System(SystemError::InvalidParams {
+                        reason: error.to_string(),
+                    })
+                }
+                CoordinatorError::WorkspaceLimit { limit } => {
+                    EngramError::Workspace(WorkspaceError::LimitReached { limit })
+                }
+            };
+            if let Err(restoration_error) = lifecycle_transaction.rollback().await {
+                return Err(EngramError::Metrics(MetricsError::WriteFailed {
+                    reason: format!(
+                        "workspace publication failed ({}); prior metrics restoration failed \
+                         ({}); metrics left unavailable",
+                        bounded_error(&publication_error),
+                        bounded_error(&restoration_error)
+                    ),
+                }));
             }
-            CoordinatorError::WorkspaceLimit { limit } => {
-                EngramError::Workspace(WorkspaceError::LimitReached { limit })
-            }
-        })?;
-    drop(workspace_admission);
+            return Err(publication_error);
+        }
+    };
+    lifecycle_transaction.commit();
     crate::services::query_stats::reset_timing();
 
     // Queue a background scan immediately. The DB connect + hydrate +
@@ -813,7 +1014,7 @@ mod tests {
     use super::{
         HandoffProbe, HandoffProbeExit, HydrationProbe, HydrationProbeExit,
         background_db_hydration, drive_transferred_sync, get_daemon_status, set_hydration_progress,
-        set_workspace_after_precheck,
+        set_workspace, set_workspace_after_metrics_replacement, set_workspace_after_precheck,
     };
     use crate::db::connect_db;
     use crate::db::queries::CodeGraphQueries;
@@ -988,6 +1189,30 @@ mod tests {
         }
     }
 
+    fn create_bind_workspace(root: &std::path::Path, name: &str, metrics_config: &str) -> PathBuf {
+        let workspace = root.join(name);
+        std::fs::create_dir_all(workspace.join(".git")).expect("create git metadata");
+        std::fs::create_dir_all(workspace.join(".engram")).expect("create engram metadata");
+        std::fs::write(
+            workspace.join(".git").join("HEAD"),
+            "ref: refs/heads/main\n",
+        )
+        .expect("write git HEAD");
+        std::fs::write(
+            workspace.join(".engram").join("config.toml"),
+            metrics_config,
+        )
+        .expect("write workspace config");
+        std::fs::write(workspace.join("lib.rs"), "pub fn indexed() {}\n").expect("write source");
+        workspace
+    }
+
+    async fn join_hydration(state: &AppState) {
+        if let Some(driver) = state.take_hydration_driver() {
+            driver.join().await.expect("workspace hydration must join");
+        }
+    }
+
     async fn drive_test_transferred_sync(
         state: &AppState,
         permit: OwnerPermit,
@@ -1072,6 +1297,160 @@ mod tests {
         crate::services::metrics::shutdown()
             .await
             .expect("reset metrics writer");
+    }
+
+    #[tokio::test]
+    async fn cancelled_bind_restores_enabled_metrics_before_workspace_admission_reopens() {
+        let _metrics_guard = crate::services::metrics::test_writer_guard().await;
+        crate::services::metrics::shutdown()
+            .await
+            .expect("reset metrics writer");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let original = create_bind_workspace(
+            temp.path(),
+            "original",
+            "[metrics]\nenabled = true\nbuffer_size = 7\nusage_path_override = \".engram/custom/usage.jsonl\"\n",
+        );
+        let replacement = create_bind_workspace(
+            temp.path(),
+            "replacement",
+            "[metrics]\nenabled = true\nbuffer_size = 3\n",
+        );
+        let state = Arc::new(AppState::new(2));
+        set_workspace(Arc::clone(&state), original.display().to_string())
+            .await
+            .expect("bind original workspace");
+        join_hydration(&state).await;
+        crate::services::metrics::reset_test_writer_activity_peak();
+
+        let (metrics_replaced_tx, metrics_replaced_rx) = tokio::sync::oneshot::channel();
+        let (_resume_tx, resume_rx) = tokio::sync::oneshot::channel();
+        let bind_state = Arc::clone(&state);
+        let bind = tokio::spawn(async move {
+            set_workspace_after_metrics_replacement(
+                bind_state,
+                replacement.display().to_string(),
+                metrics_replaced_tx,
+                resume_rx,
+                false,
+            )
+            .await
+        });
+        metrics_replaced_rx
+            .await
+            .expect("replacement must pause after metrics replacement");
+        bind.abort();
+        let _ = bind.await;
+
+        let rollback_barrier = state.acquire_workspace_admission().await;
+        drop(rollback_barrier);
+        let index_result = crate::tools::write::index_workspace(Arc::clone(&state), None).await;
+        let sync_result = crate::tools::write::sync_workspace(Arc::clone(&state), None).await;
+        crate::services::metrics::record(crate::models::metrics::UsageEvent {
+            tool_name: "restored_enabled_writer".to_owned(),
+            branch: "main".to_owned(),
+            ..crate::models::metrics::UsageEvent::default()
+        });
+        crate::services::metrics::shutdown()
+            .await
+            .expect("drain restored writer");
+
+        assert!(
+            index_result.is_ok(),
+            "original workspace must index after cancelled bind: {index_result:?}"
+        );
+        assert!(
+            sync_result.is_ok(),
+            "original workspace must sync after cancelled bind: {sync_result:?}"
+        );
+        let custom_usage = original.join(".engram").join("custom").join("usage.jsonl");
+        let usage = std::fs::read_to_string(&custom_usage)
+            .unwrap_or_else(|error| panic!("read restored custom metrics config: {error}"));
+        assert!(usage.contains("restored_enabled_writer"));
+        assert_eq!(
+            crate::services::metrics::max_test_writer_activity(),
+            1,
+            "replacement and restoration metrics writers must never overlap"
+        );
+    }
+
+    #[tokio::test]
+    async fn publication_error_restores_disabled_metrics_before_returning() {
+        let _metrics_guard = crate::services::metrics::test_writer_guard().await;
+        crate::services::metrics::shutdown()
+            .await
+            .expect("reset metrics writer");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let original = create_bind_workspace(
+            temp.path(),
+            "original-disabled",
+            "[metrics]\nenabled = false\nbuffer_size = 5\n",
+        );
+        let replacement = create_bind_workspace(
+            temp.path(),
+            "replacement-enabled",
+            "[metrics]\nenabled = true\nbuffer_size = 3\n",
+        );
+        let state = Arc::new(AppState::new(2));
+        set_workspace(Arc::clone(&state), original.display().to_string())
+            .await
+            .expect("bind original workspace");
+        join_hydration(&state).await;
+        crate::services::metrics::reset_test_writer_activity_peak();
+
+        let (metrics_replaced_tx, metrics_replaced_rx) = tokio::sync::oneshot::channel();
+        let (resume_tx, resume_rx) = tokio::sync::oneshot::channel();
+        let bind_state = Arc::clone(&state);
+        let bind = tokio::spawn(async move {
+            set_workspace_after_metrics_replacement(
+                bind_state,
+                replacement.display().to_string(),
+                metrics_replaced_tx,
+                resume_rx,
+                true,
+            )
+            .await
+        });
+        metrics_replaced_rx
+            .await
+            .expect("replacement must pause after metrics replacement");
+        resume_tx.send(()).expect("resume failed publication");
+        let bind_error = bind
+            .await
+            .expect("failed bind task must join")
+            .expect_err("publication failpoint must reject the bind");
+        let index_result = crate::tools::write::index_workspace(Arc::clone(&state), None).await;
+        let sync_result = crate::tools::write::sync_workspace(Arc::clone(&state), None).await;
+        let active = state.snapshot_workspace().await.expect("active workspace");
+        let writer_result = crate::services::metrics::writer_control_token(
+            std::path::Path::new(&active.path),
+            &active.branch,
+        );
+        crate::services::metrics::shutdown()
+            .await
+            .expect("reset restored disabled writer");
+
+        assert!(
+            bind_error.to_string().contains("sequence"),
+            "unexpected publication failure: {bind_error}"
+        );
+        assert!(
+            writer_result.is_ok(),
+            "disabled writer identity must be restored: {writer_result:?}"
+        );
+        assert!(
+            index_result.is_ok(),
+            "original workspace must index after publication failure: {index_result:?}"
+        );
+        assert!(
+            sync_result.is_ok(),
+            "original workspace must sync after publication failure: {sync_result:?}"
+        );
+        assert_eq!(
+            crate::services::metrics::max_test_writer_activity(),
+            1,
+            "replacement and disabled restoration must never overlap"
+        );
     }
 
     #[tokio::test]

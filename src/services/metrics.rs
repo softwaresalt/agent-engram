@@ -6,6 +6,8 @@
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader};
 use std::path::{Component, Path, PathBuf};
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -105,6 +107,29 @@ static METRICS_LIFECYCLE: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 static BRANCH_CONTROL: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 #[cfg(test)]
 static METRICS_TEST: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+#[cfg(test)]
+static ACTIVE_TEST_WRITERS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static MAX_ACTIVE_TEST_WRITERS: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+struct TestWriterActivity;
+
+#[cfg(test)]
+impl TestWriterActivity {
+    fn enter() -> Self {
+        let active = ACTIVE_TEST_WRITERS.fetch_add(1, Ordering::SeqCst) + 1;
+        MAX_ACTIVE_TEST_WRITERS.fetch_max(active, Ordering::SeqCst);
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestWriterActivity {
+    fn drop(&mut self) {
+        ACTIVE_TEST_WRITERS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 
 fn sender_slot() -> &'static Mutex<Option<mpsc::Sender<MetricsMessage>>> {
     METRICS_SENDER.get_or_init(|| Mutex::new(None))
@@ -161,6 +186,10 @@ fn make_writer_unavailable() -> Result<(), EngramError> {
     state.availability = WriterAvailability::Unavailable;
     state.generation = next_generation(state.generation)?;
     Ok(())
+}
+
+pub(crate) fn mark_writer_unavailable() -> Result<(), EngramError> {
+    make_writer_unavailable()
 }
 
 fn reserve_writer_generation() -> Result<u64, EngramError> {
@@ -259,6 +288,16 @@ pub(crate) async fn test_writer_guard() -> tokio::sync::MutexGuard<'static, ()> 
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
         .await
+}
+
+#[cfg(test)]
+pub(crate) fn reset_test_writer_activity_peak() {
+    MAX_ACTIVE_TEST_WRITERS.store(ACTIVE_TEST_WRITERS.load(Ordering::SeqCst), Ordering::SeqCst);
+}
+
+#[cfg(test)]
+pub(crate) fn max_test_writer_activity() -> usize {
+    MAX_ACTIVE_TEST_WRITERS.load(Ordering::SeqCst)
 }
 
 #[cfg(test)]
@@ -617,6 +656,8 @@ async fn writer_loop(
     mut receiver: mpsc::Receiver<MetricsMessage>,
     config: MetricsConfig,
 ) {
+    #[cfg(test)]
+    let _activity = TestWriterActivity::enter();
     let mut active_branch = initial_branch;
 
     while let Some(message) = receiver.recv().await {

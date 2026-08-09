@@ -967,7 +967,7 @@ pub struct AppState {
     active_connections: AtomicUsize,
     active_workspace: RwLock<Option<WorkspaceSnapshot>>,
     workspace_config: RwLock<Option<WorkspaceConfig>>,
-    workspace_admission: tokio::sync::Mutex<()>,
+    workspace_admission: Arc<tokio::sync::Mutex<()>>,
     max_workspaces: usize,
     stale_strategy: StaleStrategy,
     connection_registry: ConnectionRegistry,
@@ -1016,7 +1016,7 @@ impl AppState {
             active_connections: AtomicUsize::new(0),
             active_workspace: RwLock::new(None),
             workspace_config: RwLock::new(None),
-            workspace_admission: tokio::sync::Mutex::new(()),
+            workspace_admission: Arc::new(tokio::sync::Mutex::new(())),
             max_workspaces,
             stale_strategy,
             connection_registry: ConnectionRegistry::new(),
@@ -1053,8 +1053,8 @@ impl AppState {
     }
 
     /// Serialize admission through publication for workspace lifecycle binds.
-    pub(crate) async fn acquire_workspace_admission(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.workspace_admission.lock().await
+    pub(crate) async fn acquire_workspace_admission(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        Arc::clone(&self.workspace_admission).lock_owned().await
     }
 
     /// Atomically snapshot the active workspace binding and loaded config.
