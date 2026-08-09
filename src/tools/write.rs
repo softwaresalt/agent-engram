@@ -161,10 +161,6 @@ pub async fn index_workspace(
         .guarded_dispatch_context()
         .await
         .ok_or(EngramError::Workspace(WorkspaceError::NotSet))?;
-    let mut metrics_control = crate::services::metrics::writer_control_token(
-        Path::new(&ctx.workspace.path),
-        &ctx.workspace.branch,
-    )?;
     let requested = WorkMask::from_bits(if parsed.force { 0b111 } else { 0b001 });
     let permit = match CoordinatorCell::request(admission, requested, OwnerKind::Index) {
         Ok(RequestOutcome::Acquired(permit)) => permit,
@@ -182,6 +178,10 @@ pub async fn index_workspace(
             }));
         }
     };
+    let mut metrics_control = crate::services::metrics::writer_control_token(
+        Path::new(&ctx.workspace.path),
+        &ctx.workspace.branch,
+    )?;
     let Some((mut permit, ctx)) = prepare_branch_owner_with_control(
         &state,
         permit,
@@ -451,10 +451,6 @@ pub async fn sync_workspace(
                 .guarded_dispatch_context()
                 .await
                 .ok_or(EngramError::Workspace(WorkspaceError::NotSet))?;
-            let metrics_control = crate::services::metrics::writer_control_token(
-                Path::new(&ctx.workspace.path),
-                &ctx.workspace.branch,
-            )?;
             let permit = match CoordinatorCell::request(admission, requested, OwnerKind::Sync) {
                 Ok(RequestOutcome::Acquired(permit)) => permit,
                 Ok(RequestOutcome::Enqueued) => {
@@ -479,6 +475,10 @@ pub async fn sync_workspace(
                     }));
                 }
             };
+            let metrics_control = crate::services::metrics::writer_control_token(
+                Path::new(&ctx.workspace.path),
+                &ctx.workspace.branch,
+            )?;
             (permit, ctx, metrics_control)
         };
         let work_bits = permit.work_bits();
@@ -1150,6 +1150,20 @@ mod tests {
         guard
     }
 
+    async fn wait_for_published_branch(state: &AppState, expected_branch: &str) {
+        for _ in 0..1_000 {
+            if state
+                .snapshot_workspace()
+                .await
+                .is_some_and(|snapshot| snapshot.branch == expected_branch)
+            {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("branch '{expected_branch}' was not published");
+    }
+
     async fn run_guarded_write_probe(
         state: Arc<AppState>,
         mut permit: OwnerPermit,
@@ -1532,6 +1546,153 @@ mod tests {
         );
         assert_eq!(state.coordinator.test_pending_bits(), 0b111);
         drop(owner);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn branch_refreshing_index_reports_exact_busy_while_metrics_control_is_pending() {
+        let metrics_guard = reset_metrics_writer().await;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("workspace");
+        let data_dir = temp.path().join("data");
+        std::fs::create_dir_all(workspace.join(".git")).expect("create git metadata");
+        std::fs::write(
+            workspace.join(".git").join("HEAD"),
+            "ref: refs/heads/main\n",
+        )
+        .expect("write git HEAD");
+        std::fs::write(workspace.join("app.py"), "def run():\n    return 1\n")
+            .expect("write source");
+        let state = Arc::new(AppState::new(1));
+        let mut stale_snapshot = snapshot(
+            "pending-index-branch",
+            "uuid-pending-index-branch",
+            "id-pending-index-branch",
+            &workspace,
+            data_dir,
+        );
+        stale_snapshot.branch = "stale-branch".to_owned();
+        publish(&state, stale_snapshot).await;
+        let mut saturated_writer = crate::services::metrics::configure_test_saturated_writer(
+            &metrics_guard,
+            &workspace,
+            "stale-branch",
+        )
+        .expect("configure saturated metrics writer");
+
+        let owner_state = Arc::clone(&state);
+        let owner = tokio::spawn(async move {
+            index_workspace(owner_state, Some(json!({ "force": true }))).await
+        });
+        wait_for_published_branch(&state, "main").await;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            saturated_writer.wait_for_pending_branch_control("main"),
+        )
+        .await
+        .expect("owner must publish pending metrics control")
+        .expect("pending metrics control must target the published branch");
+        let owner_was_pending = !owner.is_finished();
+
+        let competitor = index_workspace(Arc::clone(&state), None).await;
+        let owner_still_pending = !owner.is_finished();
+
+        drop(saturated_writer);
+        let owner_result = owner.await.expect("branch-refreshing index task");
+        crate::services::metrics::shutdown()
+            .await
+            .expect("clean saturated metrics writer");
+
+        assert!(
+            owner_was_pending && owner_still_pending,
+            "owner must remain pending on metrics acknowledgment during competitor admission"
+        );
+        assert!(
+            matches!(
+                competitor,
+                Err(crate::errors::EngramError::CodeGraph(
+                    crate::errors::CodeGraphError::IndexInProgress
+                ))
+            ),
+            "competitor must receive the exact INDEX_IN_PROGRESS result"
+        );
+        assert!(
+            owner_result.is_err(),
+            "closing the saturated writer must fail the owner after the assertion window"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn branch_refreshing_sync_reports_exact_queued_while_metrics_control_is_pending() {
+        let metrics_guard = reset_metrics_writer().await;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("workspace");
+        let data_dir = temp.path().join("data");
+        std::fs::create_dir_all(workspace.join(".git")).expect("create git metadata");
+        std::fs::write(
+            workspace.join(".git").join("HEAD"),
+            "ref: refs/heads/main\n",
+        )
+        .expect("write git HEAD");
+        let state = Arc::new(AppState::new(1));
+        let mut stale_snapshot = snapshot(
+            "pending-sync-branch",
+            "uuid-pending-sync-branch",
+            "id-pending-sync-branch",
+            &workspace,
+            data_dir,
+        );
+        stale_snapshot.branch = "stale-branch".to_owned();
+        publish(&state, stale_snapshot).await;
+        let mut saturated_writer = crate::services::metrics::configure_test_saturated_writer(
+            &metrics_guard,
+            &workspace,
+            "stale-branch",
+        )
+        .expect("configure saturated metrics writer");
+
+        let owner_state = Arc::clone(&state);
+        let owner = tokio::spawn(async move { sync_workspace(owner_state, None).await });
+        wait_for_published_branch(&state, "main").await;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            saturated_writer.wait_for_pending_branch_control("main"),
+        )
+        .await
+        .expect("owner must publish pending metrics control")
+        .expect("pending metrics control must target the published branch");
+        let owner_was_pending = !owner.is_finished();
+
+        let competitor = sync_workspace(
+            Arc::clone(&state),
+            Some(json!({
+                "revalidate_code_graph": true,
+                "backfill_python_canonical": true
+            })),
+        )
+        .await;
+        let owner_still_pending = !owner.is_finished();
+
+        drop(saturated_writer);
+        let owner_result = owner.await.expect("branch-refreshing Sync task");
+        crate::services::metrics::shutdown()
+            .await
+            .expect("clean saturated metrics writer");
+
+        assert!(
+            owner_was_pending && owner_still_pending,
+            "owner must remain pending on metrics acknowledgment during competitor admission"
+        );
+        assert_eq!(
+            competitor.expect("competing Sync must queue"),
+            json!({
+                "status": "queued",
+                "message": "Sync queued; will run after current indexing completes"
+            })
+        );
+        assert!(
+            owner_result.is_err(),
+            "closing the saturated writer must fail the owner after the assertion window"
+        );
     }
 
     #[tokio::test]

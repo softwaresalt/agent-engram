@@ -278,6 +278,86 @@ pub(crate) async fn configure_test_disabled_writer(
     .await
 }
 
+#[cfg(test)]
+pub(crate) struct SaturatedTestWriter {
+    receiver: mpsc::Receiver<MetricsMessage>,
+    pending_acknowledgment: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+#[cfg(test)]
+impl SaturatedTestWriter {
+    pub(crate) async fn wait_for_pending_branch_control(
+        &mut self,
+        expected_branch: &str,
+    ) -> Result<(), EngramError> {
+        if !matches!(self.receiver.recv().await, Some(MetricsMessage::Event(_))) {
+            return Err(EngramError::Metrics(MetricsError::WriteFailed {
+                reason: "saturated test writer did not contain its blocking event".to_owned(),
+            }));
+        }
+        match self.receiver.recv().await {
+            Some(MetricsMessage::SwitchBranch {
+                branch,
+                acknowledged,
+                ..
+            }) if branch == expected_branch => {
+                self.pending_acknowledgment = Some(acknowledged);
+                Ok(())
+            }
+            Some(MetricsMessage::SwitchBranch { branch, .. }) => {
+                Err(EngramError::Metrics(MetricsError::WriteFailed {
+                    reason: format!(
+                        "saturated test writer received branch '{branch}', expected \
+                         '{expected_branch}'"
+                    ),
+                }))
+            }
+            Some(MetricsMessage::Event(_) | MetricsMessage::Shutdown) | None => {
+                Err(EngramError::Metrics(MetricsError::WriteFailed {
+                    reason: "saturated test writer did not receive pending branch control"
+                        .to_owned(),
+                }))
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for SaturatedTestWriter {
+    fn drop(&mut self) {
+        let _ = self.pending_acknowledgment.take();
+        self.receiver.close();
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn configure_test_saturated_writer(
+    _guard: &tokio::sync::MutexGuard<'static, ()>,
+    workspace_path: &Path,
+    branch: &str,
+) -> Result<SaturatedTestWriter, EngramError> {
+    let generation = reserve_writer_generation()?;
+    let (sender, receiver) = mpsc::channel(1);
+    sender
+        .try_send(MetricsMessage::Event(Box::default()))
+        .map_err(|error| {
+            EngramError::Metrics(MetricsError::WriteFailed {
+                reason: format!("failed to saturate test metrics writer: {error}"),
+            })
+        })?;
+    {
+        let mut sender_guard = sender_slot()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *sender_guard = Some(sender);
+    }
+    configure_writer(workspace_path, branch, true, generation);
+    Ok(SaturatedTestWriter {
+        receiver,
+        pending_acknowledgment: None,
+    })
+}
+
 fn metrics_dir(workspace_path: &Path, branch: &str) -> PathBuf {
     workspace_path.join(".engram").join("metrics").join(branch)
 }

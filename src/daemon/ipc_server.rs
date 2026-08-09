@@ -1085,8 +1085,16 @@ async fn run_startup_driver(
         | CompletionOutcome::Stale => None,
     };
     if let Some(successor) = transferred {
-        drive_daemon_transferred_syncs(&state, &snapshot, &workspace_config, successor, "startup")
-            .await;
+        drive_daemon_transferred_syncs(
+            &state,
+            &snapshot,
+            &workspace_config,
+            successor,
+            "startup",
+            #[cfg(test)]
+            None,
+        )
+        .await;
     }
 }
 
@@ -1096,6 +1104,7 @@ async fn drive_daemon_transferred_syncs(
     workspace_config: &WorkspaceConfig,
     successor: crate::server::state::OwnerPermit,
     driver: &'static str,
+    #[cfg(test)] operation_reached: Option<&AtomicBool>,
 ) {
     let mut successor = successor;
     let mut current_ctx = crate::server::state::DispatchSnapshot {
@@ -1118,6 +1127,10 @@ async fn drive_daemon_transferred_syncs(
         current_ctx = prepared_ctx;
         let work_bits = successor.work_bits();
         let operation = async {
+            #[cfg(test)]
+            if let Some(operation_reached) = operation_reached {
+                operation_reached.store(true, Ordering::SeqCst);
+            }
             let workspace_path = std::path::PathBuf::from(&current_ctx.workspace.path);
             let result = crate::services::code_graph::sync_workspace_with_progress(
                 &workspace_path,
@@ -1320,6 +1333,8 @@ async fn run_watcher_driver(
                     &workspace_config,
                     successor,
                     "watcher",
+                    #[cfg(test)]
+                    None,
                 )
                 .await;
             }
@@ -2029,6 +2044,10 @@ mod tests {
 
     #[tokio::test]
     async fn daemon_transferred_failure_recovers_full_mask() {
+        let metrics_guard = crate::services::metrics::test_writer_guard().await;
+        crate::services::metrics::shutdown()
+            .await
+            .expect("reset metrics writer");
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace = temp.path().join("workspace");
         std::fs::create_dir_all(&workspace).expect("create workspace");
@@ -2037,6 +2056,13 @@ mod tests {
             .expect("create invalid data path");
         let snapshot =
             coordinator_snapshot("id-transfer", "uuid-transfer", &workspace, invalid_data_dir);
+        crate::services::metrics::configure_test_disabled_writer(
+            &metrics_guard,
+            &workspace,
+            &snapshot.branch,
+        )
+        .await
+        .expect("configure fixture metrics writer");
         let config = WorkspaceConfig::default();
         let state = AppState::new(1);
         let _ = state
@@ -2070,15 +2096,39 @@ mod tests {
             | CompletionOutcome::SequenceExhausted(_)
             | CompletionOutcome::Stale => panic!("full mask should transfer"),
         };
+        let operation_reached = AtomicBool::new(false);
 
-        drive_daemon_transferred_syncs(&state, &snapshot, &config, successor, "test").await;
+        drive_daemon_transferred_syncs(
+            &state,
+            &snapshot,
+            &config,
+            successor,
+            "test",
+            Some(&operation_reached),
+        )
+        .await;
 
-        assert!(state.coordinator.test_is_idle());
-        assert_eq!(state.coordinator.test_pending_bits(), 0b111);
+        let operation_was_reached = operation_reached.load(Ordering::SeqCst);
+        let coordinator_is_idle = state.coordinator.test_is_idle();
+        let pending_bits = state.coordinator.test_pending_bits();
+        crate::services::metrics::shutdown()
+            .await
+            .expect("clean fixture metrics writer");
+
+        assert!(
+            operation_was_reached,
+            "fixture must reach the intended database failure"
+        );
+        assert!(coordinator_is_idle);
+        assert_eq!(pending_bits, 0b111);
     }
 
     #[tokio::test]
     async fn daemon_transferred_partial_file_errors_recover_full_mask() {
+        let metrics_guard = crate::services::metrics::test_writer_guard().await;
+        crate::services::metrics::shutdown()
+            .await
+            .expect("reset metrics writer");
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace = temp.path().join("workspace");
         let data_dir = temp.path().join("data");
@@ -2090,6 +2140,13 @@ mod tests {
             &workspace,
             data_dir,
         );
+        crate::services::metrics::configure_test_disabled_writer(
+            &metrics_guard,
+            &workspace,
+            &snapshot.branch,
+        )
+        .await
+        .expect("configure fixture metrics writer");
         let config = WorkspaceConfig::default();
         let state = AppState::new(1);
         let _ = state
@@ -2123,13 +2180,32 @@ mod tests {
             | CompletionOutcome::SequenceExhausted(_)
             | CompletionOutcome::Stale => panic!("full mask should transfer"),
         };
+        let operation_reached = AtomicBool::new(false);
 
-        drive_daemon_transferred_syncs(&state, &snapshot, &config, successor, "test").await;
+        drive_daemon_transferred_syncs(
+            &state,
+            &snapshot,
+            &config,
+            successor,
+            "test",
+            Some(&operation_reached),
+        )
+        .await;
 
-        assert!(state.coordinator.test_is_idle());
+        let operation_was_reached = operation_reached.load(Ordering::SeqCst);
+        let coordinator_is_idle = state.coordinator.test_is_idle();
+        let pending_bits = state.coordinator.test_pending_bits();
+        crate::services::metrics::shutdown()
+            .await
+            .expect("clean fixture metrics writer");
+
+        assert!(
+            operation_was_reached,
+            "fixture must reach the intended per-file failure"
+        );
+        assert!(coordinator_is_idle);
         assert_eq!(
-            state.coordinator.test_pending_bits(),
-            0b111,
+            pending_bits, 0b111,
             "a partial daemon transfer must retain heavy work for retry"
         );
     }
