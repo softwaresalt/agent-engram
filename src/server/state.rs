@@ -17,9 +17,12 @@
 //   compile-time net.
 // - Connection and tool-call counts use `AtomicUsize` / `AtomicU64` which
 //   need no locking at all.
-// - `workspace_admission` is a Tokio mutex intentionally held across metrics
-//   replacement and binding publication. This serializes the asynchronous
-//   lifecycle transaction without holding a synchronous mutex across `.await`.
+// - `workspace_publication` is a Tokio mutex intentionally held across every
+//   metrics-identity transition and binding publication. Lifecycle binds hold
+//   it from metrics replacement through commit/rollback; branch refreshes hold
+//   it through publication, successor claim, and acknowledged metrics control.
+//   It is always acquired before the binding/config locks and the synchronous
+//   coordinator mutex, and no synchronous mutex is held across `.await`.
 // Verdict: no deadlock potential identified.
 
 use std::collections::{HashMap, VecDeque};
@@ -967,7 +970,7 @@ pub struct AppState {
     active_connections: AtomicUsize,
     active_workspace: RwLock<Option<WorkspaceSnapshot>>,
     workspace_config: RwLock<Option<WorkspaceConfig>>,
-    workspace_admission: Arc<tokio::sync::Mutex<()>>,
+    workspace_publication: Arc<tokio::sync::Mutex<()>>,
     max_workspaces: usize,
     stale_strategy: StaleStrategy,
     connection_registry: ConnectionRegistry,
@@ -995,6 +998,14 @@ pub struct AppState {
     hydration_ready: AtomicBool,
 }
 
+/// Exclusive ownership of an identity-changing workspace publication.
+///
+/// Constructors remain on [`AppState`] so every production publisher uses the
+/// same async lock. The guard may span metrics I/O, but no synchronous mutex.
+pub(crate) struct WorkspacePublicationGuard {
+    _guard: tokio::sync::OwnedMutexGuard<()>,
+}
+
 impl AppState {
     pub fn new(max_workspaces: usize) -> Self {
         Self::with_options(max_workspaces, StaleStrategy::Warn, 20, 60)
@@ -1016,7 +1027,7 @@ impl AppState {
             active_connections: AtomicUsize::new(0),
             active_workspace: RwLock::new(None),
             workspace_config: RwLock::new(None),
-            workspace_admission: Arc::new(tokio::sync::Mutex::new(())),
+            workspace_publication: Arc::new(tokio::sync::Mutex::new(())),
             max_workspaces,
             stale_strategy,
             connection_registry: ConnectionRegistry::new(),
@@ -1052,9 +1063,11 @@ impl AppState {
         self.active_workspace.read().await.clone()
     }
 
-    /// Serialize admission through publication for workspace lifecycle binds.
-    pub(crate) async fn acquire_workspace_admission(&self) -> tokio::sync::OwnedMutexGuard<()> {
-        Arc::clone(&self.workspace_admission).lock_owned().await
+    /// Serialize every transition that changes workspace/metrics identity.
+    pub(crate) async fn acquire_workspace_publication(&self) -> WorkspacePublicationGuard {
+        WorkspacePublicationGuard {
+            _guard: Arc::clone(&self.workspace_publication).lock_owned().await,
+        }
     }
 
     /// Atomically snapshot the active workspace binding and loaded config.
@@ -1175,8 +1188,21 @@ impl AppState {
     ///
     /// Task 109.017-T replaces this compile-only RED bridge with one atomic
     /// binding/coordinator publication.
+    #[cfg(test)]
     pub(crate) async fn publish_workspace_generation(
         &self,
+        snapshot: WorkspaceSnapshot,
+        config: Option<WorkspaceConfig>,
+    ) -> Result<(u64, AdmissionGuard), CoordinatorError> {
+        let publication = self.acquire_workspace_publication().await;
+        self.publish_workspace_generation_guarded(&publication, snapshot, config)
+            .await
+    }
+
+    /// Publish while the caller retains identity-transition ownership.
+    pub(crate) async fn publish_workspace_generation_guarded(
+        &self,
+        _publication: &WorkspacePublicationGuard,
         snapshot: WorkspaceSnapshot,
         config: Option<WorkspaceConfig>,
     ) -> Result<(u64, AdmissionGuard), CoordinatorError> {
@@ -1189,8 +1215,27 @@ impl AppState {
     /// A distinct binding still inherits no old-binding work. The supplied mask
     /// is qualified to the newly published binding and is installed under the
     /// same coordinator lock as publication.
+    #[cfg(test)]
     pub(crate) async fn publish_workspace_generation_with_reissue(
         &self,
+        snapshot: WorkspaceSnapshot,
+        config: Option<WorkspaceConfig>,
+        reissued_work: WorkMask,
+    ) -> Result<(u64, AdmissionGuard), CoordinatorError> {
+        let publication = self.acquire_workspace_publication().await;
+        self.publish_workspace_generation_with_reissue_guarded(
+            &publication,
+            snapshot,
+            config,
+            reissued_work,
+        )
+        .await
+    }
+
+    /// Publish reissued work while the caller retains transition ownership.
+    pub(crate) async fn publish_workspace_generation_with_reissue_guarded(
+        &self,
+        _publication: &WorkspacePublicationGuard,
         snapshot: WorkspaceSnapshot,
         config: Option<WorkspaceConfig>,
         reissued_work: WorkMask,

@@ -527,11 +527,18 @@ pub async fn sync_workspace(
 
         match attempt {
             SyncAttempt::BranchChanged(branch) => {
+                let previous_branch = ctx.workspace.branch.clone();
                 let mut workspace = ctx.workspace;
                 workspace.workspace_id = workspace_hash(Path::new(&workspace.path), &branch);
                 workspace.branch = branch.clone();
+                let publication = state.acquire_workspace_publication().await;
+                metrics_control = crate::services::metrics::writer_control_token(
+                    Path::new(&workspace.path),
+                    &previous_branch,
+                )?;
                 let (_, publication_admission) = state
-                    .publish_workspace_generation_with_reissue(
+                    .publish_workspace_generation_with_reissue_guarded(
+                        &publication,
                         workspace.clone(),
                         Some(ctx.config.clone()),
                         WorkMask::from_bits(work_bits),
@@ -558,6 +565,7 @@ pub async fn sync_workspace(
                             workspace.branch.clone(),
                         )
                         .await?;
+                        drop(publication);
                         next_owner = Some((
                             next,
                             DispatchSnapshot {
@@ -637,6 +645,17 @@ pub(crate) async fn prepare_branch_owner(
     prepare_branch_owner_with_control(state, permit, ctx, kind, &mut metrics_control).await
 }
 
+#[cfg(test)]
+pub(crate) async fn prepare_branch_owner_with_existing_metrics_control(
+    state: &AppState,
+    permit: OwnerPermit,
+    ctx: DispatchSnapshot,
+    kind: OwnerKind,
+    mut metrics_control: crate::services::metrics::WriterControlToken,
+) -> Result<Option<(OwnerPermit, DispatchSnapshot)>, EngramError> {
+    prepare_branch_owner_with_control(state, permit, ctx, kind, &mut metrics_control).await
+}
+
 async fn prepare_branch_owner_with_control(
     state: &AppState,
     mut permit: OwnerPermit,
@@ -666,6 +685,7 @@ async fn prepare_branch_owner_with_control(
         }
 
         let work_bits = permit.work_bits();
+        let previous_branch = ctx.workspace.branch.clone();
         let mut workspace = ctx.workspace;
         workspace.workspace_id = workspace_hash(Path::new(&workspace.path), &resolved_branch);
         workspace.branch = resolved_branch;
@@ -673,13 +693,23 @@ async fn prepare_branch_owner_with_control(
             workspace: workspace.clone(),
             config: ctx.config.clone(),
         };
+        let publication_guard = state.acquire_workspace_publication().await;
+        *metrics_control = crate::services::metrics::writer_control_token(
+            Path::new(&published_ctx.workspace.path),
+            &previous_branch,
+        )?;
         let publication = if work_bits == 0 {
             state
-                .publish_workspace_generation(workspace, Some(ctx.config))
+                .publish_workspace_generation_guarded(
+                    &publication_guard,
+                    workspace,
+                    Some(ctx.config),
+                )
                 .await
         } else {
             state
-                .publish_workspace_generation_with_reissue(
+                .publish_workspace_generation_with_reissue_guarded(
+                    &publication_guard,
                     workspace,
                     Some(ctx.config),
                     WorkMask::from_bits(work_bits),
@@ -709,6 +739,7 @@ async fn prepare_branch_owner_with_control(
                         published_ctx.workspace.branch.clone(),
                     )
                     .await?;
+                    drop(publication_guard);
                     Ok(Some((next, published_ctx)))
                 }
                 ClaimOutcome::Retained | ClaimOutcome::Missing | ClaimOutcome::Stale => Ok(None),
@@ -728,6 +759,7 @@ async fn prepare_branch_owner_with_control(
                 reason: format!("branch publication lost {kind:?} retirement acknowledgment"),
             }));
         }
+        drop(publication_guard);
 
         loop {
             let Some((admission, current_ctx)) = state.guarded_dispatch_context().await else {
