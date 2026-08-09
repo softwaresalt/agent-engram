@@ -7,7 +7,7 @@ use std::collections::VecDeque;
 use std::io::{BufRead, BufReader};
 use std::path::{Component, Path, PathBuf};
 #[cfg(test)]
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -111,6 +111,17 @@ static METRICS_TEST: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 static ACTIVE_TEST_WRITERS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(test)]
 static MAX_ACTIVE_TEST_WRITERS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static SHUTDOWN_BEFORE_JOIN_PROBE: OnceLock<Mutex<Option<ShutdownBeforeJoinProbe>>> =
+    OnceLock::new();
+#[cfg(test)]
+static FAIL_NEXT_INITIALIZE_AFTER_SHUTDOWN: AtomicBool = AtomicBool::new(false);
+
+#[cfg(test)]
+struct ShutdownBeforeJoinProbe {
+    reached: tokio::sync::oneshot::Sender<()>,
+    resume: tokio::sync::oneshot::Receiver<()>,
+}
 
 #[cfg(test)]
 struct TestWriterActivity;
@@ -298,6 +309,49 @@ pub(crate) fn reset_test_writer_activity_peak() {
 #[cfg(test)]
 pub(crate) fn max_test_writer_activity() -> usize {
     MAX_ACTIVE_TEST_WRITERS.load(Ordering::SeqCst)
+}
+
+#[cfg(test)]
+pub(crate) fn pause_next_shutdown_before_join() -> (
+    tokio::sync::oneshot::Receiver<()>,
+    tokio::sync::oneshot::Sender<()>,
+) {
+    let (reached, wait_until_reached) = tokio::sync::oneshot::channel();
+    let (resume, wait_until_resumed) = tokio::sync::oneshot::channel();
+    let mut probe = SHUTDOWN_BEFORE_JOIN_PROBE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert!(
+        probe.is_none(),
+        "shutdown-before-join probe already installed"
+    );
+    *probe = Some(ShutdownBeforeJoinProbe {
+        reached,
+        resume: wait_until_resumed,
+    });
+    (wait_until_reached, resume)
+}
+
+#[cfg(test)]
+pub(crate) fn fail_next_initialize_after_shutdown() {
+    assert!(
+        !FAIL_NEXT_INITIALIZE_AFTER_SHUTDOWN.swap(true, Ordering::SeqCst),
+        "initialize-after-shutdown failure already installed"
+    );
+}
+
+#[cfg(test)]
+async fn pause_shutdown_before_join() {
+    let probe = SHUTDOWN_BEFORE_JOIN_PROBE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    if let Some(probe) = probe {
+        let _ = probe.reached.send(());
+        let _ = probe.resume.await;
+    }
 }
 
 #[cfg(test)]
@@ -731,6 +785,12 @@ pub async fn initialize(
     let _lifecycle = lock_with_timeout(lifecycle_lock(), "lifecycle").await?;
     let _branch_control = lock_with_timeout(branch_control_lock(), "branch-control").await?;
     shutdown_inner().await?;
+    #[cfg(test)]
+    if FAIL_NEXT_INITIALIZE_AFTER_SHUTDOWN.swap(false, Ordering::SeqCst) {
+        return Err(EngramError::Metrics(MetricsError::WriteFailed {
+            reason: "injected initialize failure after predecessor shutdown".to_owned(),
+        }));
+    }
 
     if !config.enabled {
         let generation = reserve_writer_generation()?;
@@ -974,6 +1034,8 @@ async fn shutdown_inner() -> Result<(), EngramError> {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         handle_guard.clone()
     };
+    #[cfg(test)]
+    pause_shutdown_before_join().await;
 
     if let Some(handle) = handle {
         match tokio::time::timeout(BRANCH_CONTROL_TIMEOUT, handle.join()).await {
