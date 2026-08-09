@@ -59,6 +59,33 @@ struct WriterState {
 pub(crate) struct WriterControlToken {
     generation: u64,
     expected_writer: Option<WriterIdentity>,
+    // Clones share the in-flight target so a cancellation guard can reverse a
+    // control message that was enqueued but not acknowledged.
+    pending_branch: Arc<Mutex<Option<String>>>,
+}
+
+impl WriterControlToken {
+    fn has_pending_branch(&self) -> bool {
+        self.pending_branch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
+    }
+
+    fn pending_branch_is(&self, branch: &str) -> bool {
+        self.pending_branch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_deref()
+            == Some(branch)
+    }
+
+    fn set_pending_branch(&self, branch: Option<String>) {
+        *self
+            .pending_branch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = branch;
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -271,6 +298,7 @@ pub(crate) fn writer_control_token(
             Ok(WriterControlToken {
                 generation: state.generation,
                 expected_writer: Some(expected_writer),
+                pending_branch: Arc::new(Mutex::new(None)),
             })
         }
         WriterAvailability::Unavailable => Err(writer_unavailable_error()),
@@ -290,6 +318,7 @@ fn current_writer_control_token() -> WriterControlToken {
     WriterControlToken {
         generation: state.generation,
         expected_writer,
+        pending_branch: Arc::new(Mutex::new(None)),
     }
 }
 
@@ -379,15 +408,52 @@ pub(crate) struct SaturatedTestWriter {
 
 #[cfg(test)]
 impl SaturatedTestWriter {
+    pub(crate) async fn release_blocking_event(&mut self) -> Result<(), EngramError> {
+        if matches!(self.receiver.recv().await, Some(MetricsMessage::Event(_))) {
+            Ok(())
+        } else {
+            Err(EngramError::Metrics(MetricsError::WriteFailed {
+                reason: "saturated test writer did not contain its blocking event".to_owned(),
+            }))
+        }
+    }
+
+    pub(crate) async fn acknowledge_branch_control(
+        &mut self,
+        expected_branch: &str,
+    ) -> Result<(), EngramError> {
+        match self.receiver.recv().await {
+            Some(MetricsMessage::SwitchBranch {
+                branch,
+                generation,
+                acknowledged,
+            }) if branch == expected_branch => {
+                acknowledge_writer_branch(generation, &branch);
+                let _ = acknowledged.send(());
+                Ok(())
+            }
+            Some(MetricsMessage::SwitchBranch { branch, .. }) => {
+                Err(EngramError::Metrics(MetricsError::WriteFailed {
+                    reason: format!(
+                        "saturated test writer received branch '{branch}', expected \
+                         '{expected_branch}'"
+                    ),
+                }))
+            }
+            Some(MetricsMessage::Event(_) | MetricsMessage::Shutdown) | None => {
+                Err(EngramError::Metrics(MetricsError::WriteFailed {
+                    reason: "saturated test writer did not receive pending branch control"
+                        .to_owned(),
+                }))
+            }
+        }
+    }
+
     pub(crate) async fn wait_for_pending_branch_control(
         &mut self,
         expected_branch: &str,
     ) -> Result<(), EngramError> {
-        if !matches!(self.receiver.recv().await, Some(MetricsMessage::Event(_))) {
-            return Err(EngramError::Metrics(MetricsError::WriteFailed {
-                reason: "saturated test writer did not contain its blocking event".to_owned(),
-            }));
-        }
+        self.release_blocking_event().await?;
         match self.receiver.recv().await {
             Some(MetricsMessage::SwitchBranch {
                 branch,
@@ -900,10 +966,18 @@ async fn switch_branch_inner(
                 }
                 identity.branch.clone_from(&branch);
                 control.expected_writer = Some(identity.clone());
+                control.set_pending_branch(None);
                 return Ok(());
             }
             WriterAvailability::Enabled(identity) => {
-                if control.expected_writer.as_ref() != Some(identity) {
+                let expected_path = control
+                    .expected_writer
+                    .as_ref()
+                    .map(|expected| expected.workspace_path.as_path());
+                let identity_matches = expected_path == Some(identity.workspace_path.as_path())
+                    && (control.expected_writer.as_ref() == Some(identity)
+                        || control.pending_branch_is(&identity.branch));
+                if !identity_matches {
                     return Err(writer_changed_error());
                 }
             }
@@ -930,6 +1004,7 @@ async fn switch_branch_inner(
         .expected_writer
         .as_ref()
         .is_some_and(|identity| identity.branch == branch)
+        && !control.has_pending_branch()
     {
         return Ok(());
     }
@@ -946,6 +1021,7 @@ async fn switch_branch_inner(
                 reason: format!("metrics branch-control channel closed: {error}"),
             })
         })?;
+    control.set_pending_branch(Some(branch.clone()));
     acknowledgment.await.map_err(|error| {
         EngramError::Metrics(MetricsError::WriteFailed {
             reason: format!("metrics branch-control acknowledgment dropped: {error}"),
@@ -971,6 +1047,7 @@ async fn switch_branch_inner(
         return Err(writer_changed_error());
     }
     control.expected_writer = Some(identity.clone());
+    control.set_pending_branch(None);
     Ok(())
 }
 
@@ -1387,6 +1464,81 @@ mod tests {
         }
         drop(receiver);
         shutdown().await.expect("reset stalled metrics state");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn timed_out_enqueued_branch_control_can_be_reversed_with_its_private_token() {
+        let _test_guard = test_writer_guard().await;
+        shutdown().await.expect("reset metrics writer");
+        let workspace = tempfile::tempdir().expect("metrics workspace");
+        let generation = reserve_writer_generation().expect("reserve writer generation");
+        let (sender, mut receiver) = mpsc::channel(1);
+        {
+            let mut sender_guard = sender_slot()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *sender_guard = Some(sender);
+        }
+        configure_writer(workspace.path(), "main", true, generation);
+        let mut control =
+            writer_control_token(workspace.path(), "main").expect("capture writer control");
+
+        let timed_out = tokio::spawn(async move {
+            let result = switch_branch_for(&mut control, "feature".to_owned()).await;
+            (control, result)
+        });
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let (mut control, result) = timed_out.await.expect("timed-out control task");
+        assert!(
+            result
+                .expect_err("unacknowledged queued control must time out")
+                .to_string()
+                .contains("timed out")
+        );
+
+        let first = receiver
+            .recv()
+            .await
+            .expect("timed-out feature control must remain queued");
+        let rollback = tokio::spawn(async move {
+            let result = switch_branch_for(&mut control, "main".to_owned()).await;
+            (control, result)
+        });
+        tokio::task::yield_now().await;
+        let MetricsMessage::SwitchBranch {
+            branch,
+            generation,
+            acknowledged,
+        } = first
+        else {
+            panic!("first queued message must be branch control");
+        };
+        assert_eq!(branch, "feature");
+        acknowledge_writer_branch(generation, &branch);
+        let _ = acknowledged.send(());
+
+        let MetricsMessage::SwitchBranch {
+            branch,
+            generation,
+            acknowledged,
+        } = receiver
+            .recv()
+            .await
+            .expect("rollback control must follow the timed-out control")
+        else {
+            panic!("second queued message must be branch control");
+        };
+        assert_eq!(branch, "main");
+        acknowledge_writer_branch(generation, &branch);
+        let _ = acknowledged.send(());
+        let (_control, result) = rollback.await.expect("rollback control task");
+        result.expect("private control token must reverse the queued switch");
+        writer_control_token(workspace.path(), "main")
+            .expect("restored writer identity must remain available");
+
+        drop(receiver);
+        shutdown().await.expect("reset restored metrics writer");
     }
 
     #[tokio::test]

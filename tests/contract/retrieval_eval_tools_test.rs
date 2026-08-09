@@ -86,7 +86,7 @@ async fn both_tools_present_in_catalog() {
 #[test]
 async fn run_while_disabled_returns_empty_report() {
     // Default config → retrieval_eval disabled.
-    let (state, _ws) = setup_workspace(WorkspaceConfig::default()).await;
+    let (state, _ws) = Box::pin(setup_workspace(WorkspaceConfig::default())).await;
 
     let result = tools::dispatch(state.clone(), "run_retrieval_eval", Some(json!({})))
         .await
@@ -104,7 +104,7 @@ async fn run_while_disabled_returns_empty_report() {
 
 #[test]
 async fn get_before_run_returns_empty_report() {
-    let (state, _ws) = setup_workspace(WorkspaceConfig::default()).await;
+    let (state, _ws) = Box::pin(setup_workspace(WorkspaceConfig::default())).await;
 
     let result = tools::dispatch(state.clone(), "get_retrieval_eval_report", Some(json!({})))
         .await
@@ -117,7 +117,7 @@ async fn get_before_run_returns_empty_report() {
 
 #[test]
 async fn unknown_params_tolerated() {
-    let (state, _ws) = setup_workspace(WorkspaceConfig::default()).await;
+    let (state, _ws) = Box::pin(setup_workspace(WorkspaceConfig::default())).await;
 
     let result = tools::dispatch(
         state.clone(),

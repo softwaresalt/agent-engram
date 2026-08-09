@@ -816,7 +816,7 @@ async fn background_db_hydration(
 }
 
 async fn drive_transferred_sync(
-    state: &AppState,
+    state: &Arc<AppState>,
     permit: OwnerPermit,
     #[cfg(test)] test_probe: Option<HandoffProbe>,
 ) {
@@ -1443,7 +1443,7 @@ mod tests {
     }
 
     async fn drive_test_transferred_sync(
-        state: &AppState,
+        state: &Arc<AppState>,
         permit: OwnerPermit,
         probe: Option<HandoffProbe>,
     ) {

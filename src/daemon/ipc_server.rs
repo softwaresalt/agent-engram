@@ -440,7 +440,7 @@ fn same_workspace_instance(left: &WorkspaceSnapshot, right: &WorkspaceSnapshot) 
 
 impl AppState {
     async fn prepare_daemon_mutation(
-        &self,
+        self: &Arc<Self>,
         permit: OwnerPermit,
         context: DispatchSnapshot,
         kind: OwnerKind,
@@ -1099,7 +1099,7 @@ async fn run_startup_driver(
 }
 
 async fn drive_daemon_transferred_syncs(
-    state: &AppState,
+    state: &SharedState,
     snapshot: &WorkspaceSnapshot,
     workspace_config: &WorkspaceConfig,
     successor: crate::server::state::OwnerPermit,
@@ -1848,7 +1848,7 @@ mod tests {
             "ref: refs/heads/main\n",
         )
         .expect("write git HEAD");
-        let state = AppState::new(1);
+        let state = Arc::new(AppState::new(1));
         let mut stale_snapshot = coordinator_snapshot(
             "id-stale",
             "uuid-worktree",
@@ -2064,7 +2064,7 @@ mod tests {
         .await
         .expect("configure fixture metrics writer");
         let config = WorkspaceConfig::default();
-        let state = AppState::new(1);
+        let state = Arc::new(AppState::new(1));
         let _ = state
             .publish_workspace_generation(snapshot.clone(), Some(config.clone()))
             .await
@@ -2148,7 +2148,7 @@ mod tests {
         .await
         .expect("configure fixture metrics writer");
         let config = WorkspaceConfig::default();
-        let state = AppState::new(1);
+        let state = Arc::new(AppState::new(1));
         let _ = state
             .publish_workspace_generation(snapshot.clone(), Some(config.clone()))
             .await

@@ -1206,7 +1206,7 @@ impl AppState {
         snapshot: WorkspaceSnapshot,
         config: Option<WorkspaceConfig>,
     ) -> Result<(u64, AdmissionGuard), CoordinatorError> {
-        self.publish_workspace_generation_transition(snapshot, config, WorkMask::default())
+        self.publish_workspace_generation_transition(snapshot, config, WorkMask::default(), false)
             .await
     }
 
@@ -1240,7 +1240,24 @@ impl AppState {
         config: Option<WorkspaceConfig>,
         reissued_work: WorkMask,
     ) -> Result<(u64, AdmissionGuard), CoordinatorError> {
-        self.publish_workspace_generation_transition(snapshot, config, reissued_work)
+        self.publish_workspace_generation_transition(snapshot, config, reissued_work, false)
+            .await
+    }
+
+    /// Republish a branch-refresh predecessor without losing transient work.
+    ///
+    /// Rollback advances the generation rather than decrementing it, so every
+    /// owner admitted against either side of the failed refresh remains stale.
+    /// The current owner, pending mask, and retirement-barrier masks are carried
+    /// to the restored binding and remain unavailable until the caller retires
+    /// the failed-refresh owner.
+    pub(crate) async fn rollback_workspace_generation_guarded(
+        &self,
+        _publication: &WorkspacePublicationGuard,
+        snapshot: WorkspaceSnapshot,
+        config: Option<WorkspaceConfig>,
+    ) -> Result<(u64, AdmissionGuard), CoordinatorError> {
+        self.publish_workspace_generation_transition(snapshot, config, WorkMask::default(), true)
             .await
     }
 
@@ -1249,6 +1266,7 @@ impl AppState {
         snapshot: WorkspaceSnapshot,
         config: Option<WorkspaceConfig>,
         reissued_work: WorkMask,
+        preserve_current_work: bool,
     ) -> Result<(u64, AdmissionGuard), CoordinatorError> {
         let target_binding = BindingIdentity {
             workspace_uuid: snapshot.workspace_uuid.clone(),
@@ -1285,7 +1303,7 @@ impl AppState {
         let prior_phase = std::mem::replace(&mut coordinator.phase, CoordinatorPhase::Idle);
         coordinator.phase = match prior_phase {
             CoordinatorPhase::Idle => {
-                if !same_binding {
+                if !same_binding && !preserve_current_work {
                     coordinator.pending = WorkMask::default();
                 }
                 coordinator.pending = coordinator.pending.union(reissued_work);
@@ -1293,7 +1311,7 @@ impl AppState {
             }
             CoordinatorPhase::Running(owner) => {
                 let retired_work_mask = owner.work_mask.union(coordinator.pending);
-                let inherited = if same_binding {
+                let inherited = if same_binding || preserve_current_work {
                     retired_work_mask
                 } else {
                     WorkMask::default()
@@ -1310,7 +1328,13 @@ impl AppState {
                 })
             }
             CoordinatorPhase::Retiring(mut barrier) => {
-                if barrier.target_binding != target_binding {
+                if preserve_current_work {
+                    barrier.deferred = barrier
+                        .retired_work_mask
+                        .union(barrier.deferred)
+                        .union(coordinator.pending);
+                    coordinator.pending = WorkMask::default();
+                } else if barrier.target_binding != target_binding {
                     barrier.deferred = if target_binding == barrier.retired_binding {
                         barrier.retired_work_mask
                     } else {
