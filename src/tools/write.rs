@@ -410,6 +410,19 @@ pub(crate) fn unfulfilled_work_bits(
 
 // ── sync_workspace (T045) ───────────────────────────────────────────
 
+const DETACHED_BRANCH_ROLLBACK_ATTEMPTS: usize = 3;
+const DETACHED_BRANCH_ROLLBACK_RETRY_DELAY: std::time::Duration =
+    std::time::Duration::from_millis(100);
+const BRANCH_ROLLBACK_DIAGNOSTIC_CHARS: usize = 512;
+
+fn bounded_branch_rollback_diagnostic(error: &impl std::fmt::Display) -> String {
+    error
+        .to_string()
+        .chars()
+        .take(BRANCH_ROLLBACK_DIAGNOSTIC_CHARS)
+        .collect()
+}
+
 /// Owned rollback state kept armed across the awaited metrics switch.
 struct BranchRefreshRollback {
     state: SharedState,
@@ -418,6 +431,7 @@ struct BranchRefreshRollback {
     metrics_control: crate::services::metrics::WriterControlToken,
     permit: Option<OwnerPermit>,
     prior_hydration_ready: bool,
+    restored_generation: Option<u64>,
 }
 
 impl BranchRefreshRollback {
@@ -436,6 +450,7 @@ impl BranchRefreshRollback {
                 })
             })?;
         drop(restored_admission);
+        self.restored_generation = Some(restored_generation);
 
         crate::services::metrics::switch_branch_for(
             &mut self.metrics_control,
@@ -452,15 +467,80 @@ impl BranchRefreshRollback {
                 reason: "branch refresh rollback owner was already consumed".to_owned(),
             })
         })?;
-        if !matches!(
-            CoordinatorCell::complete(permit),
-            CompletionOutcome::RetirementAcknowledged
-        ) {
-            return Err(EngramError::System(SystemError::DatabaseError {
-                reason: "branch refresh rollback lost owner retirement acknowledgment".to_owned(),
-            }));
-        }
+        // Abandoning the failed-refresh owner acknowledges its retirement and
+        // atomically requeues the barrier's exact deferred mask.
+        drop(permit);
         Ok(())
+    }
+
+    async fn recover_terminal(mut self, attempts: usize, last_error: &str) {
+        let publication_error = match self
+            .state
+            .rollback_workspace_generation_guarded(
+                &self.publication,
+                self.prior.workspace.clone(),
+                Some(self.prior.config.clone()),
+            )
+            .await
+        {
+            Ok((generation, admission)) => {
+                drop(admission);
+                self.restored_generation = Some(generation);
+                None
+            }
+            Err(error) => Some(bounded_branch_rollback_diagnostic(&error)),
+        };
+
+        let (metrics_outcome, metrics_error) = if self.restored_generation.is_some() {
+            match crate::services::metrics::initialize(
+                Path::new(&self.prior.workspace.path),
+                &self.prior.workspace.branch,
+                &self.prior.config.metrics,
+            )
+            .await
+            {
+                Ok(()) => ("prior_writer_reinitialized", None),
+                Err(error) => {
+                    let diagnostic = bounded_branch_rollback_diagnostic(&error);
+                    if let Err(unavailable_error) =
+                        crate::services::metrics::mark_writer_unavailable()
+                    {
+                        tracing::error!(
+                            error = %bounded_branch_rollback_diagnostic(&unavailable_error),
+                            "terminal branch rollback could not mark metrics unavailable"
+                        );
+                    }
+                    ("unavailable", Some(diagnostic))
+                }
+            }
+        } else {
+            let diagnostic = match crate::services::metrics::mark_writer_unavailable() {
+                Ok(()) => {
+                    "prior workspace was not republished; metrics marked unavailable".to_owned()
+                }
+                Err(error) => bounded_branch_rollback_diagnostic(&error),
+            };
+            ("unavailable", Some(diagnostic))
+        };
+
+        if self.prior_hydration_ready {
+            if let Some(generation) = self.restored_generation {
+                let _ = self.state.set_hydration_ready_for_generation(generation);
+            }
+        }
+
+        let owner_reissued = self.permit.is_some();
+        drop(self.permit.take());
+        tracing::error!(
+            attempts,
+            last_error,
+            publication_error = publication_error.as_deref().unwrap_or("none"),
+            metrics_outcome,
+            metrics_error = metrics_error.as_deref().unwrap_or("none"),
+            owner_reissued,
+            "detached branch refresh rollback exhausted retries; terminal recovery completed"
+        );
+        drop(self.publication);
     }
 }
 
@@ -485,6 +565,7 @@ impl BranchRefreshTransaction {
                 metrics_control: metrics_control.clone(),
                 permit: Some(permit),
                 prior_hydration_ready,
+                restored_generation: None,
             }),
         }
     }
@@ -543,18 +624,30 @@ impl Drop for BranchRefreshTransaction {
         let _rollback = runtime.spawn(async move {
             // Keep the publication guard and exact owner private until metrics
             // is coherent; competing writes remain busy/queued in the barrier.
-            loop {
+            let mut last_error = String::new();
+            for attempt in 1..=DETACHED_BRANCH_ROLLBACK_ATTEMPTS {
                 match rollback.run().await {
-                    Ok(()) => break,
+                    Ok(()) => return,
                     Err(error) => {
-                        tracing::error!(%error, "detached branch refresh rollback retry failed");
+                        last_error = bounded_branch_rollback_diagnostic(&error);
+                        tracing::error!(
+                            attempt,
+                            max_attempts = DETACHED_BRANCH_ROLLBACK_ATTEMPTS,
+                            error = %last_error,
+                            "detached branch refresh rollback retry failed"
+                        );
                         if rollback.permit.is_none() {
-                            break;
+                            return;
                         }
                     }
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                if attempt < DETACHED_BRANCH_ROLLBACK_ATTEMPTS {
+                    tokio::time::sleep(DETACHED_BRANCH_ROLLBACK_RETRY_DELAY).await;
+                }
             }
+            rollback
+                .recover_terminal(DETACHED_BRANCH_ROLLBACK_ATTEMPTS, &last_error)
+                .await;
         });
     }
 }
@@ -2140,6 +2233,140 @@ mod tests {
         crate::services::metrics::shutdown()
             .await
             .expect("clean saturated metrics writer");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancelled_branch_refresh_with_closed_metrics_has_bounded_terminal_recovery() {
+        let metrics_guard = reset_metrics_writer().await;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("workspace");
+        let data_dir = temp.path().join("data");
+        std::fs::create_dir_all(workspace.join(".git")).expect("create git metadata");
+        std::fs::write(
+            workspace.join(".git").join("HEAD"),
+            "ref: refs/heads/main\n",
+        )
+        .expect("write git HEAD");
+        std::fs::write(workspace.join("app.py"), "def run():\n    return 1\n")
+            .expect("write source");
+        let state = Arc::new(AppState::new(1));
+        let mut stale_snapshot = snapshot(
+            "closed-metrics-branch",
+            "uuid-closed-metrics-branch",
+            "id-closed-metrics-branch",
+            &workspace,
+            data_dir,
+        );
+        stale_snapshot.branch = "stale-branch".to_owned();
+        publish(&state, stale_snapshot).await;
+        let mut saturated_writer = crate::services::metrics::configure_test_saturated_writer(
+            &metrics_guard,
+            &workspace,
+            "stale-branch",
+        )
+        .expect("configure saturated metrics writer");
+        let notifications_before = state.coordinator.test_notification_calls();
+
+        let owner_state = Arc::clone(&state);
+        let owner = tokio::spawn(async move {
+            sync_workspace(
+                owner_state,
+                Some(json!({
+                    "revalidate_code_graph": true,
+                    "backfill_python_canonical": true
+                })),
+            )
+            .await
+        });
+        wait_for_published_branch(&state, "main").await;
+        saturated_writer
+            .wait_for_pending_branch_control("main")
+            .await
+            .expect("branch refresh must await metrics acknowledgment");
+        let queued = sync_workspace(
+            Arc::clone(&state),
+            Some(json!({
+                "revalidate_code_graph": true,
+                "backfill_python_canonical": true
+            })),
+        )
+        .await
+        .expect("competing heavy Sync must queue");
+        assert_eq!(
+            queued,
+            json!({
+                "status": "queued",
+                "message": "Sync queued; will run after current indexing completes"
+            })
+        );
+
+        owner.abort();
+        assert!(
+            owner
+                .await
+                .expect_err("cancelled Sync task must not join successfully")
+                .is_cancelled()
+        );
+        drop(saturated_writer);
+
+        let publication = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            state.acquire_workspace_publication(),
+        )
+        .await
+        .expect("detached rollback must terminate and release publication within its retry bound");
+        drop(publication);
+
+        let rolled_back = state
+            .snapshot_workspace()
+            .await
+            .expect("terminally recovered workspace");
+        assert_eq!(rolled_back.branch, "stale-branch");
+        assert!(state.coordinator.test_is_idle());
+        assert_eq!(
+            state.coordinator.test_pending_bits(),
+            0b111,
+            "terminal recovery must reissue the exact routine/heavy work mask once"
+        );
+        assert_eq!(
+            state.coordinator.test_notification_calls(),
+            notifications_before + 1,
+            "terminal recovery must retire the exact owner once"
+        );
+        crate::services::metrics::writer_control_token(&workspace, "stale-branch")
+            .expect("safe terminal recovery must reinitialize the prior metrics writer");
+
+        let retry = sync_workspace(Arc::clone(&state), None)
+            .await
+            .expect("next Sync must have a coherent outcome after terminal recovery");
+        assert_ne!(
+            retry.get("status").and_then(serde_json::Value::as_str),
+            Some("queued"),
+            "next Sync must claim and execute the reissued work"
+        );
+        assert_eq!(state.coordinator.test_pending_bits(), 0);
+        assert!(state.coordinator.test_is_idle());
+        assert_eq!(
+            state
+                .snapshot_workspace()
+                .await
+                .expect("workspace after retry")
+                .branch,
+            "main"
+        );
+        crate::services::metrics::writer_control_token(&workspace, "main")
+            .expect("metrics identity must follow the successful retry");
+
+        crate::services::metrics::shutdown()
+            .await
+            .expect("clean recovered metrics writer");
+        let weak_state = Arc::downgrade(&state);
+        drop(state);
+        tokio::task::yield_now().await;
+        assert!(
+            weak_state.upgrade().is_none(),
+            "bounded rollback must not leave an orphan task retaining state"
+        );
     }
 
     #[tokio::test]
