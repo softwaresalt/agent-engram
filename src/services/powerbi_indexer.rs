@@ -1249,6 +1249,23 @@ async fn delete_markerless_powerbi_nodes(
     Ok(())
 }
 
+#[cfg(test)]
+type AfterPowerBiMarkerDelete = fn() -> Result<(), EngramError>;
+
+async fn delete_powerbi_marker_before_artifacts(
+    queries: &CodeGraphQueries,
+    file_path: &str,
+    source_path: &str,
+    #[cfg(test)] after_marker_delete: AfterPowerBiMarkerDelete,
+) -> Result<(), EngramError> {
+    queries
+        .delete_powerbi_index_state_by_scope(file_path, source_path)
+        .await?;
+    #[cfg(test)]
+    after_marker_delete()?;
+    Ok(())
+}
+
 // ── Async indexer ─────────────────────────────────────────────────────────
 
 /// Index all Power BI files from a single content source.
@@ -1280,6 +1297,24 @@ pub(crate) async fn index_powerbi_source_with_snapshot(
     workspace_root: &Path,
     queries: &CodeGraphQueries,
     max_file_size: u64,
+) -> Result<(PowerBiIndexResult, CollectedFiles), EngramError> {
+    index_powerbi_source_impl(
+        source,
+        workspace_root,
+        queries,
+        max_file_size,
+        #[cfg(test)]
+        || Ok(()),
+    )
+    .await
+}
+
+async fn index_powerbi_source_impl(
+    source: &ContentSource,
+    workspace_root: &Path,
+    queries: &CodeGraphQueries,
+    max_file_size: u64,
+    #[cfg(test)] after_marker_delete: AfterPowerBiMarkerDelete,
 ) -> Result<(PowerBiIndexResult, CollectedFiles), EngramError> {
     let mut result = PowerBiIndexResult::default();
 
@@ -1403,9 +1438,14 @@ pub(crate) async fn index_powerbi_source_with_snapshot(
         // Keep marker-first deletion even though the discovery snapshot had no
         // marker. Every subsequent failure then leaves this file marker-absent,
         // while the successful rebuild below remains marker-last.
-        queries
-            .delete_powerbi_index_state_by_scope(rel_path, &source.path)
-            .await?;
+        delete_powerbi_marker_before_artifacts(
+            queries,
+            rel_path,
+            &source.path,
+            #[cfg(test)]
+            after_marker_delete,
+        )
+        .await?;
     }
     delete_markerless_powerbi_nodes(queries, &markerless_legacy_paths, &source.path).await?;
     for rel_path in &markerless_legacy_paths {
@@ -1436,9 +1476,14 @@ pub(crate) async fn index_powerbi_source_with_snapshot(
             // hash-skipped with an incomplete row set. Marker-first delete /
             // marker-last write is the crash-safe ordering (mirrors the
             // notebook sweep's freshness-stamp-first invalidation).
-            queries
-                .delete_powerbi_index_state_by_scope(prior_rel, &source.path)
-                .await?;
+            delete_powerbi_marker_before_artifacts(
+                queries,
+                prior_rel,
+                &source.path,
+                #[cfg(test)]
+                after_marker_delete,
+            )
+            .await?;
             queries
                 .delete_content_records_by_scope(prior_rel, "powerbi", &source.path)
                 .await?;
@@ -1550,9 +1595,14 @@ pub(crate) async fn index_powerbi_source_with_snapshot(
             // 087.006-T (100-S review P1-B): marker-first delete so a crash
             // between the deletes reprocesses rather than hash-skips with an
             // incomplete row set.
-            queries
-                .delete_powerbi_index_state_by_scope(&rel_path, &source.path)
-                .await?;
+            delete_powerbi_marker_before_artifacts(
+                queries,
+                &rel_path,
+                &source.path,
+                #[cfg(test)]
+                after_marker_delete,
+            )
+            .await?;
             queries
                 .delete_content_records_by_scope(&rel_path, "powerbi", &source.path)
                 .await?;
@@ -1669,6 +1719,24 @@ pub(crate) async fn sweep_deleted_powerbi_files_from_snapshot(
     queries: &CodeGraphQueries,
     collected: &CollectedFiles,
 ) -> Result<usize, EngramError> {
+    sweep_deleted_powerbi_files_impl(
+        source,
+        workspace_root,
+        queries,
+        collected,
+        #[cfg(test)]
+        || Ok(()),
+    )
+    .await
+}
+
+async fn sweep_deleted_powerbi_files_impl(
+    source: &ContentSource,
+    workspace_root: &Path,
+    queries: &CodeGraphQueries,
+    collected: &CollectedFiles,
+    #[cfg(test)] after_marker_delete: AfterPowerBiMarkerDelete,
+) -> Result<usize, EngramError> {
     // Fail-closed source-root guard (INV-2/INV-3): a missing or unreadable
     // source root is indistinguishable from a fully-emptied tree by physical
     // absence alone, so suppress the sweep entirely rather than risk
@@ -1707,9 +1775,14 @@ pub(crate) async fn sweep_deleted_powerbi_files_from_snapshot(
         // leaves the swept path marker-absent (a future re-add reprocesses)
         // rather than content-absent with a surviving marker that would
         // hash-skip it. Marker-first delete keeps hygiene crash-safe.
-        queries
-            .delete_powerbi_index_state_by_scope(path, &source.path)
-            .await?;
+        delete_powerbi_marker_before_artifacts(
+            queries,
+            path,
+            &source.path,
+            #[cfg(test)]
+            after_marker_delete,
+        )
+        .await?;
         queries
             .delete_content_records_by_scope(path, "powerbi", &source.path)
             .await?;
@@ -2798,6 +2871,100 @@ table Sales
             .collect();
         paths.sort();
         paths
+    }
+
+    async fn sweep_with_marker_delete_boundary(
+        source: &ContentSource,
+        workspace_root: &Path,
+        queries: &CodeGraphQueries,
+        after_marker_delete: AfterPowerBiMarkerDelete,
+    ) -> Result<usize, EngramError> {
+        let collected = collect_files_in_workspace_checked(
+            &workspace_root.join(&source.path),
+            workspace_root,
+            is_powerbi_file,
+        );
+        sweep_deleted_powerbi_files_impl(
+            source,
+            workspace_root,
+            queries,
+            &collected,
+            after_marker_delete,
+        )
+        .await
+    }
+
+    fn abort_after_marker_delete() -> Result<(), EngramError> {
+        Err(EngramError::System(
+            crate::errors::SystemError::DatabaseError {
+                reason: "test abort after Power BI marker deletion".to_string(),
+            },
+        ))
+    }
+
+    /// 114.002-T: the test-only operation boundary fires after marker deletion
+    /// but before either later deletion, leaving content and graph rows intact.
+    #[tokio::test]
+    async fn marker_delete_boundary_aborts_before_content_and_node_deletes() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        std::fs::create_dir_all(workspace.path().join("pbi")).expect("create source dir");
+
+        let db_dir = tempfile::tempdir().expect("db tempdir");
+        let db = crate::db::connect_db(db_dir.path(), "pbi-marker-delete-boundary")
+            .await
+            .expect("open test db");
+        let queries = CodeGraphQueries::new(db);
+        let source = powerbi_source("pbi");
+        let gone_path = "pbi/gone.bim";
+        seed_powerbi_record(&queries, gone_path, &source.path).await;
+        queries
+            .upsert_powerbi_nodes(&[PowerBiNode {
+                id: "pbi_marker_delete_boundary_control".to_string(),
+                name: "BoundaryControl".to_string(),
+                kind: PowerBiNodeKind::Table,
+                file_path: gone_path.to_string(),
+                source_path: source.path.clone(),
+                content_hash: "seed-hash".to_string(),
+                ingested_at: Utc::now(),
+            }])
+            .await
+            .expect("seed powerbi node");
+        queries
+            .upsert_powerbi_index_state(gone_path, &source.path, "seed-hash")
+            .await
+            .expect("seed completion marker");
+
+        let result = sweep_with_marker_delete_boundary(
+            &source,
+            workspace.path(),
+            &queries,
+            abort_after_marker_delete,
+        )
+        .await;
+
+        assert!(result.is_err(), "the test boundary must abort the sweep");
+        assert!(
+            !queries
+                .select_powerbi_index_state(&source.path)
+                .await
+                .expect("select markers after abort")
+                .contains_key(gone_path),
+            "the marker must be absent when the boundary fires"
+        );
+        assert_eq!(
+            remaining_powerbi_paths(&queries, &source.path).await,
+            vec![gone_path.to_string()],
+            "content rows after the boundary must remain untouched"
+        );
+        assert!(
+            queries
+                .select_powerbi_nodes(Some(&source.path))
+                .await
+                .expect("select nodes after abort")
+                .iter()
+                .any(|node| node.id == "pbi_marker_delete_boundary_control"),
+            "graph nodes after the boundary must remain untouched"
+        );
     }
 
     /// RF-2 (INV-1, alias-supersede for PowerBI): a directory alias makes the
