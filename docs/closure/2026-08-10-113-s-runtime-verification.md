@@ -53,9 +53,19 @@ daemon.
 
 ## Risk and Follow-up
 
-ProposedAction: clean markerless derived Power BI rows before rebuilding.
-ActionRisk: high. ActionResult: verified in disposable databases with live
-path, source, and PBIP controls; no live operator data was touched.
+ProposedAction:
+
+- summary: clean markerless derived Power BI rows before rebuilding;
+- targets: Power BI content records, graph nodes/edges, and completion markers
+  for fully materialized markerless paths;
+- change_kind: migration cleanup;
+- rollback: reviewed merge-commit revert; marker absence forces later
+  reprocessing;
+- approval_required: yes, satisfied by the shipment's recorded full operator
+  approval.
+
+ActionRisk: high. ActionResult: applied and verified in disposable databases
+with live path, source, and PBIP controls; no live operator data was touched.
 
 Three bounded Copilot remediation cycles closed graph-only discovery,
 interrupted synthetic-path cleanup, and overlapping PBIP live-row protection.

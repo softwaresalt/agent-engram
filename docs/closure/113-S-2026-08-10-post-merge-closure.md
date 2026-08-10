@@ -84,7 +84,7 @@ Detailed evidence:
 
 ## Invariants and Operational Monitoring
 
-The ship/operator owns a seven-day observation window through 2026-08-17.
+The shipment operator owns a seven-day observation window through 2026-08-17.
 Preserve these invariants:
 
 - deletion removes the marker before content or graph artifacts;
