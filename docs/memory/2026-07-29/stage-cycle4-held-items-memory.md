@@ -43,9 +43,10 @@ Hands-on/live-daemon investigation on post-104-F main. Findings artifact (UNCOMM
 
 **Recommendation:** DEFER to a **runtime-verification spike** (Ship-owned/instrumented) with a single pre-warmed daemon on one workspace, corpus validated against the in-process GREEN path, and daemon-internal tracing of post-pass invocation/commit + IPC response framing. Candidate fix directions (do NOT build now): async/streaming index response; bound daemon-spawn/model-load under the client deadline; persist-boundary fix if H1/H4 confirmed. **No fix fabricated on an unproven root cause (013-D discipline).**
 
-**Later evidence preserved:** controlled 107-S characterization classified the
-current daemon behavior as **no current defect**. This correction only retracts
-the earlier unsupported corroboration claim.
+**Later evidence preserved:** controlled 107-S characterization classified
+current daemon **persistence behavior** as **no current defect** while retaining
+the separate IPC `startup-outside-deadline` finding. This correction only
+retracts the earlier unsupported persistence corroboration claim.
 
 **Cleanup:** temp per-workspace daemons PIDs **35240** and **12648** killed; both temp workspaces removed. Original repo daemon **PID 31852** (model-loaded, 1.3GB) left bound and untouched.
 

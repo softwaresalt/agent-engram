@@ -161,10 +161,11 @@ persist/non-persist conclusion until the corpus passes a known-green control.
   gated by corpus validation, in addition to the per-workspace-daemon and
   auto-reindex confounds.
 
-Later controlled 107-S characterization classified the current daemon behavior
-as **no current defect**. This historical correction preserves that later
-evidence; it only retracts the unsupported corroboration claim from this
-earlier, unvalidated corpus.
+Later controlled 107-S characterization classified current daemon
+**persistence behavior** as **no current defect** while retaining the separate
+IPC `startup-outside-deadline` finding. This historical correction preserves
+both later conclusions; it only retracts the unsupported persistence
+corroboration claim from this earlier, unvalidated corpus.
 
 **No fix is authored.** A fix plan on an unproven exact root cause would be low
 quality and risk trading one defect for another (per 013-D discipline).
