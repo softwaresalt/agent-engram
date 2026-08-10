@@ -26,13 +26,34 @@ const BRANCH_CONTROL_TIMEOUT: Duration = Duration::from_millis(100);
 
 #[derive(Debug)]
 enum MetricsMessage {
-    Event(Box<UsageEvent>),
+    Event(Box<RoutedUsageEvent>),
     SwitchBranch {
         branch: String,
         generation: u64,
         acknowledged: tokio::sync::oneshot::Sender<()>,
     },
     Shutdown,
+}
+
+#[derive(Debug, Default)]
+struct RoutedUsageEvent {
+    origin_workspace: PathBuf,
+    event: UsageEvent,
+}
+
+impl RoutedUsageEvent {
+    // The workspace field is populated from the immutable dispatch snapshot.
+    // Copying that origin into a private envelope closes the writer-replacement
+    // race without changing the public serialized schema.
+    fn from_event(event: UsageEvent) -> Option<Self> {
+        if event.workspace.is_empty() {
+            return None;
+        }
+        Some(Self {
+            origin_workspace: PathBuf::from(&event.workspace),
+            event,
+        })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -769,6 +790,32 @@ async fn append_event_line(
     .await
 }
 
+async fn persist_routed_event(
+    workspace_path: &Path,
+    active_branch: &str,
+    routed: RoutedUsageEvent,
+    config: &MetricsConfig,
+) {
+    if routed.origin_workspace != workspace_path {
+        tracing::trace!(
+            origin_workspace = %routed.origin_workspace.display(),
+            writer_workspace = %workspace_path.display(),
+            "metrics_event_dropped_workspace_mismatch"
+        );
+        return;
+    }
+
+    let event = routed.event;
+    let branch = if event.branch.is_empty() {
+        active_branch
+    } else {
+        event.branch.as_str()
+    };
+    if let Err(error) = append_event_line(workspace_path, branch, &event, config).await {
+        tracing::warn!(error = %error, branch, "failed to persist metrics event");
+    }
+}
+
 #[tracing::instrument(skip(receiver, config))]
 async fn writer_loop(
     workspace_path: PathBuf,
@@ -783,17 +830,7 @@ async fn writer_loop(
     while let Some(message) = receiver.recv().await {
         match message {
             MetricsMessage::Event(event) => {
-                let event = *event;
-                let branch = if event.branch.is_empty() {
-                    active_branch.as_str()
-                } else {
-                    event.branch.as_str()
-                };
-                if let Err(error) =
-                    append_event_line(&workspace_path, branch, &event, &config).await
-                {
-                    tracing::warn!(error = %error, branch, "failed to persist metrics event");
-                }
+                persist_routed_event(&workspace_path, &active_branch, *event, &config).await;
             }
             MetricsMessage::SwitchBranch {
                 branch,
@@ -809,17 +846,8 @@ async fn writer_loop(
                 while let Ok(pending) = receiver.try_recv() {
                     match pending {
                         MetricsMessage::Event(event) => {
-                            let event = *event;
-                            let branch = if event.branch.is_empty() {
-                                active_branch.as_str()
-                            } else {
-                                event.branch.as_str()
-                            };
-                            if let Err(error) =
-                                append_event_line(&workspace_path, branch, &event, &config).await
-                            {
-                                tracing::warn!(error = %error, branch, "failed to persist drained metrics event");
-                            }
+                            persist_routed_event(&workspace_path, &active_branch, *event, &config)
+                                .await;
                         }
                         MetricsMessage::SwitchBranch {
                             branch,
@@ -895,10 +923,32 @@ pub async fn initialize(
 
 /// Record a usage event to the metrics channel (non-blocking).
 ///
-/// If the channel is full, the event is dropped with a `tracing::trace!`
-/// log. This ensures zero latency impact on tool call responses.
+/// Events without an originating workspace, events for a different writer,
+/// and events submitted while the channel is full are dropped with a
+/// `tracing::trace!` log. The writer revalidates the private routing envelope
+/// before persistence, closing replacement races without adding response
+/// latency.
 pub fn record(event: UsageEvent) {
     remember_recent_event(event.clone());
+
+    let Some(routed) = RoutedUsageEvent::from_event(event) else {
+        tracing::trace!("metrics_event_dropped_missing_workspace");
+        return;
+    };
+    {
+        let state = writer_state_slot()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let matches_current_writer = matches!(
+            &state.availability,
+            WriterAvailability::Enabled(identity)
+                if identity.workspace_path == routed.origin_workspace
+        );
+        if !matches_current_writer {
+            tracing::trace!("metrics_event_dropped_workspace_mismatch");
+            return;
+        }
+    }
 
     let sender = {
         let sender_guard = sender_slot()
@@ -908,7 +958,7 @@ pub fn record(event: UsageEvent) {
     };
 
     if let Some(sender) = sender {
-        if let Err(error) = sender.try_send(MetricsMessage::Event(Box::new(event))) {
+        if let Err(error) = sender.try_send(MetricsMessage::Event(Box::new(routed))) {
             match error {
                 mpsc::error::TrySendError::Full(_) => {
                     tracing::trace!("metrics_event_dropped");
@@ -1275,13 +1325,21 @@ mod tests {
         }
     }
 
-    fn empty_branch_event(tool_name: &str) -> UsageEvent {
+    fn empty_branch_event(tool_name: &str, workspace_path: &Path) -> UsageEvent {
         UsageEvent {
             tool_name: tool_name.to_owned(),
             timestamp: "2026-08-08T00:00:00Z".to_owned(),
             branch: String::new(),
+            workspace: workspace_path.display().to_string(),
             ..UsageEvent::default()
         }
+    }
+
+    fn routed_test_event(tool_name: &str, workspace_path: &Path) -> MetricsMessage {
+        MetricsMessage::Event(Box::new(RoutedUsageEvent {
+            origin_workspace: workspace_path.to_path_buf(),
+            event: empty_branch_event(tool_name, workspace_path),
+        }))
     }
 
     fn force_enabled_writer(workspace_path: &Path, branch: &str) {
@@ -1312,9 +1370,7 @@ mod tests {
         }
         force_enabled_writer(workspace.path(), "main");
         sender
-            .try_send(MetricsMessage::Event(Box::new(empty_branch_event(
-                "before_switch",
-            ))))
+            .try_send(routed_test_event("before_switch", workspace.path()))
             .expect("fill the event channel");
 
         let mut switch =
@@ -1343,7 +1399,7 @@ mod tests {
             .await
             .expect("switch task must join")
             .expect("writer must acknowledge branch control");
-        record(empty_branch_event("after_switch"));
+        record(empty_branch_event("after_switch", workspace.path()));
         shutdown().await.expect("drain metrics writer");
 
         let main = load_events(workspace.path(), "main").expect("main branch events");
@@ -1438,9 +1494,10 @@ mod tests {
 
         let (sender, receiver) = mpsc::channel(1);
         sender
-            .try_send(MetricsMessage::Event(Box::new(empty_branch_event(
+            .try_send(routed_test_event(
                 "fill_stalled_writer",
-            ))))
+                Path::new("missing-writer"),
+            ))
             .expect("fill stalled channel");
         {
             let mut sender_guard = sender_slot()
@@ -1627,9 +1684,10 @@ mod tests {
         shutdown().await.expect("reset metrics writer");
         let (sender, receiver) = mpsc::channel(1);
         sender
-            .try_send(MetricsMessage::Event(Box::new(empty_branch_event(
+            .try_send(routed_test_event(
                 "block_shutdown",
-            ))))
+                Path::new("stalled-writer"),
+            ))
             .expect("fill stalled writer channel");
         {
             let mut sender_guard = sender_slot()
@@ -1711,7 +1769,7 @@ mod tests {
             "unexpected stale-control error: {stale_error}"
         );
 
-        record(empty_branch_event("replacement_event"));
+        record(empty_branch_event("replacement_event", replacement.path()));
         shutdown().await.expect("drain replacement writer");
         let events = load_events(replacement.path(), "main").expect("replacement branch events");
         assert_eq!(events.len(), 1);

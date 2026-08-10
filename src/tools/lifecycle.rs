@@ -1243,6 +1243,21 @@ mod tests {
         }
     }
 
+    fn persisted_usage_events(
+        workspace: &std::path::Path,
+    ) -> Vec<crate::models::metrics::UsageEvent> {
+        let usage_path = workspace
+            .join(".engram")
+            .join("metrics")
+            .join("main")
+            .join("usage.jsonl");
+        if !usage_path.exists() {
+            return Vec::new();
+        }
+        crate::services::metrics::load_events(workspace, "main")
+            .unwrap_or_else(|error| panic!("load persisted usage events: {error}"))
+    }
+
     async fn wait_for_shutdown_before_join(
         reached: tokio::sync::oneshot::Receiver<()>,
         context: &str,
@@ -1278,11 +1293,17 @@ mod tests {
         original: &std::path::Path,
         event_name: &str,
     ) {
+        let origin_workspace = state
+            .snapshot_workspace()
+            .await
+            .expect("restored original workspace")
+            .path;
         let index_result = crate::tools::write::index_workspace(Arc::clone(state), None).await;
         let sync_result = crate::tools::write::sync_workspace(Arc::clone(state), None).await;
         crate::services::metrics::record(crate::models::metrics::UsageEvent {
             tool_name: event_name.to_owned(),
             branch: "main".to_owned(),
+            workspace: origin_workspace,
             ..crate::models::metrics::UsageEvent::default()
         });
         crate::services::metrics::shutdown()
@@ -1306,6 +1327,196 @@ mod tests {
             1,
             "workspace metrics writers must never overlap"
         );
+    }
+
+    #[tokio::test]
+    async fn set_workspace_dispatch_does_not_route_old_origin_event_to_new_workspace() {
+        let _metrics_guard = crate::services::metrics::test_writer_guard().await;
+        crate::services::metrics::shutdown()
+            .await
+            .expect("reset metrics writer");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let original = create_bind_workspace(
+            temp.path(),
+            "dispatch-origin-original",
+            "[metrics]\nenabled = true\n",
+        );
+        let replacement = create_bind_workspace(
+            temp.path(),
+            "dispatch-origin-replacement",
+            "[metrics]\nenabled = true\n",
+        );
+        let original_path = original
+            .canonicalize()
+            .expect("canonical original")
+            .display()
+            .to_string();
+        let replacement_path = replacement
+            .canonicalize()
+            .expect("canonical replacement")
+            .display()
+            .to_string();
+        let state = Arc::new(AppState::new(2));
+
+        crate::tools::dispatch(
+            Arc::clone(&state),
+            "set_workspace",
+            Some(serde_json::json!({ "path": original_path })),
+        )
+        .await
+        .expect("bind original workspace through dispatch");
+        join_hydration(&state).await;
+        let published_original_path = state
+            .snapshot_workspace()
+            .await
+            .expect("published original workspace")
+            .path;
+        crate::tools::dispatch(
+            Arc::clone(&state),
+            "set_workspace",
+            Some(serde_json::json!({ "path": replacement_path })),
+        )
+        .await
+        .expect("bind replacement workspace through dispatch");
+        join_hydration(&state).await;
+        let published_replacement_path = state
+            .snapshot_workspace()
+            .await
+            .expect("published replacement workspace")
+            .path;
+        crate::tools::dispatch(
+            Arc::clone(&state),
+            "get_daemon_status",
+            Some(serde_json::json!({
+                "_meta": { "correlation_id": "replacement-after-commit" }
+            })),
+        )
+        .await
+        .expect("record committed replacement event");
+        crate::services::metrics::shutdown()
+            .await
+            .expect("drain replacement writer");
+
+        let replacement_events = persisted_usage_events(&replacement);
+        assert!(
+            replacement_events
+                .iter()
+                .all(|event| event.workspace != published_original_path),
+            "an event originating in the old workspace must never be persisted under the \
+             replacement workspace: {replacement_events:?}"
+        );
+        assert!(
+            replacement_events.iter().any(|event| {
+                event.correlation_id.as_deref() == Some("replacement-after-commit")
+                    && event.workspace == published_replacement_path
+            }),
+            "an event originating after publication must persist under the replacement workspace: \
+             {replacement_events:?}"
+        );
+    }
+
+    async fn assert_nonpublished_workspace_receives_no_usage_event(cancel_bind: bool) {
+        let _metrics_guard = crate::services::metrics::test_writer_guard().await;
+        crate::services::metrics::shutdown()
+            .await
+            .expect("reset metrics writer");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let original = create_bind_workspace(
+            temp.path(),
+            "nonpublished-original",
+            "[metrics]\nenabled = true\n",
+        );
+        let replacement = create_bind_workspace(
+            temp.path(),
+            "nonpublished-replacement",
+            "[metrics]\nenabled = true\n",
+        );
+        let state = Arc::new(AppState::new(2));
+        set_workspace(Arc::clone(&state), original.display().to_string())
+            .await
+            .expect("bind original workspace");
+        join_hydration(&state).await;
+
+        let (metrics_replaced, wait_until_metrics_replaced) = tokio::sync::oneshot::channel();
+        let (resume_publication, wait_until_publication) = tokio::sync::oneshot::channel();
+        let bind_state = Arc::clone(&state);
+        let replacement_path = replacement.display().to_string();
+        let bind = tokio::spawn(async move {
+            set_workspace_after_metrics_replacement(
+                bind_state,
+                replacement_path,
+                metrics_replaced,
+                wait_until_publication,
+                !cancel_bind,
+            )
+            .await
+        });
+        wait_until_metrics_replaced
+            .await
+            .expect("replacement writer must be installed before publication");
+
+        crate::tools::dispatch(
+            Arc::clone(&state),
+            "get_daemon_status",
+            Some(serde_json::json!({
+                "_meta": { "correlation_id": "old-origin-during-replacement" }
+            })),
+        )
+        .await
+        .expect("old-workspace dispatch must complete while replacement is staged");
+
+        if cancel_bind {
+            bind.abort();
+            let _ = bind.await;
+            let rollback_barrier = state.acquire_workspace_publication().await;
+            drop(rollback_barrier);
+        } else {
+            resume_publication
+                .send(())
+                .expect("resume failed publication");
+            bind.await
+                .expect("failed bind task must join")
+                .expect_err("publication failpoint must reject bind");
+        }
+
+        crate::tools::dispatch(
+            Arc::clone(&state),
+            "get_daemon_status",
+            Some(serde_json::json!({
+                "_meta": { "correlation_id": "original-after-rollback" }
+            })),
+        )
+        .await
+        .expect("record restored original event");
+        crate::services::metrics::shutdown()
+            .await
+            .expect("drain restored writer");
+
+        let replacement_events = persisted_usage_events(&replacement);
+        assert!(
+            replacement_events.iter().all(|event| {
+                event.correlation_id.as_deref() != Some("old-origin-during-replacement")
+            }),
+            "an old-origin event must not enter a workspace that never published: \
+             {replacement_events:?}"
+        );
+        let original_events = persisted_usage_events(&original);
+        assert!(
+            original_events.iter().any(|event| {
+                event.correlation_id.as_deref() == Some("original-after-rollback")
+            }),
+            "the restored original writer must accept events after rollback"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_bind_does_not_route_events_to_nonpublished_workspace() {
+        assert_nonpublished_workspace_receives_no_usage_event(true).await;
+    }
+
+    #[tokio::test]
+    async fn failed_publication_does_not_route_events_to_nonpublished_workspace() {
+        assert_nonpublished_workspace_receives_no_usage_event(false).await;
     }
 
     async fn assert_branch_refresh_waits_for_failed_bind_rollback(cancel_bind: bool) {
@@ -1723,11 +1934,17 @@ mod tests {
 
         let rollback_barrier = state.acquire_workspace_publication().await;
         drop(rollback_barrier);
+        let origin_workspace = state
+            .snapshot_workspace()
+            .await
+            .expect("restored original workspace")
+            .path;
         let index_result = crate::tools::write::index_workspace(Arc::clone(&state), None).await;
         let sync_result = crate::tools::write::sync_workspace(Arc::clone(&state), None).await;
         crate::services::metrics::record(crate::models::metrics::UsageEvent {
             tool_name: "restored_enabled_writer".to_owned(),
             branch: "main".to_owned(),
+            workspace: origin_workspace,
             ..crate::models::metrics::UsageEvent::default()
         });
         crate::services::metrics::shutdown()

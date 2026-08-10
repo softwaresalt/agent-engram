@@ -2587,6 +2587,7 @@ mod tests {
         crate::services::metrics::record(crate::models::metrics::UsageEvent {
             tool_name: "branch-probe".to_owned(),
             timestamp: chrono::Utc::now().to_rfc3339(),
+            workspace: active.path.clone(),
             ..crate::models::metrics::UsageEvent::default()
         });
         crate::services::metrics::shutdown()
