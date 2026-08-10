@@ -85,7 +85,26 @@ const SQLITE_BUSY_MAX_DELAY_MS: u64 = 500;
 
 #[cfg(test)]
 tokio::task_local! {
-    static FORCED_IMMUTABLE_BUSY_ATTEMPTS: std::cell::Cell<u32>;
+    static FORCED_RUN_SCRIPT_ERRORS: std::cell::Cell<(u32, &'static str)>;
+}
+
+#[cfg(test)]
+const FORCED_BUSY_ERROR: &str = "database is locked by deterministic test probe";
+
+#[cfg(test)]
+fn take_forced_run_script_error() -> Option<&'static str> {
+    FORCED_RUN_SCRIPT_ERRORS
+        .try_with(|forced| {
+            let (remaining, message) = forced.get();
+            if remaining == 0 {
+                None
+            } else {
+                forced.set((remaining - 1, message));
+                Some(message)
+            }
+        })
+        .ok()
+        .flatten()
 }
 
 /// Snapshot of mutable-script SQLITE_BUSY retry telemetry.
@@ -558,13 +577,13 @@ impl CodeGraphQueries {
         Self { db: db.inner }
     }
 
-    /// Run a mutable script, retrying up to 5 times on `SQLITE_BUSY`.
+    /// Run a mutable script, making up to five total attempts on `SQLITE_BUSY`.
     ///
     /// Each write to the three-table symbol layout (`*_meta`, `*_code`,
     /// `*_embedding`) can race with a concurrent write transaction.  Five
-    /// attempts with 50 ms → 500 ms exponential back-off give ≈ 1.5 s of
-    /// headroom — enough for `background_db_hydration` to release its
-    /// write lock — without holding up the async executor for long.
+    /// total attempts and four exponential back-off sleeps (50, 100, 200,
+    /// and 400 ms) give 750 ms of headroom for `background_db_hydration`
+    /// to release its write lock without holding up the async executor for long.
     async fn run_script_busy_retry_mutable(
         &self,
         script: &str,
@@ -572,13 +591,20 @@ impl CodeGraphQueries {
     ) -> Result<cozo::NamedRows, EngramError> {
         let mut delay = std::time::Duration::from_millis(SQLITE_BUSY_INITIAL_DELAY_MS);
         for attempt in 0..SQLITE_BUSY_MAX_ATTEMPTS {
-            match self
-                .db
-                .run_script(script, params.clone(), ScriptMutability::Mutable)
-            {
+            #[cfg(test)]
+            let forced_error = take_forced_run_script_error();
+            #[cfg(not(test))]
+            let forced_error: Option<&str> = None;
+            let result = if let Some(message) = forced_error {
+                Err(message.to_owned())
+            } else {
+                self.db
+                    .run_script(script, params.clone(), ScriptMutability::Mutable)
+                    .map_err(|error| error.to_string())
+            };
+            match result {
                 Ok(r) => return Ok(r),
-                Err(e) => {
-                    let msg = e.to_string();
+                Err(msg) => {
                     if is_busy_error(&msg) && attempt + 1 < SQLITE_BUSY_MAX_ATTEMPTS {
                         tracing::warn!(
                             attempt = attempt + 1,
@@ -610,21 +636,11 @@ impl CodeGraphQueries {
         let mut delay = std::time::Duration::from_millis(SQLITE_BUSY_INITIAL_DELAY_MS);
         for attempt in 0..SQLITE_BUSY_MAX_ATTEMPTS {
             #[cfg(test)]
-            let forced_busy = FORCED_IMMUTABLE_BUSY_ATTEMPTS
-                .try_with(|remaining| {
-                    let current = remaining.get();
-                    if current == 0 {
-                        false
-                    } else {
-                        remaining.set(current - 1);
-                        true
-                    }
-                })
-                .unwrap_or(false);
+            let forced_error = take_forced_run_script_error();
             #[cfg(not(test))]
-            let forced_busy = false;
-            let result = if forced_busy {
-                Err("database is locked by deterministic test probe".to_owned())
+            let forced_error: Option<&str> = None;
+            let result = if let Some(message) = forced_error {
+                Err(message.to_owned())
             } else {
                 self.db
                     .run_script(script, params.clone(), ScriptMutability::Immutable)
@@ -3832,9 +3848,7 @@ orphan[from, to] := *calls_edge { from, to }, not has_def[to]
         );
         p.insert("suggestions".to_owned(), suggestions);
         p.insert("embedding".to_owned(), emb_dv);
-        self.db
-            .run_script(script, p, ScriptMutability::Mutable)
-            .map_err(|e| map_db_err(e.to_string()))?;
+        self.run_script_busy_retry_mutable(script, p).await?;
         Ok(())
     }
 
@@ -6869,40 +6883,40 @@ mod tests {
             .expect("connect_db");
         let q = CodeGraphQueries::new(db);
 
-        let (functions, remaining) = FORCED_IMMUTABLE_BUSY_ATTEMPTS
-            .scope(std::cell::Cell::new(1), async {
+        let (functions, remaining) = FORCED_RUN_SCRIPT_ERRORS
+            .scope(std::cell::Cell::new((1, FORCED_BUSY_ERROR)), async {
                 let count = q.count_functions().await;
-                let remaining = FORCED_IMMUTABLE_BUSY_ATTEMPTS.with(std::cell::Cell::get);
+                let remaining = FORCED_RUN_SCRIPT_ERRORS.with(std::cell::Cell::get).0;
                 (count, remaining)
             })
             .await;
         assert_eq!(functions.expect("function count after retry"), 0);
         assert_eq!(remaining, 0, "function count must use immutable retry");
 
-        let (classes, remaining) = FORCED_IMMUTABLE_BUSY_ATTEMPTS
-            .scope(std::cell::Cell::new(1), async {
+        let (classes, remaining) = FORCED_RUN_SCRIPT_ERRORS
+            .scope(std::cell::Cell::new((1, FORCED_BUSY_ERROR)), async {
                 let count = q.count_classes().await;
-                let remaining = FORCED_IMMUTABLE_BUSY_ATTEMPTS.with(std::cell::Cell::get);
+                let remaining = FORCED_RUN_SCRIPT_ERRORS.with(std::cell::Cell::get).0;
                 (count, remaining)
             })
             .await;
         assert_eq!(classes.expect("class count after retry"), 0);
         assert_eq!(remaining, 0, "class count must use immutable retry");
 
-        let (interfaces, remaining) = FORCED_IMMUTABLE_BUSY_ATTEMPTS
-            .scope(std::cell::Cell::new(1), async {
+        let (interfaces, remaining) = FORCED_RUN_SCRIPT_ERRORS
+            .scope(std::cell::Cell::new((1, FORCED_BUSY_ERROR)), async {
                 let count = q.count_interfaces().await;
-                let remaining = FORCED_IMMUTABLE_BUSY_ATTEMPTS.with(std::cell::Cell::get);
+                let remaining = FORCED_RUN_SCRIPT_ERRORS.with(std::cell::Cell::get).0;
                 (count, remaining)
             })
             .await;
         assert_eq!(interfaces.expect("interface count after retry"), 0);
         assert_eq!(remaining, 0, "interface count must use immutable retry");
 
-        let (edges, remaining) = FORCED_IMMUTABLE_BUSY_ATTEMPTS
-            .scope(std::cell::Cell::new(1), async {
+        let (edges, remaining) = FORCED_RUN_SCRIPT_ERRORS
+            .scope(std::cell::Cell::new((1, FORCED_BUSY_ERROR)), async {
                 let count = q.count_code_edges().await;
-                let remaining = FORCED_IMMUTABLE_BUSY_ATTEMPTS.with(std::cell::Cell::get);
+                let remaining = FORCED_RUN_SCRIPT_ERRORS.with(std::cell::Cell::get).0;
                 (count, remaining)
             })
             .await;
@@ -6918,20 +6932,130 @@ mod tests {
             .expect("connect_db");
         let q = CodeGraphQueries::new(db);
 
-        let (error, remaining) = FORCED_IMMUTABLE_BUSY_ATTEMPTS
-            .scope(std::cell::Cell::new(SQLITE_BUSY_MAX_ATTEMPTS), async {
-                let error = q
-                    .count_functions()
-                    .await
-                    .expect_err("persistent SQLITE_BUSY must exhaust the bounded retry");
-                let remaining = FORCED_IMMUTABLE_BUSY_ATTEMPTS.with(std::cell::Cell::get);
-                (error, remaining)
-            })
+        let (error, remaining) = FORCED_RUN_SCRIPT_ERRORS
+            .scope(
+                std::cell::Cell::new((SQLITE_BUSY_MAX_ATTEMPTS, FORCED_BUSY_ERROR)),
+                async {
+                    let error = q
+                        .count_functions()
+                        .await
+                        .expect_err("persistent SQLITE_BUSY must exhaust the bounded retry");
+                    let remaining = FORCED_RUN_SCRIPT_ERRORS.with(std::cell::Cell::get).0;
+                    (error, remaining)
+                },
+            )
             .await;
         assert_eq!(remaining, 0, "all bounded attempts must be consumed");
         assert!(
             error.to_string().to_lowercase().contains("locked"),
             "persistent busy error must remain actionable: {error}"
+        );
+    }
+
+    fn content_record(id: &str) -> crate::models::ContentRecord {
+        crate::models::ContentRecord {
+            id: id.to_owned(),
+            content_type: "powerbi".to_owned(),
+            file_path: format!("{id}.tmdl"),
+            content_hash: "content-hash".to_owned(),
+            content: "measure Test = 1".to_owned(),
+            embedding: None,
+            source_path: "model".to_owned(),
+            file_size_bytes: 16,
+            ingested_at: Utc::now(),
+            record_kind: "powerbi_entity".to_owned(),
+            chunk_id: None,
+            chunk_index: None,
+            heading_path: Vec::new(),
+            line_start: None,
+            line_end: None,
+            fallback_reason: None,
+            lint_summary: None,
+            suggestions: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn upsert_content_record_busy_retry_succeeds_after_transient_busy() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let db = crate::db::connect_db(tmp.path(), "content-upsert-transient-busy")
+            .await
+            .expect("connect_db");
+        let q = CodeGraphQueries::new(db);
+        let record = content_record("content:transient");
+
+        let (result, remaining) = FORCED_RUN_SCRIPT_ERRORS
+            .scope(std::cell::Cell::new((1, FORCED_BUSY_ERROR)), async {
+                let result = q.upsert_content_record(&record).await;
+                let remaining = FORCED_RUN_SCRIPT_ERRORS.with(std::cell::Cell::get).0;
+                (result, remaining)
+            })
+            .await;
+
+        assert_eq!(remaining, 0, "transient busy probe must be consumed");
+        result.expect("content upsert must succeed after transient busy");
+        let records = q
+            .select_content_records(Some("powerbi"))
+            .await
+            .expect("select content records");
+        assert_eq!(records, vec![record]);
+    }
+
+    #[tokio::test]
+    async fn upsert_content_record_busy_retry_returns_persistent_busy_at_shared_bound() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let db = crate::db::connect_db(tmp.path(), "content-upsert-persistent-busy")
+            .await
+            .expect("connect_db");
+        let q = CodeGraphQueries::new(db);
+        let record = content_record("content:persistent");
+
+        let (result, remaining) = FORCED_RUN_SCRIPT_ERRORS
+            .scope(
+                std::cell::Cell::new((SQLITE_BUSY_MAX_ATTEMPTS, FORCED_BUSY_ERROR)),
+                async {
+                    let result = q.upsert_content_record(&record).await;
+                    let remaining = FORCED_RUN_SCRIPT_ERRORS.with(std::cell::Cell::get).0;
+                    (result, remaining)
+                },
+            )
+            .await;
+
+        assert_eq!(
+            remaining, 0,
+            "persistent busy must consume exactly the shared attempt budget"
+        );
+        let error = result.expect_err("persistent busy must be returned after bounded attempts");
+        assert!(
+            error.to_string().to_lowercase().contains("locked"),
+            "persistent busy error must remain actionable: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn upsert_content_record_busy_retry_does_not_retry_non_busy_error() {
+        const FORCED_CONSTRAINT_ERROR: &str = "deterministic constraint failure from test probe";
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let db = crate::db::connect_db(tmp.path(), "content-upsert-non-busy")
+            .await
+            .expect("connect_db");
+        let q = CodeGraphQueries::new(db);
+        let record = content_record("content:non-busy");
+
+        let (result, remaining) = FORCED_RUN_SCRIPT_ERRORS
+            .scope(std::cell::Cell::new((1, FORCED_CONSTRAINT_ERROR)), async {
+                let result = q.upsert_content_record(&record).await;
+                let remaining = FORCED_RUN_SCRIPT_ERRORS.with(std::cell::Cell::get).0;
+                (result, remaining)
+            })
+            .await;
+
+        assert_eq!(remaining, 0, "non-busy probe must be attempted once");
+        let error = result.expect_err("non-busy errors must be returned without retry");
+        assert!(
+            error.to_string().contains(FORCED_CONSTRAINT_ERROR),
+            "non-busy error context must be preserved: {error}"
         );
     }
 
