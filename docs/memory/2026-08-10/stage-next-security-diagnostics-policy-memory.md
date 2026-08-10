@@ -75,7 +75,11 @@ No production, test, or configuration file was modified.
 
 1. Ship claims `115-S` only and executes the three-unit spike. Stop on any scope widening; return findings to Stage for a separate implementation plan if and only if U3 concludes proceed/pivot.
 2. After `115-S` is terminal, Ship may claim `116-S`, observe the RED contract, then edit the authoritative instruction and run prompt/quality verification.
-3. Compact-context assessment found 109 memory files (481.8 KiB), including 62 older than 14 days. Compaction would move/archive files and is blocked pending destructive-operation approval; no archive move was attempted.
+3. The approved Stage-to-Ship compact-context assessment is recorded in
+   `docs/memory/compacted/2026-08-10-stage-to-ship-compaction-report.md`.
+   It preserved six active checkpoint files and both queued shipment
+   plans/reviews; no eligible completed or superseded candidates remained, so
+   no archive move or deletion was performed.
 ## Git Publication
 
 Stage planning artifacts were committed locally on `main` as `156c85ee`. The mandatory push to `origin/main` was attempted once and rejected by repository rule GH013 because changes must arrive through a pull request. Stage did not create a branch or PR because that is outside the Stage role boundary. Local `main` is therefore ahead of `origin/main`; the operator must publish the planning commit through an allowed admin/default-branch path or explicitly hand publication to an authorized workflow.
