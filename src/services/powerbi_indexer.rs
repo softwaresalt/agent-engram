@@ -1218,6 +1218,21 @@ async fn delete_markerless_powerbi_nodes(
     file_paths: &HashSet<String>,
     source_path: &str,
 ) -> Result<(), EngramError> {
+    // A legacy `powerbi` registry source and the PBIP indexer can own graph
+    // nodes at the same source/file path. Only an exact PBIP content owner may
+    // protect a node; path-only protection would retain stale legacy nodes.
+    let pbip_records = queries.select_content_records(Some("pbip")).await?;
+    let pbip_ownership: HashSet<(&str, &str, &str)> = pbip_records
+        .iter()
+        .map(|record| {
+            (
+                record.source_path.as_str(),
+                record.file_path.as_str(),
+                record.content_hash.as_str(),
+            )
+        })
+        .collect();
+
     // The existing graph deletion query is file-path scoped because indexed
     // workspace paths are normally unique. Marker migration must additionally
     // preserve an overlapping registry source, so first move only this source's
@@ -1232,11 +1247,42 @@ async fn delete_markerless_powerbi_nodes(
         .map(|node| node.file_path.clone())
         .collect();
 
+    // A prior interrupted cleanup may have moved a PBIP-owned node under the
+    // synthetic prefix. Map that path back to its content owner's real path
+    // before deleting unmatched cleanup artifacts.
+    let restored_pbip_nodes: Vec<PowerBiNode> = source_nodes
+        .iter()
+        .filter_map(|node| {
+            let original_file_path = node.file_path.strip_prefix(&cleanup_prefix)?;
+            pbip_ownership
+                .contains(&(
+                    node.source_path.as_str(),
+                    original_file_path,
+                    node.content_hash.as_str(),
+                ))
+                .then(|| {
+                    let mut restored = node.clone();
+                    restored.file_path = original_file_path.to_string();
+                    restored
+                })
+        })
+        .collect();
+    if !restored_pbip_nodes.is_empty() {
+        queries.upsert_powerbi_nodes(&restored_pbip_nodes).await?;
+    }
+
     for file_path in file_paths {
         let cleanup_path = format!("{cleanup_prefix}{file_path}");
         let mut scoped_nodes: Vec<PowerBiNode> = source_nodes
             .iter()
-            .filter(|node| node.file_path == file_path.as_str())
+            .filter(|node| {
+                node.file_path == file_path.as_str()
+                    && !pbip_ownership.contains(&(
+                        node.source_path.as_str(),
+                        node.file_path.as_str(),
+                        node.content_hash.as_str(),
+                    ))
+            })
             .cloned()
             .collect();
         for node in &mut scoped_nodes {
@@ -2590,6 +2636,7 @@ table Sales
              \x20\x20column Amount\n\
              \x20\x20\x20\x20dataType: double\n\
              \x20\x20measure Total = SUM(Sales[Amount])\n";
+        const CURRENT_PBIP_HASH: &str = "current-pbip-hash";
 
         let workspace = tempfile::tempdir().expect("workspace tempdir");
         let rel_path = "models/Sales.SemanticModel/definition/tables/Sales.tmdl";
@@ -2619,6 +2666,30 @@ table Sales
             format!("\0engram-markerless-cleanup\0other-models\0{removed_rel_path}");
 
         queries
+            .upsert_content_record(&ContentRecord {
+                id: "cr_live_pbip_owner".to_string(),
+                content_type: "pbip".to_string(),
+                file_path: rel_path.to_string(),
+                content_hash: CURRENT_PBIP_HASH.to_string(),
+                content: "live PBIP owner".to_string(),
+                embedding: None,
+                source_path: source.path.clone(),
+                file_size_bytes: CURRENT_TMDL.len() as u64,
+                ingested_at: Utc::now(),
+                record_kind: "powerbi_table".to_string(),
+                chunk_id: Some("pbip:table:live-owner".to_string()),
+                chunk_index: None,
+                heading_path: Vec::new(),
+                line_start: None,
+                line_end: None,
+                fallback_reason: None,
+                lint_summary: None,
+                suggestions: Vec::new(),
+            })
+            .await
+            .expect("seed live PBIP ownership record");
+
+        queries
             .upsert_powerbi_nodes(&[
                 PowerBiNode {
                     id: "pbi_stale_graph_only_entity".to_string(),
@@ -2633,7 +2704,7 @@ table Sales
                     id: "pbi_stale_cleanup_retry_entity".to_string(),
                     name: "InterruptedCleanupEntity".to_string(),
                     kind: PowerBiNodeKind::Table,
-                    file_path: cleanup_path,
+                    file_path: cleanup_path.clone(),
                     source_path: source.path.clone(),
                     content_hash: "partial-cleanup-hash".to_string(),
                     ingested_at: Utc::now(),
@@ -2655,6 +2726,15 @@ table Sales
                     file_path: rel_path.to_string(),
                     source_path: "other-models".to_string(),
                     content_hash: "control-hash".to_string(),
+                    ingested_at: Utc::now(),
+                },
+                PowerBiNode {
+                    id: "pbi_live_pbip_owned_entity".to_string(),
+                    name: "LivePbipOwnedEntity".to_string(),
+                    kind: PowerBiNodeKind::Table,
+                    file_path: rel_path.to_string(),
+                    source_path: source.path.clone(),
+                    content_hash: CURRENT_PBIP_HASH.to_string(),
                     ingested_at: Utc::now(),
                 },
             ])
@@ -2707,6 +2787,12 @@ table Sales
             "cleanup must retain the same-path live control from another source"
         );
         assert!(
+            nodes
+                .iter()
+                .any(|node| node.id == "pbi_live_pbip_owned_entity"),
+            "cleanup must retain the same-path live graph owned by a current PBIP record"
+        );
+        assert!(
             nodes.iter().all(|node| {
                 node.id != "pbi_stale_graph_only_entity"
                     && node.id != "pbi_stale_cleanup_retry_entity"
@@ -2752,9 +2838,18 @@ table Sales
                     content_hash: "control-hash".to_string(),
                     ingested_at: Utc::now(),
                 },
+                PowerBiNode {
+                    id: "pbi_live_pbip_owned_entity".to_string(),
+                    name: "LivePbipOwnedEntity".to_string(),
+                    kind: PowerBiNodeKind::Table,
+                    file_path: cleanup_path,
+                    source_path: source.path.clone(),
+                    content_hash: CURRENT_PBIP_HASH.to_string(),
+                    ingested_at: Utc::now(),
+                },
             ])
             .await
-            .expect("seed removed-path cleanup artifact and other-source control");
+            .expect("seed cleanup retry artifacts and controls");
 
         let second = index_powerbi_source(&source, workspace.path(), &queries, 10 * 1024 * 1024)
             .await
@@ -2786,6 +2881,12 @@ table Sales
                 .iter()
                 .any(|node| node.id == "pbi_live_graph_other_path"),
             "cleanup-prefix purging must retain same-source non-cleanup paths"
+        );
+        assert!(
+            nodes.iter().any(|node| {
+                node.id == "pbi_live_pbip_owned_entity" && node.file_path == rel_path
+            }),
+            "cleanup-prefix purging must restore a matching PBIP-owned graph"
         );
         assert!(
             nodes.iter().any(|node| {
