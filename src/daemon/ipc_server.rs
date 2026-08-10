@@ -499,6 +499,62 @@ async fn join_retained_hydration(state: &AppState) -> Result<(), EngramError> {
     Ok(())
 }
 
+#[cfg(test)]
+static SHUTDOWN_FLUSH_CALLS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+async fn flush_all_workspaces_for_shutdown(state: &SharedState) -> Result<(), EngramError> {
+    #[cfg(test)]
+    SHUTDOWN_FLUSH_CALLS.fetch_add(1, Ordering::SeqCst);
+    crate::services::dehydration::flush_all_workspaces(state).await
+}
+
+const SHUTDOWN_ERROR_EVIDENCE_BYTES: usize = 512;
+
+fn bounded_shutdown_error_evidence(error: &EngramError) -> String {
+    let mut evidence = error.to_string();
+    if evidence.len() <= SHUTDOWN_ERROR_EVIDENCE_BYTES {
+        return evidence;
+    }
+
+    let mut end = SHUTDOWN_ERROR_EVIDENCE_BYTES - 3;
+    while !evidence.is_char_boundary(end) {
+        end -= 1;
+    }
+    evidence.truncate(end);
+    evidence.push_str("...");
+    evidence
+}
+
+fn combine_shutdown_results(
+    metrics_result: Result<(), EngramError>,
+    flush_result: Result<(), EngramError>,
+) -> Result<(), EngramError> {
+    match (metrics_result, flush_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(metrics_error), Ok(())) => Err(metrics_error),
+        (Ok(()), Err(flush_error)) => Err(flush_error),
+        (Err(metrics_error), Err(flush_error)) => {
+            let durable_evidence = bounded_shutdown_error_evidence(&flush_error);
+            let metrics_evidence = bounded_shutdown_error_evidence(&metrics_error);
+            Err(EngramError::System(
+                crate::errors::SystemError::FlushFailed {
+                    path: format!(
+                        "shutdown cleanup: durable workspace flush failed: {durable_evidence}; \
+                         metrics teardown also failed: {metrics_evidence}"
+                    ),
+                },
+            ))
+        }
+    }
+}
+
+async fn shutdown_services(state: &SharedState) -> Result<(), EngramError> {
+    let metrics_result = crate::services::metrics::shutdown().await;
+    let flush_result = flush_all_workspaces_for_shutdown(state).await;
+    combine_shutdown_results(metrics_result, flush_result)
+}
+
 /// Run the daemon accept loop with graceful shutdown support.
 ///
 /// Steps:
@@ -639,9 +695,7 @@ pub async fn run_with_shutdown(
         warn!(%error, "legacy watcher driver join failed");
     }
     join_retained_hydration(&state).await?;
-    crate::services::metrics::shutdown().await?;
-    crate::services::dehydration::flush_all_workspaces(&state).await?;
-    Ok(())
+    shutdown_services(&state).await
 }
 
 /// Run the daemon accept loop for the given workspace path (legacy API).
@@ -906,9 +960,7 @@ pub async fn run_with_shutdown_v2(
         warn!(%error, "v2 watcher driver join failed");
     }
     join_retained_hydration(&state).await?;
-    crate::services::metrics::shutdown().await?;
-    crate::services::dehydration::flush_all_workspaces(&state).await?;
-    Ok(())
+    shutdown_services(&state).await
 }
 
 async fn run_startup_driver(
@@ -1835,6 +1887,189 @@ mod tests {
             "normal shutdown must not abort hydration before its safe terminal"
         );
         assert!(state.take_hydration_driver().is_none());
+    }
+
+    async fn state_with_flush_failure() -> (tempfile::TempDir, SharedState) {
+        let temp = tempfile::tempdir().expect("shutdown cleanup tempdir");
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("create shutdown cleanup workspace");
+        let blocked_data_dir = temp.path().join("blocked-data-dir");
+        std::fs::write(&blocked_data_dir, "not a directory")
+            .expect("create blocked shutdown data directory");
+        let state = Arc::new(AppState::new(1));
+        let snapshot = coordinator_snapshot(
+            "shutdown-cleanup",
+            "shutdown-cleanup-uuid",
+            &workspace,
+            blocked_data_dir,
+        );
+        let _ = state
+            .publish_workspace_generation(snapshot, Some(WorkspaceConfig::default()))
+            .await
+            .expect("publish shutdown cleanup workspace");
+        (temp, state)
+    }
+
+    #[tokio::test]
+    async fn shutdown_cleanup_preserves_success_and_invokes_flush() {
+        let _metrics_guard = crate::services::metrics::test_writer_guard().await;
+        crate::services::metrics::shutdown()
+            .await
+            .expect("reset metrics writer");
+        let state = Arc::new(AppState::new(1));
+        let flush_calls_before = SHUTDOWN_FLUSH_CALLS.load(Ordering::SeqCst);
+
+        shutdown_services(&state)
+            .await
+            .expect("clean shutdown cleanup");
+
+        assert_eq!(
+            SHUTDOWN_FLUSH_CALLS.load(Ordering::SeqCst),
+            flush_calls_before + 1
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_cleanup_attempts_flush_after_stalled_metrics_failure() {
+        let metrics_guard = crate::services::metrics::test_writer_guard().await;
+        crate::services::metrics::shutdown()
+            .await
+            .expect("reset metrics writer");
+        let stalled = crate::services::metrics::configure_test_stalled_shutdown_writer(
+            &metrics_guard,
+            Path::new("stalled-shutdown-writer"),
+            "main",
+        )
+        .expect("configure stalled metrics shutdown");
+        let state = Arc::new(AppState::new(1));
+        let flush_calls_before = SHUTDOWN_FLUSH_CALLS.load(Ordering::SeqCst);
+
+        let error = shutdown_services(&state)
+            .await
+            .expect_err("metrics-only cleanup failure");
+        drop(stalled);
+
+        assert_eq!(
+            SHUTDOWN_FLUSH_CALLS.load(Ordering::SeqCst),
+            flush_calls_before + 1,
+            "durable flush must still be attempted after metrics teardown aborts"
+        );
+        assert!(
+            matches!(
+                &error,
+                EngramError::Metrics(crate::errors::MetricsError::WriteFailed { reason })
+                    if reason.contains("shutdown timed out")
+            ),
+            "metrics-only failure must be preserved: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_cleanup_returns_flush_only_failure() {
+        let _metrics_guard = crate::services::metrics::test_writer_guard().await;
+        crate::services::metrics::shutdown()
+            .await
+            .expect("reset metrics writer");
+        let (_temp, state) = state_with_flush_failure().await;
+        let flush_calls_before = SHUTDOWN_FLUSH_CALLS.load(Ordering::SeqCst);
+
+        let error = shutdown_services(&state)
+            .await
+            .expect_err("flush-only cleanup failure");
+
+        assert_eq!(
+            SHUTDOWN_FLUSH_CALLS.load(Ordering::SeqCst),
+            flush_calls_before + 1
+        );
+        assert!(
+            matches!(
+                &error,
+                EngramError::System(crate::errors::SystemError::DatabaseError { .. })
+            ),
+            "flush-only failure must be returned unchanged: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_cleanup_combines_both_failures_with_durable_evidence_first() {
+        let metrics_guard = crate::services::metrics::test_writer_guard().await;
+        crate::services::metrics::shutdown()
+            .await
+            .expect("reset metrics writer");
+        let stalled = crate::services::metrics::configure_test_stalled_shutdown_writer(
+            &metrics_guard,
+            Path::new("stalled-shutdown-writer"),
+            "main",
+        )
+        .expect("configure stalled metrics shutdown");
+        let (_temp, state) = state_with_flush_failure().await;
+        let flush_calls_before = SHUTDOWN_FLUSH_CALLS.load(Ordering::SeqCst);
+
+        let error = shutdown_services(&state)
+            .await
+            .expect_err("combined cleanup failure");
+        drop(stalled);
+        let message = error.to_string();
+        let durable_position = message
+            .find("durable workspace flush")
+            .expect("combined error must retain durable flush evidence");
+        let metrics_position = message
+            .find("metrics teardown")
+            .expect("combined error must retain metrics teardown evidence");
+
+        assert_eq!(
+            SHUTDOWN_FLUSH_CALLS.load(Ordering::SeqCst),
+            flush_calls_before + 1,
+            "durable flush must be attempted when metrics teardown fails"
+        );
+        assert!(
+            matches!(
+                error,
+                EngramError::System(crate::errors::SystemError::FlushFailed { .. })
+            ),
+            "combined failure must retain durable flush classification"
+        );
+        assert!(
+            durable_position < metrics_position,
+            "durable evidence must precede optional metrics evidence: {message}"
+        );
+        assert!(
+            message.contains("Database operation failed"),
+            "combined error must retain the durable failure: {message}"
+        );
+        assert!(
+            message.contains("metrics writer shutdown timed out"),
+            "combined error must retain the metrics failure: {message}"
+        );
+        assert!(
+            message.len() <= 1_200,
+            "combined shutdown error must remain bounded: {} bytes",
+            message.len()
+        );
+
+        let oversized = combine_shutdown_results(
+            Err(EngramError::Metrics(
+                crate::errors::MetricsError::WriteFailed {
+                    reason: "metrics".repeat(400),
+                },
+            )),
+            Err(EngramError::System(
+                crate::errors::SystemError::DatabaseError {
+                    reason: "durable".repeat(400),
+                },
+            )),
+        )
+        .expect_err("oversized failures must remain errors")
+        .to_string();
+        assert!(
+            oversized.len() <= 1_200,
+            "oversized combined evidence must be truncated: {} bytes",
+            oversized.len()
+        );
+        assert!(
+            oversized.matches("...").count() >= 2,
+            "both oversized error excerpts must show truncation: {oversized}"
+        );
     }
 
     #[tokio::test]

@@ -538,6 +538,44 @@ pub(crate) fn configure_test_saturated_writer(
     })
 }
 
+#[cfg(test)]
+pub(crate) struct StalledShutdownWriter {
+    _receiver: mpsc::Receiver<MetricsMessage>,
+}
+
+#[cfg(test)]
+pub(crate) fn configure_test_stalled_shutdown_writer(
+    _guard: &tokio::sync::MutexGuard<'static, ()>,
+    workspace_path: &Path,
+    branch: &str,
+) -> Result<StalledShutdownWriter, EngramError> {
+    let generation = reserve_writer_generation()?;
+    let (sender, receiver) = mpsc::channel(1);
+    sender
+        .try_send(MetricsMessage::Event(Box::default()))
+        .map_err(|error| {
+            EngramError::Metrics(MetricsError::WriteFailed {
+                reason: format!("failed to stall test metrics writer: {error}"),
+            })
+        })?;
+    {
+        let mut sender_guard = sender_slot()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *sender_guard = Some(sender);
+    }
+    {
+        let mut handle_guard = handle_slot()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *handle_guard = Some(WriterTaskGuard::new(tokio::spawn(std::future::pending())));
+    }
+    configure_writer(workspace_path, branch, true, generation);
+    Ok(StalledShutdownWriter {
+        _receiver: receiver,
+    })
+}
+
 fn metrics_dir(workspace_path: &Path, branch: &str) -> PathBuf {
     workspace_path.join(".engram").join("metrics").join(branch)
 }
