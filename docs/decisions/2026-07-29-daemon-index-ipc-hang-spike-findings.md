@@ -8,8 +8,8 @@ stash_id: "5765BAAB"
 supersedes_plan: "docs/decisions/2026-07-28-daemon-index-singleton-nonpersist-ipc-hang-spike.md"
 reproduction_status:
   ipc_hang: "REPRODUCED (symptom 2) — daemon path, current post-104-F main"
-  cross_file_non_persist: "CORROBORATED (symptom 1) — singleton absent from the persisted resolved graph; exact mechanism confounded"
-confidence: "high (IPC hang is real + daemon-specific) / medium (non-persist mechanism)"
+  cross_file_non_persist: "INCONCLUSIVE pending known-green corpus validation — observed edge absence cannot establish persistence behavior"
+confidence: "high (IPC hang is real + daemon-specific) / unclassified (non-persist claim pending known-green corpus validation)"
 relates_to: ["8DD29746"]
 related_to_shipped: ["104-F"]
 tags:
@@ -32,11 +32,14 @@ reproduced the two entangled symptoms from stash `5765BAAB`:
    server-side within seconds**. The in-process `--direct` path returned in
    **~1 s** on the same corpus. → The hang is **daemon/IPC-path-specific**, real,
    and **not fixed by 104-F**.
-2. **Cross-file singleton non-persist (symptom 1) — CORROBORATED.** After the
+2. **Cross-file singleton non-persist (symptom 1) — INCONCLUSIVE pending
+   known-green corpus validation.** After the
    run, the `alpha → beta` cross-file `calls` singleton is **absent from the
    persisted resolved graph** (`workspace-status` reports `edges: 2` — both
-   `defines`; `map-code beta` shows no incoming `calls` edge). The singleton is
-   genuinely **not in the persisted graph** — not merely invisible-behind-the-hang.
+   `defines`; `map-code beta` shows no incoming `calls` edge). That observation
+   does **not** establish a persistence defect because the same minimal corpus
+   did not produce the edge on the known-good `--direct` path and was never
+   validated against a known-green singleton control.
 
 The **exact root cause of symptom 1 is not pinned**, and a **repro-corpus
 validity caveat** applies (below). The precise root cause of symptom 2 is
@@ -80,7 +83,7 @@ bound the observed wait (>270 s ≫ 200 s), consistent with the timeout not
 covering daemon-spawn/model-load/health-wait that `run_tool_dispatch` performs
 (`ensure_daemon_running`) **before** the timed `send_request`.
 
-### Symptom 1 — cross-file singleton non-persist (daemon path)
+### Symptom 1 — cross-file singleton observation (daemon path; inconclusive)
 
 Out-of-band inspection of the persisted graph after the daemon run:
 
@@ -91,15 +94,17 @@ Out-of-band inspection of the persisted graph after the daemon run:
   `defines`. **No incoming `alpha → beta` `calls` edge.**
 - `edges.jsonl` mirror: two `defines` rows, **no `calls` row**.
 
-→ The cross-file singleton is **absent from the persisted resolved graph**. The
-scan completed and flushed within seconds, yet the singleton never appeared — so
-this is **not** merely a "hidden behind the hang" artifact.
+→ The cross-file singleton was **absent from the observed persisted resolved
+graph**, but this is **inconclusive pending known-green corpus validation**.
+Because the unvalidated corpus also failed to produce the edge on the known-good
+`--direct` path, the observation cannot distinguish daemon non-persistence from
+a corpus that never exercises the intended singleton-resolution case.
 
 ## Hypothesis resolution
 
 | ID | Hypothesis | Verdict |
 |---|---|---|
-| **H1** commit boundary (post-pass singleton not flushed before response) | **OPEN / plausible.** The persisted graph lacks the singleton even though the scan flushed — consistent with the post-pass resolution not committing on the daemon path. Not isolated to a line. |
+| **H1** commit boundary (post-pass singleton not flushed before response) | **NOT TESTED conclusively.** The observed graph lacked the singleton, but the corpus was not validated against a known-green control. Corpus validation is prerequisite to any commit-boundary inference. |
 | **H2** IPC framing / synchronous long-op | **CONFIRMED as the hang mechanism (narrowed).** CLI awaits a single response for the entire index; return exceeded `--timeout`. Refined: daemon-spawn + model-load happen **outside** the client request timeout (`run_tool_dispatch` calls `ensure_daemon_running` before the timed `send_request`), so the client-side deadline does not bound the wait. |
 | **H3** routing divergence (daemon takes a debounce/sync path skipping the post-pass) | **PARTIALLY SUPPORTED.** The daemon path behaves differently from `--direct` (which returns in ~1 s and does not hang), but I could **not** confirm the daemon skips the post-pass vs runs-it-without-committing. Needs internal tracing. |
 | **H4** staged-unresolved (post-pass never invoked) | **OPEN.** Indistinguishable from H1 without querying the `staged_call` relation directly (per-workspace-daemon auto-reindex-on-query confound blocked a clean read). |
@@ -141,8 +146,8 @@ persist path, not that flag.
 `drain_pending_sync_to_completion` bounded loop at `write.rs:170`; `clear_all_pending_sync`
 on cancel/DB-fail at `lifecycle.rs:255/280`). That addresses a **drain-stall /
 companion-bit leak** — a different layer. This spike confirms 104-F **does not
-fix** either symptom here: the daemon-path IPC hang still reproduces and the
-cross-file singleton is still absent from the persisted graph.
+fix** the daemon-path IPC hang. The singleton observation cannot support a
+persist/non-persist conclusion until the corpus passes a known-green control.
 
 ## Root-cause conclusion (honest posture)
 
@@ -150,10 +155,16 @@ cross-file singleton is still absent from the persisted graph.
   the synchronous long-op response model + daemon-spawn/model-load occurring
   outside the client request timeout. **Not** pinned to a single line/commit
   without runtime instrumentation.
-- **Symptom 1 (non-persist):** CORROBORATED at the persisted-graph layer.
-  Mechanism (H1 commit-boundary vs H4 post-pass-not-invoked) **not isolated**;
-  confounded by the per-workspace-daemon/auto-reindex behavior and the
-  corpus-validity caveat.
+- **Symptom 1 (non-persist):** **INCONCLUSIVE pending known-green corpus
+  validation.** The observed graph lacked the edge, but the unvalidated corpus
+  also failed on the known-good `--direct` path. H1/H4 inference is therefore
+  gated by corpus validation, in addition to the per-workspace-daemon and
+  auto-reindex confounds.
+
+Later controlled 107-S characterization classified the current daemon behavior
+as **no current defect**. This historical correction preserves that later
+evidence; it only retracts the unsupported corroboration claim from this
+earlier, unvalidated corpus.
 
 **No fix is authored.** A fix plan on an unproven exact root cause would be low
 quality and risk trading one defect for another (per 013-D discipline).
