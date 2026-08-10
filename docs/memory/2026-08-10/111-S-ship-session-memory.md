@@ -57,6 +57,7 @@ Backlogit archived exactly shipment `111-S`, feature `117-F`, plan review
 `117.001-R`, and tasks `117.001-T` through `117.004-T` with the merge SHA. It
 returned no items. Shipments `112-S`, `113-S`, and `114-S` remain queued.
 
-The seven-day observation window ends 2026-08-15. Rollback is a reviewed
-merge-commit revert; no automatic operator-workspace reindex or repair is
-authorized.
+The pre-established seven-day observation window began with shipment
+execution on 2026-08-08 and continues post-merge through 2026-08-15. Rollback
+is a reviewed merge-commit revert; no automatic operator-workspace reindex or
+repair is authorized.

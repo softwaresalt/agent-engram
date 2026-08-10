@@ -33,5 +33,6 @@ post-merge scenarios passed. Audit output exactly matched the accepted
 
 Backlogit archived exactly `111-S`, `117-F`, `117.001-R`, and tasks
 `117.001-T` through `117.004-T` with merge evidence. Shipments `112-S` through
-`114-S` remain queued. The coordinator/metrics/graph-count observation window
-ends 2026-08-15.
+`114-S` remain queued. The pre-established seven-day
+coordinator/metrics/graph-count observation window began with shipment
+execution on 2026-08-08 and continues post-merge through 2026-08-15.

@@ -90,10 +90,26 @@ and bounded immutable graph-count retries.
 
 ## Operational Monitoring
 
-Ship/operator owns a seven-day observation window through 2026-08-15.
-Monitor coordinator stale/missing outcomes, metrics control
-timeouts/failures, immutable SQLITE_BUSY retries, and persistent zero graph
-counts.
+Ship/operator owns the pre-established seven-day observation window that
+started with shipment execution on 2026-08-08 and continues post-merge through
+2026-08-15.
+
+Use the deployment's normal tracing sink and a once-daily workspace-status
+check. Healthy operation has zero occurrences of:
+
+- `detached branch refresh rollback exhausted retries`;
+- `terminal branch rollback could not mark metrics unavailable`;
+- `metrics writer is unavailable for branch control`;
+- `metrics_event_dropped_workspace_mismatch`; and
+- metrics lock/control `timed out` errors.
+
+For each monitored workspace with known graph content, run
+`engram workspace-status --workspace PATH --format json`. Function, class, and
+interface counts must remain consistent with the indexed project and must not
+persist at zero. The
+`SQLITE_BUSY retry: retrying immutable run_script` warning may occur
+transiently, but five attempts, a returned database error, or the same
+workspace reporting zero counts on two consecutive checks is an alert.
 
 Intervention is required for duplicate owners, lost routine work, a stalled
 metrics writer, cross-workspace metrics persistence, or persistent zero
