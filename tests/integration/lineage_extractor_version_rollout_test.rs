@@ -13,7 +13,7 @@ use std::path::Path;
 #[cfg(feature = "cozo-backend")]
 use engram::db::{connect_db, queries::CodeGraphQueries};
 #[cfg(feature = "cozo-backend")]
-use engram::models::lineage::LineageAuthorityContext;
+use engram::models::lineage::{LineageAuthorityContext, lineage_freshness_token};
 #[cfg(feature = "cozo-backend")]
 use engram::models::registry::{ContentSource, ContentSourceStatus};
 #[cfg(feature = "cozo-backend")]
@@ -64,6 +64,15 @@ async fn prior_version_stamp_forces_reextraction_after_bump() {
     write_notebook(root.path(), "nb.ipynb", CTAS_SUMMARY);
     let source = notebook_source("notebooks");
     let ctx = trusted_ctx();
+    let current_token = lineage_freshness_token(&ctx);
+    let expected_edges = vec![(
+        ctx.resolve_table("main.sales.summary")
+            .expect("summary resolves under the trusted context")
+            .id,
+        ctx.resolve_table("main.sales.orders")
+            .expect("orders resolves under the trusted context")
+            .id,
+    )];
 
     let db = connect_db(&root.path().join("data"), "lineage-rollout")
         .await
@@ -75,6 +84,48 @@ async fn prior_version_stamp_forces_reextraction_after_bump() {
         .await
         .expect("first index");
     assert_eq!(first.ingested, 1, "first index extracts the notebook");
+    assert_eq!(
+        queries
+            .select_lineage_edges()
+            .await
+            .expect("edges after first index"),
+        expected_edges,
+        "first current-version index persists the expected lineage"
+    );
+    assert_eq!(
+        queries
+            .lineage_index_version("notebooks/nb.ipynb")
+            .await
+            .expect("version after first index"),
+        Some(current_token.clone()),
+        "first current-version index stamps the current extractor version"
+    );
+
+    // Unchanged content already stamped at the CURRENT extractor version must
+    // hash+version skip without mutating the persisted lineage.
+    let unchanged = index_notebook_source(&source, root.path(), &queries, 1_048_576, &ctx)
+        .await
+        .expect("reindex unchanged content at current version");
+    assert_eq!(
+        unchanged.ingested, 0,
+        "an unchanged notebook already stamped at the current extractor version is skipped"
+    );
+    assert_eq!(
+        queries
+            .select_lineage_edges()
+            .await
+            .expect("edges after current-version control"),
+        expected_edges,
+        "current-version control run leaves persisted lineage exactly unchanged"
+    );
+    assert_eq!(
+        queries
+            .lineage_index_version("notebooks/nb.ipynb")
+            .await
+            .expect("version after current-version control"),
+        Some(current_token.clone()),
+        "current-version control run leaves the current freshness stamp unchanged"
+    );
 
     // Roll the stamp back to the PRIOR extractor version (1.0.0), preserving the
     // authority-config fingerprint so ONLY the version differs from current.
@@ -93,5 +144,21 @@ async fn prior_version_stamp_forces_reextraction_after_bump() {
     assert_eq!(
         rolled.ingested, 1,
         "a notebook stamped at the prior extractor version re-extracts after the bump"
+    );
+    assert_eq!(
+        queries
+            .select_lineage_edges()
+            .await
+            .expect("edges after version rollback"),
+        expected_edges,
+        "rollback-triggered re-extraction preserves the expected lineage"
+    );
+    assert_eq!(
+        queries
+            .lineage_index_version("notebooks/nb.ipynb")
+            .await
+            .expect("version after version rollback"),
+        Some(current_token),
+        "rollback-triggered re-extraction re-stamps the current extractor version"
     );
 }
