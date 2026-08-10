@@ -1218,21 +1218,25 @@ async fn delete_markerless_powerbi_nodes(
     file_paths: &HashSet<String>,
     source_path: &str,
 ) -> Result<(), EngramError> {
-    if file_paths.is_empty() {
-        return Ok(());
-    }
-
     // The existing graph deletion query is file-path scoped because indexed
     // workspace paths are normally unique. Marker migration must additionally
     // preserve an overlapping registry source, so first move only this source's
-    // nodes under a deterministic, non-filesystem path and delete that path.
-    // Including already-moved nodes makes an interrupted move/delete retryable.
+    // nodes under deterministic, source-scoped non-filesystem paths. Discover
+    // every already-moved path independently of the currently collected files
+    // so an interrupted cleanup remains retryable after its source file is gone.
     let source_nodes = queries.select_powerbi_nodes(Some(source_path)).await?;
+    let cleanup_prefix = format!("\0engram-markerless-cleanup\0{source_path}\0");
+    let mut cleanup_paths: HashSet<String> = source_nodes
+        .iter()
+        .filter(|node| node.file_path.starts_with(&cleanup_prefix))
+        .map(|node| node.file_path.clone())
+        .collect();
+
     for file_path in file_paths {
-        let cleanup_path = format!("\0engram-markerless-cleanup\0{source_path}\0{file_path}");
+        let cleanup_path = format!("{cleanup_prefix}{file_path}");
         let mut scoped_nodes: Vec<PowerBiNode> = source_nodes
             .iter()
-            .filter(|node| node.file_path == file_path.as_str() || node.file_path == cleanup_path)
+            .filter(|node| node.file_path == file_path.as_str())
             .cloned()
             .collect();
         for node in &mut scoped_nodes {
@@ -1241,10 +1245,14 @@ async fn delete_markerless_powerbi_nodes(
 
         if !scoped_nodes.is_empty() {
             queries.upsert_powerbi_nodes(&scoped_nodes).await?;
-            queries
-                .delete_powerbi_nodes_by_file_path(&cleanup_path)
-                .await?;
+            cleanup_paths.insert(cleanup_path);
         }
+    }
+
+    for cleanup_path in cleanup_paths {
+        queries
+            .delete_powerbi_nodes_by_file_path(&cleanup_path)
+            .await?;
     }
     Ok(())
 }
@@ -2574,6 +2582,8 @@ table Sales
     /// 114.001-T: a TMDL write can persist graph nodes before its first content
     /// upsert. With no content row or completion marker, the next run must still
     /// discover and clean both ordinary and interrupted-cleanup graph artifacts.
+    /// A later pass with no markerless collected files must also purge a
+    /// source-scoped cleanup artifact whose original file has disappeared.
     #[tokio::test]
     async fn markerless_graph_only_tmdl_write_is_cleaned_before_first_marker() {
         const CURRENT_TMDL: &str = "table Sales\n\
@@ -2600,6 +2610,13 @@ table Sales
         let queries = CodeGraphQueries::new(db);
         let source = powerbi_source("models");
         let cleanup_path = format!("\0engram-markerless-cleanup\0{}\0{rel_path}", source.path);
+        let removed_rel_path = "models/Removed.SemanticModel/definition/tables/Removed.tmdl";
+        let removed_cleanup_path = format!(
+            "\0engram-markerless-cleanup\0{}\0{removed_rel_path}",
+            source.path
+        );
+        let other_source_cleanup_path =
+            format!("\0engram-markerless-cleanup\0other-models\0{removed_rel_path}");
 
         queries
             .upsert_powerbi_nodes(&[
@@ -2713,6 +2730,70 @@ table Sales
             markers.get(rel_path).map(String::as_str),
             Some(compute_tmdl_dax_index_hash(CURRENT_TMDL.as_bytes()).as_str()),
             "the completion marker must be written after the rebuild"
+        );
+
+        queries
+            .upsert_powerbi_nodes(&[
+                PowerBiNode {
+                    id: "pbi_stale_removed_cleanup_entity".to_string(),
+                    name: "RemovedInterruptedCleanupEntity".to_string(),
+                    kind: PowerBiNodeKind::Table,
+                    file_path: removed_cleanup_path,
+                    source_path: source.path.clone(),
+                    content_hash: "removed-cleanup-hash".to_string(),
+                    ingested_at: Utc::now(),
+                },
+                PowerBiNode {
+                    id: "pbi_live_other_source_cleanup_entity".to_string(),
+                    name: "OtherSourceCleanupEntity".to_string(),
+                    kind: PowerBiNodeKind::Table,
+                    file_path: other_source_cleanup_path,
+                    source_path: "other-models".to_string(),
+                    content_hash: "control-hash".to_string(),
+                    ingested_at: Utc::now(),
+                },
+            ])
+            .await
+            .expect("seed removed-path cleanup artifact and other-source control");
+
+        let second = index_powerbi_source(&source, workspace.path(), &queries, 10 * 1024 * 1024)
+            .await
+            .expect("retry cleanup with no markerless collected files");
+        assert_eq!(
+            (second.ingested, second.unchanged),
+            (0, 1),
+            "the current marked file must remain unchanged"
+        );
+
+        let nodes = queries
+            .select_powerbi_nodes(None)
+            .await
+            .expect("select graph after removed-path cleanup retry");
+        assert!(
+            nodes
+                .iter()
+                .all(|node| node.id != "pbi_stale_removed_cleanup_entity"),
+            "a source-scoped cleanup artifact must be purged even when no markerless files are collected"
+        );
+        assert!(
+            nodes
+                .iter()
+                .any(|node| node.id == "pbi_live_other_source_cleanup_entity"),
+            "cleanup-prefix purging must retain another source"
+        );
+        assert!(
+            nodes
+                .iter()
+                .any(|node| node.id == "pbi_live_graph_other_path"),
+            "cleanup-prefix purging must retain same-source non-cleanup paths"
+        );
+        assert!(
+            nodes.iter().any(|node| {
+                node.file_path == rel_path
+                    && node.source_path == source.path
+                    && node.name == "Sales"
+            }),
+            "cleanup-prefix purging must retain the marked current graph"
         );
     }
 
