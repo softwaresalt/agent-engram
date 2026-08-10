@@ -11,8 +11,8 @@ pr: 333
 approved_head: "716c97d62384b60caf1262191c475fbd90ce64a5"
 merge_commit: "d98ac375be972c01f0c6730d2609d432f51cf983"
 merged_at: "2026-08-10T09:44:56Z"
-releasability: "READY WITH CONDITIONS"
-closure_status: ready
+releasability: READY_WITH_CONDITIONS
+closure_status: READY
 compaction_status: done
 ---
 
