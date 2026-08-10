@@ -782,86 +782,143 @@ async fn daemon_index_runtime_boundaries_characterized() {
     .expect("controlled runtime characterization exceeded the five-minute aggregate cap");
 }
 
-#[allow(clippy::too_many_lines)]
-async fn characterize_daemon_index_runtime_boundaries(deadline: EndToEndDeadline) {
+// ── 114-S / U1: characterization setup helpers ───────────────────────────────
+
+struct RepositoryIdentity {
+    data_identity: PathBuf,
+    endpoint: Option<PathBuf>,
+    pid: Option<u32>,
+}
+
+fn capture_repository_identity() -> RepositoryIdentity {
     let repository_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .canonicalize()
         .expect("repository canonical path");
-    let repository_data_identity = repository_root.join(".engram");
-    let repository_endpoint = helpers::repository_ipc_endpoint_if_known(&repository_root)
+    let data_identity = repository_root.join(".engram");
+    let endpoint = helpers::repository_ipc_endpoint_if_known(&repository_root)
         .expect("read repository IPC identity without creating state");
-    let repository_pid = PidFile::read(&repository_root).map(|pid| pid.pid);
+    let pid = PidFile::read(&repository_root).map(|pid_file| pid_file.pid);
+    RepositoryIdentity {
+        data_identity,
+        endpoint,
+        pid,
+    }
+}
 
-    let baseline = tempfile::tempdir().expect("baseline tempdir");
-    let baseline_root = baseline
+struct BaselineFixture {
+    tempdir: tempfile::TempDir,
+    root: PathBuf,
+    data_dir: PathBuf,
+    db_path: PathBuf,
+    hash: String,
+    file_hashes: BTreeMap<String, String>,
+    started_at: String,
+    completed_at: String,
+    elapsed_ms: u64,
+    result: code_graph::IndexResult,
+    singletons: u64,
+}
+
+/// Build the known-GREEN, in-process baseline workspace used to compare
+/// against the owned daemon's persistence and IPC boundaries.
+async fn establish_baseline_fixture(deadline: EndToEndDeadline) -> BaselineFixture {
+    let tempdir = tempfile::tempdir().expect("baseline tempdir");
+    let root = tempdir
         .path()
         .canonicalize()
         .expect("baseline canonical path");
-    init_git_workspace(&baseline_root);
-    helpers::verify_workspace_isolated_from_repository(&baseline_root)
+    init_git_workspace(&root);
+    helpers::verify_workspace_isolated_from_repository(&root)
         .expect("baseline workspace must be disjoint from repository identities");
-    write_frozen_corpus(&baseline_root);
-    let (baseline_hash, baseline_file_hashes) = corpus_hashes(&baseline_root);
-    let baseline_data = baseline_root.join(".engram");
-    let baseline_db = baseline_data.join("cozo").join("main").join("engram.db");
+    write_frozen_corpus(&root);
+    let (hash, file_hashes) = corpus_hashes(&root);
+    let data_dir = root.join(".engram");
+    let db_path = data_dir.join("cozo").join("main").join("engram.db");
 
-    let baseline_started_at = now_timestamp();
-    let baseline_started = Instant::now();
-    let baseline_result = tokio::time::timeout(
+    let started_at = now_timestamp();
+    let started = Instant::now();
+    let result = tokio::time::timeout(
         deadline.remaining_work(PROBE_LIMIT, "known-GREEN baseline index"),
-        code_graph::index_workspace(
-            &baseline_root,
-            &baseline_data,
-            "main",
-            &CodeGraphConfig::default(),
-            false,
-        ),
+        code_graph::index_workspace(&root, &data_dir, "main", &CodeGraphConfig::default(), false),
     )
     .await
     .expect("baseline index exceeded five-minute circuit breaker")
     .expect("known-GREEN baseline index");
-    let baseline_elapsed_ms = elapsed_ms(baseline_started);
-    let baseline_completed_at = now_timestamp();
-    let baseline_queries = queries_for(&baseline_data, "main").await;
-    let baseline_singletons = singleton_count(&baseline_queries).await;
+    let elapsed = elapsed_ms(started);
+    let completed_at = now_timestamp();
+    let baseline_queries = queries_for(&data_dir, "main").await;
+    let singletons = singleton_count(&baseline_queries).await;
     assert_eq!(
-        baseline_singletons, 1,
+        singletons, 1,
         "known-GREEN in-process fixture must persist one singleton"
     );
-    assert!(baseline_db.is_file(), "baseline database must persist");
+    assert!(db_path.is_file(), "baseline database must persist");
     drop(baseline_queries);
 
-    let daemon = tempfile::tempdir().expect("daemon tempdir");
-    let daemon_root = daemon.path().canonicalize().expect("daemon canonical path");
-    init_git_workspace(&daemon_root);
-    helpers::verify_workspace_isolated_from_repository(&daemon_root)
+    BaselineFixture {
+        tempdir,
+        root,
+        data_dir,
+        db_path,
+        hash,
+        file_hashes,
+        started_at,
+        completed_at,
+        elapsed_ms: elapsed,
+        result,
+        singletons,
+    }
+}
+
+struct DaemonWorkspaceFixture {
+    tempdir: tempfile::TempDir,
+    root: PathBuf,
+    engram_dir: PathBuf,
+    trace_path: PathBuf,
+    stderr_path: PathBuf,
+    expected_endpoint: String,
+}
+
+/// Establish the isolated owned-daemon workspace identity (tempdir, git
+/// marker, watcher-hold config, and expected IPC endpoint) prior to spawn.
+fn prepare_daemon_workspace(
+    baseline: &BaselineFixture,
+    repository: &RepositoryIdentity,
+) -> DaemonWorkspaceFixture {
+    let tempdir = tempfile::tempdir().expect("daemon tempdir");
+    let root = tempdir
+        .path()
+        .canonicalize()
+        .expect("daemon canonical path");
+    init_git_workspace(&root);
+    helpers::verify_workspace_isolated_from_repository(&root)
         .expect("daemon workspace must be disjoint from repository identities");
     assert_ne!(
-        baseline_root, daemon_root,
+        baseline.root, root,
         "baseline and daemon workspaces must be distinct"
     );
-    let daemon_engram = daemon_root.join(".engram");
+    let engram_dir = root.join(".engram");
     assert_ne!(
-        daemon_engram, repository_data_identity,
+        engram_dir, repository.data_identity,
         "owned daemon data identity must differ from repository-owned data"
     );
     assert_ne!(
-        baseline_data, repository_data_identity,
+        baseline.data_dir, repository.data_identity,
         "baseline data identity must differ from repository-owned data"
     );
-    let expected_daemon_endpoint =
-        engram::daemon::ipc_server::ipc_endpoint(&daemon_root).expect("owned daemon IPC endpoint");
-    if let Some(repository_endpoint) = repository_endpoint.as_deref() {
+    let expected_endpoint =
+        engram::daemon::ipc_server::ipc_endpoint(&root).expect("owned daemon IPC endpoint");
+    if let Some(repository_endpoint) = repository.endpoint.as_deref() {
         let repository_endpoint = repository_endpoint.to_string_lossy();
         assert_ne!(
-            normalized_path_text(&expected_daemon_endpoint),
+            normalized_path_text(&expected_endpoint),
             normalized_path_text(&repository_endpoint),
             "owned endpoint must differ from the repository-owned endpoint"
         );
     }
-    fs::create_dir_all(&daemon_engram).expect("create daemon data directory");
+    fs::create_dir_all(&engram_dir).expect("create daemon data directory");
     fs::write(
-        daemon_engram.join("config.toml"),
+        engram_dir.join("config.toml"),
         r#"idle_timeout_minutes = 0
 debounce_ms = 50
 watch_patterns = ["**/*"]
@@ -875,15 +932,44 @@ buffer_size = 1024
 "#,
     )
     .expect("write watcher-hold config");
-    let trace_path = daemon_engram.join("107s-daemon-trace.log");
-    let stderr_path = daemon_engram.join("107s-daemon-stderr.log");
+    let trace_path = engram_dir.join("107s-daemon-trace.log");
+    let stderr_path = engram_dir.join("107s-daemon-stderr.log");
 
+    DaemonWorkspaceFixture {
+        tempdir,
+        root,
+        engram_dir,
+        trace_path,
+        stderr_path,
+        expected_endpoint,
+    }
+}
+
+struct OwnedDaemonFixture {
+    harness: helpers::HarnessWithoutOwnership,
+    endpoint: String,
+    pid: u32,
+    pid_file: PidFile,
+    build_hash: String,
+    protocol_version: u64,
+    cold_started_at: String,
+    cold_ready_at: String,
+    cold_ready_ms: u64,
+}
+
+/// Spawn the one owned daemon child, confirm its identity is disjoint from
+/// the repository daemon, and capture its readiness/health facts.
+async fn spawn_owned_daemon(
+    workspace: &DaemonWorkspaceFixture,
+    repository: &RepositoryIdentity,
+    deadline: EndToEndDeadline,
+) -> OwnedDaemonFixture {
     let cold_started_at = now_timestamp();
     let cold_started = Instant::now();
-    let mut harness = helpers::DaemonHarness::spawn_for_workspace_with_trace_log(
-        &daemon_root,
-        &trace_path,
-        &stderr_path,
+    let harness = helpers::DaemonHarness::spawn_for_workspace_with_trace_log(
+        &workspace.root,
+        &workspace.trace_path,
+        &workspace.stderr_path,
         deadline.remaining_work(READY_LIMIT, "cold daemon readiness"),
     )
     .await
@@ -897,10 +983,10 @@ buffer_size = 1024
         .to_owned();
     assert_eq!(
         normalized_path_text(&endpoint),
-        normalized_path_text(&expected_daemon_endpoint),
+        normalized_path_text(&workspace.expected_endpoint),
         "owned child must serve the endpoint derived for its isolated workspace"
     );
-    if let Some(repository_endpoint) = repository_endpoint.as_deref() {
+    if let Some(repository_endpoint) = repository.endpoint.as_deref() {
         let repository_endpoint = repository_endpoint.to_string_lossy();
         assert_ne!(
             normalized_path_text(&endpoint),
@@ -908,10 +994,10 @@ buffer_size = 1024
             "owned child endpoint must not alias the repository daemon"
         );
     }
-    let owned_pid = harness.pid();
-    if let Some(repository_pid) = repository_pid {
+    let pid = harness.pid();
+    if let Some(repository_pid) = repository.pid {
         assert_ne!(
-            owned_pid, repository_pid,
+            pid, repository_pid,
             "owned child PID must differ from the repository daemon PID"
         );
     }
@@ -926,7 +1012,7 @@ buffer_size = 1024
     assert_eq!(health["status"], "ready");
     assert_eq!(
         normalized_path_text(health["workspace"].as_str().expect("health workspace path")),
-        normalized_path_text(&daemon_root.display().to_string())
+        normalized_path_text(&workspace.root.display().to_string())
     );
     let build_hash = health["build_hash"]
         .as_str()
@@ -935,9 +1021,9 @@ buffer_size = 1024
     let protocol_version = health["protocol_version"]
         .as_u64()
         .expect("health protocol version");
-    let pid_file = PidFile::read(&daemon_root).expect("owned daemon PID file");
+    let pid_file = PidFile::read(&workspace.root).expect("owned daemon PID file");
     assert_eq!(
-        pid_file.pid, owned_pid,
+        pid_file.pid, pid,
         "circuit breaker: endpoint and child PID identities must agree"
     );
     assert!(
@@ -945,288 +1031,32 @@ buffer_size = 1024
         "owned daemon PID must be live"
     );
 
-    let (settled_status, settle_attempts) = wait_for_empty_daemon(&endpoint, deadline).await;
-    assert!(empty_settled(&settled_status));
-    let settled_scan_completion = settled_status
-        .pointer("/scan_status/last_completed_at")
-        .cloned()
-        .unwrap_or(Value::Null);
-    let daemon_db = PathBuf::from(
-        settled_status["db_path"]
-            .as_str()
-            .expect("daemon database path"),
-    );
-    assert_ne!(
-        baseline_db, daemon_db,
-        "baseline and daemon databases must be distinct"
-    );
-    let daemon_before = send_ok(
-        &endpoint,
-        &correlated_request("107s-daemon-before", "get_daemon_status", json!({})),
-        IPC_LIMIT,
-        deadline,
-    )
-    .await;
-    assert_eq!(daemon_before["active_workspaces"].as_u64(), Some(1));
-    assert_eq!(
-        daemon_before.pointer("/telemetry/duplicate_daemon_detected"),
-        Some(&Value::from(0_u64)),
-        "circuit breaker: a second daemon identity was detected"
-    );
-    assert_eq!(watcher_event_count(&daemon_before), 0);
-    let model_loaded_before = daemon_before["model_loaded"].as_bool().unwrap_or(false);
-
-    write_frozen_corpus(&daemon_root);
-    let (daemon_hash, daemon_file_hashes) = corpus_hashes(&daemon_root);
-    assert_eq!(daemon_hash, baseline_hash, "aggregate corpus bytes drifted");
-    assert_eq!(
-        daemon_file_hashes, baseline_file_hashes,
-        "per-file corpus bytes drifted"
-    );
-    tokio::time::sleep(
-        deadline.remaining_work(Duration::from_millis(250), "post-seed watcher hold"),
-    )
-    .await;
-    let seeded_status = send_ok(
-        &endpoint,
-        &correlated_request("107s-seeded-status", "get_workspace_status", json!({})),
-        IPC_LIMIT,
-        deadline,
-    )
-    .await;
-    assert!(
-        empty_settled(&seeded_status),
-        "watcher or background ingestion populated the graph before explicit index: {seeded_status}"
-    );
-    assert_eq!(
-        seeded_status
-            .pointer("/scan_status/last_completed_at")
-            .cloned()
-            .unwrap_or(Value::Null),
-        settled_scan_completion,
-        "a background scan began after corpus seeding"
-    );
-    let seeded_daemon_status = send_ok(
-        &endpoint,
-        &correlated_request("107s-seeded-daemon-status", "get_daemon_status", json!({})),
-        IPC_LIMIT,
-        deadline,
-    )
-    .await;
-    assert_eq!(
-        watcher_event_count(&seeded_daemon_status),
-        0,
-        "watcher hold must suppress all corpus ingestion"
-    );
-
-    let primary_request = correlated_request(
-        "107s-index-primary",
-        "index_workspace",
-        json!({ "force": false }),
-    );
-    let primary_client_started_at = now_timestamp();
-    let primary_client_started = Instant::now();
-    let primary_result = send_ok(&endpoint, &primary_request, PROBE_LIMIT, deadline).await;
-    let primary_client_elapsed_ms = elapsed_ms(primary_client_started);
-    let primary_client_received_at = now_timestamp();
-    assert_eq!(primary_result["files_parsed"].as_u64(), Some(2));
-    assert_eq!(primary_result["functions_indexed"].as_u64(), Some(2));
-    assert_eq!(primary_result["errors"], json!([]));
-    assert_eq!(
-        primary_result["edges_created"].as_u64(),
-        Some(3),
-        "two defines edges plus the singleton calls edge must be reported"
-    );
-    let primary_usage = wait_for_usage_record(&daemon_root, "107s-index-primary", deadline).await;
-    assert_eq!(primary_usage["tool_name"], "index_workspace");
-    assert_eq!(primary_usage["outcome"], "success");
-    assert_eq!(
-        normalized_path_text(
-            primary_usage["workspace"]
-                .as_str()
-                .expect("usage workspace path")
-        ),
-        normalized_path_text(&daemon_root.display().to_string())
-    );
-
-    let pre_flush_map = send_ok(
-        &endpoint,
-        &correlated_request(
-            "107s-query-before-flush",
-            "map_code",
-            json!({ "symbol_name": "beta", "depth": 1, "max_nodes": 10 }),
-        ),
-        IPC_LIMIT,
-        deadline,
-    )
-    .await;
-    let calls_before_flush = assert_singleton_visible(&pre_flush_map);
-    let indexed_status = send_ok(
-        &endpoint,
-        &correlated_request("107s-indexed-status", "get_workspace_status", json!({})),
-        IPC_LIMIT,
-        deadline,
-    )
-    .await;
-    assert_eq!(
-        indexed_status.pointer("/code_graph/code_files"),
-        Some(&json!(2))
-    );
-    assert_eq!(
-        indexed_status.pointer("/code_graph/functions"),
-        Some(&json!(2))
-    );
-    assert_eq!(indexed_status.pointer("/code_graph/edges"), Some(&json!(3)));
-    assert_eq!(
-        indexed_status
-            .pointer("/scan_status/running")
-            .and_then(Value::as_bool),
-        Some(false)
-    );
-
-    let flush_result = send_ok(
-        &endpoint,
-        &correlated_request("107s-flush-primary", "flush_state", json!({})),
-        IPC_LIMIT,
-        deadline,
-    )
-    .await;
-    let flush_timestamp = flush_result["flush_timestamp"]
-        .as_str()
-        .expect("flush timestamp")
-        .to_owned();
-    let post_flush_map = send_ok(
-        &endpoint,
-        &correlated_request(
-            "107s-query-after-flush",
-            "map_code",
-            json!({ "symbol_name": "beta", "depth": 1, "max_nodes": 10 }),
-        ),
-        IPC_LIMIT,
-        deadline,
-    )
-    .await;
-    let calls_after_flush = assert_singleton_visible(&post_flush_map);
-    let post_flush_status = send_ok(
-        &endpoint,
-        &correlated_request("107s-status-after-flush", "get_workspace_status", json!({})),
-        IPC_LIMIT,
-        deadline,
-    )
-    .await;
-    assert!(
-        post_flush_status["last_flush"].is_string(),
-        "finalization must publish last_flush after explicit flush"
-    );
-    let edges_path = daemon_engram
-        .join("code-graph")
-        .join("main")
-        .join("edges.jsonl");
-    assert_eq!(
-        singleton_rows(&edges_path).len(),
-        1,
-        "explicit flush must persist singleton provenance"
-    );
-
-    let daemon_after_primary = send_ok(
-        &endpoint,
-        &correlated_request("107s-daemon-after-primary", "get_daemon_status", json!({})),
-        IPC_LIMIT,
-        deadline,
-    )
-    .await;
-    let model_loaded_after = daemon_after_primary["model_loaded"]
-        .as_bool()
-        .unwrap_or(false);
-    if primary_result["embeddings_generated"].as_u64().unwrap_or(0) > 0 {
-        assert!(
-            model_loaded_after,
-            "generated embeddings require the owned daemon model to be ready"
-        );
+    OwnedDaemonFixture {
+        harness,
+        endpoint,
+        pid,
+        pid_file,
+        build_hash,
+        protocol_version,
+        cold_started_at,
+        cold_ready_at,
+        cold_ready_ms,
     }
-    assert_eq!(watcher_event_count(&daemon_after_primary), 0);
-    assert_eq!(
-        daemon_after_primary.pointer("/telemetry/duplicate_daemon_detected"),
-        Some(&Value::from(0_u64))
-    );
+}
 
-    let negative_request = correlated_request(
-        "107s-index-short-timeout",
-        "index_workspace",
-        json!({ "force": true }),
-    );
-    let negative_client_started_at = now_timestamp();
-    let negative_client_started = Instant::now();
-    let negative_result = send_request(
-        &endpoint,
-        &negative_request,
-        deadline.remaining_work(SHORT_TIMEOUT, "short-timeout index request"),
-    )
-    .await;
-    let negative_client_elapsed_ms = elapsed_ms(negative_client_started);
-    let negative_client_finished_at = now_timestamp();
-    let negative_outcome = match negative_result {
-        Err(EngramError::Ipc(IpcError::Timeout { timeout_ms })) => {
-            assert_eq!(timeout_ms, 10);
-            "client_timeout"
-        }
-        Ok(response) => {
-            assert_response_id(&negative_request, &response);
-            assert!(
-                response.error.is_none(),
-                "short-timeout request returned a tool error: {:?}",
-                response.error
-            );
-            "completed_within_deadline"
-        }
-        Err(error) => panic!("unexpected short-timeout IPC result: {error}"),
-    };
-    let negative_usage =
-        wait_for_usage_record(&daemon_root, "107s-index-short-timeout", deadline).await;
-    assert_eq!(negative_usage["tool_name"], "index_workspace");
-    assert_eq!(negative_usage["outcome"], "success");
-    tokio::time::sleep(
-        deadline.remaining_work(Duration::from_millis(100), "post-timeout settlement"),
-    )
-    .await;
+// ── 114-S / U1: characterization cleanup helpers ─────────────────────────────
 
-    let final_map = send_ok(
-        &endpoint,
-        &correlated_request(
-            "107s-query-after-timeout",
-            "map_code",
-            json!({ "symbol_name": "beta", "depth": 1, "max_nodes": 10 }),
-        ),
-        IPC_LIMIT,
-        deadline,
-    )
-    .await;
-    let calls_after_timeout = assert_singleton_visible(&final_map);
-    let final_flush = send_ok(
-        &endpoint,
-        &correlated_request("107s-flush-final", "flush_state", json!({})),
-        IPC_LIMIT,
-        deadline,
-    )
-    .await;
-    assert!(final_flush["flush_timestamp"].is_string());
-    let final_daemon_status = send_ok(
-        &endpoint,
-        &correlated_request("107s-daemon-final", "get_daemon_status", json!({})),
-        IPC_LIMIT,
-        deadline,
-    )
-    .await;
-    let final_watcher_events = watcher_event_count(&final_daemon_status);
-    assert_eq!(final_watcher_events, 0);
-    assert_eq!(
-        final_daemon_status.pointer("/telemetry/duplicate_daemon_detected"),
-        Some(&Value::from(0_u64))
-    );
-
+/// Send `_shutdown`, wait for graceful exit (falling back to a bounded
+/// forced reap), and verify the PID and endpoint are fully torn down.
+async fn shut_down_owned_daemon(
+    mut harness: helpers::HarnessWithoutOwnership,
+    endpoint: &str,
+    pid_file: &PidFile,
+    deadline: EndToEndDeadline,
+) -> u64 {
     let shutdown_started = Instant::now();
     let shutdown_result = send_ok(
-        &endpoint,
+        endpoint,
         &internal_request("107s-owned-shutdown", "_shutdown"),
         IPC_LIMIT,
         deadline,
@@ -1250,7 +1080,7 @@ buffer_size = 1024
     );
     assert!(
         probe(
-            &endpoint,
+            endpoint,
             deadline.remaining_cleanup(
                 Duration::from_millis(100),
                 "post-reap endpoint verification",
@@ -1261,15 +1091,76 @@ buffer_size = 1024
         "owned endpoint remained reachable after cleanup"
     );
     drop(harness);
+    shutdown_elapsed_ms
+}
 
-    let persisted_singletons = singleton_rows(&edges_path);
+/// Close both owned temp workspaces and confirm their state was removed.
+fn close_owned_temp_workspaces(
+    baseline_tempdir: tempfile::TempDir,
+    daemon_tempdir: tempfile::TempDir,
+    baseline_root: PathBuf,
+    daemon_root: PathBuf,
+) -> (PathBuf, PathBuf) {
+    baseline_tempdir
+        .close()
+        .expect("remove owned baseline temp state");
+    daemon_tempdir
+        .close()
+        .expect("remove owned daemon temp state");
+    assert!(!baseline_root.exists(), "baseline temp state remained");
+    assert!(!daemon_root.exists(), "daemon temp state remained");
+    (baseline_root, daemon_root)
+}
+
+// ── 114-S / U2: response/trace evidence parser helpers ──────────────────────
+
+struct DispatchFacts {
+    dispatched_at: String,
+    latency_ms: u64,
+}
+
+/// Extract the dispatch timestamp and latency reported on a usage-telemetry
+/// record (used for both the primary and short-timeout probes).
+fn dispatch_facts(usage: &Value, label: &str) -> DispatchFacts {
+    let dispatched_at = usage["timestamp"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{label} dispatch timestamp"))
+        .to_owned();
+    let latency_ms = usage["latency_ms"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("{label} dispatch latency"));
+    DispatchFacts {
+        dispatched_at,
+        latency_ms,
+    }
+}
+
+struct TraceEvidence {
+    persisted_singletons_len: usize,
+    stderr_bytes: usize,
+    postpass_at: String,
+    primary_service_completed_at: String,
+    primary_frame_closed_at: String,
+    negative_service_completed_at: String,
+    negative_frame_closed_at: String,
+    negative_frame_error_at: Option<String>,
+}
+
+/// Parse the daemon's pretty trace and persisted-edges mirror into the
+/// post-pass/response-frame timeline facts needed for the evidence record.
+fn analyze_trace_evidence(
+    trace_path: &Path,
+    stderr_path: &Path,
+    edges_path: &Path,
+) -> TraceEvidence {
+    let persisted_singletons = singleton_rows(edges_path);
     assert_eq!(
         persisted_singletons.len(),
         1,
         "singleton must survive the negative case and graceful shutdown"
     );
-    let lines = trace_lines(&trace_path);
-    let stderr_bytes = fs::read(&stderr_path)
+    let lines = trace_lines(trace_path);
+    let stderr_bytes = fs::read(stderr_path)
         .unwrap_or_else(|error| panic!("read daemon stderr {}: {error}", stderr_path.display()))
         .len();
     assert_eq!(
@@ -1308,134 +1199,634 @@ buffer_size = 1024
     let negative_frame_closed_at = trace_timestamp(&lines, negative_frame_index);
     let negative_frame_error_at = negative_frame_error.map(|index| trace_timestamp(&lines, index));
 
-    let primary_dispatch_at = primary_usage["timestamp"]
-        .as_str()
-        .expect("primary dispatch timestamp")
-        .to_owned();
-    let primary_dispatch_latency_ms = primary_usage["latency_ms"]
-        .as_u64()
-        .expect("primary dispatch latency");
-    let negative_dispatch_at = negative_usage["timestamp"]
-        .as_str()
-        .expect("negative dispatch timestamp")
-        .to_owned();
-    let negative_dispatch_latency_ms = negative_usage["latency_ms"]
-        .as_u64()
-        .expect("negative dispatch latency");
-    let index_duration_ms = primary_result["duration_ms"]
-        .as_u64()
-        .expect("index duration");
+    TraceEvidence {
+        persisted_singletons_len: persisted_singletons.len(),
+        stderr_bytes,
+        postpass_at,
+        primary_service_completed_at,
+        primary_frame_closed_at,
+        negative_service_completed_at,
+        negative_frame_closed_at,
+        negative_frame_error_at,
+    }
+}
 
-    let baseline_path = baseline_root.clone();
-    let daemon_path = daemon_root.clone();
-    baseline.close().expect("remove owned baseline temp state");
-    daemon.close().expect("remove owned daemon temp state");
-    assert!(!baseline_path.exists(), "baseline temp state remained");
-    assert!(!daemon_path.exists(), "daemon temp state remained");
+// ── 114-S / U2: evidence assembly helpers ────────────────────────────────────
 
-    let evidence = json!({
+struct RevisionAndBinaryFacts {
+    build_hash: String,
+    protocol_version: u64,
+}
+
+struct CorpusFacts {
+    aggregate_sha256: String,
+    file_sha256: BTreeMap<String, String>,
+    baseline_workspace: PathBuf,
+    daemon_workspace: PathBuf,
+    baseline_database: PathBuf,
+    daemon_database: PathBuf,
+}
+
+struct BaselineEvidenceFacts {
+    started_at: String,
+    completed_at: String,
+    elapsed_ms: u64,
+    result: code_graph::IndexResult,
+    singletons: u64,
+}
+
+struct DaemonIdentityFacts {
+    pid: u32,
+    endpoint: String,
+    repository_pid_checked: bool,
+    settle_attempts: u32,
+    watcher_events: u64,
+}
+
+struct AggregateDeadlineFacts {
+    elapsed_ms: u64,
+}
+
+struct DiagnosticsFacts {
+    stderr_bytes: usize,
+}
+
+struct U2Facts {
+    postpass_resolved_at: String,
+    calls_before_flush: usize,
+    flush_timestamp: String,
+    calls_after_flush: usize,
+    calls_after_timeout: usize,
+    persisted_singletons_after_shutdown: usize,
+}
+
+struct ColdStartFacts {
+    started_at: String,
+    ready_at: String,
+    elapsed_ms: u64,
+}
+
+struct ModelReadinessFacts {
+    loaded_before_index: bool,
+    loaded_after_index: bool,
+    upper_bound_ms: u64,
+}
+
+struct PrimaryRequestFacts {
+    client_started_at: String,
+    service_completed_at: String,
+    dispatch_completed_at: String,
+    dispatch_latency_ms: u64,
+    index_duration_ms: u64,
+    frame_closed_at: String,
+    client_received_at: String,
+    client_elapsed_ms: u64,
+}
+
+struct ShortTimeoutFacts {
+    client_started_at: String,
+    client_finished_at: String,
+    client_elapsed_ms: u64,
+    outcome: &'static str,
+    service_completed_at: String,
+    dispatch_completed_at: String,
+    dispatch_latency_ms: u64,
+    frame_closed_at: String,
+    frame_error_at: Option<String>,
+}
+
+struct U3Facts {
+    cold_start: ColdStartFacts,
+    model_readiness: ModelReadinessFacts,
+    primary_request: PrimaryRequestFacts,
+    short_timeout: ShortTimeoutFacts,
+}
+
+struct CleanupFacts {
+    shutdown_elapsed_ms: u64,
+}
+
+struct CharacterizationEvidenceInputs {
+    revision: RevisionAndBinaryFacts,
+    corpus: CorpusFacts,
+    baseline: BaselineEvidenceFacts,
+    daemon_identity: DaemonIdentityFacts,
+    aggregate_deadline: AggregateDeadlineFacts,
+    diagnostics: DiagnosticsFacts,
+    u2: U2Facts,
+    u3: U3Facts,
+    cleanup: CleanupFacts,
+}
+
+/// Assemble the `107S_EVIDENCE` JSON record from the facts gathered across
+/// setup, the runtime scenario, cleanup, and trace/response parsing.
+#[allow(clippy::too_many_lines)]
+fn assemble_characterization_evidence(inputs: &CharacterizationEvidenceInputs) -> Value {
+    json!({
         "revision_and_binary": {
-            "build_hash": build_hash,
+            "build_hash": inputs.revision.build_hash,
             "package_version": env!("CARGO_PKG_VERSION"),
             "binary": env!("CARGO_BIN_EXE_engram"),
-            "protocol_version": protocol_version,
+            "protocol_version": inputs.revision.protocol_version,
         },
         "corpus": {
-            "aggregate_sha256": baseline_hash,
-            "file_sha256": baseline_file_hashes,
-            "baseline_workspace": baseline_path,
-            "daemon_workspace": daemon_path,
-            "baseline_database": baseline_db,
-            "daemon_database": daemon_db,
+            "aggregate_sha256": inputs.corpus.aggregate_sha256,
+            "file_sha256": inputs.corpus.file_sha256,
+            "baseline_workspace": inputs.corpus.baseline_workspace,
+            "daemon_workspace": inputs.corpus.daemon_workspace,
+            "baseline_database": inputs.corpus.baseline_database,
+            "daemon_database": inputs.corpus.daemon_database,
         },
         "baseline": {
-            "started_at": baseline_started_at,
-            "completed_at": baseline_completed_at,
-            "elapsed_ms": baseline_elapsed_ms,
-            "files_parsed": baseline_result.files_parsed,
-            "functions_indexed": baseline_result.functions_indexed,
-            "edges_created": baseline_result.edges_created,
-            "singletons": baseline_singletons,
+            "started_at": inputs.baseline.started_at,
+            "completed_at": inputs.baseline.completed_at,
+            "elapsed_ms": inputs.baseline.elapsed_ms,
+            "files_parsed": inputs.baseline.result.files_parsed,
+            "functions_indexed": inputs.baseline.result.functions_indexed,
+            "edges_created": inputs.baseline.result.edges_created,
+            "singletons": inputs.baseline.singletons,
         },
         "daemon_identity": {
-            "pid": owned_pid,
-            "endpoint": endpoint,
+            "pid": inputs.daemon_identity.pid,
+            "endpoint": inputs.daemon_identity.endpoint,
             "repository_endpoint_distinct": true,
             "repository_data_identity_distinct": true,
-            "repository_pid_checked_when_available": repository_pid.is_some(),
-            "settle_attempts": settle_attempts,
+            "repository_pid_checked_when_available": inputs.daemon_identity.repository_pid_checked,
+            "settle_attempts": inputs.daemon_identity.settle_attempts,
             "active_workspaces": 1,
             "duplicate_daemon_detected": 0,
-            "watcher_events": final_watcher_events,
+            "watcher_events": inputs.daemon_identity.watcher_events,
         },
         "aggregate_deadline": {
             "limit_ms": u64::try_from(PROBE_LIMIT.as_millis()).unwrap_or(u64::MAX),
             "cleanup_reserve_ms": u64::try_from(CLEANUP_RESERVE.as_millis()).unwrap_or(u64::MAX),
-            "elapsed_ms": deadline.elapsed_ms(),
+            "elapsed_ms": inputs.aggregate_deadline.elapsed_ms,
         },
         "diagnostics": {
             "stdout_trace_captured": true,
             "stderr_captured_separately": true,
-            "stderr_bytes": stderr_bytes,
+            "stderr_bytes": inputs.diagnostics.stderr_bytes,
         },
         "u2": {
             "classification": "no current defect",
-            "postpass_resolved_at": postpass_at,
+            "postpass_resolved_at": inputs.u2.postpass_resolved_at,
             "postpass_resolved_count": 1,
-            "calls_before_flush": calls_before_flush,
-            "flush_timestamp": flush_timestamp,
-            "calls_after_flush": calls_after_flush,
-            "calls_after_timeout": calls_after_timeout,
-            "persisted_singletons_after_shutdown": persisted_singletons.len(),
+            "calls_before_flush": inputs.u2.calls_before_flush,
+            "flush_timestamp": inputs.u2.flush_timestamp,
+            "calls_after_flush": inputs.u2.calls_after_flush,
+            "calls_after_timeout": inputs.u2.calls_after_timeout,
+            "persisted_singletons_after_shutdown": inputs.u2.persisted_singletons_after_shutdown,
         },
         "u3": {
             "classification": "static contract finding: startup outside user request deadline",
             "runtime_blocker": "missing cold CLI timeout/end-to-end request-ID frame correlation",
             "cold_start": {
-                "started_at": cold_started_at,
-                "ready_at": cold_ready_at,
-                "elapsed_ms": cold_ready_ms,
+                "started_at": inputs.u3.cold_start.started_at,
+                "ready_at": inputs.u3.cold_start.ready_at,
+                "elapsed_ms": inputs.u3.cold_start.elapsed_ms,
             },
             "model_readiness": {
-                "loaded_before_index": model_loaded_before,
-                "loaded_after_index": model_loaded_after,
-                "upper_bound_ms": primary_client_elapsed_ms,
+                "loaded_before_index": inputs.u3.model_readiness.loaded_before_index,
+                "loaded_after_index": inputs.u3.model_readiness.loaded_after_index,
+                "upper_bound_ms": inputs.u3.model_readiness.upper_bound_ms,
             },
             "primary_request": {
                 "id": "107s-index-primary",
-                "client_started_at": primary_client_started_at,
-                "service_completed_at": primary_service_completed_at,
-                "dispatch_completed_at": primary_dispatch_at,
-                "dispatch_latency_ms": primary_dispatch_latency_ms,
-                "index_duration_ms": index_duration_ms,
-                "frame_closed_at": primary_frame_closed_at,
-                "client_received_at": primary_client_received_at,
-                "client_elapsed_ms": primary_client_elapsed_ms,
+                "client_started_at": inputs.u3.primary_request.client_started_at,
+                "service_completed_at": inputs.u3.primary_request.service_completed_at,
+                "dispatch_completed_at": inputs.u3.primary_request.dispatch_completed_at,
+                "dispatch_latency_ms": inputs.u3.primary_request.dispatch_latency_ms,
+                "index_duration_ms": inputs.u3.primary_request.index_duration_ms,
+                "frame_closed_at": inputs.u3.primary_request.frame_closed_at,
+                "client_received_at": inputs.u3.primary_request.client_received_at,
+                "client_elapsed_ms": inputs.u3.primary_request.client_elapsed_ms,
                 "frame_error": Value::Null,
             },
             "short_timeout": {
                 "id": "107s-index-short-timeout",
                 "deadline_ms": 10,
-                "client_started_at": negative_client_started_at,
-                "client_finished_at": negative_client_finished_at,
-                "client_elapsed_ms": negative_client_elapsed_ms,
-                "outcome": negative_outcome,
-                "service_completed_at": negative_service_completed_at,
-                "dispatch_completed_at": negative_dispatch_at,
-                "dispatch_latency_ms": negative_dispatch_latency_ms,
-                "frame_closed_at": negative_frame_closed_at,
-                "frame_error_at": negative_frame_error_at,
+                "client_started_at": inputs.u3.short_timeout.client_started_at,
+                "client_finished_at": inputs.u3.short_timeout.client_finished_at,
+                "client_elapsed_ms": inputs.u3.short_timeout.client_elapsed_ms,
+                "outcome": inputs.u3.short_timeout.outcome,
+                "service_completed_at": inputs.u3.short_timeout.service_completed_at,
+                "dispatch_completed_at": inputs.u3.short_timeout.dispatch_completed_at,
+                "dispatch_latency_ms": inputs.u3.short_timeout.dispatch_latency_ms,
+                "frame_closed_at": inputs.u3.short_timeout.frame_closed_at,
+                "frame_error_at": inputs.u3.short_timeout.frame_error_at,
             },
             "smallest_future_contract_surface": "src/cli/runner.rs::run_tool_dispatch deadline envelope around health/startup and send_request",
         },
         "cleanup": {
             "graceful_shutdown": true,
-            "shutdown_elapsed_ms": shutdown_elapsed_ms,
+            "shutdown_elapsed_ms": inputs.cleanup.shutdown_elapsed_ms,
             "pid_reaped": true,
             "endpoint_unreachable": true,
             "baseline_temp_removed": true,
             "daemon_temp_removed": true,
             "repository_workspace_touched": false,
+        },
+    })
+}
+#[allow(clippy::too_many_lines)]
+async fn characterize_daemon_index_runtime_boundaries(deadline: EndToEndDeadline) {
+    let repository = capture_repository_identity();
+    let baseline = establish_baseline_fixture(deadline).await;
+    let daemon_workspace = prepare_daemon_workspace(&baseline, &repository);
+    let owned_daemon = spawn_owned_daemon(&daemon_workspace, &repository, deadline).await;
+
+    let (settled_status, settle_attempts) =
+        wait_for_empty_daemon(&owned_daemon.endpoint, deadline).await;
+    assert!(empty_settled(&settled_status));
+    let settled_scan_completion = settled_status
+        .pointer("/scan_status/last_completed_at")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let daemon_db = PathBuf::from(
+        settled_status["db_path"]
+            .as_str()
+            .expect("daemon database path"),
+    );
+    assert_ne!(
+        baseline.db_path, daemon_db,
+        "baseline and daemon databases must be distinct"
+    );
+    let daemon_before = send_ok(
+        &owned_daemon.endpoint,
+        &correlated_request("107s-daemon-before", "get_daemon_status", json!({})),
+        IPC_LIMIT,
+        deadline,
+    )
+    .await;
+    assert_eq!(daemon_before["active_workspaces"].as_u64(), Some(1));
+    assert_eq!(
+        daemon_before.pointer("/telemetry/duplicate_daemon_detected"),
+        Some(&Value::from(0_u64)),
+        "circuit breaker: a second daemon identity was detected"
+    );
+    assert_eq!(watcher_event_count(&daemon_before), 0);
+    let model_loaded_before = daemon_before["model_loaded"].as_bool().unwrap_or(false);
+
+    write_frozen_corpus(&daemon_workspace.root);
+    let (daemon_hash, daemon_file_hashes) = corpus_hashes(&daemon_workspace.root);
+    assert_eq!(daemon_hash, baseline.hash, "aggregate corpus bytes drifted");
+    assert_eq!(
+        daemon_file_hashes, baseline.file_hashes,
+        "per-file corpus bytes drifted"
+    );
+    tokio::time::sleep(
+        deadline.remaining_work(Duration::from_millis(250), "post-seed watcher hold"),
+    )
+    .await;
+    let seeded_status = send_ok(
+        &owned_daemon.endpoint,
+        &correlated_request("107s-seeded-status", "get_workspace_status", json!({})),
+        IPC_LIMIT,
+        deadline,
+    )
+    .await;
+    assert!(
+        empty_settled(&seeded_status),
+        "watcher or background ingestion populated the graph before explicit index: {seeded_status}"
+    );
+    assert_eq!(
+        seeded_status
+            .pointer("/scan_status/last_completed_at")
+            .cloned()
+            .unwrap_or(Value::Null),
+        settled_scan_completion,
+        "a background scan began after corpus seeding"
+    );
+    let seeded_daemon_status = send_ok(
+        &owned_daemon.endpoint,
+        &correlated_request("107s-seeded-daemon-status", "get_daemon_status", json!({})),
+        IPC_LIMIT,
+        deadline,
+    )
+    .await;
+    assert_eq!(
+        watcher_event_count(&seeded_daemon_status),
+        0,
+        "watcher hold must suppress all corpus ingestion"
+    );
+
+    let primary_request = correlated_request(
+        "107s-index-primary",
+        "index_workspace",
+        json!({ "force": false }),
+    );
+    let primary_client_started_at = now_timestamp();
+    let primary_client_started = Instant::now();
+    let primary_result = send_ok(
+        &owned_daemon.endpoint,
+        &primary_request,
+        PROBE_LIMIT,
+        deadline,
+    )
+    .await;
+    let primary_client_elapsed_ms = elapsed_ms(primary_client_started);
+    let primary_client_received_at = now_timestamp();
+    assert_eq!(primary_result["files_parsed"].as_u64(), Some(2));
+    assert_eq!(primary_result["functions_indexed"].as_u64(), Some(2));
+    assert_eq!(primary_result["errors"], json!([]));
+    assert_eq!(
+        primary_result["edges_created"].as_u64(),
+        Some(3),
+        "two defines edges plus the singleton calls edge must be reported"
+    );
+    let primary_usage =
+        wait_for_usage_record(&daemon_workspace.root, "107s-index-primary", deadline).await;
+    assert_eq!(primary_usage["tool_name"], "index_workspace");
+    assert_eq!(primary_usage["outcome"], "success");
+    assert_eq!(
+        normalized_path_text(
+            primary_usage["workspace"]
+                .as_str()
+                .expect("usage workspace path")
+        ),
+        normalized_path_text(&daemon_workspace.root.display().to_string())
+    );
+
+    let pre_flush_map = send_ok(
+        &owned_daemon.endpoint,
+        &correlated_request(
+            "107s-query-before-flush",
+            "map_code",
+            json!({ "symbol_name": "beta", "depth": 1, "max_nodes": 10 }),
+        ),
+        IPC_LIMIT,
+        deadline,
+    )
+    .await;
+    let calls_before_flush = assert_singleton_visible(&pre_flush_map);
+    let indexed_status = send_ok(
+        &owned_daemon.endpoint,
+        &correlated_request("107s-indexed-status", "get_workspace_status", json!({})),
+        IPC_LIMIT,
+        deadline,
+    )
+    .await;
+    assert_eq!(
+        indexed_status.pointer("/code_graph/code_files"),
+        Some(&json!(2))
+    );
+    assert_eq!(
+        indexed_status.pointer("/code_graph/functions"),
+        Some(&json!(2))
+    );
+    assert_eq!(indexed_status.pointer("/code_graph/edges"), Some(&json!(3)));
+    assert_eq!(
+        indexed_status
+            .pointer("/scan_status/running")
+            .and_then(Value::as_bool),
+        Some(false)
+    );
+
+    let flush_result = send_ok(
+        &owned_daemon.endpoint,
+        &correlated_request("107s-flush-primary", "flush_state", json!({})),
+        IPC_LIMIT,
+        deadline,
+    )
+    .await;
+    let flush_timestamp = flush_result["flush_timestamp"]
+        .as_str()
+        .expect("flush timestamp")
+        .to_owned();
+    let post_flush_map = send_ok(
+        &owned_daemon.endpoint,
+        &correlated_request(
+            "107s-query-after-flush",
+            "map_code",
+            json!({ "symbol_name": "beta", "depth": 1, "max_nodes": 10 }),
+        ),
+        IPC_LIMIT,
+        deadline,
+    )
+    .await;
+    let calls_after_flush = assert_singleton_visible(&post_flush_map);
+    let post_flush_status = send_ok(
+        &owned_daemon.endpoint,
+        &correlated_request("107s-status-after-flush", "get_workspace_status", json!({})),
+        IPC_LIMIT,
+        deadline,
+    )
+    .await;
+    assert!(
+        post_flush_status["last_flush"].is_string(),
+        "finalization must publish last_flush after explicit flush"
+    );
+    let edges_path = daemon_workspace
+        .engram_dir
+        .join("code-graph")
+        .join("main")
+        .join("edges.jsonl");
+    assert_eq!(
+        singleton_rows(&edges_path).len(),
+        1,
+        "explicit flush must persist singleton provenance"
+    );
+
+    let daemon_after_primary = send_ok(
+        &owned_daemon.endpoint,
+        &correlated_request("107s-daemon-after-primary", "get_daemon_status", json!({})),
+        IPC_LIMIT,
+        deadline,
+    )
+    .await;
+    let model_loaded_after = daemon_after_primary["model_loaded"]
+        .as_bool()
+        .unwrap_or(false);
+    if primary_result["embeddings_generated"].as_u64().unwrap_or(0) > 0 {
+        assert!(
+            model_loaded_after,
+            "generated embeddings require the owned daemon model to be ready"
+        );
+    }
+    assert_eq!(watcher_event_count(&daemon_after_primary), 0);
+    assert_eq!(
+        daemon_after_primary.pointer("/telemetry/duplicate_daemon_detected"),
+        Some(&Value::from(0_u64))
+    );
+
+    let negative_request = correlated_request(
+        "107s-index-short-timeout",
+        "index_workspace",
+        json!({ "force": true }),
+    );
+    let negative_client_started_at = now_timestamp();
+    let negative_client_started = Instant::now();
+    let negative_result = send_request(
+        &owned_daemon.endpoint,
+        &negative_request,
+        deadline.remaining_work(SHORT_TIMEOUT, "short-timeout index request"),
+    )
+    .await;
+    let negative_client_elapsed_ms = elapsed_ms(negative_client_started);
+    let negative_client_finished_at = now_timestamp();
+    let negative_outcome = match negative_result {
+        Err(EngramError::Ipc(IpcError::Timeout { timeout_ms })) => {
+            assert_eq!(timeout_ms, 10);
+            "client_timeout"
+        }
+        Ok(response) => {
+            assert_response_id(&negative_request, &response);
+            assert!(
+                response.error.is_none(),
+                "short-timeout request returned a tool error: {:?}",
+                response.error
+            );
+            "completed_within_deadline"
+        }
+        Err(error) => panic!("unexpected short-timeout IPC result: {error}"),
+    };
+    let negative_usage =
+        wait_for_usage_record(&daemon_workspace.root, "107s-index-short-timeout", deadline).await;
+    assert_eq!(negative_usage["tool_name"], "index_workspace");
+    assert_eq!(negative_usage["outcome"], "success");
+    tokio::time::sleep(
+        deadline.remaining_work(Duration::from_millis(100), "post-timeout settlement"),
+    )
+    .await;
+
+    let final_map = send_ok(
+        &owned_daemon.endpoint,
+        &correlated_request(
+            "107s-query-after-timeout",
+            "map_code",
+            json!({ "symbol_name": "beta", "depth": 1, "max_nodes": 10 }),
+        ),
+        IPC_LIMIT,
+        deadline,
+    )
+    .await;
+    let calls_after_timeout = assert_singleton_visible(&final_map);
+    let final_flush = send_ok(
+        &owned_daemon.endpoint,
+        &correlated_request("107s-flush-final", "flush_state", json!({})),
+        IPC_LIMIT,
+        deadline,
+    )
+    .await;
+    assert!(final_flush["flush_timestamp"].is_string());
+    let final_daemon_status = send_ok(
+        &owned_daemon.endpoint,
+        &correlated_request("107s-daemon-final", "get_daemon_status", json!({})),
+        IPC_LIMIT,
+        deadline,
+    )
+    .await;
+    let final_watcher_events = watcher_event_count(&final_daemon_status);
+    assert_eq!(final_watcher_events, 0);
+    assert_eq!(
+        final_daemon_status.pointer("/telemetry/duplicate_daemon_detected"),
+        Some(&Value::from(0_u64))
+    );
+
+    let shutdown_elapsed_ms = shut_down_owned_daemon(
+        owned_daemon.harness,
+        &owned_daemon.endpoint,
+        &owned_daemon.pid_file,
+        deadline,
+    )
+    .await;
+
+    let trace = analyze_trace_evidence(
+        &daemon_workspace.trace_path,
+        &daemon_workspace.stderr_path,
+        &edges_path,
+    );
+    let primary_dispatch = dispatch_facts(&primary_usage, "primary");
+    let negative_dispatch = dispatch_facts(&negative_usage, "negative");
+    let index_duration_ms = primary_result["duration_ms"]
+        .as_u64()
+        .expect("index duration");
+
+    let baseline_root_path = baseline.root.clone();
+    let daemon_root_path = daemon_workspace.root.clone();
+    let (baseline_path, daemon_path) = close_owned_temp_workspaces(
+        baseline.tempdir,
+        daemon_workspace.tempdir,
+        baseline_root_path,
+        daemon_root_path,
+    );
+
+    let evidence = assemble_characterization_evidence(&CharacterizationEvidenceInputs {
+        revision: RevisionAndBinaryFacts {
+            build_hash: owned_daemon.build_hash,
+            protocol_version: owned_daemon.protocol_version,
+        },
+        corpus: CorpusFacts {
+            aggregate_sha256: baseline.hash,
+            file_sha256: baseline.file_hashes,
+            baseline_workspace: baseline_path,
+            daemon_workspace: daemon_path,
+            baseline_database: baseline.db_path,
+            daemon_database: daemon_db,
+        },
+        baseline: BaselineEvidenceFacts {
+            started_at: baseline.started_at,
+            completed_at: baseline.completed_at,
+            elapsed_ms: baseline.elapsed_ms,
+            result: baseline.result,
+            singletons: baseline.singletons,
+        },
+        daemon_identity: DaemonIdentityFacts {
+            pid: owned_daemon.pid,
+            endpoint: owned_daemon.endpoint,
+            repository_pid_checked: repository.pid.is_some(),
+            settle_attempts,
+            watcher_events: final_watcher_events,
+        },
+        aggregate_deadline: AggregateDeadlineFacts {
+            elapsed_ms: deadline.elapsed_ms(),
+        },
+        diagnostics: DiagnosticsFacts {
+            stderr_bytes: trace.stderr_bytes,
+        },
+        u2: U2Facts {
+            postpass_resolved_at: trace.postpass_at,
+            calls_before_flush,
+            flush_timestamp,
+            calls_after_flush,
+            calls_after_timeout,
+            persisted_singletons_after_shutdown: trace.persisted_singletons_len,
+        },
+        u3: U3Facts {
+            cold_start: ColdStartFacts {
+                started_at: owned_daemon.cold_started_at,
+                ready_at: owned_daemon.cold_ready_at,
+                elapsed_ms: owned_daemon.cold_ready_ms,
+            },
+            model_readiness: ModelReadinessFacts {
+                loaded_before_index: model_loaded_before,
+                loaded_after_index: model_loaded_after,
+                upper_bound_ms: primary_client_elapsed_ms,
+            },
+            primary_request: PrimaryRequestFacts {
+                client_started_at: primary_client_started_at,
+                service_completed_at: trace.primary_service_completed_at,
+                dispatch_completed_at: primary_dispatch.dispatched_at,
+                dispatch_latency_ms: primary_dispatch.latency_ms,
+                index_duration_ms,
+                frame_closed_at: trace.primary_frame_closed_at,
+                client_received_at: primary_client_received_at,
+                client_elapsed_ms: primary_client_elapsed_ms,
+            },
+            short_timeout: ShortTimeoutFacts {
+                client_started_at: negative_client_started_at,
+                client_finished_at: negative_client_finished_at,
+                client_elapsed_ms: negative_client_elapsed_ms,
+                outcome: negative_outcome,
+                service_completed_at: trace.negative_service_completed_at,
+                dispatch_completed_at: negative_dispatch.dispatched_at,
+                dispatch_latency_ms: negative_dispatch.latency_ms,
+                frame_closed_at: trace.negative_frame_closed_at,
+                frame_error_at: trace.negative_frame_error_at,
+            },
+        },
+        cleanup: CleanupFacts {
+            shutdown_elapsed_ms,
         },
     });
     assert!(
