@@ -1,12 +1,17 @@
 ---
 title: "Dynamically escalate truncated test diagnostics"
 description: "Persist complete test output inside the workspace when tool transport truncation hides the actionable failure, then return to normal logging after resolution."
+doc_type: learning
+source: docs/memory/2026-08-08/circuit-break-cargo-test-all-targets.md
 problem_type: "test diagnostic transport truncation"
 category: "workflow-issues"
 component: "Ship quality-gate diagnostics"
 root_cause: "The tool transport output limit truncated cargo test output before the failing-target summary, so repeated console-only retries could not reveal the actual failing test."
 resolution_type: "workaround"
 severity: "high"
+date: 2026-08-08
+shipment: "111-S"
+pr: 329
 message: "cargo test --all-targets exited 101 without a visible failure summary"
 file_path: "logs/111-s-cargo-test-all-targets.log"
 citations:
@@ -14,6 +19,7 @@ citations:
   - "shipment 111-S"
   - "docs/memory/2026-08-08/111-s-audit-gate-blocked.md"
   - "https://github.com/softwaresalt/agent-engram/pull/329"
+  - "docs/closure/111-S-2026-08-10-post-merge-closure.md"
 tags:
   - "cargo-test"
   - "diagnostics"
@@ -74,6 +80,7 @@ Diagnostic handling MUST adapt to the failure's observability:
   traceability, then archive or remove them under repository safeguards.
 
 Formal circuit-breaker wording should adopt this escalation/de-escalation rule
-through a separately reviewed follow-up rather than widening shipment 111-S.
-Shipment implementation and review evidence is carried by PR #329; its
-post-merge closure artifact will provide the final release citation.
+through separately reviewed follow-up `241B503F` rather than widening shipment
+111-S. Shipment implementation and review evidence is carried by PR #329; the
+final release and runtime evidence is recorded in
+`docs/closure/111-S-2026-08-10-post-merge-closure.md`.
