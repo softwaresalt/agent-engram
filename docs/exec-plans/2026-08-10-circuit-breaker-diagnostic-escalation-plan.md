@@ -25,9 +25,12 @@ The authoritative `.github/instructions/circuit-breaker.instructions.md` preserv
 
 ### U1 — Add the RED policy contract harness
 
-**Domain/files:** tests only; `tests/contract/verify_test.rs`. **Cap:** 100 minutes, one file, three scenarios.
+**Domain/files:** contract test plus its focused CI trigger;
+`tests/contract/verify_test.rs` and
+`.github/workflows/circuit-breaker-contract.yml`. **Cap:** 100 minutes, two
+files, three scenarios.
 
-Add repository-content contract tests that fail against the current instruction and prove: (1) the universal threshold remains exactly three with stop/log/prompt behavior; (2) after a hidden/truncated failure, diagnostic escalation precedes any equivalent console-only retry and does not reset the underlying failure counter; and (3) workspace-log containment, bounded extraction/retention, concrete-error recording, de-escalation, and secret/raw-payload safeguards are all required. Use `env!("CARGO_MANIFEST_DIR")`; do not add a new Cargo test target or production seam. Observe the focused RED result before U2.
+Add repository-content contract tests that fail against the current instruction and prove: (1) the universal threshold remains exactly three with stop/log/prompt behavior; (2) after a hidden/truncated failure, diagnostic escalation precedes any equivalent console-only retry and does not reset the underlying failure counter; and (3) workspace-log containment, bounded extraction/retention, concrete-error recording, de-escalation, and secret/raw-payload safeguards are all required. Use `env!("CARGO_MANIFEST_DIR")`; do not add a new Cargo test target or production seam. Add a narrowly scoped workflow that runs the existing `contract_verify` target whenever the authoritative instruction, this contract test, or the workflow changes. This is required because the broad Rust CI intentionally ignores `.github/**/*.md`. Observe the focused RED result before U2.
 
 ### U2 — Amend the authoritative circuit-breaker instruction
 
@@ -43,7 +46,7 @@ U1 blocks U2. No other backlog or shipment dependency exists. The security spike
 
 ## Decisions and Rationale
 
-Put the rule in the authoritative circuit-breaker instruction rather than the compound learning or individual skills. Distinguish diagnostic escalation from a blind retry without forgiving the underlying command failure. Capture full output only for a bounded invocation, and bound what the agent reads and retains. Do not add a general logging framework, runtime code, new CLI flags, or duplicate wording across skills.
+Put the rule in the authoritative circuit-breaker instruction rather than the compound learning or individual skills. Distinguish diagnostic escalation from a blind retry without forgiving the underlying command failure. Capture full output only for a bounded invocation, and bound what the agent reads and retains. Enforce the repository-content contract with one narrow workflow rather than broadening the full Rust CI path filter. Do not add a general logging framework, runtime code, new CLI flags, or duplicate wording across skills.
 
 ## Constitution Check
 
@@ -70,7 +73,7 @@ Requires plan hardening: yes
 
 ## Runtime Verification and Closure
 
-Run focused `contract_verify`, then Markdown/YAML/frontmatter validation and repository instruction cross-reference checks; finally run normal ordered quality gates in Ship. Prompt-authoring review manually exercises three examples: truncated test output, secret-bearing command output, and a third same-error recurrence. Healthy behavior escalates once, extracts a bounded concrete failure, checkpoints it, de-escalates, and still stops at three. Rollback trigger: any test or review shows counter reset, a fourth equivalent retry, out-of-workspace logging, raw secret persistence, unbounded append/retention, or failure to de-escalate. Rollback is a reviewed instruction/test revert. Observe the next three Ship sessions or seven days, whichever is longer, for blind-retry recurrence and accidental log commits.
+Run focused `contract_verify`, prove the dedicated instruction-path workflow selects the change, then run Markdown/YAML/frontmatter validation and repository instruction cross-reference checks; finally run normal ordered quality gates in Ship. Prompt-authoring review manually exercises three examples: truncated test output, secret-bearing command output, and a third same-error recurrence. Healthy behavior escalates once, extracts a bounded concrete failure, checkpoints it, de-escalates, and still stops at three. Rollback trigger: any test, workflow-selection check, or review shows a missing contract gate, counter reset, a fourth equivalent retry, out-of-workspace logging, raw secret persistence, unbounded append/retention, or failure to de-escalate. Rollback is a reviewed workflow/instruction/test revert. Observe the next three Ship sessions or seven days, whichever is longer, for blind-retry recurrence and accidental log commits.
 
 ## Plan Hardening
 

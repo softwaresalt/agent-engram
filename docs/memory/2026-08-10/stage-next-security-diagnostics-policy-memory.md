@@ -57,7 +57,7 @@ Both manifests are parent-first, reviewed, and never claimed.
 
 ## Evidence and Validation
 
-Consulted the authoritative backlog metadata/WIT/templates, stash, 017-D, Cargo manifest/lock/history, RustSec advisory, current crates.io/GitHub Cozo/swapvec manifests, Cozo/swapvec call paths, dynamic-diagnostics learning, circuit-breaker/constitution/strict-safety/release-observability instructions, 102-F advisory decision, and 111-S audit/closure evidence. Backlog doctor returned no findings. Direct shipment custom fields were required because neither MCP nor CLI exposes shipment custom-field mutation; the index was synced immediately afterward.
+Consulted the authoritative backlog metadata/WIT/templates, stash, 017-D, Cargo manifest/lock/history, RustSec advisory, current crates.io/GitHub Cozo/swapvec manifests, Cozo/swapvec call paths, dynamic-diagnostics learning, circuit-breaker/constitution/strict-safety/release-observability instructions, 102-F advisory decision, and 111-S audit/closure evidence. Publication validation reported 43 pre-existing `archived_from_self_ref` doctor advisories and no new orphan, duplicate-ID, or actionable structural finding. Direct shipment custom fields were required because neither MCP nor CLI exposes shipment custom-field mutation; the index was synced immediately afterward.
 
 Engram daemon was reachable, but its status initially reported a stale prior branch while Git was on `main`. Indexed searches were supplemented with targeted local reads. A rebind was refused by the one-workspace limit and a refresh ended with `database is locked`; no retries or source mutations followed.
 
