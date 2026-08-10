@@ -466,8 +466,8 @@ pub(super) mod sql_lineage {
         }
     }
 
-    /// Advance to the newline that ends a `--` line comment (the terminal `\n`
-    /// itself is normal text), or to end-of-input. Spark continues a
+    /// Advance to the line ending that ends a `--` line comment (the terminal
+    /// `\r`/`\n` itself is normal text), or to end-of-input. Spark continues a
     /// `SIMPLE_COMMENT` across `\\\n`, but not across `\\\r\n`. `pos` is the
     /// first byte after `--`.
     fn skip_line_comment(bytes: &[u8], mut pos: usize) -> usize {
@@ -476,7 +476,7 @@ pub(super) mod sql_lineage {
                 pos += 2;
                 continue;
             }
-            if bytes[pos] == b'\n' {
+            if matches!(bytes[pos], b'\r' | b'\n') {
                 return pos;
             }
             pos += 1;
@@ -810,6 +810,13 @@ pub(super) mod sql_lineage {
                 normalize_spark_insert(crlf),
                 "-- shield\\\r\nINSERT INTO cat.sch.t SELECT x FROM cat.sch.src",
                 "CRLF ends a Spark -- comment even after backslash"
+            );
+
+            let cr = "-- shield\rINSERT OVERWRITE TABLE cat.sch.t SELECT x FROM cat.sch.src";
+            assert_eq!(
+                normalize_spark_insert(cr),
+                "-- shield\rINSERT INTO cat.sch.t SELECT x FROM cat.sch.src",
+                "a bare CR also ends a Spark -- comment"
             );
         }
 
