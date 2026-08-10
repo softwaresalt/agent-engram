@@ -17,8 +17,12 @@
 //   compile-time net.
 // - Connection and tool-call counts use `AtomicUsize` / `AtomicU64` which
 //   need no locking at all.
-// - No lock is held across an I/O operation; the only await performed while a
-//   guard is held is the paired lock acquisition described above.
+// - `workspace_publication` is a Tokio mutex intentionally held across every
+//   metrics-identity transition and binding publication. Lifecycle binds hold
+//   it from metrics replacement through commit/rollback; branch refreshes hold
+//   it through publication, successor claim, and acknowledged metrics control.
+//   It is always acquired before the binding/config locks and the synchronous
+//   coordinator mutex, and no synchronous mutex is held across `.await`.
 // Verdict: no deadlock potential identified.
 
 use std::collections::{HashMap, VecDeque};
@@ -966,6 +970,7 @@ pub struct AppState {
     active_connections: AtomicUsize,
     active_workspace: RwLock<Option<WorkspaceSnapshot>>,
     workspace_config: RwLock<Option<WorkspaceConfig>>,
+    workspace_publication: Arc<tokio::sync::Mutex<()>>,
     max_workspaces: usize,
     stale_strategy: StaleStrategy,
     connection_registry: ConnectionRegistry,
@@ -993,6 +998,14 @@ pub struct AppState {
     hydration_ready: AtomicBool,
 }
 
+/// Exclusive ownership of an identity-changing workspace publication.
+///
+/// Constructors remain on [`AppState`] so every production publisher uses the
+/// same async lock. The guard may span metrics I/O, but no synchronous mutex.
+pub(crate) struct WorkspacePublicationGuard {
+    _guard: tokio::sync::OwnedMutexGuard<()>,
+}
+
 impl AppState {
     pub fn new(max_workspaces: usize) -> Self {
         Self::with_options(max_workspaces, StaleStrategy::Warn, 20, 60)
@@ -1014,6 +1027,7 @@ impl AppState {
             active_connections: AtomicUsize::new(0),
             active_workspace: RwLock::new(None),
             workspace_config: RwLock::new(None),
+            workspace_publication: Arc::new(tokio::sync::Mutex::new(())),
             max_workspaces,
             stale_strategy,
             connection_registry: ConnectionRegistry::new(),
@@ -1047,6 +1061,13 @@ impl AppState {
 
     pub async fn snapshot_workspace(&self) -> Option<WorkspaceSnapshot> {
         self.active_workspace.read().await.clone()
+    }
+
+    /// Serialize every transition that changes workspace/metrics identity.
+    pub(crate) async fn acquire_workspace_publication(&self) -> WorkspacePublicationGuard {
+        WorkspacePublicationGuard {
+            _guard: Arc::clone(&self.workspace_publication).lock_owned().await,
+        }
     }
 
     /// Atomically snapshot the active workspace binding and loaded config.
@@ -1167,12 +1188,25 @@ impl AppState {
     ///
     /// Task 109.017-T replaces this compile-only RED bridge with one atomic
     /// binding/coordinator publication.
+    #[cfg(test)]
     pub(crate) async fn publish_workspace_generation(
         &self,
         snapshot: WorkspaceSnapshot,
         config: Option<WorkspaceConfig>,
     ) -> Result<(u64, AdmissionGuard), CoordinatorError> {
-        self.publish_workspace_generation_transition(snapshot, config, WorkMask::default())
+        let publication = self.acquire_workspace_publication().await;
+        self.publish_workspace_generation_guarded(&publication, snapshot, config)
+            .await
+    }
+
+    /// Publish while the caller retains identity-transition ownership.
+    pub(crate) async fn publish_workspace_generation_guarded(
+        &self,
+        _publication: &WorkspacePublicationGuard,
+        snapshot: WorkspaceSnapshot,
+        config: Option<WorkspaceConfig>,
+    ) -> Result<(u64, AdmissionGuard), CoordinatorError> {
+        self.publish_workspace_generation_transition(snapshot, config, WorkMask::default(), false)
             .await
     }
 
@@ -1181,13 +1215,49 @@ impl AppState {
     /// A distinct binding still inherits no old-binding work. The supplied mask
     /// is qualified to the newly published binding and is installed under the
     /// same coordinator lock as publication.
+    #[cfg(test)]
     pub(crate) async fn publish_workspace_generation_with_reissue(
         &self,
         snapshot: WorkspaceSnapshot,
         config: Option<WorkspaceConfig>,
         reissued_work: WorkMask,
     ) -> Result<(u64, AdmissionGuard), CoordinatorError> {
-        self.publish_workspace_generation_transition(snapshot, config, reissued_work)
+        let publication = self.acquire_workspace_publication().await;
+        self.publish_workspace_generation_with_reissue_guarded(
+            &publication,
+            snapshot,
+            config,
+            reissued_work,
+        )
+        .await
+    }
+
+    /// Publish reissued work while the caller retains transition ownership.
+    pub(crate) async fn publish_workspace_generation_with_reissue_guarded(
+        &self,
+        _publication: &WorkspacePublicationGuard,
+        snapshot: WorkspaceSnapshot,
+        config: Option<WorkspaceConfig>,
+        reissued_work: WorkMask,
+    ) -> Result<(u64, AdmissionGuard), CoordinatorError> {
+        self.publish_workspace_generation_transition(snapshot, config, reissued_work, false)
+            .await
+    }
+
+    /// Republish a branch-refresh predecessor without losing transient work.
+    ///
+    /// Rollback advances the generation rather than decrementing it, so every
+    /// owner admitted against either side of the failed refresh remains stale.
+    /// The current owner, pending mask, and retirement-barrier masks are carried
+    /// to the restored binding and remain unavailable until the caller retires
+    /// the failed-refresh owner.
+    pub(crate) async fn rollback_workspace_generation_guarded(
+        &self,
+        _publication: &WorkspacePublicationGuard,
+        snapshot: WorkspaceSnapshot,
+        config: Option<WorkspaceConfig>,
+    ) -> Result<(u64, AdmissionGuard), CoordinatorError> {
+        self.publish_workspace_generation_transition(snapshot, config, WorkMask::default(), true)
             .await
     }
 
@@ -1196,6 +1266,7 @@ impl AppState {
         snapshot: WorkspaceSnapshot,
         config: Option<WorkspaceConfig>,
         reissued_work: WorkMask,
+        preserve_current_work: bool,
     ) -> Result<(u64, AdmissionGuard), CoordinatorError> {
         let target_binding = BindingIdentity {
             workspace_uuid: snapshot.workspace_uuid.clone(),
@@ -1232,7 +1303,7 @@ impl AppState {
         let prior_phase = std::mem::replace(&mut coordinator.phase, CoordinatorPhase::Idle);
         coordinator.phase = match prior_phase {
             CoordinatorPhase::Idle => {
-                if !same_binding {
+                if !same_binding && !preserve_current_work {
                     coordinator.pending = WorkMask::default();
                 }
                 coordinator.pending = coordinator.pending.union(reissued_work);
@@ -1240,7 +1311,7 @@ impl AppState {
             }
             CoordinatorPhase::Running(owner) => {
                 let retired_work_mask = owner.work_mask.union(coordinator.pending);
-                let inherited = if same_binding {
+                let inherited = if same_binding || preserve_current_work {
                     retired_work_mask
                 } else {
                     WorkMask::default()
@@ -1257,7 +1328,13 @@ impl AppState {
                 })
             }
             CoordinatorPhase::Retiring(mut barrier) => {
-                if barrier.target_binding != target_binding {
+                if preserve_current_work {
+                    barrier.deferred = barrier
+                        .retired_work_mask
+                        .union(barrier.deferred)
+                        .union(coordinator.pending);
+                    coordinator.pending = WorkMask::default();
+                } else if barrier.target_binding != target_binding {
                     barrier.deferred = if target_binding == barrier.retired_binding {
                         barrier.retired_work_mask
                     } else {

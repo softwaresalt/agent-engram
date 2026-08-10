@@ -67,13 +67,20 @@ async fn setup_workspace(config: WorkspaceConfig) -> (Arc<AppState>, tempfile::T
     fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").expect("write HEAD");
 
     let state = Arc::new(AppState::new(10));
-    helpers::bind_isolated_workspace(&state, workspace.path(), "main", config).await;
+    helpers::bind_isolated_workspace_with_disabled_metrics(
+        &state,
+        workspace.path(),
+        "main",
+        config,
+    )
+    .await;
     (state, workspace)
 }
 
 /// Regression: an ambient developer data directory must never redirect this
 /// in-process fixture away from its disposable workspace.
 #[test]
+#[serial_test::serial(metrics_writer)]
 async fn setup_workspace_keeps_data_dir_inside_temp_workspace() {
     let (state, workspace) = setup_workspace(WorkspaceConfig::default()).await;
     let snapshot = state
@@ -112,6 +119,7 @@ fn enabled_config_with_thresholds(thresholds: RetrievalEvalThresholds) -> Worksp
 // ── Verification (2): a breached floor is recorded (the RED scenario) ─────────
 
 #[test]
+#[serial_test::serial(metrics_writer)]
 async fn breached_threshold_is_recorded_in_report() {
     // An impossible floor: `resolution_recall` is clamped to [0, 1], so a floor
     // of 2.0 can never be met by any non-empty run.
@@ -147,6 +155,7 @@ async fn breached_threshold_is_recorded_in_report() {
 // ── Verification (1)+(3): met / default thresholds do not gate ───────────────
 
 #[test]
+#[serial_test::serial(metrics_writer)]
 async fn default_thresholds_do_not_produce_a_breach() {
     // Default thresholds are permissive (floors 0.0, ceiling 1.0), modelling an
     // unconfigured workspace: a real run must not be gated (back-compat).
@@ -173,6 +182,7 @@ async fn default_thresholds_do_not_produce_a_breach() {
 // ── Verification (4a): a disabled run never breaches ─────────────────────────
 
 #[test]
+#[serial_test::serial(metrics_writer)]
 async fn disabled_run_records_no_breach() {
     // Disabled config with an otherwise-impossible floor: the disabled path must
     // short-circuit before any gating.
@@ -202,6 +212,7 @@ async fn disabled_run_records_no_breach() {
 // ── Verification (4b): an empty enabled run does not FALSE-breach ─────────────
 
 #[test]
+#[serial_test::serial(metrics_writer)]
 async fn empty_enabled_run_does_not_false_breach() {
     // Enabled with an impossible floor, but NOTHING indexed: there is no metric
     // to measure against the floor, so gating must be skipped rather than firing

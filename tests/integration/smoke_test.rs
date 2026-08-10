@@ -298,8 +298,8 @@ async fn s071_full_workspace_status_response() {
 /// counts surface through `get_workspace_status`, and match `get_workspace_statistics`.
 #[tokio::test]
 async fn s072_workspace_status_reports_code_graph_counts() {
-    use engram::db::workspace::{canonicalize_workspace, resolve_data_dir, resolve_git_branch};
-    use engram::models::config::CodeGraphConfig;
+    use engram::db::workspace::canonicalize_workspace;
+    use engram::models::config::{CodeGraphConfig, WorkspaceConfig};
     use engram::services::code_graph;
 
     let workspace = tempfile::tempdir().expect("workspace tempdir");
@@ -328,16 +328,14 @@ pub fn use_widget() -> Widget {
 
     let path = workspace.path().to_string_lossy().to_string();
 
-    // Index the workspace BEFORE binding, resolving data_dir/branch exactly as
-    // set_workspace does. Populating the DB up front means set_workspace's
-    // background hydration hits hydrate_code_graph's "DB already populated"
-    // fast-path (no JSONL reload, no writes) and only performs reads — so there
-    // is no concurrent CozoDB writer and no reliance on scheduler timing.
+    // Index the workspace BEFORE binding with test-owned storage. Ambient
+    // ENGRAM_DATA_DIR values belong to the caller's live workspace and must not
+    // redirect this disposable fixture into a shared database.
     let canonical = canonicalize_workspace(&path).expect("canonicalize workspace");
-    let branch = resolve_git_branch(&canonical).unwrap_or_else(|_| "default".to_string());
-    let data_dir = resolve_data_dir(&canonical);
+    let branch = "main";
+    let data_dir = canonical.join(".engram");
     let config = CodeGraphConfig::default();
-    let index = code_graph::index_workspace(&canonical, &data_dir, &branch, &config, false)
+    let index = code_graph::index_workspace(&canonical, &data_dir, branch, &config, false)
         .await
         .expect("index_workspace should succeed");
     assert!(
@@ -347,13 +345,7 @@ pub fn use_widget() -> Widget {
     );
 
     let state = Arc::new(AppState::new(10));
-    tools::dispatch(
-        state.clone(),
-        "set_workspace",
-        Some(json!({ "path": path })),
-    )
-    .await
-    .expect("set_workspace must succeed");
+    helpers::bind_isolated_workspace(&state, &canonical, branch, WorkspaceConfig::default()).await;
 
     let result = tools::dispatch(state.clone(), "get_workspace_status", None)
         .await

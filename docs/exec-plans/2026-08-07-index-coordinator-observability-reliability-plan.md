@@ -65,11 +65,16 @@ Ship runs saturated-channel, direct-sync waiter, canonical retry, and S072 focus
 
 ## Plan Hardening
 
-Hardening is required for concurrent runtime ownership. No mutex may be held across metrics acknowledgment; control acknowledgment is bounded by channel closure and writer task health; permit ownership remains RAII-protected.
+Hardening is required for concurrent runtime ownership. No synchronous or
+coordinator mutex may be held across metrics acknowledgment. The async
+workspace-publication and branch-control guards intentionally span
+acknowledgment so binding publication, writer identity, and rollback remain
+serialized. Control acknowledgment is bounded by channel closure and writer
+task health; permit ownership remains RAII-protected.
 
-ProposedAction: atomically acknowledge the old direct Sync and claim its new-binding routine work.  ActionRisk: high.  Approval required: yes; operator approval is recorded.  ActionResult: planned.
+ProposedAction: atomically acknowledge the old direct Sync and claim its new-binding routine work.  ActionRisk: high.  Approval required: yes; operator dark-factory approval was retained for shipment 111-S.  ActionResult: applied on the reviewed feature branch; runtime verification and merge evidence remain required.
 
-ProposedAction: make metrics branch switch an acknowledged control path while retaining droppable usage events.  ActionRisk: moderate.  Approval required: no additional approval.  ActionResult: planned.
+ProposedAction: make metrics branch switch an acknowledged control path while retaining droppable usage events.  ActionRisk: moderate.  Approval required: no additional approval.  ActionResult: applied with bounded acknowledgment and explicit disabled/unavailable writer behavior; runtime verification remains required.
 
 Protected invariants: one owner, no waiter before successor installation, one routine bit, no coordinator lock across await, bounded busy retry, no public test seam. Rollback is a code revert.
 

@@ -33,9 +33,16 @@ fn make_workspace() -> (tempfile::TempDir, Arc<AppState>) {
 }
 
 #[tokio::test]
+#[serial_test::serial(metrics_writer)]
 async fn public_owner_preserves_busy_queue_and_release_contracts() {
     let (ws, state) = make_workspace();
-    helpers::bind_isolated_workspace(&state, ws.path(), "main", WorkspaceConfig::default()).await;
+    helpers::bind_isolated_workspace_with_disabled_metrics(
+        &state,
+        ws.path(),
+        "main",
+        WorkspaceConfig::default(),
+    )
+    .await;
 
     tools::dispatch(Arc::clone(&state), "index_workspace", Some(json!({})))
         .await

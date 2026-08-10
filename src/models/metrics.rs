@@ -91,17 +91,6 @@ fn default_response_shape_counts() -> BTreeMap<String, u32> {
     BTreeMap::new()
 }
 
-/// Message types for the metrics background writer channel.
-#[derive(Debug)]
-pub enum MetricsMessage {
-    /// A usage event to record.
-    Event(Box<UsageEvent>),
-    /// Switch the active branch output path.
-    SwitchBranch(String),
-    /// Drain buffered events and shut down.
-    Shutdown,
-}
-
 /// A single tool call usage measurement.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UsageEvent {

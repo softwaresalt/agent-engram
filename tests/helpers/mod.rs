@@ -38,6 +38,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use engram::models::config::WorkspaceConfig;
+use engram::models::metrics::MetricsConfig;
 use engram::server::state::{AppState, WorkspaceSnapshot};
 use tempfile::TempDir;
 
@@ -289,6 +290,39 @@ pub async fn bind_isolated_workspace(
         .set_workspace_and_config(snapshot, Some(config))
         .await
         .expect("isolated test workspace must bind");
+}
+
+/// Configure an explicitly disabled process-global metrics writer for a test fixture.
+///
+/// # Panics
+///
+/// Panics if the disabled test writer cannot be initialized.
+pub async fn configure_disabled_metrics_writer(workspace: &Path, branch: &str) {
+    engram::services::metrics::initialize(
+        workspace,
+        branch,
+        &MetricsConfig {
+            enabled: false,
+            ..MetricsConfig::default()
+        },
+    )
+    .await
+    .expect("test metrics writer must be disabled");
+}
+
+/// Bind an isolated fixture that intentionally bypasses lifecycle initialization.
+///
+/// # Panics
+///
+/// Panics if disabled metrics initialization or isolated workspace binding fails.
+pub async fn bind_isolated_workspace_with_disabled_metrics(
+    state: &Arc<AppState>,
+    workspace: &Path,
+    branch: &str,
+    config: WorkspaceConfig,
+) {
+    configure_disabled_metrics_writer(workspace, branch).await;
+    bind_isolated_workspace(state, workspace, branch, config).await;
 }
 
 /// Compute the IPC endpoint path for a canonical workspace path.

@@ -83,6 +83,11 @@ const SQLITE_BUSY_MAX_ATTEMPTS: u32 = 5;
 const SQLITE_BUSY_INITIAL_DELAY_MS: u64 = 50;
 const SQLITE_BUSY_MAX_DELAY_MS: u64 = 500;
 
+#[cfg(test)]
+tokio::task_local! {
+    static FORCED_IMMUTABLE_BUSY_ATTEMPTS: std::cell::Cell<u32>;
+}
+
 /// Snapshot of mutable-script SQLITE_BUSY retry telemetry.
 ///
 /// Exposed by the `get_mutable_script_retry_metrics` MCP tool.
@@ -604,13 +609,30 @@ impl CodeGraphQueries {
     ) -> Result<cozo::NamedRows, EngramError> {
         let mut delay = std::time::Duration::from_millis(SQLITE_BUSY_INITIAL_DELAY_MS);
         for attempt in 0..SQLITE_BUSY_MAX_ATTEMPTS {
-            match self
-                .db
-                .run_script(script, params.clone(), ScriptMutability::Immutable)
-            {
+            #[cfg(test)]
+            let forced_busy = FORCED_IMMUTABLE_BUSY_ATTEMPTS
+                .try_with(|remaining| {
+                    let current = remaining.get();
+                    if current == 0 {
+                        false
+                    } else {
+                        remaining.set(current - 1);
+                        true
+                    }
+                })
+                .unwrap_or(false);
+            #[cfg(not(test))]
+            let forced_busy = false;
+            let result = if forced_busy {
+                Err("database is locked by deterministic test probe".to_owned())
+            } else {
+                self.db
+                    .run_script(script, params.clone(), ScriptMutability::Immutable)
+                    .map_err(|error| error.to_string())
+            };
+            match result {
                 Ok(r) => return Ok(r),
-                Err(e) => {
-                    let msg = e.to_string();
+                Err(msg) => {
                     if is_busy_error(&msg) && attempt + 1 < SQLITE_BUSY_MAX_ATTEMPTS {
                         tracing::warn!(
                             attempt = attempt + 1,
@@ -3464,35 +3486,27 @@ stale[from, to] :=
     pub async fn count_functions(&self) -> Result<u64, EngramError> {
         let script = "?[count(id)] := *function_meta { id }";
         let result = self
-            .db
-            .run_script(script, BTreeMap::new(), ScriptMutability::Immutable)
-            .map_err(|e| map_db_err(e.to_string()))?;
+            .run_script_busy_retry_immutable(script, BTreeMap::new())
+            .await?;
         Ok(extract_count(&result))
     }
 
     /// Return the total number of class records indexed.
     pub async fn count_classes(&self) -> Result<u64, EngramError> {
         let result = self
-            .db
-            .run_script(
-                "?[count(id)] := *class_meta { id }",
-                BTreeMap::new(),
-                ScriptMutability::Immutable,
-            )
-            .map_err(|e| map_db_err(e.to_string()))?;
+            .run_script_busy_retry_immutable("?[count(id)] := *class_meta { id }", BTreeMap::new())
+            .await?;
         Ok(extract_count(&result))
     }
 
     /// Return the total number of interface records indexed.
     pub async fn count_interfaces(&self) -> Result<u64, EngramError> {
         let result = self
-            .db
-            .run_script(
+            .run_script_busy_retry_immutable(
                 "?[count(id)] := *interface_meta { id }",
                 BTreeMap::new(),
-                ScriptMutability::Immutable,
             )
-            .map_err(|e| map_db_err(e.to_string()))?;
+            .await?;
         Ok(extract_count(&result))
     }
 
@@ -3509,9 +3523,8 @@ stale[from, to] :=
         ] {
             let script = format!("?[count(from)] := *{tbl} {{ from }}");
             let r = self
-                .db
-                .run_script(&script, BTreeMap::new(), ScriptMutability::Immutable)
-                .map_err(|e| map_db_err(e.to_string()))?;
+                .run_script_busy_retry_immutable(&script, BTreeMap::new())
+                .await?;
             total += extract_count(&r);
         }
         Ok(total)
@@ -6845,6 +6858,80 @@ mod tests {
         assert!(
             mutable_script_retry_metrics().last_retry_at.is_some(),
             "last_retry_at must be Some after a simulated retry"
+        );
+    }
+
+    #[tokio::test]
+    async fn graph_counts_retry_transient_immutable_busy_errors() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let db = crate::db::connect_db(tmp.path(), "count-retry")
+            .await
+            .expect("connect_db");
+        let q = CodeGraphQueries::new(db);
+
+        let (functions, remaining) = FORCED_IMMUTABLE_BUSY_ATTEMPTS
+            .scope(std::cell::Cell::new(1), async {
+                let count = q.count_functions().await;
+                let remaining = FORCED_IMMUTABLE_BUSY_ATTEMPTS.with(std::cell::Cell::get);
+                (count, remaining)
+            })
+            .await;
+        assert_eq!(functions.expect("function count after retry"), 0);
+        assert_eq!(remaining, 0, "function count must use immutable retry");
+
+        let (classes, remaining) = FORCED_IMMUTABLE_BUSY_ATTEMPTS
+            .scope(std::cell::Cell::new(1), async {
+                let count = q.count_classes().await;
+                let remaining = FORCED_IMMUTABLE_BUSY_ATTEMPTS.with(std::cell::Cell::get);
+                (count, remaining)
+            })
+            .await;
+        assert_eq!(classes.expect("class count after retry"), 0);
+        assert_eq!(remaining, 0, "class count must use immutable retry");
+
+        let (interfaces, remaining) = FORCED_IMMUTABLE_BUSY_ATTEMPTS
+            .scope(std::cell::Cell::new(1), async {
+                let count = q.count_interfaces().await;
+                let remaining = FORCED_IMMUTABLE_BUSY_ATTEMPTS.with(std::cell::Cell::get);
+                (count, remaining)
+            })
+            .await;
+        assert_eq!(interfaces.expect("interface count after retry"), 0);
+        assert_eq!(remaining, 0, "interface count must use immutable retry");
+
+        let (edges, remaining) = FORCED_IMMUTABLE_BUSY_ATTEMPTS
+            .scope(std::cell::Cell::new(1), async {
+                let count = q.count_code_edges().await;
+                let remaining = FORCED_IMMUTABLE_BUSY_ATTEMPTS.with(std::cell::Cell::get);
+                (count, remaining)
+            })
+            .await;
+        assert_eq!(edges.expect("edge count after retry"), 0);
+        assert_eq!(remaining, 0, "edge count must use immutable retry");
+    }
+
+    #[tokio::test]
+    async fn graph_count_retry_stops_after_persistent_immutable_busy() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let db = crate::db::connect_db(tmp.path(), "count-retry-exhausted")
+            .await
+            .expect("connect_db");
+        let q = CodeGraphQueries::new(db);
+
+        let (error, remaining) = FORCED_IMMUTABLE_BUSY_ATTEMPTS
+            .scope(std::cell::Cell::new(SQLITE_BUSY_MAX_ATTEMPTS), async {
+                let error = q
+                    .count_functions()
+                    .await
+                    .expect_err("persistent SQLITE_BUSY must exhaust the bounded retry");
+                let remaining = FORCED_IMMUTABLE_BUSY_ATTEMPTS.with(std::cell::Cell::get);
+                (error, remaining)
+            })
+            .await;
+        assert_eq!(remaining, 0, "all bounded attempts must be consumed");
+        assert!(
+            error.to_string().to_lowercase().contains("locked"),
+            "persistent busy error must remain actionable: {error}"
         );
     }
 
