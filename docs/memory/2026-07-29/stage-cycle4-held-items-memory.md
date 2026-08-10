@@ -10,7 +10,7 @@
 
 | Item | Type | Disposition | Outcome |
 |---|---|---|---|
-| 015-D (stash 5765BAAB) | spike | **SPIKE COMPLETE → DEFER to runtime-verification spike** | Both symptoms reproduced; root cause narrowed, not pinned; no fix authored. Stash 5765BAAB stays active. |
+| 015-D (stash 5765BAAB) | spike | **SPIKE COMPLETE → DEFER to runtime-verification spike** | IPC hang reproduced; singleton persistence claim inconclusive pending known-green corpus validation; no fix authored. Stash 5765BAAB stays active. |
 | 016-D (stash B94772CB) | deliberation | **DECIDED: keep fail-closed → archived/parked** | Stash B94772CB archived; 016-D archived. |
 | 014-D (stash FF7DE872) | deliberation | **MOOT / superseded → archived** | Fully shipped as 100-F/092-S; follow-up tracked as 016-D. |
 
@@ -25,7 +25,12 @@ Hands-on/live-daemon investigation on post-104-F main. Findings artifact (UNCOMM
 
 **Evidence:**
 - **Symptom 2 (IPC hang) REPRODUCED:** daemon-path `engram index --workspace <tmp> --timeout 200` hung the CLI **>270s** (killed), exceeding its own `--timeout`, while the daemon completed the scan server-side in seconds (`scan_status.running=false`). In-process `--direct` returned in **~1.0s** on the same corpus → hang is **daemon/IPC-path-specific**.
-- **Symptom 1 (non-persist) CORROBORATED:** `workspace-status` reported `edges:2` (both `defines`); `map-code beta` showed no incoming `calls` edge; `edges.jsonl` had no `calls` row → cross-file `alpha→beta` singleton **absent from the persisted resolved graph** (not merely hidden behind the hang).
+- **Symptom 1 (non-persist) INCONCLUSIVE pending known-green corpus
+  validation:** `workspace-status` reported `edges:2` (both `defines`);
+  `map-code beta` showed no incoming `calls` edge; and `edges.jsonl` had no
+  `calls` row. The same minimal corpus did not produce the edge on the
+  known-good `--direct` path, so the observation cannot establish a daemon
+  persistence defect until the corpus passes a known-green singleton control.
 
 **Hypothesis resolution:** H2 (synchronous long-op response + daemon-spawn/model-load OUTSIDE the client timeout via `ensure_daemon_running` before the timed `send_request`) **confirmed as the hang mechanism**. H1/H4 (commit-boundary vs post-pass-not-invoked) **open, not isolated**. H3 partially supported. Original `direct.rs:162` attribution stays **refuted**.
 
@@ -33,10 +38,15 @@ Hands-on/live-daemon investigation on post-104-F main. Findings artifact (UNCOMM
 
 **Confounds/caveats (honesty):**
 1. Per-workspace-daemon + auto-reindex-on-query → nondeterministic partial states (a `workspace-status` query itself triggered a fresh partial re-index: `code_files:1, edges:1, last_flush:null`).
-2. Repro-corpus validity: even `--direct` reported `cross_file_edges_dropped:1` and no resolved `alpha→beta` edge; the minimal `from N import name; name()` shape may not reproduce the exact GREEN-suite singleton — a runtime follow-up must validate the corpus against a known-GREEN case first.
+2. Repro-corpus validity: even `--direct` reported `cross_file_edges_dropped:1` and no resolved `alpha→beta` edge; the minimal `from N import name; name()` shape may not reproduce the exact GREEN-suite singleton — **known-green corpus validation is prerequisite to any persist/non-persist follow-up**.
 3. Daemon-path CLI killed at ~270s → finalize/post-pass completeness uncertain.
 
 **Recommendation:** DEFER to a **runtime-verification spike** (Ship-owned/instrumented) with a single pre-warmed daemon on one workspace, corpus validated against the in-process GREEN path, and daemon-internal tracing of post-pass invocation/commit + IPC response framing. Candidate fix directions (do NOT build now): async/streaming index response; bound daemon-spawn/model-load under the client deadline; persist-boundary fix if H1/H4 confirmed. **No fix fabricated on an unproven root cause (013-D discipline).**
+
+**Later evidence preserved:** controlled 107-S characterization classified
+current daemon **persistence behavior** as **no current defect** while retaining
+the separate IPC `startup-outside-deadline` finding. This correction only
+retracts the earlier unsupported persistence corroboration claim.
 
 **Cleanup:** temp per-workspace daemons PIDs **35240** and **12648** killed; both temp workspaces removed. Original repo daemon **PID 31852** (model-loaded, 1.3GB) left bound and untouched.
 
