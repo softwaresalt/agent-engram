@@ -15,6 +15,12 @@ archive_moves: 0
 space_recovered_kb: 0
 active_checkpoints_preserved: 6
 protected_items:
+  - .backlogit/checkpoints/checkpoint-20260808-030834.json
+  - .backlogit/checkpoints/checkpoint-20260802-220809.json
+  - .backlogit/checkpoints/checkpoint-20260716-025419.json
+  - .backlogit/checkpoints/checkpoint-20260716-004135.json
+  - .backlogit/checkpoints/checkpoint-20260715-181946.json
+  - .backlogit/checkpoints/checkpoint-20260801-065720.json
   - docs/memory/2026-08-10/111-S-ship-session-memory.md
   - docs/memory/2026-08-10/112-S-ship-session-memory.md
   - docs/memory/2026-08-10/113-S-ship-session-memory.md
@@ -67,6 +73,13 @@ durable plans and closure records were superseded or safely consolidatable.
 
 ## Protected surfaces
 
+- `.backlogit/checkpoints/checkpoint-20260808-030834.json`
+- `.backlogit/checkpoints/checkpoint-20260802-220809.json`
+- `.backlogit/checkpoints/checkpoint-20260716-025419.json`
+- `.backlogit/checkpoints/checkpoint-20260716-004135.json`
+- `.backlogit/checkpoints/checkpoint-20260715-181946.json`
+- `.backlogit/checkpoints/checkpoint-20260801-065720.json` (preserved
+  unchanged despite its existing schema-validation error)
 - `docs/memory/2026-08-10/111-S-ship-session-memory.md`
 - `docs/memory/2026-08-10/112-S-ship-session-memory.md`
 - `docs/memory/2026-08-10/113-S-ship-session-memory.md`

@@ -39,9 +39,9 @@ Harness before candidate change: capture the baseline compile result and locked 
 
 ### U3 — Verify Cozo runtime/data compatibility and decide
 
-**Domain/files:** focused verification plus the U1 findings artifact only. **Cap:** 110 minutes, no production edits, at most three scenario groups.
+**Domain/files:** focused verification, one prototype-only reopen harness, and the U1 findings artifact only. **Cap:** 110 minutes, no production edits, at most three scenario groups.
 
-Against the isolated prototype, run `integration_cozo_cold_restart` over a baseline-created disposable database, then the focused `integration_cozo_crud`, `integration_cozo_edge`, `integration_cozo_symbol_lookup`, and `integration_cozo_vector` targets as one grouped backend gate. Re-run the locked graph and audit. Record Windows results and a Linux/macOS compile disposition; if a non-Windows check is unavailable, the recommendation remains blocked pending hosted matrix proof. Conclude `proceed`, `pivot`, `defer`, or `abandon`, including the exact production patch shape, maintenance owner, dependency source pin, rollback, and whether a separate implementation plan is now justified.
+First prove direct on-disk compatibility with a prototype-only reopen-in-place harness: the baseline dependency creates and populates a disposable Cozo database, all baseline handles close, and the candidate opens the same files without deletion, dehydration, hydration, migration, or copying. Verify exact graph counts and representative query results. Then run `integration_cozo_cold_restart` only as a separate dehydration/hydration regression, followed by the focused `integration_cozo_crud`, `integration_cozo_edge`, `integration_cozo_symbol_lookup`, and `integration_cozo_vector` targets as one grouped backend gate. Re-run the locked graph and audit. Record Windows results and a Linux/macOS compile disposition; if a non-Windows check is unavailable, the recommendation remains blocked pending hosted matrix proof. Conclude `proceed`, `pivot`, `defer`, or `abandon`, including the exact production patch shape, maintenance owner, dependency source pin, rollback, and whether a separate implementation plan is now justified.
 
 ## Dependency Graph
 
@@ -80,7 +80,7 @@ Requires plan hardening: yes
 
 ## Runtime Verification and Closure
 
-The spike runs only in disposable workspaces and databases. Healthy evidence is: one pinned candidate, no affected lz4 version in the resolved graph, advisory absent, all focused Cozo targets green, baseline database cold-restarts, and no root tracked diff. Failure/rollback trigger: advisory remains, duplicate lz4 versions, compile/API break, cold-restart mismatch, graph result drift, unpinned source, missing license, or any required scope widening. Rollback is to discard the isolated worktree; no live data or root manifest is changed. Closure is the findings artifact plus backlog comments, with operator ownership of any later fork and a seven-day post-implementation audit/runtime observation window if a fix is eventually planned.
+The spike runs only in disposable workspaces and databases. Healthy evidence is: one pinned candidate, no affected lz4 version in the resolved graph, advisory absent, direct reopen-in-place of the untouched baseline database with exact graph/query results, the separate dehydration/hydration regression green, all focused Cozo targets green, and no root tracked diff. Failure/rollback trigger: advisory remains, duplicate lz4 versions, compile/API break, direct-reopen or hydration mismatch, graph result drift, unpinned source, missing license, or any required scope widening. Rollback is to discard the isolated worktree; no live data or root manifest is changed. Closure is the findings artifact plus backlog comments, with operator ownership of any later fork and a seven-day post-implementation audit/runtime observation window if a fix is eventually planned.
 
 ## Plan Hardening
 
