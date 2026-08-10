@@ -1213,6 +1213,42 @@ fn compute_dirty_model_scopes(
     dirty
 }
 
+async fn delete_markerless_powerbi_nodes(
+    queries: &CodeGraphQueries,
+    file_paths: &HashSet<String>,
+    source_path: &str,
+) -> Result<(), EngramError> {
+    if file_paths.is_empty() {
+        return Ok(());
+    }
+
+    // The existing graph deletion query is file-path scoped because indexed
+    // workspace paths are normally unique. Marker migration must additionally
+    // preserve an overlapping registry source, so first move only this source's
+    // nodes under a deterministic, non-filesystem path and delete that path.
+    // Including already-moved nodes makes an interrupted move/delete retryable.
+    let source_nodes = queries.select_powerbi_nodes(Some(source_path)).await?;
+    for file_path in file_paths {
+        let cleanup_path = format!("\0engram-markerless-cleanup\0{source_path}\0{file_path}");
+        let mut scoped_nodes: Vec<PowerBiNode> = source_nodes
+            .iter()
+            .filter(|node| node.file_path == file_path.as_str() || node.file_path == cleanup_path)
+            .cloned()
+            .collect();
+        for node in &mut scoped_nodes {
+            node.file_path.clone_from(&cleanup_path);
+        }
+
+        if !scoped_nodes.is_empty() {
+            queries.upsert_powerbi_nodes(&scoped_nodes).await?;
+            queries
+                .delete_powerbi_nodes_by_file_path(&cleanup_path)
+                .await?;
+        }
+    }
+    Ok(())
+}
+
 // ── Async indexer ─────────────────────────────────────────────────────────
 
 /// Index all Power BI files from a single content source.
@@ -1342,6 +1378,41 @@ pub(crate) async fn index_powerbi_source_with_snapshot(
     // permanently dropping the file's missing summaries.
     let existing_hashes: HashMap<String, String> =
         queries.select_powerbi_index_state(&source.path).await?;
+
+    // 114.001-T: markerless content rows predate the completion-marker
+    // contract, or survived an interrupted write. They cannot authorize a
+    // hash skip, but they must still be removed before the first-marker rebuild
+    // or entities absent from the current file would survive permanently.
+    // Limit discovery and deletion to collected files in this exact source;
+    // unrelated paths and overlapping registry sources are live controls.
+    let collected_rel_paths: HashSet<&str> =
+        files.iter().map(|file| file.rel_path.as_str()).collect();
+    let markerless_legacy_paths: HashSet<String> = queries
+        .select_content_records(Some("powerbi"))
+        .await?
+        .into_iter()
+        .filter(|record| {
+            record.source_path == source.path
+                && collected_rel_paths.contains(record.file_path.as_str())
+                && !existing_hashes.contains_key(&record.file_path)
+        })
+        .map(|record| record.file_path)
+        .collect();
+
+    for rel_path in &markerless_legacy_paths {
+        // Keep marker-first deletion even though the discovery snapshot had no
+        // marker. Every subsequent failure then leaves this file marker-absent,
+        // while the successful rebuild below remains marker-last.
+        queries
+            .delete_powerbi_index_state_by_scope(rel_path, &source.path)
+            .await?;
+    }
+    delete_markerless_powerbi_nodes(queries, &markerless_legacy_paths, &source.path).await?;
+    for rel_path in &markerless_legacy_paths {
+        queries
+            .delete_content_records_by_scope(rel_path, "powerbi", &source.path)
+            .await?;
+    }
 
     // P3b (`085.008-T`): model-scope invalidation. Determine which model scopes
     // changed on this pass so unchanged siblings are reprocessed and their
@@ -2253,6 +2324,250 @@ table Sales
                 .any(|record| record.id != "cr_partial_survivor"),
             "reprocessed file must materialize real summary records beyond the partial survivor; got {:?}",
             for_file.iter().map(|record| &record.id).collect::<Vec<_>>()
+        );
+    }
+
+    /// 114.001-T: migration-era rows have content and graph entities but no
+    /// completion marker. The first index must remove stale entities before
+    /// rebuilding, preserve unrelated controls, and write the marker last; the
+    /// next unchanged index must then skip.
+    #[tokio::test]
+    async fn markerless_legacy_rows_are_cleaned_before_first_marker() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let model_dir = workspace.path().join("models").join("Sales.SemanticModel");
+        std::fs::create_dir_all(&model_dir).expect("create model dir");
+        let model_json =
+            serde_json::to_string(&model_bim_with_rel_and_ds()).expect("serialize model");
+        std::fs::write(model_dir.join("model.bim"), &model_json).expect("write model.bim");
+        let rel_path = "models/Sales.SemanticModel/model.bim";
+        let hash = compute_file_hash(model_json.as_bytes());
+
+        let db_dir = tempfile::tempdir().expect("db tempdir");
+        let db = crate::db::connect_db(db_dir.path(), "pbi-markerless-cleanup")
+            .await
+            .expect("open test db");
+        let queries = CodeGraphQueries::new(db);
+        let source = powerbi_source("models");
+
+        let stale_record = ContentRecord {
+            id: "cr_removed_legacy_entity".to_string(),
+            content_type: "powerbi".to_string(),
+            file_path: rel_path.to_string(),
+            content_hash: "legacy-hash".to_string(),
+            content: "Kind: powerbi_table. Name: RemovedLegacyEntity.".to_string(),
+            embedding: None,
+            source_path: source.path.clone(),
+            file_size_bytes: model_json.len() as u64,
+            ingested_at: Utc::now(),
+            record_kind: "powerbi_table".to_string(),
+            chunk_id: Some("RemovedLegacyEntity:powerbi_table".to_string()),
+            chunk_index: None,
+            heading_path: Vec::new(),
+            line_start: None,
+            line_end: None,
+            fallback_reason: None,
+            lint_summary: None,
+            suggestions: Vec::new(),
+        };
+        queries
+            .upsert_content_record(&stale_record)
+            .await
+            .expect("seed stale markerless content");
+
+        let mut other_path_control = stale_record.clone();
+        other_path_control.id = "cr_live_other_path".to_string();
+        other_path_control.file_path = "models/Control.SemanticModel/model.bim".to_string();
+        other_path_control.content = "live same-source control".to_string();
+        queries
+            .upsert_content_record(&other_path_control)
+            .await
+            .expect("seed same-source control");
+
+        let mut other_source_control = stale_record.clone();
+        other_source_control.id = "cr_live_other_source".to_string();
+        other_source_control.source_path = "other-models".to_string();
+        other_source_control.content = "live other-source control".to_string();
+        queries
+            .upsert_content_record(&other_source_control)
+            .await
+            .expect("seed other-source control");
+
+        let stale_node = PowerBiNode {
+            id: "pbi_removed_legacy_entity".to_string(),
+            name: "RemovedLegacyEntity".to_string(),
+            kind: PowerBiNodeKind::Table,
+            file_path: rel_path.to_string(),
+            source_path: source.path.clone(),
+            content_hash: "legacy-hash".to_string(),
+            ingested_at: Utc::now(),
+        };
+        let control_node = PowerBiNode {
+            id: "pbi_live_control".to_string(),
+            name: "LiveControl".to_string(),
+            kind: PowerBiNodeKind::Table,
+            file_path: "models/Control.SemanticModel/model.bim".to_string(),
+            source_path: source.path.clone(),
+            content_hash: "control-hash".to_string(),
+            ingested_at: Utc::now(),
+        };
+        let other_source_node = PowerBiNode {
+            id: "pbi_live_other_source".to_string(),
+            name: "LiveOtherSource".to_string(),
+            kind: PowerBiNodeKind::Table,
+            file_path: rel_path.to_string(),
+            source_path: "other-models".to_string(),
+            content_hash: "control-hash".to_string(),
+            ingested_at: Utc::now(),
+        };
+        queries
+            .upsert_powerbi_nodes(&[stale_node, control_node, other_source_node])
+            .await
+            .expect("seed markerless graph entities");
+
+        let first = index_powerbi_source(&source, workspace.path(), &queries, 10 * 1024 * 1024)
+            .await
+            .expect("first index");
+        assert_eq!(first.ingested, 1, "markerless file must be rebuilt");
+        assert_eq!(first.unchanged, 0, "markerless file cannot be skipped");
+
+        let records = queries
+            .select_content_records(Some("powerbi"))
+            .await
+            .expect("select rebuilt content");
+        assert!(
+            records
+                .iter()
+                .all(|record| record.id != "cr_removed_legacy_entity"),
+            "stale markerless content must be deleted before rebuild"
+        );
+        assert!(
+            records.iter().any(|record| {
+                record.file_path == rel_path
+                    && record.source_path == source.path
+                    && record.content.contains("Sales")
+            }),
+            "current source entities must be recreated"
+        );
+        assert!(
+            records
+                .iter()
+                .any(|record| record.id == "cr_live_other_path"),
+            "cleanup must retain the same-source control at another path"
+        );
+        assert!(
+            records
+                .iter()
+                .any(|record| record.id == "cr_live_other_source"),
+            "cleanup must retain the same-path control from another source"
+        );
+
+        let nodes = queries
+            .select_powerbi_nodes(None)
+            .await
+            .expect("select rebuilt graph");
+        assert!(
+            nodes
+                .iter()
+                .all(|node| node.id != "pbi_removed_legacy_entity"),
+            "stale markerless graph entities must be deleted before rebuild"
+        );
+        assert!(
+            nodes.iter().any(|node| {
+                node.file_path == rel_path
+                    && node.source_path == source.path
+                    && node.name == "Sales"
+            }),
+            "current graph entities must be recreated"
+        );
+        assert!(
+            nodes.iter().any(|node| node.id == "pbi_live_control"),
+            "graph cleanup must retain live controls at another path"
+        );
+        assert!(
+            nodes.iter().any(|node| node.id == "pbi_live_other_source"),
+            "graph cleanup must retain the same-path control from another source"
+        );
+
+        let markers = queries
+            .select_powerbi_index_state(&source.path)
+            .await
+            .expect("select completion markers");
+        assert_eq!(
+            markers.get(rel_path).map(String::as_str),
+            Some(hash.as_str()),
+            "the first completion marker must be written after the rebuild"
+        );
+
+        let second = index_powerbi_source(&source, workspace.path(), &queries, 10 * 1024 * 1024)
+            .await
+            .expect("second index");
+        assert_eq!(second.ingested, 0, "unchanged second run must not rebuild");
+        assert_eq!(second.unchanged, 1, "unchanged second run must skip");
+    }
+
+    /// 114.001-T: if a markerless cleanup cannot complete a rebuild because the
+    /// current JSON contains no indexable entities, cleanup may finish but the
+    /// completion marker must remain absent.
+    #[tokio::test]
+    async fn markerless_rebuild_without_entities_leaves_marker_absent() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let source_dir = workspace.path().join("models");
+        std::fs::create_dir_all(&source_dir).expect("create source dir");
+        let rel_path = "models/empty.json";
+        std::fs::write(workspace.path().join(rel_path), "{}").expect("write empty JSON");
+
+        let db_dir = tempfile::tempdir().expect("db tempdir");
+        let db = crate::db::connect_db(db_dir.path(), "pbi-markerless-no-entities")
+            .await
+            .expect("open test db");
+        let queries = CodeGraphQueries::new(db);
+        let source = powerbi_source("models");
+        seed_powerbi_record(&queries, rel_path, &source.path).await;
+        queries
+            .upsert_powerbi_nodes(&[PowerBiNode {
+                id: "pbi_empty_legacy_entity".to_string(),
+                name: "RemovedLegacyEntity".to_string(),
+                kind: PowerBiNodeKind::Table,
+                file_path: rel_path.to_string(),
+                source_path: source.path.clone(),
+                content_hash: "legacy-hash".to_string(),
+                ingested_at: Utc::now(),
+            }])
+            .await
+            .expect("seed stale markerless graph entity");
+
+        let result = index_powerbi_source(&source, workspace.path(), &queries, 10 * 1024 * 1024)
+            .await
+            .expect("index markerless empty JSON");
+        assert_eq!(result.ingested, 0, "entity-free rebuild cannot complete");
+
+        assert!(
+            queries
+                .select_content_records(Some("powerbi"))
+                .await
+                .expect("select content after incomplete rebuild")
+                .iter()
+                .all(|record| {
+                    record.file_path != rel_path || record.source_path != source.path
+                }),
+            "markerless legacy content must still be cleaned"
+        );
+        assert!(
+            queries
+                .select_powerbi_nodes(Some(&source.path))
+                .await
+                .expect("select graph after incomplete rebuild")
+                .iter()
+                .all(|node| node.file_path != rel_path),
+            "markerless legacy graph entities must still be cleaned"
+        );
+        assert!(
+            !queries
+                .select_powerbi_index_state(&source.path)
+                .await
+                .expect("select markers after incomplete rebuild")
+                .contains_key(rel_path),
+            "a rebuild that does not complete must leave its marker absent"
         );
     }
 
