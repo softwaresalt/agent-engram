@@ -87,9 +87,22 @@ dynamic diagnostic escalation protocol correctly remained inactive.
 
 ## Operational Monitoring
 
-Ship/operator owns a seven-day observation window through 2026-08-17.
-Observe lineage edge deltas and parser-error diagnostics for workspaces that
-contain Spark SQL or PySpark notebooks. Healthy operation requires:
+Ship/operator owns a seven-day observation window through 2026-08-17. There
+is no production parser-error counter: failed SQL parses are intentionally
+dropped fail-closed. This local-only release is therefore observed with exact
+edge-set queries and the repository acceptance suites, not a nonexistent
+parser-error dashboard.
+
+Before the first daily check, preserve the expected edge set for each affected
+target dataset. Once daily, query its one-hop lineage neighborhood:
+
+```text
+engram query-graph --operation neighborhood --root <TARGET_DATASET_ID> --direction outgoing --max-depth 1 --edge-types lineage_derives_from --workspace <TARGET_WORKSPACE> --format json
+```
+
+Compare the returned edge set byte-for-byte with the preserved baseline and
+run the focused SQL and Python lineage acceptance suites from the released
+revision. Healthy operation requires:
 
 - no edge from `INSERT` text inside nested, backslash-LF-continued, CRLF, or
   bare-CR comments;
@@ -97,25 +110,25 @@ contain Spark SQL or PySpark notebooks. Healthy operation requires:
 - preserved one-read/multi-write fan-out; and
 - no edge from unresolved, ambiguous, or nested Python events.
 
-Any new false edge or loss of an established recall control is a rollback
-trigger. Preserve the affected notebook, exact edge set, and bounded parser
+Any edge-set delta, focused-suite failure, new false edge, or loss of an
+established recall control is an immediate alert and rollback trigger.
+Preserve the affected notebook, baseline/current edge sets, and bounded test
 diagnostics for investigation.
 
-## Operator Reindex Handoff
+## Operator Exposure Handoff
 
 No automatic workspace reindex was run or introduced. Existing persisted
 lineage remains unchanged until the operator explicitly chooses to reprocess
 an exposed workspace.
 
-If a released workspace contains affected notebooks and historical correction
-is required, the operator may approve a workspace-specific forced pass:
-
-```text
-engram sync --full --force --workspace <TARGET_WORKSPACE> --format json
-```
-
-Run it only against the named workspace after preserving the pre-pass edge
-set. Stop if a false edge appears or an established recall control is lost.
+Current tooling has no supported force input for notebook-lineage ingestion.
+`engram sync --full --force` only forces code-graph indexing and **must not**
+be represented as a historical notebook-lineage correction. For an exposed
+workspace, preserve the affected notebook and current edge set, leave
+persisted history unchanged, and apply this release only to new or genuinely
+changed notebooks. Historical correction requires a separately reviewed
+extractor-version bump or notebook backfill mechanism; neither is introduced
+or automatically invoked by `112-S`.
 
 ## Rollback and Reconciliation
 

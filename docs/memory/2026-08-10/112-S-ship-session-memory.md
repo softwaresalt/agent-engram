@@ -65,6 +65,10 @@ Backlogit archived shipment `112-S`, feature `115-F`, plan review
 `115.001-R`, and tasks `115.001-T` through `115.004-T` with merge evidence and
 returned no items. Shipments `113-S` and `114-S` remain queued.
 
-Observe lineage edge deltas and parser diagnostics through 2026-08-17.
-Rollback is a reviewed merge-commit revert. Historical correction requires a
-separate operator-approved forced sync of the named workspace.
+Observe exact one-hop lineage edge sets and the focused acceptance suites once
+daily through 2026-08-17. No production parser-error counter or supported
+forced notebook-lineage backfill exists. `engram sync --full --force` affects
+the code graph, not current-stamped notebook ingestion, and is not a
+historical correction path. Rollback is a reviewed merge-commit revert;
+historical correction remains blocked on a separately reviewed
+extractor-version bump or notebook backfill mechanism.

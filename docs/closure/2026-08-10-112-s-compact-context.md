@@ -24,6 +24,9 @@ focused post-merge scenarios passed. Audit output exactly matched the accepted
 
 Backlogit archived `112-S`, `115-F`, `115.001-R`, and tasks `115.001-T`
 through `115.004-T` with merge evidence. Shipments `113-S` and `114-S` remain
-queued. No automatic workspace reindex occurred; any historical correction is
-an explicit operator-approved forced sync of the named workspace. Observe
-lineage edge deltas and parser diagnostics through 2026-08-17.
+queued. No automatic workspace reindex occurred. Current tooling has no
+supported forced notebook-lineage backfill; code-graph `sync --force` is not a
+historical notebook correction path. Observe exact one-hop lineage edge sets
+and focused acceptance suites once daily through 2026-08-17. Historical
+correction requires a separately reviewed extractor-version bump or notebook
+backfill mechanism.
