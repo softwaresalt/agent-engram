@@ -187,16 +187,14 @@ impl LineageAuthorityContext {
         let authority = self.catalog_authority.get(catalog)?;
         let name = format!("{}.{}.{}", parts[0], parts[1], parts[2]);
         // N3 (injective canonical key): the id joins `authority` and `name` with an
-        // unescaped `::` delimiter, so it is only injective when neither component
-        // embeds the delimiter — nor a boundary colon that could fake one across
-        // the join (e.g. authority ending `:` or name starting `:` yields `:::`).
-        // On ambiguity, fail closed: emit no edge rather than merge unrelated
-        // datasets into false lineage.
-        if authority.contains("::")
-            || name.contains("::")
-            || authority.ends_with(':')
-            || name.starts_with(':')
-        {
+        // unescaped `::` delimiter. W2 has already constrained `name` to three
+        // unquoted Spark identifier components joined by `.`, so it cannot embed
+        // `::` or start with `:`. The remaining runtime ambiguity surface is the
+        // configured authority: reject any authority that embeds the delimiter or
+        // ends with `:` and could fake one across the join. On ambiguity, fail
+        // closed: emit no edge rather than merge unrelated datasets into false
+        // lineage.
+        if authority.contains("::") || authority.ends_with(':') {
             return None;
         }
         let id = format!("table::{authority}::{name}");
@@ -393,13 +391,15 @@ mod tests {
 
     #[test]
     fn canonical_table_key_is_injective_n3() {
-        // N3: `table::{authority}::{name}` uses `::` as a delimiter, so it is only
-        // injective when neither component embeds the delimiter (nor a boundary
-        // colon that could fake one). Otherwise two unrelated datasets collapse to
-        // one id and merge into false lineage. The fix fails closed on ambiguity.
+        // N3: `table::{authority}::{name}` uses `::` as a delimiter. After W2,
+        // `name` is already constrained to unquoted Spark identifiers joined by
+        // `.`, so the live ambiguity surface is the configured authority.
+        // Malformed table literals that try to embed `::` or a boundary `:` still
+        // fail closed earlier under W2. Either way, no ambiguous id is emitted.
 
-        // The cited collision: authority `auth::x` + `cat.s.t` would produce the
-        // same id as authority `auth` + `x::cat.s.t` — both must be rejected.
+        // The cited live collision: authority `auth::x` + `cat.s.t` would produce
+        // the same id prefix as a differently-split authority/name pair, so an
+        // authority embedding `::` must be rejected.
         let mut a = BTreeMap::new();
         a.insert("cat".to_owned(), "auth::x".to_owned());
         let ctx_a = LineageAuthorityContext::new(a, Vec::new());
@@ -408,15 +408,19 @@ mod tests {
             "an authority embedding the `::` delimiter fails closed (N3)"
         );
 
+        // The historical table-name side of that counterexample is malformed
+        // under W2 (`x::cat` is not an unquoted Spark identifier), so it still
+        // fails closed before canonical id construction.
         let mut b = BTreeMap::new();
         b.insert("x::cat".to_owned(), "auth".to_owned());
         let ctx_b = LineageAuthorityContext::new(b, Vec::new());
         assert!(
             ctx_b.resolve_table("x::cat.s.t").is_none(),
-            "a table component embedding the `::` delimiter fails closed (N3)"
+            "a malformed catalog token containing `::` fails closed before id construction"
         );
 
-        // Boundary colons that could fake the delimiter also fail closed.
+        // Boundary colons in the configured authority could fake the delimiter
+        // across the join and must still fail closed.
         let mut c = BTreeMap::new();
         c.insert("cat".to_owned(), "auth:".to_owned());
         let ctx_c = LineageAuthorityContext::new(c, Vec::new());
@@ -425,12 +429,14 @@ mod tests {
             "an authority ending in a boundary colon fails closed (N3)"
         );
 
+        // The historical table-name boundary-colon witness is likewise malformed
+        // under W2 and is rejected before canonical id construction.
         let mut d = BTreeMap::new();
         d.insert(":c".to_owned(), "auth".to_owned());
         let ctx_d = LineageAuthorityContext::new(d, Vec::new());
         assert!(
             ctx_d.resolve_table(":c.s.t").is_none(),
-            "a table name starting with a boundary colon fails closed (N3)"
+            "a malformed catalog token starting with `:` fails closed before id construction"
         );
 
         // A normal authority+table pair still resolves to the canonical id.
