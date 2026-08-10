@@ -1414,24 +1414,17 @@ async fn index_powerbi_source_impl(
     let existing_hashes: HashMap<String, String> =
         queries.select_powerbi_index_state(&source.path).await?;
 
-    // 114.001-T: markerless content rows predate the completion-marker
-    // contract, or survived an interrupted write. They cannot authorize a
-    // hash skip, but they must still be removed before the first-marker rebuild
-    // or entities absent from the current file would survive permanently.
-    // Limit discovery and deletion to collected files in this exact source;
-    // unrelated paths and overlapping registry sources are live controls.
-    let collected_rel_paths: HashSet<&str> =
-        files.iter().map(|file| file.rel_path.as_str()).collect();
-    let markerless_legacy_paths: HashSet<String> = queries
-        .select_content_records(Some("powerbi"))
-        .await?
-        .into_iter()
-        .filter(|record| {
-            record.source_path == source.path
-                && collected_rel_paths.contains(record.file_path.as_str())
-                && !existing_hashes.contains_key(&record.file_path)
-        })
-        .map(|record| record.file_path)
+    // 114.001-T: markerless artifacts predate the completion-marker contract,
+    // or survived an interrupted write. TMDL graph writes precede the first
+    // content upsert, and interrupted cleanup nodes may already use the cleanup
+    // path, so content rows cannot be the discovery authority. Every fully
+    // materialized collected path without a marker must be cleaned before its
+    // first-marker rebuild. The collected path and source-scoped cleanup below
+    // preserve unrelated paths and overlapping registry sources.
+    let markerless_legacy_paths: HashSet<String> = files
+        .iter()
+        .filter(|file| !existing_hashes.contains_key(&file.rel_path))
+        .map(|file| file.rel_path.clone())
         .collect();
 
     for rel_path in &markerless_legacy_paths {
@@ -2576,6 +2569,151 @@ table Sales
             .expect("second index");
         assert_eq!(second.ingested, 0, "unchanged second run must not rebuild");
         assert_eq!(second.unchanged, 1, "unchanged second run must skip");
+    }
+
+    /// 114.001-T: a TMDL write can persist graph nodes before its first content
+    /// upsert. With no content row or completion marker, the next run must still
+    /// discover and clean both ordinary and interrupted-cleanup graph artifacts.
+    #[tokio::test]
+    async fn markerless_graph_only_tmdl_write_is_cleaned_before_first_marker() {
+        const CURRENT_TMDL: &str = "table Sales\n\
+             \x20\x20column Amount\n\
+             \x20\x20\x20\x20dataType: double\n\
+             \x20\x20measure Total = SUM(Sales[Amount])\n";
+
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let rel_path = "models/Sales.SemanticModel/definition/tables/Sales.tmdl";
+        std::fs::create_dir_all(
+            workspace
+                .path()
+                .join(rel_path)
+                .parent()
+                .expect("TMDL path must have a parent"),
+        )
+        .expect("create TMDL model directory");
+        std::fs::write(workspace.path().join(rel_path), CURRENT_TMDL).expect("write current TMDL");
+
+        let db_dir = tempfile::tempdir().expect("db tempdir");
+        let db = crate::db::connect_db(db_dir.path(), "pbi-markerless-graph-only")
+            .await
+            .expect("open test db");
+        let queries = CodeGraphQueries::new(db);
+        let source = powerbi_source("models");
+        let cleanup_path = format!("\0engram-markerless-cleanup\0{}\0{rel_path}", source.path);
+
+        queries
+            .upsert_powerbi_nodes(&[
+                PowerBiNode {
+                    id: "pbi_stale_graph_only_entity".to_string(),
+                    name: "RemovedGraphOnlyEntity".to_string(),
+                    kind: PowerBiNodeKind::Table,
+                    file_path: rel_path.to_string(),
+                    source_path: source.path.clone(),
+                    content_hash: "partial-write-hash".to_string(),
+                    ingested_at: Utc::now(),
+                },
+                PowerBiNode {
+                    id: "pbi_stale_cleanup_retry_entity".to_string(),
+                    name: "InterruptedCleanupEntity".to_string(),
+                    kind: PowerBiNodeKind::Table,
+                    file_path: cleanup_path,
+                    source_path: source.path.clone(),
+                    content_hash: "partial-cleanup-hash".to_string(),
+                    ingested_at: Utc::now(),
+                },
+                PowerBiNode {
+                    id: "pbi_live_graph_other_path".to_string(),
+                    name: "LiveOtherPath".to_string(),
+                    kind: PowerBiNodeKind::Table,
+                    file_path: "models/Control.SemanticModel/definition/tables/Control.tmdl"
+                        .to_string(),
+                    source_path: source.path.clone(),
+                    content_hash: "control-hash".to_string(),
+                    ingested_at: Utc::now(),
+                },
+                PowerBiNode {
+                    id: "pbi_live_graph_other_source".to_string(),
+                    name: "LiveOtherSource".to_string(),
+                    kind: PowerBiNodeKind::Table,
+                    file_path: rel_path.to_string(),
+                    source_path: "other-models".to_string(),
+                    content_hash: "control-hash".to_string(),
+                    ingested_at: Utc::now(),
+                },
+            ])
+            .await
+            .expect("seed graph-only partial write and live controls");
+
+        assert!(
+            queries
+                .select_content_records(Some("powerbi"))
+                .await
+                .expect("select markerless content precondition")
+                .iter()
+                .all(|record| {
+                    record.file_path != rel_path || record.source_path != source.path
+                }),
+            "graph-only partial write must not have a content record"
+        );
+        assert!(
+            !queries
+                .select_powerbi_index_state(&source.path)
+                .await
+                .expect("select markerless marker precondition")
+                .contains_key(rel_path),
+            "graph-only partial write must not have a completion marker"
+        );
+
+        let first = index_powerbi_source(&source, workspace.path(), &queries, 10 * 1024 * 1024)
+            .await
+            .expect("rebuild graph-only partial TMDL write");
+        assert_eq!(
+            (first.ingested, first.unchanged),
+            (1, 0),
+            "markerless TMDL path must be rebuilt"
+        );
+
+        let nodes = queries
+            .select_powerbi_nodes(None)
+            .await
+            .expect("select rebuilt graph");
+        assert!(
+            nodes
+                .iter()
+                .any(|node| node.id == "pbi_live_graph_other_path"),
+            "cleanup must retain the same-source live control at another path"
+        );
+        assert!(
+            nodes
+                .iter()
+                .any(|node| node.id == "pbi_live_graph_other_source"),
+            "cleanup must retain the same-path live control from another source"
+        );
+        assert!(
+            nodes.iter().all(|node| {
+                node.id != "pbi_stale_graph_only_entity"
+                    && node.id != "pbi_stale_cleanup_retry_entity"
+            }),
+            "stale graph-only and interrupted-cleanup entities must be removed"
+        );
+        assert!(
+            nodes.iter().any(|node| {
+                node.file_path == rel_path
+                    && node.source_path == source.path
+                    && node.name == "Sales"
+            }),
+            "the current TMDL graph must be rebuilt"
+        );
+
+        let markers = queries
+            .select_powerbi_index_state(&source.path)
+            .await
+            .expect("select completion markers");
+        assert_eq!(
+            markers.get(rel_path).map(String::as_str),
+            Some(compute_tmdl_dax_index_hash(CURRENT_TMDL.as_bytes()).as_str()),
+            "the completion marker must be written after the rebuild"
+        );
     }
 
     /// 114.001-T: if a markerless cleanup cannot complete a rebuild because the
