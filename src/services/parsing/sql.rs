@@ -466,21 +466,45 @@ pub(super) mod sql_lineage {
         }
     }
 
-    /// Advance to the newline that ends a `--` line comment (the `\n` itself is
-    /// normal text), or to end-of-input. `pos` is the first byte after `--`.
+    /// Advance to the line ending that ends a `--` line comment (the terminal
+    /// `\r`/`\n` itself is normal text), or to end-of-input. Spark continues a
+    /// `SIMPLE_COMMENT` across `\\\n`, but not across `\\\r\n`. `pos` is the
+    /// first byte after `--`.
     fn skip_line_comment(bytes: &[u8], mut pos: usize) -> usize {
-        while pos < bytes.len() && bytes[pos] != b'\n' {
+        while pos < bytes.len() {
+            if bytes[pos] == b'\\' && bytes.get(pos + 1) == Some(&b'\n') {
+                pos += 2;
+                continue;
+            }
+            if matches!(bytes[pos], b'\r' | b'\n') {
+                return pos;
+            }
             pos += 1;
         }
         pos
     }
 
-    /// Advance past the `*/` that closes a `/* */` block comment, or to
-    /// end-of-input. `pos` is the first byte after the opening `/*`.
+    /// Advance past the `*/` that closes a possibly nested `/* */` block
+    /// comment, or to end-of-input. `pos` is the first byte after the opening
+    /// `/*`.
     fn skip_block_comment(bytes: &[u8], mut pos: usize) -> usize {
+        let mut depth = 1usize;
         while pos < bytes.len() {
+            if bytes[pos] == b'/' && bytes.get(pos + 1) == Some(&b'*') {
+                let Some(next_depth) = depth.checked_add(1) else {
+                    return bytes.len();
+                };
+                depth = next_depth;
+                pos += 2;
+                continue;
+            }
             if bytes[pos] == b'*' && bytes.get(pos + 1) == Some(&b'/') {
-                return pos + 2;
+                depth -= 1;
+                pos += 2;
+                if depth == 0 {
+                    return pos;
+                }
+                continue;
             }
             pos += 1;
         }
@@ -751,6 +775,49 @@ pub(super) mod sql_lineage {
                     "INSERT inside a comment/string/quoted-id must not be rewritten: {src:?}"
                 );
             }
+        }
+
+        #[test]
+        fn normalize_skips_insert_inside_nested_block_comments() {
+            let src = concat!(
+                "/* outer /* inner */ ",
+                "INSERT OVERWRITE TABLE cat.sch.evil SELECT y FROM cat.sch.bad ",
+                "*/\n",
+                "SELECT 1",
+            );
+            assert_eq!(
+                normalize_spark_insert(src),
+                src,
+                "INSERT inside a nested block comment must not be rewritten"
+            );
+        }
+
+        #[test]
+        fn normalize_handles_spark_simple_comment_line_continuations() {
+            let continued = concat!(
+                "-- shield\\\n",
+                "INSERT OVERWRITE TABLE cat.sch.evil SELECT y FROM cat.sch.bad\n",
+                "SELECT 1",
+            );
+            assert_eq!(
+                normalize_spark_insert(continued),
+                continued,
+                "backslash+LF continues a Spark -- comment"
+            );
+
+            let crlf = "-- shield\\\r\nINSERT OVERWRITE TABLE cat.sch.t SELECT x FROM cat.sch.src";
+            assert_eq!(
+                normalize_spark_insert(crlf),
+                "-- shield\\\r\nINSERT INTO cat.sch.t SELECT x FROM cat.sch.src",
+                "CRLF ends a Spark -- comment even after backslash"
+            );
+
+            let cr = "-- shield\rINSERT OVERWRITE TABLE cat.sch.t SELECT x FROM cat.sch.src";
+            assert_eq!(
+                normalize_spark_insert(cr),
+                "-- shield\rINSERT INTO cat.sch.t SELECT x FROM cat.sch.src",
+                "a bare CR also ends a Spark -- comment"
+            );
         }
 
         #[test]

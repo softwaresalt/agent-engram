@@ -1269,11 +1269,15 @@ pub(super) mod spark_lineage {
     /// Fail closed (no edge) on: any rebind/invalidation of the tracked variable
     /// before the write (`df = other`, `spark = other` — AR-29 — an unresolvable
     /// RHS, or any augmented/walrus/del/import/for/with/comprehension rebind, F2);
+    /// a second resolved read into the same variable before any intervening write
+    /// (ambiguous reread, W1);
     /// a bind or write whose event scope is not the top-level cell/module body
     /// (branch, loop, comprehension, `with`/`except`, `def`/`class` — AR-07); an
     /// unresolved receiver (`receiver = None`); or a read/write endpoint U2 left
-    /// unresolved. Cross-cell `df` propagation is out of v1 — callers invoke this
-    /// per cell, so a cell's events never mix with another's.
+    /// unresolved. A later resolved read *after* one or more writes rebinds the
+    /// variable to the new source while preserving the earlier write fan-out.
+    /// Cross-cell `df` propagation is out of v1 — callers invoke this per cell, so
+    /// a cell's events never mix with another's.
     pub(crate) fn resolve_cell_candidates(
         events: &[SparkLineageEvent],
     ) -> Vec<crate::models::lineage::LineageEdgeCandidate> {
@@ -1285,6 +1289,11 @@ pub(super) mod spark_lineage {
         // Session names invalidated by a prior rebind (`spark = other`, AR-29).
         // A read whose chain-root session is invalidated is untrusted.
         let mut invalidated_sessions: HashSet<String> = HashSet::new();
+        // Variables poisoned by an ambiguous second read before any write (W1).
+        let mut reread_invalidated: HashSet<String> = HashSet::new();
+        // Variables whose current read binding has already fanned out to at least
+        // one write, so a later resolved read can safely rebind to a new source.
+        let mut written_since_bind: HashSet<String> = HashSet::new();
         let mut candidates = Vec::new();
         for event in events {
             match event {
@@ -1300,21 +1309,26 @@ pub(super) mod spark_lineage {
                     .as_deref()
                     .is_some_and(|s| invalidated_sessions.contains(s)) =>
                 {
-                    // U2b/W1 (097.004-T): a resolved top-level read into a
-                    // variable that is already bound — or was already
-                    // invalidated by a prior re-read — makes the read->write
-                    // dataflow chain ambiguous. Per the U2b fail-closed
-                    // doctrine, invalidate the chain (drop the binding and mark
-                    // the name invalidated so no later read revives it) rather
-                    // than rebinding to the later read and minting a possibly
-                    // false edge. The first read of a variable still binds.
-                    if binding.contains_key(variable)
-                        || invalidated_sessions.contains(variable.as_str())
-                    {
+                    // U2b/W1 (097.004-T): a second resolved top-level read into
+                    // an active binding is ambiguous until at least one write
+                    // consumes that binding. Fail closed by poisoning the name.
+                    // After one or more writes, the binding has already fanned
+                    // out, so a later read may safely rebind to a new source.
+                    if reread_invalidated.contains(variable.as_str()) {
                         binding.remove(variable);
-                        invalidated_sessions.insert(variable.clone());
+                        written_since_bind.remove(variable);
+                    } else if binding.contains_key(variable) {
+                        if written_since_bind.contains(variable.as_str()) {
+                            binding.insert(variable.clone(), endpoint.clone());
+                            written_since_bind.remove(variable);
+                        } else {
+                            binding.remove(variable);
+                            written_since_bind.remove(variable);
+                            reread_invalidated.insert(variable.clone());
+                        }
                     } else {
                         binding.insert(variable.clone(), endpoint.clone());
+                        written_since_bind.remove(variable);
                     }
                 }
                 // A nested-scope, unresolved, or untrusted-session read rebinds
@@ -1322,6 +1336,7 @@ pub(super) mod spark_lineage {
                 // binding (AR-07 / AR-29).
                 SparkLineageEvent::ReadBind { variable, .. } => {
                     binding.remove(variable);
+                    written_since_bind.remove(variable);
                 }
                 // A resolved top-level write on a bound variable emits an edge.
                 SparkLineageEvent::WriteCall {
@@ -1335,14 +1350,16 @@ pub(super) mod spark_lineage {
                             target: target.clone(),
                             sources: vec![source.clone()],
                         });
+                        written_since_bind.insert(receiver.clone());
                     }
                 }
                 // Unresolved receiver / endpoint / non-top-level write: no edge.
                 SparkLineageEvent::WriteCall { .. } => {}
                 // Any invalidation drops the tracked binding and marks the name
-                // as an untrusted session for later reads (F2 / AR-29).
+                // as an untrusted session receiver for later reads (F2 / AR-29).
                 SparkLineageEvent::Invalidate { variable, .. } => {
                     binding.remove(variable);
+                    written_since_bind.remove(variable);
                     invalidated_sessions.insert(variable.clone());
                 }
             }
@@ -1558,6 +1575,60 @@ pub(super) mod spark_lineage {
                 .is_empty(),
                 "a third read does not revive a poisoned binding"
             );
+        }
+
+        #[test]
+        fn u2b_regression_115_002_read_write_read_write_reuse_emits_both_exact_edges() {
+            let candidates = candidates_for(concat!(
+                "df = spark.read.parquet(\"s3://bucket/a\")\n",
+                "df.write.saveAsTable(\"cat.sch.out_a\")\n",
+                "df = spark.read.parquet(\"s3://bucket/b\")\n",
+                "df.write.saveAsTable(\"cat.sch.out_b\")\n",
+            ));
+            assert_eq!(candidates.len(), 2, "both read→write chains must emit");
+            assert_eq!(candidates[0].sources.len(), 1);
+            assert_eq!(candidates[0].sources[0].name, "s3://bucket/a");
+            assert_eq!(candidates[0].target.name, "cat.sch.out_a");
+            assert_eq!(candidates[1].sources.len(), 1);
+            assert_eq!(candidates[1].sources[0].name, "s3://bucket/b");
+            assert_eq!(candidates[1].target.name, "cat.sch.out_b");
+        }
+
+        #[test]
+        fn u2b_regression_115_002_non_spark_invalidation_then_valid_read_emits_edge() {
+            let candidates = candidates_for(concat!(
+                "df = other\n",
+                "df = spark.read.parquet(\"s3://bucket/in\")\n",
+                "df.write.saveAsTable(\"cat.sch.out\")\n",
+            ));
+            assert_eq!(
+                candidates.len(),
+                1,
+                "a non-Spark invalidation must not poison a later valid read"
+            );
+            assert_eq!(candidates[0].sources.len(), 1);
+            assert_eq!(candidates[0].sources[0].name, "s3://bucket/in");
+            assert_eq!(candidates[0].target.name, "cat.sch.out");
+        }
+
+        #[test]
+        fn u2b_regression_115_002_one_read_multiple_writes_preserves_fan_out() {
+            let candidates = candidates_for(concat!(
+                "df = spark.read.parquet(\"s3://bucket/in\")\n",
+                "df.write.saveAsTable(\"cat.sch.out_a\")\n",
+                "df.write.saveAsTable(\"cat.sch.out_b\")\n",
+            ));
+            assert_eq!(
+                candidates.len(),
+                2,
+                "one read binding must fan out to both writes"
+            );
+            assert_eq!(candidates[0].sources.len(), 1);
+            assert_eq!(candidates[0].sources[0].name, "s3://bucket/in");
+            assert_eq!(candidates[0].target.name, "cat.sch.out_a");
+            assert_eq!(candidates[1].sources.len(), 1);
+            assert_eq!(candidates[1].sources[0].name, "s3://bucket/in");
+            assert_eq!(candidates[1].target.name, "cat.sch.out_b");
         }
 
         #[test]
