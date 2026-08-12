@@ -66,7 +66,7 @@ blanket cleanup is authorized.
 | Isolated run root | `tmp/rustsec-2026-0041/` and every required child path were absent: `cargo-home`, `target`, `cargo-audit/advisory-db`, `cargo-audit/data`, `cargo-audit/cache`, `candidate-source`, `prototype`, `logs`, `temp`, `baselines`, and `data` | PASS (not used) |
 | Core target protection | Core `target/` exists with 96,733 files and 80,175,671,723 logical bytes. It was not cleaned, reused, or modified | PASS (protected) |
 | Prior-artifact inventory | `tmp/` contains unrelated prior-run directories (for example `104S-*` and `109031-tests`), but no `rustsec-2026-0041` run root. No prior artifact was reused or deleted | PASS (inventory only) |
-| Disk admission | C: free `117,462,368,256` bytes (`109.395 GiB`). Core target alone gives conservative `B >= 80,175,671,723` bytes (`74.669 GiB`), so required `ceil(1.5*B)+2 GiB` is `122,410,991,233` bytes (`114.004 GiB`), a shortfall of about `4.609 GiB`. Adding registry source/cache raises the threshold further | **BLOCKED** |
+| Disk admission | The prior attempt recorded C: free `117,462,368,256` bytes (`109.395 GiB`) and blocked under the superseded policy that multiplied the protected core target (`74.669 GiB`) into a `114.004 GiB` threshold. The recalibrated policy uses an `8 GiB` fixed floor for read-only U1 and an incremental-footprint threshold for U2/U3 that excludes the protected core target and pre-existing caches | **RECHECK REQUIRED** |
 | Synthetic data boundary | `tmp/rustsec-2026-0041/data/` is absent; no live, operator, or existing Engram data was accessed | PASS (not created) |
 | Canonical containment | `tmp/` resolves to `C:\Source\GitHub\engram\tmp` and is not a link; the absent run root therefore has no external resolution | PASS (not created) |
 | Windows containment | Intended controls are workspace-local `CARGO_HOME`, explicit `CARGO_TARGET_DIR`, supported cargo-audit data/db flags, tool flags, and `TMP`/`TEMP`; XDG/TMPDIR would be Unix-only supplements. No tool was run | NOT EXECUTED |
@@ -110,9 +110,12 @@ Strict-safety records:
 ## Disposition
 
 `119.001-T` cannot advance to U2. The daemon must be shut down orderly by its
-owner, handle inspection must become provable, and the disk threshold must
-pass before admission is retried. After those gates pass, U1 must still
-perform read-only candidate identity/inventory and obtain explicit approval
+owner and handle inspection must become provable before admission is retried.
+The prior disk failure was caused by a superseded target-size multiplier;
+recheck U1 against the 8 GiB read-only floor, then calculate the incremental
+footprint before U2/U3 without counting the protected core target or
+pre-existing caches. After those gates pass, U1 must still perform read-only
+candidate identity/inventory and obtain explicit approval
 bound to that exact candidate before any execution. `119.002-T` and
 `119.003-T` remain blocked by dependency and approval gates. Shipment `115-S`
 does not ship and must not unlock `116-S`.
