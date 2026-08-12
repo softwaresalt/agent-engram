@@ -105,3 +105,13 @@ advisory clears as a side effect and the spike above scopes the migration.
 - Layers on nothing; independent. Safe to defer indefinitely.
 - Stash 99AFF44B remains **active** (deliberation-linked), consistent with the
   015-D / 016-D deferred-at-deliberation handling.
+
+## 2026-08-10 Resolution — consolidated with 27F691AE
+
+The critical intake `27F691AE` re-opened this decision with current upstream evidence. The earlier premise that a Cozo 0.8+ release might be available is false as of 2026-08-10: crates.io and Cozo `main` both remain at `cozo 0.7.6`, whose non-optional dependency is `swapvec ^0.3.0`. The newest published `swapvec` is 0.4.2, but both 0.4.2 and its current `main` still require `lz4_flex ^0.10.0`; therefore neither a Cozo point update nor a swapvec release clears `RUSTSEC-2026-0041`. A direct Cargo override to `lz4_flex 0.11.6` cannot satisfy swapvec's `^0.10.0` range.
+
+The exposure rationale remains bounded but does not constitute remediation. Cozo uses `swapvec::SwapVec::default()` for temporary query collection; swapvec defaults compression to `None`. If LZ4 is selected, swapvec calls `decompress_size_prepended` into a fresh vector, and lz4_flex 0.10.0 enables `safe-decode` by default. These facts substantially reduce practical exposure, but Cargo still resolves the affected crate and `cargo audit` correctly reports the advisory.
+
+**Resolved direction: SPIKE, not implementation.** Cozo upgrade is unavailable; wholesale Cozo removal/replacement is disproportionate; containment alone does not clear the advisory; and an incompatible direct override is invalid. The narrow candidate is a reviewed swapvec-compatible patch (for example, a pinned fork or vendored 0.3-compatible package that changes only the lz4_flex requirement), but source compatibility, provenance, lock behavior, cross-platform compilation, and Cozo runtime/data compatibility require hands-on proof. A hardened, security-reviewed, time-boxed spike plan is `docs/exec-plans/2026-08-10-rustsec-2026-0041-remediation-spike-plan.md`. No production remediation plan is authorized until that spike returns a high- or medium-confidence executable recommendation and proves that `cargo audit` no longer reports the advisory.
+
+This resolution supersedes the earlier indefinite defer and consolidates deliberation `017-D` with stash `27F691AE` into one security decision stream.
