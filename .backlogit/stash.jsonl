@@ -1,1 +1,0 @@
-{"id":"2DF0B48E","priority":"high","kind":"feature","text":"Allow Engram to sync files and directories that are not tracked by a Git repository. Git membership must not block indexing or reasoning over large mixed code/content corpora; preserve workspace-containment and traversal safety for non-repository roots.","created_at":"2026-08-12T00:28:41.0133947Z"}
