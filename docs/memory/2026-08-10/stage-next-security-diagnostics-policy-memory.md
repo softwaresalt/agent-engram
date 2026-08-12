@@ -3,83 +3,59 @@ title: "Stage next: advisory spike and diagnostic policy batch"
 doc_type: memory
 date: 2026-08-10
 agent: stage
-status: staged
+status: staged-remediated
 operator_batch: dark-factory-2026-08-10
 shipments: [115-S, 116-S]
+references:
+  - docs/exec-plans/2026-08-10-rustsec-2026-0041-remediation-spike-plan.md
+  - docs/exec-plans/2026-08-10-circuit-breaker-diagnostic-escalation-plan.md
+  - docs/closure/2026-08-10-pr-337-stage-publication-dark-factory-adversarial-review.md
+  - docs/memory/2026-08-11/pr-337-adversarial-remediation-memory.md
 ---
+
+# Stage next: advisory spike and diagnostic policy batch
 
 ## Session Scope
 
-Performed Stage work only for active stash `27F691AE`, `241B503F`, and deliberation `017-D`: metadata refresh, evidence-grounded triage, deliberation resolution, implementation/spike planning, risk hardening, plan review, harvest, dependency wiring, and queued shipment assembly. No source/test/config implementation, build, test, lint, branch, PR, merge, claim, or Ship action occurred.
+Originally harvested stash `27F691AE`, `241B503F`, and deliberation `017-D` into reviewed plans, features/tasks, and queued shipments. The 2026-08-11 adversarial remediation supersedes execution wording in this memory; the governing details are the referenced final plans, focused reviews, manifests, and final Stage handoff. No source/test/config implementation, claim, Ship execution, cleanup, PR, or merge occurred in Stage.
 
-## Decisions
-
-- Security/reliability is first. `27F691AE` and `017-D` are one decision stream.
-- Current upstream evidence rules out the assumed Cozo upgrade: crates.io and Cozo `main` remain at 0.7.6. Latest/current swapvec remains on lz4_flex 0.10, and Cargo cannot satisfy swapvec `^0.10.0` with fixed lz4_flex 0.11.6.
-- Cozo uses default SwapVec temporary collection with compression `None`; lz4_flex 0.10 defaults to safe decoding and swapvec's LZ4 path allocates a fresh vector. This lowers practical exposure but does not remove the distributed vulnerable crate or audit finding.
-- Removal/replacement is disproportionate and direct override is invalid. The only safe executable next step is a bounded, hardened, security-reviewed spike for one immutable-pinned swapvec 0.3-compatible patch. No production remediation plan was manufactured.
-- The circuit-breaker policy unit remains separate. Its reviewed plan requires a RED repository-content contract before the authoritative instruction edit and preserves the universal three-failure threshold.
-
-## Intake Accounting
-
-- `27F691AE` (critical): harvested with provenance into `119.001-T`; feature `119-F`; review `119.001-R`; shipment `115-S`.
-- `241B503F` (high): harvested with provenance into `120.001-T`; feature `120-F`; review `120.001-R`; shipment `116-S`.
-- `017-D`: updated from queued/deferred to `accepted`/critical, chosen direction replaced with the current spike decision, linked `informs -> 119-F`, and durable decision artifact amended.
-- Active stash after harvest: empty.
-
-## Reviewed Plans and Hierarchies
+## Reviewed Hierarchies
 
 ### 115-S — RUSTSEC-2026-0041 feasibility spike
 
-Plan: `docs/exec-plans/2026-08-10-rustsec-2026-0041-remediation-spike-plan.md`
-Review: `119.001-R` PASS for spike only; hardened security/supply-chain lens.
-
 - `119-F`
-- `119.001-T` immutable graph/audit/provenance baseline (critical, <=90m)
-- `119.002-T` one isolated 0.3-compatible swapvec prototype (critical, <=110m), blocked by `119.001-T`
-- `119.003-T` Cozo cold-restart/runtime/platform decision (critical, <=110m), blocked by `119.002-T`
+- `119.001-T`: <=110m admission, immutable evidence, read-only candidate discovery, exact approval stop
+- `119.002-T`: <=110m one explicitly approved prototype in the sole current core worktree
+- `119.003-T`: <=110m synthetic compatibility, restoration, process/path/fingerprint closure, and cleanup disposition
+- `119.001-R`: second focused Stage re-review PASS; final adversarial rerun pending
 
 ### 116-S — Circuit-breaker diagnostic policy
 
-Plan: `docs/exec-plans/2026-08-10-circuit-breaker-diagnostic-escalation-plan.md`
-Review: `120.001-R` PASS; hardened prompt/instruction-authoring lens.
-
 - `120-F`
-- `120.002-T` RED policy contract in existing `contract_verify` target (high, <=100m)
-- `120.001-T` authoritative instruction edit (high, <=100m), blocked by `120.002-T`
+- `120.002-T`: <=110m dedicated `contract_circuit_breaker_policy` RED target plus narrow secure workflow
+- `120.001-T`: <=110m template-first policy edit, supported generated synchronization, clean staging/hash and second-render proof
+- `120.001-R`: second focused Stage re-review PASS; final adversarial rerun pending
 
 ## Ordered Batch
 
-- `115-S`: queued, priority critical, `operator_batch=dark-factory-2026-08-10`, `operator_order=1`, `operator_predecessors=[]`.
-- `116-S`: queued, priority high, `operator_batch=dark-factory-2026-08-10`, `operator_order=2`, `operator_predecessors=[115-S]`; shipment dependency `116-S` blocked by `115-S`.
+- `115-S`: queued; `operator_batch=dark-factory-2026-08-10`; order `1`; predecessors `[]`. It is unclaimable until the unrelated tracked `.autoharness/config.yaml` change receives separate operator disposition and tracked status is clean.
+- `116-S`: queued; same batch; order `2`; predecessors `[115-S]`; hard dependency `116-S -> 115-S`. It requires 115-S shipment/item archive/merge evidence **and** separately approved successful cleanup with passing absence/path/external-fingerprint verification. Cleanup unavailable/not-approved/failed keeps 116-S blocked.
 
-Both manifests are parent-first, reviewed, and never claimed.
+Exact ordered metadata is unchanged. Neither shipment has ever been claimed.
 
-## Evidence and Validation
+## Final Admission and Durability Decisions
 
-Consulted the authoritative backlog metadata/WIT/templates, stash, 017-D, Cargo manifest/lock/history, RustSec advisory, current crates.io/GitHub Cozo/swapvec manifests, Cozo/swapvec call paths, dynamic-diagnostics learning, circuit-breaker/constitution/strict-safety/release-observability instructions, 102-F advisory decision, and 111-S audit/closure evidence. Publication validation reported 43 pre-existing `archived_from_self_ref` doctor advisories and no new orphan, duplicate-ID, or actionable structural finding. Direct shipment custom fields were required because neither MCP nor CLI exposes shipment custom-field mutation; the index was synced immediately afterward.
+- Spike execution requires the sole current core worktree, quiescent cargo/rustc/rust-analyzer/daemon/handles, free bytes >= `max(20 GiB, ceil(1.5 * B) + 2 GiB)`, an absent/empty workspace-local target, prior-artifact inventory including `tmp/rustsec-2026-0041/data/`, synthetic-only data, and named owners.
+- Windows uses workspace-local CARGO_HOME, explicit CARGO_TARGET_DIR, supported cargo-audit/tool paths, TMP/TEMP, and unchanged external fingerprints. XDG/TMPDIR are Unix supplements only.
+- Candidate discovery/static inspection is read-only. Candidate build scripts, proc macros, tests, or binaries require explicit operator approval after exact identity/hash/license/delta/inventory/containment evidence. No generic, inferred, or auto-check approval.
+- Cleanup is a separately approved exact destructive action after byte restoration, child-process exit, no handles, path/fingerprint verification, and artifact inventory.
+- `templates/instructions/circuit-breaker.instructions.md.tmpl` is the policy source of truth; `.github/instructions/circuit-breaker.instructions.md` is generated. Use template-first edit -> supported tune-harness sync -> targeted GREEN -> clean staged hash -> second-render no diff.
+- The policy plan does not depend on `.autoharness/config.yaml` values.
 
-Engram daemon was reachable, but its status initially reported a stale prior branch while Git was on `main`. Indexed searches were supplemented with targeted local reads. A rebind was refused by the one-workspace limit and a refresh ended with `database is locked`; no retries or source mutations followed.
+## Evidence and Validation Wording
 
-## Files Modified
+Backlog doctor is recorded as **no new actionable findings**, preserving the known historical 43 `archived_from_self_ref` advisory baseline. The broad verifier record contains two distinct invalid usages and one completed validation exposing 25 pre-existing strict-schema blockers; the universal same-error breaker did not trip, and the operator prohibited rerunning that broad command. Use targeted validation only. Markdownlint unavailability is advisory.
 
-- `docs/decisions/2026-07-29-cozo-0_8-major-bump-feasibility-deliberation.md`
-- `docs/exec-plans/2026-08-10-rustsec-2026-0041-remediation-spike-plan.md`
-- `docs/exec-plans/2026-08-10-circuit-breaker-diagnostic-escalation-plan.md`
-- this memory file
-- backlogit-managed queue, stash/archive, link, event, memory, and shipment artifacts under `.backlogit/`
+## Publication Continuity
 
-No production, test, or configuration file was modified.
-
-## Continuity / Next Steps
-
-1. Ship claims `115-S` only and executes the three-unit spike. Stop on any scope widening; return findings to Stage for a separate implementation plan if and only if U3 concludes proceed/pivot.
-2. After `115-S` is terminal, Ship may claim `116-S`, observe the RED contract, then edit the authoritative instruction and run prompt/quality verification.
-3. The approved Stage-to-Ship compact-context assessment is recorded in
-   `docs/memory/compacted/2026-08-10-stage-to-ship-compaction-report.md`.
-   It preserved six active checkpoint files and both queued shipment
-   plans/reviews; no eligible completed or superseded candidates remained, so
-   no archive move or deletion was performed.
-## Git Publication
-
-Stage planning artifacts were committed locally on `main` as `156c85ee`. The mandatory push to `origin/main` was attempted once and rejected by repository rule GH013 because changes must arrive through a pull request. Stage did not create a branch or PR because that is outside the Stage role boundary. Local `main` is therefore ahead of `origin/main`; the operator must publish the planning commit through an allowed admin/default-branch path or explicitly hand publication to an authorized workflow.
+The original local-main publication attempt (`156c85ee`) and GH013 rejection are historical. Current remediation is on `chore/stage-publication-dark-factory`. Authorized publication must use the exact allowlist in `docs/memory/2026-08-11/pr-337-adversarial-remediation-memory.md`; never use `git add -A`, `git add .`, or `git commit -a`. Verify cached names/content exclude `.autoharness/config.yaml` and all unrelated files. Stage role policy leaves this feature-branch batch uncommitted for an authorized publisher.

@@ -2,7 +2,7 @@
 name: _Orchestrator
 description: "Coordinates the Stage → Ship pipeline for continuous iteration: routes stash intake through Stage and queued shipments through Ship"
 maturity: stable
-tools: vscode, execute, read, agent, edit, search, web, 'microsoft-docs/*', 'backlogit/*', ms-python.python/getPythonEnvironmentInfo, ms-python.python/getPythonExecutableCommand, ms-python.python/installPythonPackage, ms-python.python/configurePythonEnvironment, todo
+tools: vscode, execute, read, write, create, agent, edit, search, engram, backlogit, graphtor, web, todo, microsoft-docs, ms-python.python/getPythonEnvironmentInfo, ms-python.python/getPythonExecutableCommand, ms-python.python/installPythonPackage, ms-python.python/configurePythonEnvironment
 model_routing: "Tier 3 (Frontier)"  # DEPRECATED — use model_tier
 model_tier: 3
 max_subagent_tier: 3

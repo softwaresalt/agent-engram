@@ -5,92 +5,94 @@ date: 2026-08-10
 source: docs/compound/workflow-issues/dynamic-diagnostic-escalation-2026-08-08.md
 status: reviewed
 source_stash_ids: [241B503F]
+references:
+  - docs/closure/2026-08-10-pr-337-stage-publication-dark-factory-adversarial-review.md
+  - .backlogit/archive/120.001-R-circuit-breaker-diagnostic-policy-plan-review.md
+  - .backlogit/queue/116-S.md
+  - templates/instructions/circuit-breaker.instructions.md.tmpl
+  - .github/instructions/circuit-breaker.instructions.md
+  - docs/memory/2026-08-11/pr-337-adversarial-remediation-memory.md
 ---
 
 # Circuit-breaker dynamic diagnostic escalation policy
 
 ## Problem Frame
 
-The authoritative `.github/instructions/circuit-breaker.instructions.md` preserves a universal three-consecutive-failure stop rule but does not tell agents how to react when tool transport truncation hides the concrete error. Shipment 111-S showed that repeated console-only retries can exhaust the breaker without making the failure actionable. The policy must require a bounded observability escalation, preserve the native exit/failure evidence, prevent secret or raw-payload leakage and unbounded logs, record the concrete error, and de-escalate immediately after diagnosis. This changes harness policy/prompt artifacts only; it does not change Engram runtime behavior.
+Transport truncation can hide a concrete failure, but diagnostic escalation must remain the next counted attempt and never reset, pause, split, or bypass `MAXIMUM_RETRY_THRESHOLD = 3`. The durable policy source is the autoharness product template `templates/instructions/circuit-breaker.instructions.md.tmpl`; `.github/instructions/circuit-breaker.instructions.md` is generated workspace output. A generated-only edit is invalid because supported harness regeneration would revert it.
+
+This changes template/prompt and policy-contract artifacts only; it does not change Engram runtime behavior. No policy requirement or publication decision depends on a value in `.autoharness/config.yaml`.
 
 ## Requirements Trace
 
-- Preserve `MAXIMUM_RETRY_THRESHOLD = 3` and stop/log/prompt/checkpoint semantics: U1 pins the contract; U2 retains it verbatim.
-- Escalate before an information-loss failure becomes another equivalent blind retry: U1 asserts ordering; U2 adds the rule.
-- Persist complete combined output under workspace `logs/`, preserve native exit, and inspect only bounded actionable sections: U1/U2.
-- Record the concrete error before mutation and return to normal verbosity after diagnosis: U1/U2.
-- Prevent secrets, raw payloads, out-of-workspace writes, duplicate captures, and unbounded files/retention: U1/U2.
+- Retry semantics: each non-zero/timeout counts; hidden failures use a provisional operation fingerprint; the diagnostic invocation occupies the next attempt; attempt three may be inspected but still trips the breaker; attempt four is forbidden; concrete identity links prior attempts without recounting; genuinely different observable errors retain the skill-loop exception.
+- Durability: U2 edits the authoritative template first, then synchronizes the generated instruction through the supported harness render path and proves a clean rerender is byte-stable and does not remove the policy.
+- Contract cohesion: U1 uses a dedicated `contract_circuit_breaker_policy` target at `tests/contract/circuit_breaker_policy_contract_test.rs`, not the unrelated CLI `contract_verify` target.
+- CI hygiene: any new/changed workflow is least-privilege, uses repository-required SHA pins, and sets checkout `persist-credentials: false`.
+- Operational order: `116-S` remains blocked by `115-S` shipment/archive/merge evidence and by the separately recorded successful cleanup approval/result/verification.
+
+## Retry and Identity Contract
+
+1. Record each non-zero exit or timeout immediately against the current operation.
+2. While details are hidden, fingerprint normalized command/target, working directory, relevant environment, and workflow phase; conservatively classify another failed invocation of that fingerprint as substantially the same failure.
+3. If the threshold is not reached, change diagnostic transport on the next invocation. That invocation consumes the next attempt and increments the same counter when non-zero/timeout. No reset, pause, parallel counter, or fourth run exists.
+4. Inspect already captured evidence from failed attempt three, then trip the breaker; inspection is not re-execution.
+5. Record one concrete identity from stable native exit/timeout, target/code, normalized message, affected path, and phase. Link provisional attempts without recounting. Hidden output never manufactures a different-error exception.
+6. Stop high-volume capture immediately after diagnosis. De-escalation changes verbosity only.
 
 ## Implementation Units
 
-### U1 — Add the RED policy contract harness
+### U1 — Add the RED dedicated policy contract
 
-**Domain/files:** contract test plus its focused CI trigger;
-`tests/contract/verify_test.rs` and
-`.github/workflows/circuit-breaker-contract.yml`. **Cap:** 100 minutes, two
-files, three scenarios.
+**Domain/files:** `tests/contract/circuit_breaker_policy_contract_test.rs`, the cohesive `[[test]] name = "contract_circuit_breaker_policy"` entry in `Cargo.toml`, and `.github/workflows/circuit-breaker-contract.yml`. **Cap:** 110 minutes, three scenarios, no production code.
 
-Add repository-content contract tests that fail against the current instruction and prove: (1) the universal threshold remains exactly three with stop/log/prompt behavior; (2) after a hidden/truncated failure, diagnostic escalation precedes any equivalent console-only retry and does not reset the underlying failure counter; and (3) workspace-log containment, bounded extraction/retention, concrete-error recording, de-escalation, and secret/raw-payload safeguards are all required. Use `env!("CARGO_MANIFEST_DIR")`; do not add a new Cargo test target or production seam. Add a narrowly scoped workflow that runs the existing `contract_verify` target whenever the authoritative instruction, this contract test, or the workflow changes. This is required because the broad Rust CI intentionally ignores `.github/**/*.md`. Observe the focused RED result before U2.
+Add RED repository-content scenarios for the full Retry and Identity Contract, bounded workspace logs, native exit, secret/raw-payload exclusion, bounded extraction/retention, and immediate de-escalation. The target is dedicated because `tests/contract/verify_test.rs`/`contract_verify` exercises the Engram CLI verify exit-code contract and is unrelated to harness policy content. Observe the dedicated target RED before U2.
 
-### U2 — Amend the authoritative circuit-breaker instruction
+The narrow workflow runs only `cargo test --test contract_circuit_breaker_policy` for changes to the authoritative template reference, generated instruction, dedicated test, Cargo target declaration, or workflow. Give it only required read permissions. Use SHA-pinned actions when repository policy requires pins; for the current repository convention, pin every action by full commit SHA. Set `actions/checkout` `persist-credentials: false`. Do not imply that the broad Rust workflow covers Markdown instruction changes.
 
-**Domain/files:** instruction authoring only; `.github/instructions/circuit-breaker.instructions.md`. **Cap:** 100 minutes, one file, no generated-family fan-out.
+### U2 — Update source template, synchronize generated output, and prove drift resistance
 
-Add a concise diagnostic-visibility section. A non-zero/timeout remains a failed operation and does not reset the universal counter. If the visible response is truncated before the concrete error, the next attempt must materially change observability: capture complete combined stdout/stderr for one bounded invocation under workspace `logs/`, preserve native exit, then inspect only a bounded tail or named failing section. An unchanged console-only rerun is an equivalent blind retry and counts normally. Record the concrete error before any code/policy mutation, then return to normal focused output after diagnosis.
+**Domain/files:** authoritative `templates/instructions/circuit-breaker.instructions.md.tmpl` in the autoharness source resolved from `autoharness home`, generated `.github/instructions/circuit-breaker.instructions.md` in the target workspace, and the harness manifest checksum only if the supported renderer requires it. **Cap:** 110 minutes, one template family/concern.
 
-Require preflight exclusion/redaction of secrets and sensitive raw payloads; never persist known credential-bearing output. Use one bounded capture per diagnostic step, command timeout and size/retention controls, no unbounded append, no out-of-workspace path, and no full-log ingestion into agent context. Logs are not committed by default and are archived/removed only under repository safeguards. Preserve all existing skill-loop exceptions and the universal three-failure breaker.
+Apply this exact order:
+
+1. Resolve and record `autoharness_home` via `autoharness home`; verify the authoritative template exists there. Record baseline bytes/SHA-256 for the template, generated instruction, and any manifest entry the renderer owns. Do not read policy semantics from or modify `.autoharness/config.yaml`; fail if the render proposes unrelated config or artifact drift.
+2. Edit `templates/instructions/circuit-breaker.instructions.md.tmpl` first. Put all Retry and Identity Contract wording there. Do not hand-edit only the generated instruction.
+3. Invoke the supported `tune-harness` skill with that `autoharness_home`, the current target `workspace_path`, `scope: instructions`, and the accepted circuit-breaker-only proposal. Permit only the generated instruction and renderer-owned manifest checksum to change in the target workspace.
+4. Verify template and generated instruction both contain the contract, valid frontmatter/Markdown, no unresolved placeholders, bounded logging/sensitive-output safeguards, and identical intended semantics. Then run the dedicated target GREEN.
+5. Perform the clean regeneration drift test through the supported harness path: render the instruction again from the changed template into clean harness staging (the `install-harness` dry-run/staging path or renderer-equivalent clean staging mode), compare staged bytes/SHA-256 with the checked-in generated instruction, and run the circuit-breaker-only tune render a second time. The staged/generated hashes must match, the second render must produce no policy or generated-file diff, and the policy text must remain. Any reversion, unrelated drift, or config-dependent result fails closure.
+
+If source and generated changes require different repositories, record both repository-relative paths and commits in closure; do not pretend a downstream generated-only PR is durable. The template remains the source of truth.
 
 ## Dependency Graph
 
-U1 blocks U2. No other backlog or shipment dependency exists. The security spike shipment precedes this shipment only because the operator ordered security/reliability first.
+U1 blocks U2. Shipment `116-S` remains batch `dark-factory-2026-08-10`, order 2, predecessors `[115-S]`, with hard dependency `116-S -> 115-S`. It is technically independent of the spike recommendation, but not operationally claimable until `115-S` is shipped, shipment/items archived, merge evidence recorded, and the exact post-spike cleanup is approved, successful, and verified. If cleanup is not approved or fails, `116-S` stays blocked.
 
 ## Decisions and Rationale
 
-Put the rule in the authoritative circuit-breaker instruction rather than the compound learning or individual skills. Distinguish diagnostic escalation from a blind retry without forgiving the underlying command failure. Capture full output only for a bounded invocation, and bound what the agent reads and retains. Enforce the repository-content contract with one narrow workflow rather than broadening the full Rust CI path filter. Do not add a general logging framework, runtime code, new CLI flags, or duplicate wording across skills.
-
-## Constitution Check
-
-- Test first: U1 must be observed RED before U2.
-- Workspace/security containment: captures stay under workspace `logs/`; secrets/raw payloads are excluded.
-- Structured observability: concrete errors and capture paths become checkpoint evidence.
-- Single responsibility: one authoritative policy plus its contract harness.
-- Two-hour/width limits: one test file and one instruction file in separate <=100-minute units.
-- Circuit breaker: the universal threshold and skill-managed exceptions are preserved, not weakened.
-
-## Risks and Caveats
-
-Ambiguous wording could let agents reset retry counters, dump secrets, ingest megabyte logs into context, or retain logs forever. Overly rigid byte limits could truncate the very failure being sought. The policy therefore bounds the command, capture count, extraction, and retention while requiring the complete available output for that bounded invocation; if a size guard stops capture, the agent records that explicit truncation and halts rather than silently claiming completeness.
-
-## Plan Hardening Signals
-
-- Public API/schema change: absent.
-- Shared agent contract change: present; all agent retry loops consume this instruction.
-- Security-sensitive behavior: present at the logging boundary because output may contain secrets or payloads.
-- Migration/destructive action: absent.
-- High runtime/rollback risk: moderate; bad wording can weaken safety behavior across workflows.
-
-Requires plan hardening: yes
-
-## Runtime Verification and Closure
-
-Run focused `contract_verify`, prove the dedicated instruction-path workflow selects the change, then run Markdown/YAML/frontmatter validation and repository instruction cross-reference checks; finally run normal ordered quality gates in Ship. Prompt-authoring review manually exercises three examples: truncated test output, secret-bearing command output, and a third same-error recurrence. Healthy behavior escalates once, extracts a bounded concrete failure, checkpoints it, de-escalates, and still stops at three. Rollback trigger: any test, workflow-selection check, or review shows a missing contract gate, counter reset, a fourth equivalent retry, out-of-workspace logging, raw secret persistence, unbounded append/retention, or failure to de-escalate. Rollback is a reviewed workflow/instruction/test revert. Observe the next three Ship sessions or seven days, whichever is longer, for blind-retry recurrence and accidental log commits.
+- Put policy in the authoritative template and treat the workspace instruction as generated output.
+- Use supported `tune-harness` synchronization plus clean staging/idempotence proof; never validate a hand-copied generated edit as durable.
+- Use a dedicated policy contract target because `contract_verify` is an Engram CLI contract.
+- Add a narrow workflow because broad CI ignores instruction Markdown; enforce least privilege and credential/pin hygiene.
+- Keep policy semantics independent of unrelated `.autoharness/config.yaml` values.
 
 ## Plan Hardening
 
-Hardening is required because a shared safety contract and diagnostic data boundary change.
+Hardening is required because this is a shared safety contract, generated-artifact durability boundary, CI workflow change, and ordered operational gate.
 
-- **Protected invariants:** universal threshold three; every underlying non-zero/timeout counts; no secret/raw payload persistence; workspace-only logs; native exit preserved; bounded extraction and retention; concrete error before mutation; normal verbosity restored.
-- **Reinforcing evidence:** dynamic-diagnostic-escalation learning, 111-S circuit-break/audit checkpoints and closure, circuit-breaker, strict-safety, and constitution instructions.
-- **ProposedAction:** amend the universal circuit-breaker prompt contract. **ActionRisk:** moderate. **approval_required:** no additional approval; operator explicitly requested the policy update. **rollback:** reviewed revert of the test and instruction. **ActionResult:** planned.
-- **ProposedAction:** capture full command output during a future diagnosis. **ActionRisk:** high when output may contain sensitive data. **approval_required:** preflight classification is mandatory; known secret-bearing/raw-payload output must use a safe repro or tool-native redaction instead. **rollback:** stop capture, protect the artifact, and follow repository safeguards. **ActionResult:** planned as policy, not executed here.
+- **ProposedAction:** amend the authoritative circuit-breaker template and regenerate target output. **ActionRisk:** high shared-contract change. **approval_required:** implementation review and drift proof. **ActionResult:** planned.
+- **ProposedAction:** add a narrow GitHub workflow. **ActionRisk:** moderate. **approval_required:** least-privilege/SHA-pin/credential review. **ActionResult:** planned.
+- **Protected invariants:** threshold three, counted diagnostics, no fourth run, source-template authority, deterministic clean regeneration, no unrelated config dependence, bounded sensitive logging, dedicated contract target, and extended predecessor cleanup gate.
 
-## Plan Review
+## Runtime Verification and Closure
 
-**Gate: PASS.** Hardening requirement is satisfied. Constitution, Rust/test, scope-boundary, learnings, architecture, and prompt/instruction-authoring personas reviewed both units.
+Run targeted supported validation: dedicated policy contract, template/generated frontmatter and placeholder checks, reference existence (resolving `templates/...` against `autoharness_home`), workflow YAML/security inspection, supported clean staging hash comparison, second-render idempotence, and `git diff --check`. The known broad `autoharness verify-workspace` strict-schema blockers are a baseline issue and are not evidence against this targeted policy batch.
 
-- **P0:** 0.
-- **P1:** 0.
-- **P2:** 0.
-- **P3:** 0.
+Rollback reverts template first, then reruns supported synchronization and repeats the clean staging/hash test. Never revert only the generated instruction. Observe the next three Ship sessions or seven days for blind retries, accidental fourth attempts, regeneration drift, and accidental log commits.
 
-Prompt review confirms imperative ordering, no unresolved template variables, valid frontmatter/Markdown expectations, preserved three-failure semantics, explicit information-loss handling, bounded evidence extraction, secret/raw-payload exclusions, and de-escalation. The plan is ready for harvest.
+## Historical Plan Review
+
+The 2026-08-10 review and first 2026-08-11 focused re-review are preserved in `120.001-R`. They predate the generated-template, dedicated-target, CI-hygiene, and cleanup-result findings and do not by themselves authorize execution.
+
+## Focused Plan Re-review — 2026-08-11 (second remediation)
+
+**Stage gate: PASS; final adversarial rerun still required.** Constitution, scope, architecture, template-authoring, prompt/instruction, CI security, test, durability, and operational-sequencing lenses found P0 0, P1 0, P2 0, P3 0 in this final Stage contract. The gate confirms template-first supported regeneration, clean staging/idempotence proof, the dedicated policy target, least-privilege workflow requirements, config independence, exact retry semantics, and the extended cleanup-result predecessor. It does not claim the final adversarial rerun has passed.

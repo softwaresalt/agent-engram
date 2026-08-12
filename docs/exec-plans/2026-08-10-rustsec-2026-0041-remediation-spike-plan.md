@@ -7,98 +7,121 @@ status: reviewed
 execution_kind: spike
 source_stash_ids: [27F691AE]
 source_deliberation: 017-D
+references:
+  - docs/closure/2026-08-10-pr-337-stage-publication-dark-factory-adversarial-review.md
+  - .backlogit/archive/119.001-R-rustsec-2026-0041-spike-plan-security-review.md
+  - .backlogit/queue/115-S.md
+  - .backlogit/queue/116-S.md
+  - docs/compound/workflow-issues/dark-mode-single-worktree-disk-admission-gates-2026-08-02.md
+  - docs/memory/2026-08-11/pr-337-adversarial-remediation-memory.md
 ---
 
 # RUSTSEC-2026-0041 dependency remediation feasibility spike
 
 ## Problem Frame
 
-The locked chain is `engram -> cozo 0.7.6 -> swapvec 0.3.0 -> lz4_flex 0.10.0`. `RUSTSEC-2026-0041` affects lz4_flex block decompression and is patched at 0.11.6/0.12.1. Current evidence rules out a straightforward upgrade: Cozo has no published 0.8+ release and its `main` remains 0.7.6; swapvec 0.4.2 and `main` still require lz4_flex 0.10. Cozo's `^0.3.0` requirement also rejects swapvec 0.4, and swapvec's `^0.10.0` requirement rejects lz4_flex 0.11.6.
-
-Exposure is low but not a fix: Cozo uses default, uncompressed SwapVec temporary spill; swapvec's LZ4 path allocates a fresh output and lz4_flex 0.10 defaults to safe decoding. The advisory nevertheless remains in the distributed graph. The safe next executable unit is therefore a bounded compatibility/supply-chain spike for a 0.3-compatible swapvec patch. This plan does not authorize a production dependency override, fork, vendoring decision, Cozo replacement, or database migration.
+The locked chain is `engram -> cozo 0.7.6 -> swapvec 0.3.0 -> lz4_flex 0.10.0`. `RUSTSEC-2026-0041` affects lz4_flex block decompression and is patched at 0.11.6/0.12.1. No straightforward compatible upgrade currently exists. This shipment authorizes only a bounded compatibility and supply-chain investigation; it does not authorize a production override, fork, vendoring decision, Cozo replacement, migration, second worktree, sibling repository, global cache write, live-data access, or implicit cleanup.
 
 ## Requirements Trace
 
-- `27F691AE`: U1 reproduces and bounds the advisory; U2 proves or rejects the narrow patch; U3 verifies runtime/data compatibility and records the recommendation.
-- `017-D`: current release evidence closes the nonexistent Cozo-major path; U2/U3 answer the remaining patch and compatibility questions without manufacturing an implementation plan.
-- Security review: all candidate source, lock, audit, rollback, and disclosure gates are explicit below.
+- `27F691AE` and `017-D`: U1 establishes immutable identity and admission evidence; U2 proves or rejects one approved patch; U3 verifies synthetic runtime/data compatibility and records `proceed`, `pivot`, `defer`, or `abandon`.
+- Dark-factory admission: exactly the current core worktree, a separately disposed `.autoharness/config.yaml`, a clean tracked baseline, process/handle quiescence, adequate disk, an empty isolated workspace-local target, inventoried prior artifacts, synthetic data only, and named cleanup ownership are mandatory before mutation or execution.
+- Untrusted execution: candidate discovery and static inspection are read-only. Build scripts, proc macros, tests, and binaries from the exact candidate require explicit operator approval after immutable identity, hashes, license, source delta, executable inventory, and containment evidence are presented. Generic, inferred, shipment, or dark-factory approval never satisfies this gate.
+- Closure: byte restoration, process exit, path and external-directory fingerprint verification precede a separately approved exact cleanup. `116-S` also requires a successful cleanup result and verification; refusal, unavailable approval, or failed cleanup keeps it blocked.
+
+## Claim and Admission Contract
+
+`115-S` remains queued and unclaimable while the unrelated tracked `.autoharness/config.yaml` modification lacks separate operator disposition. Stage publication may use a path-scoped commit that excludes it, but Ship must not claim `115-S` until the operator separately chooses how to dispose of that change and `git status --porcelain --untracked-files=no` is empty. This plan neither reads policy intent from nor depends on any value in that config file.
+
+After claim and before the first Cargo/cargo-audit command, manifest/lock mutation, candidate execution, or prototype execution, record all of these gates in the findings artifact:
+
+1. `git worktree list --porcelain` reports exactly one registered worktree whose canonical path is the current core root. Branch, HEAD, and clean tracked status match the admitted baseline. No repository copy or second worktree exists.
+2. The OS process table and handle inspection show no running `cargo`, `rustc`, `rust-analyzer`, Engram daemon, or other process holding the core `target/`, run target, `Cargo.toml`, `Cargo.lock`, candidate files, or relevant lock files. Require orderly owner-approved shutdown; do not kill processes implicitly.
+3. Inventory the core `target/`, every prior path under `tmp/rustsec-2026-0041/`, manifest/lock baselines, candidate source, caches, data, and logs. Select a workspace-local `CARGO_TARGET_DIR` that is absent or empty. Existing prior-run content blocks execution until separately inventoried and approved for targeted cleanup; never reuse it silently and never run `cargo clean` against the core target.
+4. Measure baseline footprint `B` as allocated bytes for the current core target plus the locked-package source/cache material needed for a fresh local build. Require free bytes on the workspace volume of at least `max(20 GiB, ceil(1.5 * B) + 2 GiB)` before execution, record the values, and recheck before U2 and U3. Insufficient or unmeasurable capacity blocks.
+5. Prove `tmp/rustsec-2026-0041/data/` is absent or empty and cannot resolve to an operator, production, or existing Engram database. All runtime scenarios create uniquely marked synthetic data there; no live data is read, copied, migrated, repaired, or deleted.
+6. Name the Ship executor as owner of baseline capture, process shutdown verification, byte restoration, and cleanup request preparation. Name the operator as approver of the exact destructive target list. Name the approved cleanup executor only in the approval record.
+
+## Workspace-Local Execution Contract
+
+| Purpose | Required path/control |
+|---|---|
+| Run root | `tmp/rustsec-2026-0041/` |
+| Cargo package/Git cache/config | `tmp/rustsec-2026-0041/cargo-home/` via workspace-local `CARGO_HOME` |
+| Isolated build output | `tmp/rustsec-2026-0041/target/` via explicit `CARGO_TARGET_DIR`; absent or empty at admission |
+| cargo-audit advisory DB | `tmp/rustsec-2026-0041/cargo-audit/advisory-db/` via supported `cargo audit --db`; block if the installed tool cannot honor it |
+| cargo-audit data/cache | `tmp/rustsec-2026-0041/cargo-audit/data/` and `.../cache/` via supported tool-specific flags/paths; otherwise block |
+| Candidate/static inspection | `tmp/rustsec-2026-0041/candidate-source/` |
+| Prototype artifacts | `tmp/rustsec-2026-0041/prototype/` |
+| Logs | `tmp/rustsec-2026-0041/logs/` |
+| Temporary files | `tmp/rustsec-2026-0041/temp/`; `TMP`/`TEMP` on Windows and `TMPDIR` on Unix |
+| Baselines/hash ledger | `tmp/rustsec-2026-0041/baselines/` |
+| Synthetic Cozo data | `tmp/rustsec-2026-0041/data/` |
+
+On Windows, effective containment is the workspace-local `CARGO_HOME`, explicit `CARGO_TARGET_DIR`, supported cargo-audit `--db`/data-path controls, tool-specific flags, Windows temporary-directory controls, and unchanged external-directory fingerprints. `XDG_DATA_HOME` and `XDG_CACHE_HOME` are Unix-specific supplemental controls only; do not claim they redirect Windows tools. Before and after each unit, fingerprint default external Cargo and cargo-audit database/data/cache directories (record absent as absent), then prove those fingerprints did not change. Missing support or proof blocks.
 
 ## Implementation Units
 
-### U1 — Establish the immutable advisory and candidate baseline
+### U1 — Establish admission, immutable evidence, and approval stop
 
-**Domain/files:** investigation evidence only; create `docs/decisions/2026-08-10-rustsec-2026-0041-remediation-spike-findings.md`. **Cap:** 90 minutes, one durable file, at most three evidence groups.
+**Domain/files:** one findings artifact, `docs/decisions/2026-08-10-rustsec-2026-0041-remediation-spike-findings.md`. **Cap:** 110 minutes, no candidate execution.
 
-Before any prototype mutation, record the locked `cargo tree -i lz4_flex`, `cargo audit`, Cozo/swapvec release state, swapvec 0.3.0 crate checksum and MIT license, lz4_flex 0.11.6 checksum/license, and the exact affected call path. Confirm root `Cargo.toml` and `Cargo.lock` remain byte-identical. Reject unpinned branches, mutable tags, missing license/provenance, unsafe backports, and any candidate that broadens Cozo features.
+Complete the claim/admission contract and inventory every named run path, including `tmp/rustsec-2026-0041/data/`. Establish the Windows/Unix controls accurately, capture `Cargo.toml` and `Cargo.lock` bytes plus SHA-256, fingerprint protected external paths, and record baseline graph/audit/release/call-path evidence.
 
-### U2 — Prototype one 0.3-compatible swapvec patch in isolation
+Candidate discovery is read-only. Acquire at most one immutable candidate for static inspection under `candidate-source/`; do not invoke its build system or execute code. Record exact source URL/repository, immutable revision/version, archive/crate checksum and content hash, license, owner/maintenance status, reviewed source delta, and complete build-script/proc-macro/test/binary plus new-transitive-code inventory. Present that evidence and containment plan to the operator. Record explicit approval bound to the exact identity, or record `blocked`. No auto-check, generic request, inferred consent, or unavailable approval permits U2.
 
-**Domain/files:** dependency/prototype only; use a disposable workspace-contained worktree under `tmp/rustsec-2026-0041/`. The root checkout must not change. **Cap:** 110 minutes, one candidate, no production/source refactor.
+### U2 — Prototype one explicitly approved patch
 
-Harness before candidate change: capture the baseline compile result and locked graph, then make only the minimum prototype change needed for a checksum/revision-pinned swapvec 0.3-compatible package to require `lz4_flex >=0.11.6,<0.12`. Preserve swapvec API and default behavior; do not edit engram Rust source. Prove the resolved graph contains no lz4_flex 0.10.x or 0.12.0, `cargo audit` no longer reports `RUSTSEC-2026-0041`, and `cargo check --all-targets` succeeds. Stop rather than widen scope if this requires a Cozo fork, unsafe-code change, decompression backport, more than one third-party package, or a mutable dependency source. Prototype artifacts are non-shippable evidence and must not enter the release manifest.
+**Domain/files:** temporary dependency/prototype edits only in the current core worktree and run root. **Cap:** 110 minutes, one approved candidate, no Engram Rust source change.
 
-### U3 — Verify Cozo runtime/data compatibility and decide
+Re-prove all admission gates, process/handle quiescence, disk threshold, empty isolated target, external fingerprints, and the exact approval before execution. Capture byte baselines and hashes for every allowlisted manifest, lock, candidate, or harness file before mutation. Any candidate build script, proc macro, test, or binary execution without the exact approval is a high-risk manual-gate failure and stops the shipment.
 
-**Domain/files:** focused verification, one prototype-only reopen harness, and the U1 findings artifact only. **Cap:** 110 minutes, no production edits, at most three scenario groups.
+Run only the bounded compile/graph/audit prototype. Prove no affected or duplicate lz4 version, native audit semantics, and focused compile success. Stop on a second third-party package, mutable source, Cozo fork, unsafe/backport work, scope widening, process collision, disk pressure, containment uncertainty, or restoration risk.
 
-First prove direct on-disk compatibility with a prototype-only reopen-in-place harness: the baseline dependency creates and populates a disposable Cozo database, all baseline handles close, and the candidate opens the same files without deletion, dehydration, hydration, migration, or copying. Verify exact graph counts and representative query results. Then run `integration_cozo_cold_restart` only as a separate dehydration/hydration regression, followed by the focused `integration_cozo_crud`, `integration_cozo_edge`, `integration_cozo_symbol_lookup`, and `integration_cozo_vector` targets as one grouped backend gate. Re-run the locked graph and audit. Record Windows results and a Linux/macOS compile disposition; if a non-Windows check is unavailable, the recommendation remains blocked pending hosted matrix proof. Conclude `proceed`, `pivot`, `defer`, or `abandon`, including the exact production patch shape, maintenance owner, dependency source pin, rollback, and whether a separate implementation plan is now justified.
+Before U2 completes, wait for all child processes to exit, re-run handle checks, restore every temporary edit from captured bytes, verify hashes and admitted tracked status, and recheck external fingerprints and canonical artifact paths.
+
+### U3 — Verify synthetic runtime/data compatibility and close
+
+**Domain/files:** focused synthetic verification, one prototype-only reopen harness, and the findings artifact. **Cap:** 110 minutes excluding operator approval wait.
+
+Re-prove U2's gates. Create/populate only uniquely marked synthetic Cozo data under `tmp/rustsec-2026-0041/data/`; close every baseline handle before candidate reopen. Verify exact graph counts/query results, the separate dehydration/hydration regression, focused Cozo targets, locked graph/audit, Windows result, and Linux/macOS compile disposition. No unavailable platform proof may be represented as success.
+
+Record `proceed`, `pivot`, `defer`, or `abandon`, then complete post-spike closure: all spawned processes exited; no protected handle remains; temporary files are restored byte-identically; tracked status equals admission; every path remains under the run root; external fingerprints are unchanged; no live data was touched.
+
+Prepare an exact cleanup inventory limited to approved workspace-local prototype/cache/data/log artifacts under `tmp/rustsec-2026-0041/`. Cleanup is a separate `ActionRisk: destructive` action. Present exact canonical paths, hashes/sizes, owner, exclusions, and verification steps after spike evidence exists. Blanket dark-factory or shipment approval is not cleanup approval. If explicitly approved, remove only listed targets and verify their absence plus unchanged protected paths/fingerprints. Record `approved-and-verified`, `not-approved`, or `failed`. The latter two are valid closure facts but do not unlock `116-S`.
 
 ## Dependency Graph
 
-U1 blocks U2; U2 blocks U3. No implementation shipment may depend directly on this plan before U3 records a proceed/pivot recommendation. The policy shipment is ordered after this spike for operator priority, but is technically independent.
+U1 blocks U2; U2 blocks U3. Shipment `115-S` remains batch `dark-factory-2026-08-10`, order 1, predecessors `[]`. Shipment `116-S` remains the same batch, order 2, predecessors `[115-S]`, with hard edge `116-S -> 115-S`.
+
+Technical independence does not permit early claim. `116-S` remains queued/unclaimable until backlogit records `115-S` shipped, its shipment/items archived, merge commit evidence present, and the findings/closure evidence records an exact cleanup approval, successful targeted cleanup, and passing absence/path/fingerprint verification. If cleanup is not approved, unavailable, partial, or failed, `116-S` stays blocked even if `115-S` shipped.
 
 ## Decisions and Rationale
 
-- Do not plan a Cozo upgrade: no 0.8+ release exists.
-- Do not accept a direct lz4_flex override: it violates swapvec's semver requirement.
-- Do not remove/replace Cozo: that is disproportionate and introduces schema/query migration risk.
-- Do not call runtime containment remediation: current default-uncompressed/safe-decode evidence lowers exposure but leaves the vulnerable package and audit finding.
-- Investigate one minimal swapvec-compatible patch because it isolates the dependency change and can be falsified quickly.
-
-## Constitution Check
-
-- Safety-first Rust/unsafe prohibition: no unsafe implementation or backport is permitted.
-- Test first: U1 captures the baseline and U2 records the pre-change harness before candidate mutation; U3 validates behavior before any implementation plan.
-- Workspace containment: all prototypes stay under `tmp/rustsec-2026-0041/`; no external filesystem writes.
-- Single responsibility: one advisory, one transitive package boundary, one candidate.
-- Two-hour/width limits: every unit is <=110 minutes and isolated to evidence, dependency prototype, or verification.
-- Destructive approval: no deletion, force operation, live-data repair, or history rewrite is authorized.
-
-## Risks and Caveats
-
-A fork or vendored package creates supply-chain ownership; a git source can become unavailable; LZ4 API compatibility does not alone prove on-disk safety; and Cargo may retain multiple lz4 versions. Cozo's swapvec storage is temporary, but existing Cozo SQLite databases must still cold-restart unchanged. The spike must fail closed on provenance, audit, compile, runtime, data, or platform uncertainty.
-
-## Plan Hardening Signals
-
-- Public API, schema, or contract change: absent in the spike; possible in a later implementation.
-- Security-sensitive behavior: present; high-severity memory-exposure advisory and third-party source selection.
-- Migration/destructive action: absent; live databases and root manifests are read-only.
-- External dependency/operator checkpoint: present; candidate provenance and any future fork/vendoring choice need operator approval.
-- High runtime/rollback risk: present; the Cozo backend is the durable graph store.
-
-Requires plan hardening: yes
-
-## Runtime Verification and Closure
-
-The spike runs only in disposable workspaces and databases. Healthy evidence is: one pinned candidate, no affected lz4 version in the resolved graph, advisory absent, direct reopen-in-place of the untouched baseline database with exact graph/query results, the separate dehydration/hydration regression green, all focused Cozo targets green, and no root tracked diff. Failure/rollback trigger: advisory remains, duplicate lz4 versions, compile/API break, direct-reopen or hydration mismatch, graph result drift, unpinned source, missing license, or any required scope widening. Rollback is to discard the isolated worktree; no live data or root manifest is changed. Closure is the findings artifact plus backlog comments, with operator ownership of any later fork and a seven-day post-implementation audit/runtime observation window if a fix is eventually planned.
+- Keep one core worktree and one candidate; do not manufacture isolation through a second repository.
+- Use a fresh workspace-local target rather than cleaning/reusing the core target.
+- Treat static discovery as read-only and candidate execution as `ActionRisk: high`, manual approval required.
+- Treat targeted run-artifact cleanup as a later `ActionRisk: destructive`, exact approval required.
+- Preserve Windows accuracy: XDG variables supplement Unix only and do not prove Windows containment.
 
 ## Plan Hardening
 
-Hardening is required because the apparent small dependency change crosses a security and supply-chain boundary while sitting below the durable Cozo store.
+Hardening is required for security, untrusted execution, process/disk admission, destructive cleanup, filesystem containment, and durable-store risk.
 
-- **Protected invariants:** `#![forbid(unsafe_code)]`; exact Cozo feature set; no production source change; no operator database access; byte-identical cold restart; one lz4 version; immutable source pin and license; native audit exit preserved.
-- **Reinforcing evidence:** RustSec advisory text; 102-F advisory triage; 111-S audit closure; Cozo/swapvec crates.io metadata and current manifests; Cozo default SwapVec use; `cozo_cold_restart_test`; strict-safety and release-observability instructions.
-- **ProposedAction:** execute a third-party dependency prototype in a disposable workspace-contained worktree. **ActionRisk:** high. **approval_required:** yes; the operator explicitly requested a bounded security spike. **rollback:** discard or retain the disposable worktree under operator safeguards; root checkout remains untouched. **ActionResult:** planned.
-- **ProposedAction:** select a forked or vendored dependency for production. **ActionRisk:** high. **approval_required:** yes, after spike findings. **rollback:** reviewed manifest/lock revert. **ActionResult:** blocked pending U3; not authorized by this shipment.
-- **Monitoring/rollback:** record graph and audit deltas, candidate checksum/revision, platform matrix, cold-restart outcome, and source availability. Any failed invariant blocks promotion; no waiver converts this spike into implementation.
+- **ProposedAction:** statically inspect one immutable candidate. **ActionRisk:** moderate. **approval_required:** no execution approval for read-only inspection; admission evidence still required. **ActionResult:** planned.
+- **ProposedAction:** build or execute the exact candidate. **ActionRisk:** high. **approval_required:** explicit operator approval after identity/hash/license/inventory/containment evidence; no substitute. **ActionResult:** blocked until approval.
+- **ProposedAction:** temporarily mutate allowlisted manifests/lock/harness files. **ActionRisk:** high. **approval_required:** exact baseline and restoration contract. **ActionResult:** planned after admission.
+- **ProposedAction:** remove exact run artifacts. **ActionRisk:** destructive. **approval_required:** separate post-spike operator approval for canonical targets; blanket approval invalid. **ActionResult:** blocked pending post-spike inventory.
+- **Protected invariants:** one worktree, clean tracked baseline, quiescent processes/handles, disk threshold, isolated target, no live data, no external writes, byte restoration, exact cleanup, and `116-S` cleanup-result gate.
 
-## Plan Review
+## Runtime Verification and Closure
 
-**Gate: PASS for spike harvest only.** Hardening requirement is satisfied. Constitution, Rust, scope-boundary, learnings, architecture, supply-chain, and security-lens personas reviewed all units. Cross-model dispatch was unavailable; independent persona passes were consolidated locally.
+Healthy closure requires all admission evidence, exact approval, bounded prototype results, child-process exit, no open handles, byte-identical restoration, admitted status, canonical path proof, unchanged external fingerprints, synthetic-only data, and a recorded cleanup disposition. Cleanup success additionally requires exact approval, targeted deletion only, path absence, and protected-state re-verification. A recommendation may be recorded when cleanup is declined or fails, but `116-S` remains blocked.
 
-- **P0:** 0.
-- **P1:** 0 remaining. The prior ungrounded Cozo-major assumption was removed; the plan now forbids implementation until compatibility/provenance evidence exists.
-- **P2:** 0.
-- **P3:** 0.
+## Historical Plan Review
 
-The security lens confirms fail-closed source pinning, audit/lock proof, disposable data, cross-platform disposition, and explicit operator ownership. This PASS does not approve a dependency fix; it approves only the three-unit time-boxed investigation for harvest.
+The 2026-08-10 review and first 2026-08-11 focused re-review are preserved in `119.001-R`. They predate the second adversarial findings and do not by themselves authorize execution.
+
+## Focused Plan Re-review — 2026-08-11 (second remediation)
+
+**Stage gate: PASS; final adversarial rerun still required.** Constitution, scope, architecture, security/supply-chain, strict-safety, Windows containment, rollback/cleanup, and operational-sequencing lenses found P0 0, P1 0, P2 0, P3 0 in this final Stage contract. The gate confirms the dirty-config claim stop, process/disk/target/prior-artifact/live-data admission, explicit exact-candidate approval, byte/process/path closure, exact cleanup approval/result, and extended `116-S` block. It authorizes only the bounded investigation after every gate; it does not approve candidate execution, cleanup, or production remediation.
