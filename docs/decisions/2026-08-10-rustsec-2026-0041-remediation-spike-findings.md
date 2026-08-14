@@ -199,18 +199,124 @@ the previously assumed "bump `swapvec`" path:
 | Normal (non-dev) dependencies at build time | `twox-hash ^2.0.0` (optional, only under the `frame` feature) — no other third-party code pulled in |
 | Transitive impact | No change to `cozo` (`0.7.6`) or `swapvec` (`0.3.0`) versions; only the `lz4_flex` leaf is repinned |
 
-This candidate profile is **read-only discovery only** — no `Cargo.toml`,
-`Cargo.lock`, patch directive, or build/test/audit command has been applied
-or executed. Per the acceptance criteria on `119.001-T`, execution of any
-patched version requires an operator approval bound to this exact candidate
-identity; blanket, batch, shipment-level, or "dark-factory" authorization
-does not satisfy that requirement.
+At the U1 boundary this candidate profile was **read-only discovery only** —
+no core `Cargo.toml`, `Cargo.lock`, patch directive, or build/test/audit command
+had been applied or executed. The exact-candidate approval recorded for the
+next phase was bound to `lz4_flex 0.11.6` and its checksum above; blanket,
+batch, shipment-level, or "dark-factory" authorization was not used as a
+substitute.
 
-### Updated disposition
+### U1 disposition at phase boundary
 
-U1's process-quiescence and disk-admission gates are now genuinely satisfied
-with fresh evidence, and read-only candidate discovery is complete. `119.001-T`
-remains `blocked` pending one specific decision: explicit operator approval to
-apply the `lz4_flex 0.11.6` patch (via `[patch.crates-io]`, checksum
-`373f5ec...`) and proceed to a sandboxed `U2` build/test under
-`tmp/rustsec-2026-0041/`. No such approval has been recorded yet.
+U1's process-quiescence and disk-admission gates were satisfied with fresh
+evidence, and read-only candidate discovery was complete. The phase then
+paused until the operator approved execution bound to the exact candidate
+identity below. That approval was subsequently provided on 2026-08-14.
+
+## U2 prototype — 2026-08-14 (approved candidate validated)
+
+The operator explicitly approved execution of `lz4_flex 0.11.6` on
+2026-08-14. U2 ran only inside `tmp/rustsec-2026-0041/` with a workspace-local
+`CARGO_HOME`, `CARGO_TARGET_DIR`, advisory database, candidate source, logs,
+and temporary-data boundary. The core worktree and its production manifests
+were not edited.
+
+### Resolver correction
+
+The initially proposed direct `[patch.crates-io] lz4_flex = "=0.11.6"`
+configuration is not valid Cargo patch syntax for this graph: Cargo rejects a
+same-source registry patch, and `swapvec 0.3.0` declares `lz4_flex ^0.10.0`,
+which cannot select `0.11.6` directly. The sandbox therefore used the
+smallest compatibility bridge that preserves the approved candidate:
+
+- Download the immutable `swapvec 0.3.0` crate into `candidate-source/`
+- Change only its dependency declaration from `lz4_flex = "0.10.0"` to
+  `lz4_flex = "0.11.6"`
+- Add a path patch for that manifest-only `swapvec 0.3.0` copy
+- Resolve the registry `lz4_flex 0.11.6` crate with its recorded checksum
+
+No swapvec Rust source, Cozo source, Engram source, or production manifest was
+changed. Cargo resolved the final graph as:
+
+```text
+engram -> cozo 0.7.6 -> swapvec 0.3.0 (manifest-only sandbox bridge)
+       -> lz4_flex 0.11.6
+```
+
+### U2 evidence and results
+
+- Isolated U2 baseline: `37,317,342` bytes; final sandbox footprint after
+  compilation and tests: `32,644,387,387` bytes
+- Incremental footprint `I`: `32,607,070,045` bytes (**30.368 GiB**)
+- Required threshold: `max(20 GiB, ceil(1.5*I) + 2 GiB)` = **47.552 GiB**
+- Free space after U3: **78.774 GiB** — threshold PASS
+- `cargo update -p lz4_flex --precise 0.11.6`: PASS in sandbox
+- `cargo check --locked --all-targets`: PASS
+- `cargo dev-test`: **599 passed, 0 failed**
+- `cargo test --locked --all-targets`: PASS, including all registered
+  contract, integration, and unit targets
+- `cargo clippy --locked --all-targets -- -D warnings -D clippy::pedantic`:
+  PASS for the default feature set
+- `cargo fmt --all -- --check`: PASS
+- `cargo audit --file <sandbox Cargo.lock>`: PASS with **0 vulnerabilities**
+  across 553 dependencies. The report contained existing unmaintained and
+  unsound warnings, but no advisory, including RUSTSEC-2026-0041.
+
+The all-features clippy probe remains outside this spike's default Cozo path
+and fails on pre-existing OpenTelemetry API incompatibilities in
+`src/server/observability.rs` (`SdkTracerProvider` and
+`SpanExporter::builder`). No candidate-related error was reported by that
+probe, and no source fix was made for it.
+
+### Restoration and containment
+
+- Core `Cargo.toml` SHA-256 remained
+  `7234A5028E719DABDCF9BD46235A1D4FE8432E666B7E0B831A145F6BA23B1626`
+- Core `Cargo.lock` SHA-256 remained
+  `BBBD0B143102D6A0CFF3A652D02A1DD633D6A75B4DFB02B2627E24988D5B7E87`
+- Core `git status --porcelain --untracked-files=no` was clean throughout U2
+  and U3; this findings addendum is the only subsequent tracked modification
+- No Cargo process, Rust compiler, Rust analyzer, or cargo-audit process
+  remained after U2
+- Global Cargo registry source/cache counts and bytes matched the captured
+  baseline exactly: 34,474 files / 975,766,692 bytes and 909 files /
+  159,067,361 bytes. Global Cargo git and local cargo-audit paths remained
+  absent
+- All sandbox artifacts resolve beneath `tmp/rustsec-2026-0041/`
+- The sandbox manifest, lockfile, target, caches, logs, and candidate source
+  remain retained for the separate cleanup decision; no deletion was attempted
+
+## U3 runtime/data verification — 2026-08-14 (synthetic only)
+
+U3 ran focused Cozo verification with `TEMP` and `TMP` redirected to the
+workspace-local synthetic boundary. The test set exercised cold restart,
+CRUD, graph edges, symbol lookup, and vector storage using only temporary
+synthetic records. The run passed **53 tests, 0 failed**:
+
+- `integration_cozo_cold_restart`: 4 passed
+- `integration_cozo_crud`: 11 passed
+- `integration_cozo_edge`: 15 passed
+- `integration_cozo_symbol_lookup`: 13 passed
+- `integration_cozo_vector`: 10 passed
+
+The synthetic `data/` directory was empty after test-managed temporary cleanup.
+No live or operator data was read, copied, migrated, repaired, or deleted. No
+child process remained. The approved candidate therefore preserves the tested
+Cozo 0.7.6 graph, dehydration/hydration, and vector runtime behavior in the
+sandbox.
+
+## Spike disposition
+
+**Recommendation: `pivot` — eligible for a separately planned production
+remediation, not an automatic production change.** The approved patched
+`lz4_flex 0.11.6` candidate is build-, audit-, and focused-runtime-compatible,
+but production adoption requires a maintained compatibility bridge or an
+upstream `swapvec` release that widens its `lz4_flex` requirement. The direct
+same-source Cargo patch originally proposed is not viable. This spike did not
+modify production manifests, lockfiles, source, or live data.
+
+The spike evidence is complete. Cleanup is **`not-approved`**: the exact
+workspace-local artifact inventory is retained under `tmp/rustsec-2026-0041/`
+for a later, separately approved destructive cleanup action. This leaves the
+follow-on shipment blocked until that cleanup decision and a production
+remediation plan are separately reviewed.
