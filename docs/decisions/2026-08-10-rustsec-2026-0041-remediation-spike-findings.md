@@ -119,3 +119,98 @@ candidate identity/inventory and obtain explicit approval
 bound to that exact candidate before any execution. `119.002-T` and
 `119.003-T` remain blocked by dependency and approval gates. Shipment `115-S`
 does not ship and must not unlock `116-S`.
+
+## U1 recheck — 2026-08-14 (process/disk gates cleared; candidate identified)
+
+This addendum records a fresh, independent U1 recheck performed after the
+tracked-baseline blocker (`.autoharness/config.yaml`, PR #338) and the
+`.github/agents/stage.agent.md` model-routing update were both resolved and
+committed (`05651ebe`) on this branch.
+
+### Process/handle quiescence — now PASS
+
+- The specific Engram daemon PID (`7016`) recorded in the prior admission
+  attempt is **no longer running** (`Get-Process -Id 7016` returns nothing).
+- A live process inventory (`Get-CimInstance Win32_Process`) found no
+  `engram.exe daemon` process bound to the `C:\Source\GitHub\engram`
+  workspace. The only running Engram daemon (PID `16448`) is bound to the
+  **`autoharness`** workspace, a different working tree.
+- Querying the Engram MCP tool surface directly
+  (`get_daemon_status` / `get_workspace_status`) for this workspace returned
+  `Failed to connect to daemon IPC endpoint ... The system cannot find the
+  file specified` — confirming, from the tool's own perspective, that no
+  daemon session or open pipe currently exists for this workspace.
+- No `cargo.exe`, `rustc.exe`, `rust-analyzer.exe`, or `cargo-audit.exe`
+  process was found running anywhere on the host.
+- **This gate is satisfied without terminating any process** — the prior
+  blocking daemon session had already ended on its own between admission
+  attempts. No implicit kill was performed or required.
+
+### Disk admission — now PASS
+
+- Current `C:` free space: `116,691,091,456` bytes (**108.677 GiB**), measured
+  via `System.IO.DriveInfo`.
+- This clears the `8 GiB` fixed read-only U1 floor with wide margin (the
+  prior failure was caused by a superseded policy multiplying the protected
+  core target into the threshold, which the recalibrated policy no longer
+  does).
+- The core `target/` directory remains untouched and is still excluded from
+  any admission calculation.
+- U2/U3 incremental-footprint threshold (`max(20 GiB, ceil(1.5*I) + 2 GiB)`)
+  has not yet been computed against a real isolated run root because no
+  isolated run has started; at 108.677 GiB free, headroom is ample for any
+  plausible single-crate patch build (`I` on the order of low single-digit
+  GiB), but the exact measurement must still be taken at U2 start per policy.
+
+### Candidate identity — read-only discovery complete
+
+Read-only registry/advisory research (`crates.io` API, `rustsec.org`, and the
+upstream `lz4_flex` GitHub manifest) established the following, in place of
+the previously assumed "bump `swapvec`" path:
+
+- **`swapvec` does not fix the advisory.** Both the currently locked
+  `swapvec 0.3.0` and the latest published `swapvec 0.4.2` declare the
+  identical dependency requirement `lz4_flex = "^0.10.0"` — confirmed via
+  `crates.io/api/v1/crates/swapvec/0.4.2/dependencies`. Bumping `swapvec`
+  alone, at any published version, does **not** clear RUSTSEC-2026-0041.
+- **`cozo` has no newer crates.io release.** `crates.io/api/v1/crates/cozo`
+  reports `max_version = newest_version = 0.7.6`, last published
+  2023-12-11. No `0.8` (or any post-0.7.6) version is published on
+  crates.io, consistent with deliberation `017-D`'s conclusion that a
+  crates.io-based major-version path is not currently available.
+- **Only a direct `lz4_flex` patch clears the advisory** while keeping
+  `cozo 0.7.6` / `swapvec 0.3.0` unchanged, via a `[patch.crates-io]`
+  override in this repository's own `Cargo.toml`.
+
+**Proposed exact candidate** (read-only profile, not yet applied):
+
+| Field | Value |
+|---|---|
+| Crate | `lz4_flex` |
+| Version | `0.11.6` (lowest version inside the official patched range `>=0.11.6, <0.12.0`, minimizing API drift from the currently locked `0.10.0`) |
+| Advisory patched ranges | `>=0.11.6, <0.12.0` or `>=0.12.1` (per `rustsec.org/advisories/RUSTSEC-2026-0041.html`) |
+| SHA-256 checksum (crates.io) | `373f5eceeeab7925e0c1098212f2fbc4d416adec9d35051a6ab251e824c1854a` |
+| License | MIT |
+| Repository | `https://github.com/pseitz/lz4_flex` |
+| Publisher | `PSeitz` (GitHub `pseitz`) — same publisher as every other published `lz4_flex` version, including the currently locked `0.10.0` |
+| `rust-version` (MSRV) | `1.81` — satisfied by this repo's own `rust-version = "1.85"` (`Cargo.toml`) |
+| Build script | **None.** Upstream `Cargo.toml`'s `include` manifest is `["src/*.rs", "src/frame/**/*", "src/block/**/*", "README.md", "LICENSE"]` — no `build.rs`, no `build =` field, no `[build-dependencies]` |
+| Proc-macro | **None.** No `proc-macro = true`, no proc-macro-kind dependency at any version |
+| Normal (non-dev) dependencies at build time | `twox-hash ^2.0.0` (optional, only under the `frame` feature) — no other third-party code pulled in |
+| Transitive impact | No change to `cozo` (`0.7.6`) or `swapvec` (`0.3.0`) versions; only the `lz4_flex` leaf is repinned |
+
+This candidate profile is **read-only discovery only** — no `Cargo.toml`,
+`Cargo.lock`, patch directive, or build/test/audit command has been applied
+or executed. Per the acceptance criteria on `119.001-T`, execution of any
+patched version requires an operator approval bound to this exact candidate
+identity; blanket, batch, shipment-level, or "dark-factory" authorization
+does not satisfy that requirement.
+
+### Updated disposition
+
+U1's process-quiescence and disk-admission gates are now genuinely satisfied
+with fresh evidence, and read-only candidate discovery is complete. `119.001-T`
+remains `blocked` pending one specific decision: explicit operator approval to
+apply the `lz4_flex 0.11.6` patch (via `[patch.crates-io]`, checksum
+`373f5ec...`) and proceed to a sandboxed `U2` build/test under
+`tmp/rustsec-2026-0041/`. No such approval has been recorded yet.
