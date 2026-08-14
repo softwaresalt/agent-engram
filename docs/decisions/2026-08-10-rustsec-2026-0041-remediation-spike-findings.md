@@ -2,7 +2,7 @@
 title: "RUSTSEC-2026-0041 remediation spike findings"
 type: decision
 date: 2026-08-12
-status: blocked
+status: accepted
 shipment: 115-S
 feature: 119-F
 task: 119.001-T
@@ -307,16 +307,40 @@ sandbox.
 
 ## Spike disposition
 
-**Recommendation: `pivot` — eligible for a separately planned production
-remediation, not an automatic production change.** The approved patched
-`lz4_flex 0.11.6` candidate is build-, audit-, and focused-runtime-compatible,
-but production adoption requires a maintained compatibility bridge or an
-upstream `swapvec` release that widens its `lz4_flex` requirement. The direct
-same-source Cargo patch originally proposed is not viable. This spike did not
-modify production manifests, lockfiles, source, or live data.
+**Historical recommendation: `pivot`.** The approved patched
+`lz4_flex 0.11.6` candidate was build-, audit-, and focused-runtime-compatible,
+but direct same-source patching was not viable. Production adoption therefore
+required a maintained compatibility bridge or an upstream `swapvec` release
+that widened its `lz4_flex` requirement.
 
 The spike evidence is complete. Cleanup is **`not-approved`**: the exact
 workspace-local artifact inventory is retained under `tmp/rustsec-2026-0041/`
-for a later, separately approved destructive cleanup action. This leaves the
-follow-on shipment blocked until that cleanup decision and a production
-remediation plan are separately reviewed.
+for a later, separately approved destructive cleanup action.
+
+## Production remediation — 2026-08-14
+
+The operator-approved compatibility-fork option is now applied to the
+production dependency graph:
+
+* `softwaresalt/swapvec` is based on upstream `swapvec 0.3.0` commit `3369988`
+* Fork revision `72b99cef424a739470cefc08f9a37b934a0afcd4` changes only the
+  `lz4_flex` requirement from `0.10.0` to `0.11.6`
+* Root `Cargo.toml` pins that immutable fork revision with `[patch.crates-io]`
+* `Cargo.lock` resolves `swapvec 0.3.0` from the fork and `lz4_flex 0.11.6`
+
+Production verification passed:
+
+* `cargo check --locked --all-targets`
+* `cargo dev-test` — 599 passed, 0 failed
+* `cargo clippy --all-targets -- -D warnings -D clippy::pedantic`
+* `cargo fmt --all -- --check`
+* `cargo audit` — 0 vulnerabilities; existing allowed maintenance and
+  unsoundness warnings remain
+* `cargo tree --locked --invert lz4_flex@0.11.6` —
+  `engram -> cozo 0.7.6 -> swapvec 0.3.0 -> lz4_flex 0.11.6`
+* `cargo tree --locked --invert lz4_flex@0.10.0` — no matching package
+
+The all-features Clippy probe remains blocked by unrelated pre-existing
+OpenTelemetry API incompatibilities in `src/server/observability.rs`.
+Sandbox artifacts remain retained because cleanup is still a separate,
+destructive action requiring exact approval.
