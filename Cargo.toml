@@ -2,6 +2,13 @@
 members = [".", "crates/powerbi-tmdl-parser"]
 resolver = "2"
 
+# Cozo 0.7.6 requires swapvec 0.3.x, whose published manifest restricts
+# lz4_flex to the vulnerable 0.10.x line. This immutable reviewed fork keeps
+# swapvec 0.3.0 source/API unchanged and only changes that one dependency's
+# requirement, from the vulnerable ^0.10.0 range to the patched ^0.11.6 range.
+[patch.crates-io]
+swapvec = { git = "https://github.com/softwaresalt/swapvec", rev = "72b99cef424a739470cefc08f9a37b934a0afcd4" }
+
 [package]
 name = "engram"
 version = "0.2.0"
