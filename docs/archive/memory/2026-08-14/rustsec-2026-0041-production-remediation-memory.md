@@ -32,10 +32,10 @@ The production change was committed and pushed as `ed78d5780e22f86601d0139a07128
 
 ## Decisions and constraints
 
-The direct same-source crates.io patch was rejected by Cargo and cannot satisfy
-`swapvec ^0.10`-style resolution across the `0.x` minor boundary. The fork
-changes only the dependency declaration and keeps `swapvec 0.3.0` source/API
-unchanged. The all-features OpenTelemetry Clippy failure remains unrelated and
+The direct same-source crates.io patch was rejected by Cargo and cannot
+satisfy `swapvec 0.3.0`'s `lz4_flex ^0.10.0` dependency requirement across the
+`0.x` minor-version boundary. The fork changes only that dependency
+declaration and keeps `swapvec 0.3.0` source/API unchanged. The all-features OpenTelemetry Clippy failure remains unrelated and
 was not changed.
 
 Sandbox artifacts under `tmp/rustsec-2026-0041/` remain retained. Deletion is a

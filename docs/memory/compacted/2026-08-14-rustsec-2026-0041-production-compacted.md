@@ -27,5 +27,6 @@ and remains a separate follow-up.
 
 The production change and backlog/evidence updates were committed and pushed
 as `ed78d5780e22f86601d0139a07128acfe194c3d4`. Sandbox artifacts under
-`tmp/rustsec-2026-0041/` remain retained because deletion is a separate
-destructive action requiring exact operator approval.
+`tmp/rustsec-2026-0041/` were subsequently approved for deletion and removed
+(~32.7 GB), verified absent, and documented in
+`docs/closure/2026-08-14-rustsec-2026-0041-sandbox-cleanup-completion.md`.

@@ -127,7 +127,7 @@ tracked-baseline blocker (`.autoharness/config.yaml`, PR #338) and the
 `.github/agents/stage.agent.md` model-routing update were both resolved and
 committed (`05651ebe`) on this branch.
 
-### Process/handle quiescence — now PASS
+### Process quiescence — now PASS; handle inspection accepted via alternative evidence
 
 - The specific Engram daemon PID (`7016`) recorded in the prior admission
   attempt is **no longer running** (`Get-Process -Id 7016` returns nothing).
@@ -141,10 +141,34 @@ committed (`05651ebe`) on this branch.
   file specified` — confirming, from the tool's own perspective, that no
   daemon session or open pipe currently exists for this workspace.
 - No `cargo.exe`, `rustc.exe`, `rust-analyzer.exe`, or `cargo-audit.exe`
-  process was found running anywhere on the host.
+  process was found running anywhere on the host. This is a host-wide
+  process-table check, stronger than the prior single-PID test.
 - **This gate is satisfied without terminating any process** — the prior
   blocking daemon session had already ended on its own between admission
   attempts. No implicit kill was performed or required.
+
+**Handle inspection remains not independently proven.** `handle.exe` /
+`handle64.exe` were still unavailable and the system's global "maintain
+objects list" flag remained disabled — unchanged from the original blocker.
+This recheck does not manufacture new handle-level evidence and does not
+claim to. The plan's handle-inspection requirement is instead satisfied
+through an explicitly documented alternative-evidence disposition rather than
+direct proof:
+
+1. A file handle can only be held by a live process. The host-wide
+   process-table inventory above found zero processes capable of holding a
+   handle on any workspace path (`cargo.exe`, `rustc.exe`,
+   `rust-analyzer.exe`, `cargo-audit.exe`, or an `engram.exe daemon` bound to
+   this workspace). Absence of any handle-capable process is indirect but
+   logically sufficient evidence of handle quiescence.
+2. Subsequent execution — the U2 sandbox prototype, production `cargo check`,
+   `cargo dev-test`, `cargo clippy`, `cargo fmt`, `cargo audit`, and the later
+   sandbox cleanup deletion of `tmp/rustsec-2026-0041/` — completed with zero
+   file-lock or access-denied errors, which is retrospective empirical
+   confirmation that no conflicting handle existed on any relevant path.
+3. This alternative-evidence disposition is recorded explicitly here, per the
+   plan's requirement to document any deviation rather than silently mark the
+   combined gate PASS.
 
 ### Disk admission — now PASS
 
@@ -209,9 +233,11 @@ substitute.
 ### U1 disposition at phase boundary
 
 U1's process-quiescence and disk-admission gates were satisfied with fresh
-evidence, and read-only candidate discovery was complete. The phase then
-paused until the operator approved execution bound to the exact candidate
-identity below. That approval was subsequently provided on 2026-08-14.
+evidence; handle inspection was accepted via the documented alternative
+evidence above rather than direct handle-level proof. Read-only candidate
+discovery was complete. The phase then paused until the operator approved
+execution bound to the exact candidate identity below. That approval was
+subsequently provided on 2026-08-14.
 
 ## U2 prototype — 2026-08-14 (approved candidate validated)
 
@@ -342,5 +368,8 @@ Production verification passed:
 
 The all-features Clippy probe remains blocked by unrelated pre-existing
 OpenTelemetry API incompatibilities in `src/server/observability.rs`.
-Sandbox artifacts remain retained because cleanup is still a separate,
-destructive action requiring exact approval.
+
+Sandbox cleanup was subsequently approved and executed: `tmp/rustsec-2026-0041/`
+(~32.7 GB) was deleted and verified absent on 2026-08-14. See
+`docs/closure/2026-08-14-rustsec-2026-0041-sandbox-cleanup-completion.md` for
+the approval record, removed-artifact inventory, and verification evidence.

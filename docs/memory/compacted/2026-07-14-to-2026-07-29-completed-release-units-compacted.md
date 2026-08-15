@@ -4,12 +4,12 @@ type: compacted-memory
 date: 2026-08-14
 status: complete
 sources:
-  - docs/memory/2026-07-14-ship-080S-dax-intelligence-merge-closure.md
-  - docs/memory/2026-07-28-ship-092S-same-file-shadowing-closure.md
-  - docs/memory/2026-07-28-ship-093S-cargo-audit-closure.md
-  - docs/memory/2026-07-28-ship-094S-versioned-revalidation-closure.md
-  - docs/memory/2026-07-29-ship-095S-daemon-drain-hardening-closure.md
-  - docs/memory/2026-07-29-ship-096S-forced-index-certify-completeness-closure.md
+  - docs/archive/memory/2026-07-14-ship-080S-dax-intelligence-merge-closure.md
+  - docs/archive/memory/2026-07-28-ship-092S-same-file-shadowing-closure.md
+  - docs/archive/memory/2026-07-28-ship-093S-cargo-audit-closure.md
+  - docs/archive/memory/2026-07-28-ship-094S-versioned-revalidation-closure.md
+  - docs/archive/memory/2026-07-29-ship-095S-daemon-drain-hardening-closure.md
+  - docs/archive/memory/2026-07-29-ship-096S-forced-index-certify-completeness-closure.md
 ---
 
 # Completed release-unit memory compaction

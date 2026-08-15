@@ -1,8 +1,8 @@
 ---
 type: closure
-completion_date: 2026-08-14T16:57:00Z
+completion_date: 2026-08-14T16:57:00-07:00
 work_unit: RUSTSEC-2026-0041 Remediation (Sandbox Cleanup Phase)
-operator_approval: "User approved full cleanup at 2026-08-14T16:55:52Z"
+operator_approval: "User approved full cleanup at 2026-08-14T16:55:52-07:00"
 ---
 
 # RustSec Sandbox Cleanup — Completion Report
@@ -33,13 +33,15 @@ Cleanup of all artifacts produced during the RustSec 2026-0041 spike and remedia
 
 ## Timeline
 
+All times below are US Pacific local time (`-07:00`) unless otherwise noted.
+
 | Event | Date/Time |
 |-------|-----------|
 | Sandbox creation | 2026-08-12 (spike phase) |
 | Validation complete | 2026-08-13 |
 | Production remediation applied | 2026-08-14 |
-| PR created | 2026-08-14T16:57:00Z |
-| Cleanup approved and executed | 2026-08-14T16:55:52Z → 16:57:00Z |
+| PR created | 2026-08-14T16:56:12-07:00 (`2026-08-14T23:56:12Z`) |
+| Cleanup approved and executed | 2026-08-14T16:55:52-07:00 → 16:57:00-07:00 |
 
 ## Decision Record
 
@@ -61,4 +63,4 @@ No sandbox artifacts remain to interfere with production builds or CI.
 
 **Approved by**: User (operator approval timestamp logged)  
 **Executed by**: Copilot  
-**Completion verified**: 2026-08-14T16:57:00Z
+**Completion verified**: 2026-08-14T16:57:00-07:00

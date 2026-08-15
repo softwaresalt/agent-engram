@@ -1,6 +1,6 @@
 ---
 title: "Cargo same-source patches cannot widen an indirect semver requirement"
-description: "A registry-only lz4_flex patch is rejected and cannot bypass swapvec's ^0.10.0 requirement"
+description: "A registry-only lz4_flex patch is rejected and cannot bypass swapvec's ^0.10.0 lz4_flex requirement"
 problem_type: "dependency resolution failure"
 category: "build-errors"
 component: "Cargo dependency graph (cozo/swapvec/lz4_flex)"
@@ -47,10 +47,14 @@ The bridge passed the default-feature build, 599-test development suite,
 all-target tests, pedantic clippy, formatting, audit with zero vulnerabilities,
 and 53 focused synthetic Cozo tests.
 
-This bridge is not a production change. Production adoption requires a
-reviewed maintained swapvec compatibility bridge or an upstream swapvec release
-that widens the requirement. The production manifest and lockfile remained
-unchanged.
+This sandbox bridge itself was never a production change. Production adoption
+followed as a separate, reviewed step: an immutable `softwaresalt/swapvec`
+Git fork (based on upstream `swapvec 0.3.0` commit `3369988`, pinned at
+revision `72b99cef424a739470cefc08f9a37b934a0afcd4`) that changes only the
+`lz4_flex` requirement to `0.11.6`. Root `Cargo.toml` now pins that fork
+under `[patch.crates-io]`, and `Cargo.lock` resolves `swapvec 0.3.0` from the
+Git source with `lz4_flex 0.11.6`. Production verification (tests, pedantic
+Clippy, formatting, `cargo audit`) passed against the patched graph.
 
 ## Prevention
 
