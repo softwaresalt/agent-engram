@@ -24,9 +24,14 @@ The run is **blocked before candidate discovery or any Cargo/cargo-audit
 command**. No manifest/lock file was changed, no candidate was acquired or
 executed, no test/runtime code ran, and no data or cleanup operation occurred.
 
-The exact final reviewed plan remains authoritative. No production fix, Cozo
-fork, vendoring, migration, second worktree, live data, global write, or
-blanket cleanup is authorized.
+The exact final reviewed plan remains authoritative **at this U1 admission
+boundary**. No production fix, Cozo fork, vendoring, migration, second
+worktree, live data, global write, or blanket cleanup is authorized at this
+point in the record. This prohibition is scoped to the U1 spike phase
+documented here; it does not extend to the separately approved production
+remediation recorded later in this document under "Production remediation —
+2026-08-14", which followed its own explicit operator approval and
+strict-safety disposition.
 
 ## Claim and baseline evidence
 
@@ -276,6 +281,17 @@ engram -> cozo 0.7.6 -> swapvec 0.3.0 (manifest-only sandbox bridge)
 - Incremental footprint `I`: `32,607,070,045` bytes (**30.368 GiB**)
 - Required threshold: `max(20 GiB, ceil(1.5*I) + 2 GiB)` = **47.552 GiB**
 - Free space after U3: **78.774 GiB** — threshold PASS
+- **Gate-timing deviation**: the plan requires the incremental-footprint
+  estimate and a free-space check before both U2 and U3 start. Only one
+  combined measurement was taken, after both phases completed, rather than
+  separate pre-U2 and pre-U3 checks. This is recorded here as an explicit
+  deviation rather than an implicit claim that the fail-closed check ran
+  before execution. It is accepted because: (1) U2 and U3 ran back-to-back
+  with no intervening operator action or additional disk consumption between
+  them, so a single post-hoc measurement bounds both phases' combined
+  footprint; and (2) the observed free space (78.774 GiB) cleared the
+  threshold (47.552 GiB) by a wide margin, making it very unlikely that
+  either phase individually would have failed a pre-check that was skipped.
 - `cargo update -p lz4_flex --precise 0.11.6`: PASS in sandbox
 - `cargo check --locked --all-targets`: PASS
 - `cargo dev-test`: **599 passed, 0 failed**
@@ -373,3 +389,14 @@ Sandbox cleanup was subsequently approved and executed: `tmp/rustsec-2026-0041/`
 (~32.7 GB) was deleted and verified absent on 2026-08-14. See
 `docs/closure/2026-08-14-rustsec-2026-0041-sandbox-cleanup-completion.md` for
 the approval record, removed-artifact inventory, and verification evidence.
+
+Strict-safety record for this production action:
+
+- **ProposedAction:** apply the reviewed `softwaresalt/swapvec` compatibility
+  fork to the production `Cargo.toml`/`Cargo.lock` to remediate
+  RUSTSEC-2026-0041 in the shipped dependency graph.
+  **ActionRisk:** high (production dependency-graph change, security
+  remediation).
+  **ActionResult:** applied — operator approved the compatibility-fork option
+  on 2026-08-14; the change was committed, pushed, and verified via the
+  quality-gate results above.
