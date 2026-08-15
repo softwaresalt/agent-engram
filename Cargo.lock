@@ -3946,7 +3946,7 @@ dependencies = [
 [[package]]
 name = "swapvec"
 version = "0.3.0"
-source = "git+https://github.com/softwaresalt/swapvec?rev=72b99ce#72b99cef424a739470cefc08f9a37b934a0afcd4"
+source = "git+https://github.com/softwaresalt/swapvec?rev=72b99cef424a739470cefc08f9a37b934a0afcd4#72b99cef424a739470cefc08f9a37b934a0afcd4"
 dependencies = [
  "bincode",
  "lz4_flex",
