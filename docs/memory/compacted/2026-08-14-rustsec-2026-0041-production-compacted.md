@@ -26,7 +26,12 @@ is absent. The all-features OpenTelemetry Clippy incompatibility is unrelated
 and remains a separate follow-up.
 
 The production change and backlog/evidence updates were committed and pushed
-as `ed78d5780e22f86601d0139a07128acfe194c3d4`. Sandbox artifacts under
+as `ed78d5780e22f86601d0139a07128acfe194c3d4`, which pinned the fork by its
+short `72b99ce` revision prefix. A subsequent PR review fix finalized the
+manifest to the full 40-character SHA
+(`72b99cef424a739470cefc08f9a37b934a0afcd4`) in commit `d8932057`, so the
+durable provenance now reaches the fully reviewed full-SHA state. Sandbox
+artifacts under
 `tmp/rustsec-2026-0041/` were subsequently approved for deletion and removed
 (~32.7 GB), verified absent, and documented in
 `docs/closure/2026-08-14-rustsec-2026-0041-sandbox-cleanup-completion.md`.
