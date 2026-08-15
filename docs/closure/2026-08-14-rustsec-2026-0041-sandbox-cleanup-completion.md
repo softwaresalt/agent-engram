@@ -38,7 +38,7 @@ All times below are US Pacific local time (`-07:00`) unless otherwise noted.
 | Event | Date/Time |
 |-------|-----------|
 | Sandbox creation | 2026-08-12 (spike phase) |
-| Validation complete | 2026-08-13 |
+| Validation complete | 2026-08-14 (U1 recheck and U2 prototype validation) |
 | Production remediation applied | 2026-08-14 |
 | PR created | 2026-08-14T16:56:12-07:00 (`2026-08-14T23:56:12Z`) |
 | Cleanup approved and executed | 2026-08-14T16:55:52-07:00 → 16:57:00-07:00 |
