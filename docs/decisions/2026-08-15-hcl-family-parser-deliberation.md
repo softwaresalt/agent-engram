@@ -66,9 +66,22 @@ Defer until a newer release or vendor generated grammar sources. Deferral leaves
 
 Choose Option B. Exact-pin `tree-sitter-hcl = "=1.1.0"`; retain Cargo.lock checksum verification; add no workspace `unsafe` blocks. Use one `Language::Hcl` and map all three extensions to `hcl`. Include `hcl` in default supported languages so Terraform-family projects are indexed without hidden opt-in. Keep dialect identity in the file extension/path rather than creating duplicate language variants.
 
-Symbol contract: each top-level HCL block becomes one structural class symbol named from its header segments joined by dots, such as `resource.aws_instance.web`, `data.aws_ami.ubuntu`, `module.vpc`, or `variable.region`. Each top-level attribute becomes a structural class symbol named by its key, which gives `.tfvars` useful symbols. Emit a `Defines` edge for each.
+Symbol contract: each top-level HCL block becomes one structural class symbol
+named from its header segments joined by dots and prefixed with `hcl.block.`,
+such as `hcl.block.resource.aws_instance.web`,
+`hcl.block.data.aws_ami.ubuntu`, `hcl.block.module.vpc`, or
+`hcl.block.variable.region`. Each top-level attribute becomes
+`hcl.attribute.<key>`, which gives `.tfvars` useful symbols. Emit a `Defines`
+edge for each.
 
-Reference contract: for expression traversals, emit one normalized dotted target such as `var.region`, `local.name`, `module.vpc.id`, `data.aws_ami.ubuntu.id`, or `aws_vpc.main.id`; attribute the reference to the containing file through the existing persistence contract. Do not execute expressions or infer provider schemas. Deduplicate identical targets per file while preserving deterministic source order for symbols.
+Reference contract: for expression traversals, emit one normalized dotted
+target such as `var.region`, `local.name`, `module.vpc.id`,
+`data.aws_ami.ubuntu.id`, or `aws_vpc.main.id`; attribute the reference to the
+containing file through the existing persistence contract. Do not execute
+expressions or infer provider schemas. Deduplicate by `(file, target)` in
+deterministic first-encounter order because the current persistence key cannot
+preserve source context as edge identity. HCL v1 persists only a file
+self-loop and target hint, never global name resolution.
 
 ## Rejected Alternatives
 

@@ -5,7 +5,8 @@ type: "pre-pr-adversarial-review"
 status: "passed"
 plan: "docs/exec-plans/2026-08-15-hcl-family-parser-plan.md"
 shipment_id: "117-S"
-reviewed_head: "5b4f89c4b6e4c2506bbbf4d4d125dd814564cb14 plus uncommitted changes"
+reviewed_commit: "e1aa1196e6a9a4d1e906840c7bd52813f4ace68f"
+reviewed_tree: "925fc01f8fce641ae512128f1494ac679973b858"
 ---
 
 **Baseline:** `origin/main`
@@ -16,10 +17,10 @@ reviewed_head: "5b4f89c4b6e4c2506bbbf4d4d125dd814564cb14 plus uncommitted change
 
 ## Scope
 
-The complete current diff was reviewed: 37 files, 1,594 insertions, and 58
-deletions before this report. The reviewed changes are limited to planning,
-backlog, and documentation artifacts; no runtime source or build behavior is
-changed.
+The substantive planning diff later committed at `reviewed_commit` and
+`reviewed_tree` above was reviewed. The result artifact itself is the review
+output. The reviewed changes are limited to planning, backlog, and
+documentation artifacts; no runtime source or build behavior is changed.
 
 ## Consensus Findings - High Confidence
 

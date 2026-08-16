@@ -86,9 +86,11 @@ Within attribute and block-body expressions, normalize traversal chains from
 `var.region`, `local.name`, `module.vpc.id`, `data.aws_ami.ubuntu.id`, and
 `aws_vpc.main.id`. Preserve only syntactic evidence; do not evaluate indexes,
 functions, conditionals, providers, or modules. Deduplicate identical
-`(source context, target)` references deterministically. HCL v1 bypasses
-global name resolution and persists only the existing file self-loop plus
-normalized `target_hint`, preventing cross-language binding.
+`(file, target)` references in deterministic first-encounter order. The first
+encounter's source may remain non-identity metadata, but the current
+`references_edge` key cannot preserve source context as edge identity. HCL v1
+bypasses global name resolution and persists only the existing file self-loop
+plus normalized `target_hint`, preventing cross-language binding.
 
 Malformed files may yield partial syntax only when declaration/traversal nodes are unambiguous; otherwise return no fabricated symbols/edges. Grammar initialization or parser failure returns `EngramError` and is recorded per-file without terminating the daemon.
 
@@ -149,7 +151,9 @@ instruction.
 - Files: `src/services/parsing/hcl.rs`.
 - Estimate: 90-120 minutes; fewer than five functions and three scenario groups.
 - Depends on: U5.
-- Change: walk expression traversals, build conservative dotted targets, associate source context, deduplicate deterministically, and emit `References`.
+- Change: walk expression traversals, build conservative dotted targets,
+  deduplicate by `(file, target)` in first-encounter order, retain the first
+  source only as non-identity metadata, and emit `References`.
 - Exit: U1/U2 reference expectations turn green with no evaluation or schema inference.
 
 ### U7 — Canonical Detection, Discovery, and Default Enablement
@@ -346,7 +350,14 @@ append-only review traceability and must not be used for implementation.
 
 V1 accepts only plain header segments: an HCL block symbol is emitted when the block type is an `identifier` and every label is a plain `string_lit` containing literal text only. Template/interpolation labels, dynamic labels, malformed headers, nested attributes, indexed traversals, splats, and traversal fragments with non-identifier segments are skipped. Top-level attributes require a plain identifier key.
 
-A reference is emitted only for a contiguous `variable_expr` root followed by zero or more plain `get_attr` identifier segments. The root plus at least one attribute is required. `index`, legacy index, splat, template, function-call, and dynamically computed path forms are not normalized in v1. Identical `(source context, target)` pairs are deduplicated in deterministic encounter order. Fixed malformed fixtures assert the exact conservative partial-or-empty result; the implementation may not fabricate around `ERROR` nodes.
+A reference is emitted only for a contiguous `variable_expr` root followed by
+zero or more plain `get_attr` identifier segments. The root plus at least one
+attribute is required. `index`, legacy index, splat, template, function-call,
+and dynamically computed path forms are not normalized in v1. Identical
+`(file, target)` pairs are deduplicated in deterministic first-encounter
+order; source context is not persistence identity. Fixed malformed fixtures
+assert the exact conservative partial-or-empty result; the implementation may
+not fabricate around `ERROR` nodes.
 
 Grammar initialization/ABI failure and source syntax are distinct. `Parser::set_language(&tree_sitter_hcl::LANGUAGE.into())` uses only the crate's safe exported handle; no manual extern, raw handle, pointer shim, transmute, unsafe allowance, copied FFI, or shared parser cache is allowed. A grammar initialization error is a service defect that fails the ABI gate and blocks HCL enablement. Each parse owns a local parser. Malformed source is bounded per-file input: it may yield only allowlisted unambiguous nodes, records a typed file error when current index semantics support one, and never terminates daemon/IPC. Async clients observe indexing errors through the existing index/sync result and logs; list/map never invent results or a new client-specific error envelope.
 
@@ -426,7 +437,9 @@ Agent/MCP, IPC, and CLI wrappers share the existing backend/serializer. The cano
 
 - Domain/files: Rust parser implementation only; `src/services/parsing/hcl.rs`.
 - Estimate: 75-105 minutes. Depends on U8.
-- Change/exit: extend the same walk/helpers with allowlisted dotted traversals, source context, deterministic dedup, and one existing persistence outcome; reference tests pass.
+- Change/exit: extend the same walk/helpers with allowlisted dotted traversals,
+  `(file, target)` first-encounter dedup, first-source non-identity metadata,
+  and one existing persistence outcome; reference tests pass.
 
 #### U10 — Startup Discovery and Default Enablement
 
@@ -544,7 +557,10 @@ Three independent Copilot CLI reviewers used `gpt-5.4`, `claude-opus-4.6`, and `
 Test-only `tests/contract/hcl_parser_contract_test.rs`; 60-90 minutes; compact mixed-extension list/map plus bounded index-result errors. Compiles without HCL crate/variant references and fails on absent behavior.
 
 #### U2 — Parser Behavior RED Harness
-Test-only `tests/unit/hcl_parsing_test.rs`; 60-90 minutes; obtain language by `Language::try_from("hcl")`, then assert namespaced allowlisted symbols and conservative traversal/dedup behavior. No direct `tree_sitter_hcl` import or ABI claim.
+Test-only `tests/unit/hcl_parsing_test.rs`; 60-90 minutes; obtain language by
+`Language::try_from("hcl")`, then assert namespaced allowlisted symbols and
+conservative `(file, target)` traversal dedup behavior. No direct
+`tree_sitter_hcl` import or ABI claim.
 
 #### U3 — Canonical Routing RED Harness
 Test-only `tests/unit/hcl_routing_test.rs`; 60-90 minutes; alias/case characterization, startup/explicit-sync/default identity, live routing parity, and one existing retrieval-language delegation assertion.
@@ -559,7 +575,11 @@ Test-only `tests/integration/hcl_indexing_test.rs`; 90-120 minutes; cold start/l
 Dependency-only `Cargo.toml`, `Cargo.lock`; 30-45 minutes; depends on U1-U5 RED. Exact registry pin/checksum/license/source and expected tree-sitter-language graph only.
 
 #### U7 — Grammar ABI and Engram Registration RED Harness
-Test-only `tests/unit/hcl_grammar_abi_test.rs`; 30-45 minutes; depends on U6. One test safely loads `tree_sitter_hcl::LANGUAGE.into()` then expects Engram `Language::try_from("hcl")`/dispatcher registration, so the overall test is RED before U8. No production source change.
+Test-only `tests/unit/hcl_grammar_abi_test.rs`; 30-45 minutes; depends on U6.
+One test safely loads `tree_sitter_hcl::LANGUAGE.into()`, parses compact
+representative `.hcl`, `.tf`, and `.tfvars` snippets without a root error,
+then expects Engram `Language::try_from("hcl")`/dispatcher registration, so
+the overall test is RED before U8. No production source change.
 
 #### U8 — Canonical Language Identity and Grammar Registration
 Rust parser core `src/services/parsing.rs`, `src/services/parsing/hcl.rs`; 75-105 minutes; depends on U7 RED. Add `Language::Hcl`, exhaustive conversions, sole path classifier, local safe parser, and empty extraction. U7 and identity subset turn green.
@@ -568,7 +588,9 @@ Rust parser core `src/services/parsing.rs`, `src/services/parsing/hcl.rs`; 75-10
 Rust parser `src/services/parsing/hcl.rs`; 75-105 minutes; depends on U8. Read-only class-consumer audit then allowlisted `hcl.block.*`/`hcl.attribute.*` structural symbols and Defines.
 
 #### U10 — Conservative Traversal Extraction
-Rust parser `src/services/parsing/hcl.rs`; 75-105 minutes; depends on U9. Plain traversal target hints only, source context, stable order-preserving dedup.
+Rust parser `src/services/parsing/hcl.rs`; 75-105 minutes; depends on U9. Emit
+plain traversal target hints only, deduplicated by `(file, target)` in stable
+first-encounter order. Retain only the first source as non-identity metadata.
 
 #### U11 — HCL Reference Persistence Guard
 Rust graph persistence `src/services/code_graph.rs`; 45-75 minutes; depends on U10. For `Language::Hcl`, bypass global name resolution and create only file self-loop plus target hint; assert no SQL/HCL cross-collision and idempotence.
