@@ -2,42 +2,10 @@
 
 use engram::services::parsing::{ExtractedEdge, ExtractedSymbol, Language, parse_source};
 
-const DECLARATION_SOURCE: &str = r#"
-terraform {
-  required_version = ">= 1.6"
-}
+#[path = "../fixtures/hcl_parser_cases.rs"]
+mod hcl_parser_cases;
 
-resource "aws_instance" "web" {
-  ami = "ami-123"
-}
-
-data "aws_ami" "ubuntu" {
-  most_recent = true
-}
-
-module "vpc" {
-  source = "./vpc"
-}
-
-region = "us-west-2"
-"#;
-
-const TRAVERSAL_SOURCE: &str = r#"
-resource "aws_instance" "web" {
-  region           = var.region
-  duplicate_region = var.region
-  subnet_id        = module.vpc.id
-  image_id         = data.aws_ami.ubuntu.id
-  indexed          = local.items[count.index]
-  splatted         = aws_instance.web[*].id
-  rendered         = "${local.name}"
-}
-"#;
-
-const MALFORMED_SOURCE: &str = r#"
-resource "aws_instance" "broken" {
-  ami = var.
-"#;
+use hcl_parser_cases::{DECLARATIONS, MALFORMED, TRAVERSALS};
 
 fn hcl_language(marker: &str) -> Language {
     let result = Language::try_from("hcl");
@@ -83,16 +51,14 @@ fn canonical_hcl_language_is_available_without_a_terraform_alias() {
 #[test]
 fn top_level_blocks_and_attributes_are_namespaced_structural_symbols() {
     let language = hcl_language("HCL_DECLARATION_PARSER_MISSING");
-    let parsed = parse_source(DECLARATION_SOURCE, language).expect("parse valid HCL declarations");
+    let parsed = parse_source(DECLARATIONS.source, language).expect("parse valid HCL declarations");
 
-    let expected = [
-        "hcl.block.terraform",
-        "hcl.block.resource.aws_instance.web",
-        "hcl.block.data.aws_ami.ubuntu",
-        "hcl.block.module.vpc",
-        "hcl.attribute.region",
-    ];
-    assert_eq!(structural_names(&parsed), expected);
+    assert_eq!(
+        structural_names(&parsed),
+        DECLARATIONS.symbols,
+        "fixture: {}",
+        DECLARATIONS.name
+    );
 
     let defines: Vec<&str> = parsed
         .edges
@@ -102,23 +68,26 @@ fn top_level_blocks_and_attributes_are_namespaced_structural_symbols() {
             _ => None,
         })
         .collect();
-    assert_eq!(defines, expected);
+    assert_eq!(defines, DECLARATIONS.symbols);
 }
 
 #[test]
 fn plain_traversals_are_stable_deduplicated_and_dynamic_forms_fail_closed() {
     let language = hcl_language("HCL_TRAVERSAL_PARSER_MISSING");
-    let parsed = parse_source(TRAVERSAL_SOURCE, language).expect("parse valid HCL traversals");
+    let parsed = parse_source(TRAVERSALS.source, language).expect("parse valid HCL traversals");
 
     assert_eq!(
         reference_targets(&parsed),
-        ["var.region", "module.vpc.id", "data.aws_ami.ubuntu.id"],
-        "plain traversals must retain first-encounter order while duplicate, index, splat, and template forms are skipped"
+        TRAVERSALS.references,
+        "fixture `{}` must retain first-encounter order while duplicate, index, splat, and template forms are skipped",
+        TRAVERSALS.name
     );
 
-    let malformed = parse_source(MALFORMED_SOURCE, language).expect("malformed HCL stays bounded");
+    let malformed = parse_source(MALFORMED.source, language).expect("malformed HCL stays bounded");
     assert!(
-        malformed.symbols.is_empty() && malformed.edges.is_empty(),
-        "malformed HCL must not fabricate declarations or traversal targets: {malformed:?}"
+        structural_names(&malformed) == MALFORMED.symbols
+            && reference_targets(&malformed) == MALFORMED.references,
+        "fixture `{}` must not fabricate declarations or traversal targets: {malformed:?}",
+        MALFORMED.name
     );
 }
