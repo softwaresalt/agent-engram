@@ -36,8 +36,7 @@ Mandatory pre-harvest review covered every design and sequencing decision in the
 | Registry/tag mismatch weakens source provenance | MEDIUM (majority) | P1/P2 | Fixed/accepted exception. Exact crates.io checksum, manifests, binding, owners/license, dependency graph, and published node-types hash are recorded; tag/Git/path substitution is blocked. |
 | HCL enablement could precede the reference-persistence guard | LOW (1/3 re-review) | P1 | Fixed despite low confidence. U12 now depends on U11 and U3; U13 remains downstream of U12. |
 | `tree-sitter-hcl 1.1.0` allegedly requires tree-sitter 0.20 | LOW (1/3) | P0 | Rejected as factually contradicted by official exact-version dependencies and matching archive: normal `tree-sitter-language 0.1`, dev `tree-sitter 0.25.3`, no 0.20 runtime dependency. U6/U7 still fail closed on deviation. |
-| Exact AST vocabulary was allegedly unresolved | LOW (1/3) | P1 | Resolved with safe inspection of exact archive SHA-256 and published
-ode-types.json` SHA-256 `d86638c95d20335b960abb62f6758ab53f78fd0efbe4b6669473b5a20dfd1fb5`; runtime behavior remains test-gated. |
+| Exact AST vocabulary was allegedly unresolved | LOW (1/3) | P1 | Resolved with safe inspection of exact archive SHA-256 and published `node-types.json` SHA-256 `d86638c95d20335b960abb62f6758ab53f78fd0efbe4b6669473b5a20dfd1fb5`; runtime behavior remains test-gated. |
 | Rollback might deserialize an unknown enum or leave HCL graph state | MEDIUM (2/3) | P2/P3 | Premise narrowed: language is persisted as a string. Added isolated rollback reconciliation rehearsal; destructive DB purge requires operator approval and is not planned. |
 | Stable dedup, class serialization, retrieval delegation, repeated sync/restart | LOW (single reviewers) | P2/P3 | Incorporated into U3, U9, U15, or closure. No new framework/API/schema was added. |
 

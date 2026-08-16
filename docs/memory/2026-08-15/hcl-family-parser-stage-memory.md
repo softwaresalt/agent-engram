@@ -63,4 +63,12 @@ Invoked assessment because `docs/memory` exceeds the 40-file trigger: 112 files,
 
 ## Next Steps
 
-Ship may consider queued `117-S` only after active isolated release `116-S` is safely resolved under P-001. Ship must claim `117-S` itself, execute RED-first dependencies exactly, stop on dependency/ABI/provenance failure, run runtime/closure tasks, and preserve queued status until that handoff.
+Correction recorded 2026-08-16: invalid cross-repository shipment `116-S`
+and its `120-*` children are rejected and archived. They are neither a
+predecessor nor a blocker for `117-S`; see
+`docs/memory/2026-08-16/shipment-116-backlog-correction-memory.md`.
+
+Ship may consider queued `117-S` independently. Ship must claim `117-S`
+itself, execute RED-first dependencies exactly, stop on
+dependency/ABI/provenance failure, run runtime/closure tasks, and preserve
+queued status until that handoff.

@@ -50,17 +50,17 @@ The source decision is `docs/decisions/2026-08-15-hcl-family-parser-deliberation
 
 | ID | Requirement | Planned units |
 |---|---|---|
-| R1 | Detect `.hcl`, `.tf`, `.tfvars` as canonical `hcl` | U2, U3, U7, U8 |
-| R2 | Register one composable HCL parser | U2, U4, U5 |
-| R3 | Extract top-level block and attribute symbols | U1, U2, U3, U5 |
-| R4 | Extract normalized traversal references | U1, U2, U3, U6 |
-| R5 | Include files in startup traversal and default config | U3, U7 |
-| R6 | Route created/modified files through live sync | U3, U8 |
-| R7 | Prove Rust/tree-sitter 0.25 compatibility | U2, U4, U5 |
-| R8 | Contract, unit, integration test-first delivery | U1, U2, U3, all production units |
-| R9 | Preserve containment and fail-closed behavior | U3, U7, U8, U10 |
-| R10 | Document support and operational expectations | U9, U10 |
-| R11 | One cohesive release, tasks under two hours and single-domain | U1-U10 |
+| R1 | Detect `.hcl`, `.tf`, `.tfvars` as canonical `hcl` | U3, U8, U12, U13 |
+| R2 | Register one composable HCL parser | U2, U7, U8 |
+| R3 | Extract top-level block and attribute symbols | U2, U9 |
+| R4 | Extract normalized traversal references | U2, U10, U11 |
+| R5 | Include files in startup traversal and default config | U3, U12 |
+| R6 | Route created/modified files through live sync | U3, U13 |
+| R7 | Prove Rust/tree-sitter 0.25 compatibility | U6, U7, U8 |
+| R8 | Contract, unit, integration test-first delivery | U1-U7, U15 |
+| R9 | Preserve containment and fail-closed behavior | U4, U11-U13, U15 |
+| R10 | Document support and operational expectations | U14-U16 |
+| R11 | One cohesive release, tasks under two hours and single-domain | U1-U16 |
 
 ## Public Extraction Contract
 
@@ -70,15 +70,33 @@ The source decision is `docs/decisions/2026-08-15-hcl-family-parser-deliberation
 
 ### Symbols
 
-For each top-level `block`, join its header identifier/string segments with dots and emit one `ExtractedSymbol::Class` plus `Defines`: `resource.aws_instance.web`, `data.aws_ami.ubuntu`, `module.vpc`, `variable.region`, `output.endpoint`, `provider.aws`, `terraform`, or equivalent generic HCL block headers. For each top-level `attribute`, emit a class symbol named by its key; this gives `.tfvars` first-class symbols. Bodies, hashes, line ranges, and token counts follow existing structural-symbol conventions. Nested attributes are not separate v1 symbols.
+For each top-level `block`, join its header identifier/string segments with
+dots and emit one `ExtractedSymbol::Class` plus `Defines`, namespaced as
+`hcl.block.<header-segments>`: `hcl.block.resource.aws_instance.web`,
+`hcl.block.data.aws_ami.ubuntu`, `hcl.block.module.vpc`, or
+`hcl.block.terraform`. For each top-level `attribute`, emit
+`hcl.attribute.<key>`; this gives `.tfvars` first-class symbols. Bodies,
+hashes, line ranges, and token counts follow existing structural-symbol
+conventions. Nested attributes are not separate v1 symbols.
 
 ### References
 
-Within attribute and block-body expressions, normalize traversal chains from `variable_expr` plus `get_attr` segments into one dotted target, including `var.region`, `local.name`, `module.vpc.id`, `data.aws_ami.ubuntu.id`, and `aws_vpc.main.id`. Preserve only syntactic evidence; do not evaluate indexes, functions, conditionals, providers, or modules. Deduplicate identical `(source context, target)` references deterministically. Persist through existing `ExtractedEdge::References`; unresolved targets retain a file self-loop and `target_hint`.
+Within attribute and block-body expressions, normalize traversal chains from
+`variable_expr` plus `get_attr` segments into one dotted target, including
+`var.region`, `local.name`, `module.vpc.id`, `data.aws_ami.ubuntu.id`, and
+`aws_vpc.main.id`. Preserve only syntactic evidence; do not evaluate indexes,
+functions, conditionals, providers, or modules. Deduplicate identical
+`(source context, target)` references deterministically. HCL v1 bypasses
+global name resolution and persists only the existing file self-loop plus
+normalized `target_hint`, preventing cross-language binding.
 
 Malformed files may yield partial syntax only when declaration/traversal nodes are unambiguous; otherwise return no fabricated symbols/edges. Grammar initialization or parser failure returns `EngramError` and is recorded per-file without terminating the daemon.
 
-## Implementation Units
+## Historical Initial Implementation Units (U1-U10, Superseded)
+
+This initial decomposition is retained only as append-only review history.
+The final authoritative U1-U16 hierarchy below is the sole implementation
+instruction.
 
 ### U1 — Contract RED Harness
 
@@ -170,7 +188,11 @@ Malformed files may yield partial syntax only when declaration/traversal nodes a
 - Change: Ship runs targeted then full quality gates, exercises cold-start index, live modification plus sync, list/map queries, malformed-file resilience, restart idempotence, and records evidence.
 - Exit: closure names healthy/failure signals, owner, 30-minute local observation window, rollback trigger, and revert procedure.
 
-## Dependency Graph
+## Historical Pre-Review Dependency Graph (Superseded)
+
+The following U1-U10 draft is retained only as review history. It must not be
+used for implementation; the final authoritative U1-U16 graph below replaces
+it.
 
 ```text
 U1 contract RED ─┐
@@ -180,7 +202,9 @@ U3 integration RED┘                              └──> U7 detection/defau
 U1-U9 ─────────────────────────────────────────────────────────────────> U10 closure
 ```
 
-Production work must not begin until U1-U3 compile and fail for their intended missing-HCL assertions. U4 is the first production/dependency mutation. U5-U8 may proceed only in dependency order.
+This superseded draft required U1-U3 RED evidence before its former U4-U8
+sequence. The current execution order is defined only by the final U1-U16
+graph below.
 
 ## Decisions and Rationale
 
@@ -221,7 +245,8 @@ Production work must not begin until U1-U3 compile and fail for their intended m
 
 - Lockfile resolves exactly `tree-sitter-hcl 1.1.0`, official checksum, one `tree-sitter 0.25.x`, and existing `tree-sitter-language` bridge.
 - No workspace `unsafe` added; no path/Git dependency; all fixtures live in isolated temporary workspaces.
-- U1-U3 RED evidence exists before U4; targeted tests pass before full gates.
+- U1-U5 RED evidence exists before U6; U7 supplies the post-dependency
+  ABI/registration RED gate before U8; targeted tests pass before full gates.
 
 ### Runtime Scenarios
 
@@ -288,7 +313,10 @@ The published/tag mismatch is accepted only as documented registry provenance ri
 
 ### Reinforced Verification Gates
 
-1. **RED gate**: U1-U3 compile before any Cargo/source mutation and fail only on missing HCL behavior.
+1. **RED gate**: U1-U5 add only their test files and minimal Cargo `[[test]]`
+   registrations, compile before dependency/source mutation, and fail only on
+   missing HCL behavior. U7 adds the post-U6 ABI/registration RED target before
+   U8 production source.
 2. **Dependency gate**: exact version/checksum/license/source and single runtime tree-sitter are reviewed before grammar execution.
 3. **ABI gate**: a targeted grammar-load/representative parse test must turn green before any extraction task is accepted.
 4. **Extraction gate**: exact fixture symbols and traversal target hints match the documented contract; malformed/unsupported shapes fail closed.
@@ -307,9 +335,12 @@ The pre-deploy audit confirms no migration, no feature flag, exact rollback proc
 
 None for the reviewed exact pin and v1 syntactic scope. If the dependency or ABI gate fails, the safe outcome is `blocked` and return to Stage; Ship may not guess a replacement or widen scope.
 
-## Plan Review Remediation — Cycle 1
+## Historical Plan Review Remediation — Cycle 1 (Superseded)
 
-This section resolves the initial standard multi-persona findings and is authoritative wherever it narrows or reslices the earlier U1-U10 draft. Harvest must use the revised U1-U14 units below. No original requirement is dropped.
+This section records how the initial standard multi-persona findings narrowed
+the U1-U10 draft into U1-U14. It was later superseded by the adversarial
+remediation and final U1-U16 hierarchy below. It is retained only for
+append-only review traceability and must not be used for implementation.
 
 ### Tightened Extraction and Error Contract
 
@@ -340,7 +371,7 @@ Agent/MCP, IPC, and CLI wrappers share the existing backend/serializer. The cano
 - Diff gate rejects new unsafe allowances, raw pointer/FFI shims, transmutes, vendored generated code, or weakening `forbid(unsafe_code)`.
 - Rollback restores manifest/lock, performs a clean rebuild through normal Ship workflow, force-reindexes the same fixture workspace, and verifies pre-change graph expectations.
 
-### Revised Implementation Units (Authoritative)
+### Historical Revised Implementation Units (U1-U14, Superseded)
 
 #### U1 — MCP/IPC Contract RED Harness
 
@@ -445,7 +476,7 @@ No merge/release is allowed unless RED evidence precedes U6, targeted tests pass
 
 ### Gate Decision
 
-**PASS after remediation cycle 1.** Plan hardening was required and is present. Seven standard personas reviewed the plan independently: Constitution, Rust, Scope Boundary, Learnings, Architecture, Agent-Native Parity, and Security. The initial gate was FAIL because P1 findings remained; the authoritative `Plan Review Remediation — Cycle 1` resliced the work and tightened contracts. A combined multi-persona re-review returned `GATE PASS` with no remaining P0/P1 finding.
+**PASS after remediation cycle 1.** Plan hardening was required and is present. Seven standard personas reviewed the plan independently: Constitution, Rust, Scope Boundary, Learnings, Architecture, Agent-Native Parity, and Security. The initial gate was FAIL because P1 findings remained; the historical `Plan Review Remediation — Cycle 1` resliced the work and tightened contracts. A combined multi-persona re-review returned `GATE PASS` with no remaining P0/P1 finding. The later adversarial remediation supersedes that cycle's U1-U14 numbering with the final U1-U16 hierarchy.
 
 ### Merged Findings and Decisions
 
@@ -491,7 +522,7 @@ Three independent Copilot CLI reviewers used `gpt-5.4`, `claude-opus-4.6`, and `
 **MEDIUM P1/P2 — structural symbol/reference collisions (majority): fixed.** HCL symbols are namespace-prefixed: `hcl.block.<header-segments>` and `hcl.attribute.<key>`. IDs remain file-scoped through existing persistence. HCL references never call the current global/name-first `resolve_reference_target` in v1; code-graph persistence creates only the file self-loop plus normalized `target_hint`. This prevents HCL symbols from capturing SQL references and prevents HCL hints from binding to unrelated classes. A future HCL-scoped unambiguous resolver requires a separate plan.
 
 **MEDIUM P1/P2 — provenance/tag mismatch (majority): fixed/accepted with explicit exception.** The operator-authorized registry selection is the exact crates.io artifact, not the historical tag. Evidence now includes official archive SHA-256 `5a7b2cc3d7121553b84309fab9d11b3ff3d420403eef9ae50f9fd1cd9d9cf012`, exact published manifests/binding, owner/license metadata, dependency endpoint, and exact published
-ode-types.json` SHA-256 `d86638c95d20335b960abb62f6758ab53f78fd0efbe4b6669473b5a20dfd1fb5`. The tag mismatch remains a documented provenance exception and blocks substitution, not the reviewed checksum-addressed release.
+`node-types.json` SHA-256 `d86638c95d20335b960abb62f6758ab53f78fd0efbe4b6669473b5a20dfd1fb5`. The tag mismatch remains a documented provenance exception and blocks substitution, not the reviewed checksum-addressed release.
 
 **LOW P0 — alleged tree-sitter version mismatch (single reviewer): rejected as factually contradicted.** Official crates.io dependency metadata and the matching downloaded archive show normal `tree-sitter-language = 0.1`, dev `tree-sitter = 0.25.3`, and no runtime dependency on tree-sitter 0.20. U6/U7 still fail closed if Cargo or ABI evidence differs.
 
@@ -566,6 +597,36 @@ U11 + U3 ──> U12 startup/default ──> U13 live routing
 U9-U13 ──> U14 docs
 U1-U14 ──> U15 runtime evidence ──> U16 closure
 ```
+
+### Pre-PR Review Corrections
+
+The final U1-U16 hierarchy, namespaced symbol contract, and hint-only HCL
+reference behavior above are authoritative. Earlier U1-U10 and U1-U14
+sections remain only as append-only review history and must not be used as
+implementation instructions.
+
+Every standalone test file under `tests/contract/`, `tests/unit/`, or
+`tests/integration/` requires an explicit `[[test]]` target in `Cargo.toml` in
+this repository. U1-U5 each own the minimal target stanza for their test file
+and add it before recording the RED result. This manifest-only test
+registration is part of the test harness, not a dependency or production
+change. U7 likewise owns the target stanza for
+`tests/unit/hcl_grammar_abi_test.rs` after U6 makes the exact grammar crate
+available. U6 remains limited to the reviewed dependency and lockfile
+mutation.
+
+## Constitution Check
+
+| Principle | Plan compliance |
+|---|---|
+| I. Safety-First Rust | U6-U11 prohibit workspace `unsafe`, raw FFI shims, transmute, and dependency substitution; typed failure and fail-closed parsing remain mandatory. |
+| II. Test-First Development | U1-U5 register and run dependency-agnostic RED targets before U6; U7 registers and runs the ABI/registration RED target before U8. Production units depend on their RED evidence. |
+| III-IV. Workspace isolation and CLI containment | Fixtures and runtime checks use isolated, workspace-contained paths and preserve existing ignore and containment gates. |
+| V. Structured observability | U15-U16 record gate, runtime, provenance, health, and rollback evidence. |
+| VI. Single responsibility | The final U1-U16 units are single-domain, bounded to at most two hours, and dependency ordered. |
+| VII-VIII. Destructive approval and safety modes | Planning and normal implementation require no destructive action. Any future rollback execution, forced reindex that replaces graph state, database cleanup, or alternate dependency/source requires fresh explicit operator approval and a careful-mode action record. |
+| IX-X. Git-friendly persistence and context efficiency | Backlog state remains human-readable Markdown; canonical routing and existing query surfaces are reused rather than duplicated. |
+| XI. Merge commit preservation | Delivery must use a GitHub merge commit only. Squash and rebase merge are forbidden, and repository settings must be verified before merge. |
 
 ### Adversarial Re-review Disposition
 
