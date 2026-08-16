@@ -31,14 +31,22 @@ fn event(path: &str, kind: WatchEventKind) -> WatcherEvent {
     }
 }
 
+fn assert_canonical_hcl_token(path: &str, marker: &str) {
+    let token = language_of(path);
+    assert_eq!(token, "hcl", "RED:{marker} {path} must route as hcl");
+
+    let parsed = Language::try_from(token.as_str());
+    assert!(
+        parsed.is_ok(),
+        "RED:HCL_ROUTED_IDENTITY_UNSUPPORTED routed token {token:?} is not parseable: {parsed:?}"
+    );
+    assert_eq!(parsed.expect("asserted routed language").as_str(), token);
+}
+
 #[test]
 fn three_case_sensitive_aliases_share_only_the_hcl_language_identity() {
     for path in HCL_ALIASES {
-        assert_eq!(
-            language_of(path),
-            "hcl",
-            "RED:HCL_ALIAS_ROUTING_MISSING {path} must use canonical hcl"
-        );
+        assert_canonical_hcl_token(path, "HCL_ALIAS_ROUTING_MISSING");
     }
 
     let language = Language::try_from("hcl");
@@ -86,6 +94,24 @@ async fn default_startup_and_explicit_sync_persist_one_hcl_identity() {
         indexed.errors
     );
 
+    let startup_db = connect_db(&data_dir, branch)
+        .await
+        .expect("connect startup graph DB");
+    let startup_files = CodeGraphQueries::new(startup_db)
+        .list_code_files()
+        .await
+        .expect("list startup HCL files");
+    assert_eq!(startup_files.len(), 3);
+    assert!(
+        startup_files.iter().all(|file| file.language == "hcl"),
+        "startup must persist only hcl identities: {startup_files:?}"
+    );
+    let mut startup_paths: Vec<&str> = startup_files
+        .iter()
+        .map(|file| file.path.as_str())
+        .collect();
+    startup_paths.sort_unstable();
+
     write_source(
         workspace.path(),
         HCL_ALIASES[1],
@@ -109,6 +135,12 @@ async fn default_startup_and_explicit_sync_persist_one_hcl_identity() {
         .await
         .expect("list indexed HCL files");
     assert_eq!(files.len(), 3);
+    let mut synced_paths: Vec<&str> = files.iter().map(|file| file.path.as_str()).collect();
+    synced_paths.sort_unstable();
+    assert_eq!(
+        synced_paths, startup_paths,
+        "explicit sync must retain startup file identity"
+    );
     assert!(
         files.iter().all(|file| file.language == "hcl"),
         "startup and sync must persist only hcl identities: {files:?}"
@@ -127,11 +159,7 @@ fn live_created_and_modified_aliases_match_retrieval_routing() {
                 "RED:HCL_LIVE_ROUTING_MISSING {path} must route to reindex"
             );
         }
-        assert_eq!(
-            language_of(path),
-            "hcl",
-            "retrieval language delegation must match live routing for {path}"
-        );
+        assert_canonical_hcl_token(path, "HCL_RETRIEVAL_ROUTING_MISSING");
         assert_eq!(
             adapt_event(&event(path, WatchEventKind::Deleted)),
             ServiceAction::Skip
