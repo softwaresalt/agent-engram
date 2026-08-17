@@ -6,7 +6,6 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -32,7 +31,7 @@ use crate::services::workspace_source::{
 };
 
 type RustCanonicalContext = (canonical::ModulePath, canonical::UseGraph);
-type SourceSnapshotCache = HashMap<String, Arc<SourceSnapshot>>;
+type SourceHashIndex = HashMap<String, String>;
 
 #[cfg(test)]
 #[derive(Clone)]
@@ -161,6 +160,10 @@ pub(crate) async fn unsafe_module_prepass(
         }
         let Ok(rel) = file_path.strip_prefix(ws_path) else {
             prepass.complete = false;
+            prepass.errors.push(FileError {
+                file: file_path.display().to_string(),
+                error: "Rust prepass candidate is outside the workspace root".to_owned(),
+            });
             continue;
         };
         let relative_path = match ValidatedRelativePath::new(rel) {
@@ -452,6 +455,23 @@ async fn discover_workspace_crates_from_reader(
         }
         .into()
     })
+}
+
+fn rejected_global_context(context: &str, errors: &[FileError]) -> EngramError {
+    let (file_path, detail) = errors.first().map_or_else(
+        || {
+            (
+                context.to_owned(),
+                "context discovery was incomplete".to_owned(),
+            )
+        },
+        |error| (error.file.clone(), error.error.clone()),
+    );
+    CodeGraphError::SourceAccess {
+        file_path,
+        reason: format!("{context} rejected before graph publication: {detail}"),
+    }
+    .into()
 }
 
 /// Whether the workspace-relative path `rel` is a `.py` file nested under the
@@ -911,7 +931,7 @@ fn non_empty_str(value: &str) -> Option<&str> {
 
 async fn rust_ctx_for_staged_file(
     source_reader: &WorkspaceSourceReader,
-    source_snapshots: &SourceSnapshotCache,
+    source_hashes: &SourceHashIndex,
     crates: &canonical::WorkspaceCrates,
     rel_path: &str,
     max_file_size_bytes: u64,
@@ -919,19 +939,15 @@ async fn rust_ctx_for_staged_file(
     // 108.002-T: preserve an unresolvable module layout as `Ok(None)`, but
     // propagate source-read failures so the post-pass cannot certify a graph
     // after silently dropping the caller's last-known-good canonical edge.
-    let snapshot = staged_source_snapshot(
-        source_reader,
-        source_snapshots,
-        rel_path,
-        max_file_size_bytes,
-    )
-    .await
-    .map_err(|error| CodeGraphError::SourceAccess {
-        file_path: rel_path.to_owned(),
-        reason: format!(
-            "rust canonical post-pass: failed to read staged source '{rel_path}': {error}"
-        ),
-    })?;
+    let snapshot =
+        staged_source_snapshot(source_reader, source_hashes, rel_path, max_file_size_bytes)
+            .await
+            .map_err(|error| CodeGraphError::SourceAccess {
+                file_path: rel_path.to_owned(),
+                reason: format!(
+                    "rust canonical post-pass: failed to read staged source '{rel_path}': {error}"
+                ),
+            })?;
     Ok(rust_canonical_ctx(
         crates,
         Language::Rust,
@@ -951,7 +967,7 @@ type PythonStagedContext = (Option<String>, PythonShadowIndex, HashMap<String, S
 /// position (T5c shadow guard) without a per-call database query.
 async fn python_ctx_for_staged_file(
     source_reader: &WorkspaceSourceReader,
-    source_snapshots: &SourceSnapshotCache,
+    source_hashes: &SourceHashIndex,
     python_packages: &HashSet<String>,
     queries: &CodeGraphQueries,
     rel_path: &str,
@@ -963,19 +979,15 @@ async fn python_ctx_for_staged_file(
     // version marker advance is gated behind this pass's `?` — so a silent
     // failure here could advance the marker over an incomplete pass (fail closed
     // toward retry instead).
-    let snapshot = staged_source_snapshot(
-        source_reader,
-        source_snapshots,
-        rel_path,
-        max_file_size_bytes,
-    )
-    .await
-    .map_err(|error| CodeGraphError::SourceAccess {
-        file_path: rel_path.to_owned(),
-        reason: format!(
-            "python canonical post-pass: failed to read staged source '{rel_path}': {error}"
-        ),
-    })?;
+    let snapshot =
+        staged_source_snapshot(source_reader, source_hashes, rel_path, max_file_size_bytes)
+            .await
+            .map_err(|error| CodeGraphError::SourceAccess {
+                file_path: rel_path.to_owned(),
+                reason: format!(
+                    "python canonical post-pass: failed to read staged source '{rel_path}': {error}"
+                ),
+            })?;
     let is_regular_package =
         |p: &Path| python_packages.contains(&p.to_string_lossy().replace('\\', "/"));
     let module_path = python_module_path_for_file(rel_path, &is_regular_package);
@@ -994,30 +1006,48 @@ async fn python_ctx_for_staged_file(
 
 async fn staged_source_snapshot(
     source_reader: &WorkspaceSourceReader,
-    source_snapshots: &SourceSnapshotCache,
+    source_hashes: &SourceHashIndex,
     rel_path: &str,
     max_file_size_bytes: u64,
-) -> Result<Arc<SourceSnapshot>, EngramError> {
-    if let Some(snapshot) = source_snapshots.get(rel_path) {
-        return Ok(Arc::clone(snapshot));
-    }
-    match source_reader
+) -> Result<SourceSnapshot, EngramError> {
+    let expected_hash = source_hashes.get(rel_path).ok_or_else(|| {
+        EngramError::from(CodeGraphError::SourceAccess {
+            file_path: rel_path.to_owned(),
+            reason: "canonical post-pass source has no persisted content hash".to_owned(),
+        })
+    })?;
+    let snapshot = match source_reader
         .read(Path::new(rel_path), max_file_size_bytes)
         .await?
     {
-        SourceRead::Snapshot(snapshot) => Ok(Arc::new(snapshot)),
-        SourceRead::Oversized { size_bytes } => Err(CodeGraphError::FileTooLarge {
-            file_path: rel_path.to_owned(),
-            size_bytes,
-            max_bytes: max_file_size_bytes,
+        SourceRead::Snapshot(snapshot) => snapshot,
+        SourceRead::Oversized { size_bytes } => {
+            return Err(CodeGraphError::FileTooLarge {
+                file_path: rel_path.to_owned(),
+                size_bytes,
+                max_bytes: max_file_size_bytes,
+            }
+            .into());
         }
-        .into()),
-        SourceRead::Rejected(error) => Err(CodeGraphError::SourceAccess {
-            file_path: rel_path.to_owned(),
-            reason: error.to_string(),
+        SourceRead::Rejected(error) => {
+            return Err(CodeGraphError::SourceAccess {
+                file_path: rel_path.to_owned(),
+                reason: error.to_string(),
+            }
+            .into());
         }
-        .into()),
+    };
+    if snapshot.content_hash != *expected_hash {
+        return Err(CodeGraphError::SourceAccess {
+            file_path: rel_path.to_owned(),
+            reason: format!(
+                "canonical post-pass source hash changed (expected {expected_hash}, observed {})",
+                snapshot.content_hash
+            ),
+        }
+        .into());
     }
+    Ok(snapshot)
 }
 
 /// The smallest module-scope definition position of `caller_name`, or
@@ -1222,17 +1252,23 @@ fn python_target_for_staged_call(
 async fn reresolve_calls_edges_with_source_reader(
     queries: &CodeGraphQueries,
     source_reader: &WorkspaceSourceReader,
-    source_snapshots: &SourceSnapshotCache,
     crates: &canonical::WorkspaceCrates,
     unsafe_prefixes: &HashSet<String>,
     python_packages: &HashSet<String>,
     max_file_size_bytes: u64,
+    publish_canonical: bool,
 ) -> Result<ReresolveResult, EngramError> {
     let staged: Vec<_> = queries
         .list_staged_calls_with_provenance()
         .await?
         .into_iter()
         .filter(|call| !call.qualifier_kind.is_empty())
+        .collect();
+    let source_hashes: SourceHashIndex = queries
+        .list_code_files()
+        .await?
+        .into_iter()
+        .map(|file| (file.path, file.content_hash))
         .collect();
     // 108.002-T: preflight every fallible staged-source context before the
     // bare-name pass or any canonical-edge retraction mutates the graph. A
@@ -1245,7 +1281,7 @@ async fn reresolve_calls_edges_with_source_reader(
         if is_py_path(&call.source_file) && !python_context_cache.contains_key(&call.source_file) {
             let ctx = python_ctx_for_staged_file(
                 source_reader,
-                source_snapshots,
+                &source_hashes,
                 python_packages,
                 queries,
                 &call.source_file,
@@ -1258,7 +1294,7 @@ async fn reresolve_calls_edges_with_source_reader(
         {
             let ctx = rust_ctx_for_staged_file(
                 source_reader,
-                source_snapshots,
+                &source_hashes,
                 crates,
                 &call.source_file,
                 max_file_size_bytes,
@@ -1266,6 +1302,13 @@ async fn reresolve_calls_edges_with_source_reader(
             .await?;
             rust_context_cache.insert(call.source_file.clone(), ctx);
         }
+    }
+
+    if !publish_canonical {
+        return Ok(ReresolveResult {
+            resolved: 0,
+            lookups: 0,
+        });
     }
 
     let mut result = queries.reresolve_calls_edges().await?;
@@ -1424,11 +1467,11 @@ async fn reresolve_calls_edges_with_canonical_context(
     reresolve_calls_edges_with_source_reader(
         queries,
         &source_reader,
-        &SourceSnapshotCache::new(),
         crates,
         unsafe_prefixes,
         python_packages,
         u64::MAX,
+        true,
     )
     .await
 }
@@ -1598,6 +1641,44 @@ async fn index_workspace_impl(
     let start = std::time::Instant::now();
     let source_reader = WorkspaceSourceReader::open(ws_path).await?;
 
+    // Option C Unit A / A6: workspace crate set for canonical-identity derivation
+    // (computed once per index run; Rust-only, precision-neutral).
+    let CanonicalCrateDiscovery {
+        crates,
+        errors: mut source_errors,
+        complete: manifest_complete,
+    } = discover_workspace_crates_from_reader(&source_reader).await?;
+    if !manifest_complete {
+        return Err(rejected_global_context(
+            "Cargo manifest context",
+            &source_errors,
+        ));
+    }
+
+    // ── Step 1: Discover files ──────────────────────────────────────
+    let discovery = discover_files(ws_path, config, &source_reader).await?;
+    let files = discovery.files;
+    let blocked_prefixes = discovery.blocked_prefixes;
+    let deletion_authoritative = discovery.complete;
+    let mut pass_complete = discovery.complete && blocked_prefixes.is_empty();
+    source_errors.extend(discovery.errors);
+    let prepass = unsafe_module_prepass(
+        ws_path,
+        &source_reader,
+        &crates,
+        &files,
+        config.max_file_size_bytes,
+    )
+    .await?;
+    if !prepass.complete {
+        return Err(rejected_global_context(
+            "Rust unsafe-module prepass (rust canonical post-pass preflight)",
+            &prepass.errors,
+        ));
+    }
+    source_errors.extend(prepass.errors);
+    let unsafe_prefixes = prepass.unsafe_prefixes.clone();
+
     let db = connect_db(data_dir, branch).await?;
     let queries = CodeGraphQueries::new(db);
 
@@ -1607,30 +1688,6 @@ async fn index_workspace_impl(
     // sync via the marker gate. Load then clear, mirroring the sync sequence.
     let previous_canonical_workspace = queries.load_index_canonical_workspace_snapshot().await?;
     queries.clear_index_canonical_workspace_snapshot().await?;
-
-    // Option C Unit A / A6: workspace crate set for canonical-identity derivation
-    // (computed once per index run; Rust-only, precision-neutral).
-    let CanonicalCrateDiscovery {
-        crates,
-        errors: mut source_errors,
-        complete: manifest_complete,
-    } = discover_workspace_crates_from_reader(&source_reader).await?;
-
-    // ── Step 1: Discover files ──────────────────────────────────────
-    let discovery = discover_files(ws_path, config).await?;
-    let files = discovery.files;
-    let mut pass_complete = discovery.complete && manifest_complete;
-    let prepass = unsafe_module_prepass(
-        ws_path,
-        &source_reader,
-        &crates,
-        &files,
-        config.max_file_size_bytes,
-    )
-    .await?;
-    pass_complete &= prepass.complete;
-    source_errors.extend(prepass.errors.clone());
-    let unsafe_prefixes = prepass.unsafe_prefixes.clone();
     // 096-F/T3: provable Python regular-package directories, computed once and
     // persisted in the snapshot so a later sync can detect topology drift.
     let python_packages = python_package_dirs(&files, ws_path);
@@ -1700,8 +1757,7 @@ async fn index_workspace_impl(
         errors: source_errors,
         duration_ms: 0,
     };
-    let mut source_snapshots = SourceSnapshotCache::new();
-
+    let mut source_read_rejected = false;
     // ── Step 2: Process each file ───────────────────────────────────
     // T7 (096.010-T): track whether any `.py` file was hash-skipped as unchanged.
     // The extraction-version marker may only advance when every indexed `.py` was
@@ -1752,7 +1808,7 @@ async fn index_workspace_impl(
                 .read_validated(&relative_path, config.max_file_size_bytes)
                 .await?
             {
-                SourceRead::Snapshot(snapshot) => Arc::new(snapshot),
+                SourceRead::Snapshot(snapshot) => snapshot,
                 SourceRead::Oversized { size_bytes } => {
                     let stale_file_id = format!("code_file:{}", sha256_short(&rel_path));
                     let _orphaned =
@@ -1769,6 +1825,7 @@ async fn index_workspace_impl(
                 }
                 SourceRead::Rejected(error) => {
                     pass_complete = false;
+                    source_read_rejected |= error.is_capability_boundary();
                     result.errors.push(FileError {
                         file: rel_path.clone(),
                         error: format!("read error: {error}"),
@@ -1777,7 +1834,6 @@ async fn index_workspace_impl(
                     break 'file;
                 }
             };
-            source_snapshots.insert(rel_path.clone(), Arc::clone(&snapshot));
             let source = &snapshot.source;
 
             if source.is_empty() {
@@ -2292,12 +2348,14 @@ async fn index_workspace_impl(
     // Files are processed in filesystem order. A reference to `public.users`
     // may be processed before the `users` class is created, leaving a self-loop.
     // Now that all symbols exist, retry resolution for those edges.
-    let reresolved = queries.reresolve_references_edges().await?;
-    if reresolved.resolved > 0 {
-        debug!(
-            count = reresolved.resolved,
-            "code graph: re-resolved deferred references edges"
-        );
+    if !source_read_rejected {
+        let reresolved = queries.reresolve_references_edges().await?;
+        if reresolved.resolved > 0 {
+            debug!(
+                count = reresolved.resolved,
+                "code graph: re-resolved deferred references edges"
+            );
+        }
     }
 
     // ── R3 (105.003-T / 7A317008): forced-index file-set reconciliation runs
@@ -2319,7 +2377,7 @@ async fn index_workspace_impl(
     // and is kept). The dangling-edge sweep + generation marker still certify
     // AFTER the post-pass (103-F order preserved, AC3), so any edge orphaned by
     // an eviction is swept in that later pass.
-    if pass_complete && result.errors.is_empty() && (force || !any_hash_skipped) {
+    if deletion_authoritative && result.errors.is_empty() && (force || !any_hash_skipped) {
         let discovered_rel: std::collections::HashSet<String> = files
             .iter()
             .filter_map(|p| {
@@ -2331,6 +2389,11 @@ async fn index_workspace_impl(
         let indexed_files = queries.list_code_files().await?;
         for indexed_file in &indexed_files {
             if !discovered_rel.contains(&indexed_file.path) {
+                let is_blocked = ValidatedRelativePath::new(Path::new(&indexed_file.path))
+                    .is_ok_and(|path| path_is_blocked(&path, &blocked_prefixes));
+                if is_blocked {
+                    continue;
+                }
                 // A3: reuse the sync deletion primitive — no new eviction
                 // semantics. Direct edges are same-file by construction, so this
                 // never removes a cross-file edge (094-F invariants preserved).
@@ -2352,11 +2415,11 @@ async fn index_workspace_impl(
     let resolved_calls = match reresolve_calls_edges_with_source_reader(
         &queries,
         &source_reader,
-        &source_snapshots,
         &crates,
         &unsafe_prefixes,
         &python_packages,
         config.max_file_size_bytes,
+        !source_read_rejected,
     )
     .await
     {
@@ -2595,24 +2658,26 @@ async fn sync_workspace_with_progress_impl(
     let start = std::time::Instant::now();
     let source_reader = WorkspaceSourceReader::open(ws_path).await?;
 
-    let db = connect_db(data_dir, branch).await?;
-    let queries = CodeGraphQueries::new(db);
-
-    let previous_canonical_workspace = queries.load_index_canonical_workspace_snapshot().await?;
-    queries.clear_index_canonical_workspace_snapshot().await?;
-
     // Option C Unit A / A6: workspace crate set for canonical-identity derivation.
     let CanonicalCrateDiscovery {
         crates,
         errors: mut source_errors,
         complete: manifest_complete,
     } = discover_workspace_crates_from_reader(&source_reader).await?;
+    if !manifest_complete {
+        return Err(rejected_global_context(
+            "Cargo manifest context",
+            &source_errors,
+        ));
+    }
 
     // Discover current files on disk.
-    let discovery = discover_files(ws_path, config).await?;
+    let discovery = discover_files(ws_path, config, &source_reader).await?;
     let current_files = discovery.files;
-    let mut pass_complete = discovery.complete && manifest_complete;
     let blocked_prefixes = discovery.blocked_prefixes;
+    let deletion_authoritative = discovery.complete;
+    let mut pass_complete = discovery.complete && blocked_prefixes.is_empty();
+    source_errors.extend(discovery.errors);
     let prepass = unsafe_module_prepass(
         ws_path,
         &source_reader,
@@ -2621,9 +2686,20 @@ async fn sync_workspace_with_progress_impl(
         config.max_file_size_bytes,
     )
     .await?;
-    pass_complete &= prepass.complete;
-    source_errors.extend(prepass.errors.clone());
+    if !prepass.complete {
+        return Err(rejected_global_context(
+            "Rust unsafe-module prepass (rust canonical post-pass preflight)",
+            &prepass.errors,
+        ));
+    }
+    source_errors.extend(prepass.errors);
     let unsafe_prefixes = prepass.unsafe_prefixes.clone();
+
+    let db = connect_db(data_dir, branch).await?;
+    let queries = CodeGraphQueries::new(db);
+
+    let previous_canonical_workspace = queries.load_index_canonical_workspace_snapshot().await?;
+    queries.clear_index_canonical_workspace_snapshot().await?;
     // 096-F/T3: current provable Python regular-package directories.
     let python_packages = python_package_dirs(&current_files, ws_path);
     let is_regular_package =
@@ -2730,7 +2806,7 @@ async fn sync_workspace_with_progress_impl(
     let deleted_paths: Vec<_> = indexed_map
         .iter()
         .filter(|(indexed_path, _)| {
-            if !pass_complete || current_rel_paths.contains(*indexed_path) {
+            if !deletion_authoritative || current_rel_paths.contains(*indexed_path) {
                 return false;
             }
             ValidatedRelativePath::new(Path::new(indexed_path))
@@ -2758,8 +2834,7 @@ async fn sync_workspace_with_progress_impl(
         errors: source_errors,
         duration_ms: 0,
     };
-    let mut source_snapshots = SourceSnapshotCache::new();
-
+    let mut source_read_rejected = false;
     // ── Phase 1: Detect and remove deleted files ────────────────────
     for (indexed_path, indexed_file) in deleted_paths {
         // File deleted — collect concerns edges before removing symbols.
@@ -2809,7 +2884,7 @@ async fn sync_workspace_with_progress_impl(
                 .read_validated(&relative_path, config.max_file_size_bytes)
                 .await?
             {
-                SourceRead::Snapshot(snapshot) => Arc::new(snapshot),
+                SourceRead::Snapshot(snapshot) => snapshot,
                 SourceRead::Oversized { size_bytes } => {
                     let stale_file_id = format!("code_file:{}", sha256_short(&rel_path));
                     let orphaned = handle_deleted_file(&queries, &rel_path, &stale_file_id).await?;
@@ -2825,6 +2900,7 @@ async fn sync_workspace_with_progress_impl(
                 }
                 SourceRead::Rejected(error) => {
                     pass_complete = false;
+                    source_read_rejected |= error.is_capability_boundary();
                     result.errors.push(FileError {
                         file: rel_path.clone(),
                         error: format!("read error: {error}"),
@@ -2832,7 +2908,6 @@ async fn sync_workspace_with_progress_impl(
                     break 'file;
                 }
             };
-            source_snapshots.insert(rel_path.clone(), Arc::clone(&snapshot));
             let source = &snapshot.source;
 
             let size_bytes = snapshot.size_bytes;
@@ -3428,6 +3503,19 @@ async fn sync_workspace_with_progress_impl(
         advance_progress(&mut progress, &mut completed_files, total_files);
     }
 
+    if source_read_rejected {
+        if let Some(previous) = previous_canonical_workspace.as_ref() {
+            queries
+                .replace_index_canonical_workspace_snapshot(previous)
+                .await?;
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        {
+            result.duration_ms = start.elapsed().as_millis() as u64;
+        }
+        return Ok(result);
+    }
+
     // ── C8-1: sweep stale canonical edges after a mod-mapping change ─
     // An incremental sync only retracts the CHANGED files' own edges, so a
     // `#[path]`/`#[cfg]` mod-declaration edit that makes a module prefix newly
@@ -3460,11 +3548,11 @@ async fn sync_workspace_with_progress_impl(
         let resolved = match reresolve_calls_edges_with_source_reader(
             &queries,
             &source_reader,
-            &source_snapshots,
             &crates,
             &unsafe_prefixes,
             &python_packages,
             config.max_file_size_bytes,
+            true,
         )
         .await
         {
@@ -3508,11 +3596,11 @@ async fn sync_workspace_with_progress_impl(
             let resolved = match reresolve_calls_edges_with_source_reader(
                 &queries,
                 &source_reader,
-                &source_snapshots,
                 &crates,
                 &unsafe_prefixes,
                 &python_packages,
                 config.max_file_size_bytes,
+                true,
             )
             .await
             {
@@ -3747,6 +3835,13 @@ struct SourceDiscovery {
     files: Vec<std::path::PathBuf>,
     complete: bool,
     blocked_prefixes: Vec<ValidatedRelativePath>,
+    errors: Vec<FileError>,
+}
+
+#[derive(Debug)]
+struct CapabilityIgnoreLayer {
+    directory: std::path::PathBuf,
+    matcher: ignore::gitignore::Gitignore,
 }
 
 fn path_is_blocked(
@@ -3762,11 +3857,13 @@ fn path_is_blocked(
 async fn discover_files(
     ws_path: &Path,
     config: &CodeGraphConfig,
+    source_reader: &WorkspaceSourceReader,
 ) -> Result<SourceDiscovery, EngramError> {
     let ws_path = ws_path.to_path_buf();
     let display = ws_path.display().to_string();
     let config = config.clone();
-    tokio::task::spawn_blocking(move || discover_files_blocking(&ws_path, &config))
+    let source_reader = source_reader.clone();
+    tokio::task::spawn_blocking(move || discover_files_blocking(&ws_path, &config, &source_reader))
         .await
         .map_err(|error| {
             CodeGraphError::SourceAccess {
@@ -3777,15 +3874,19 @@ async fn discover_files(
         })
 }
 
-fn discover_files_blocking(ws_path: &Path, config: &CodeGraphConfig) -> SourceDiscovery {
+fn discover_files_blocking(
+    ws_path: &Path,
+    config: &CodeGraphConfig,
+    source_reader: &WorkspaceSourceReader,
+) -> SourceDiscovery {
     let mut builder = ignore::WalkBuilder::new(ws_path);
     builder
         .hidden(true)
-        .git_ignore(true)
-        .git_global(true)
-        .git_exclude(true)
-        // Workspace-local ignore rules remain authoritative without repository metadata.
-        .require_git(false)
+        .parents(false)
+        .ignore(false)
+        .git_ignore(false)
+        .git_global(false)
+        .git_exclude(false)
         .follow_links(false);
 
     // Add custom exclude patterns from config using a single OverrideBuilder.
@@ -3816,13 +3917,17 @@ fn discover_files_blocking(ws_path: &Path, config: &CodeGraphConfig) -> SourceDi
     let mut files = Vec::new();
     let mut complete = true;
     let mut blocked_prefixes = Vec::new();
+    let mut directories = vec![std::path::PathBuf::new()];
+    let mut errors = Vec::new();
     for entry in builder.build() {
         let entry = match entry {
             Ok(entry) => entry,
             Err(error) => {
-                complete = false;
-                if let Some(path) = ignore_error_path(&error) {
-                    record_blocked_prefix(ws_path, path, &mut blocked_prefixes);
+                let localized = ignore_error_path(&error).is_some_and(|path| {
+                    record_blocked_prefix(ws_path, path, &mut blocked_prefixes)
+                });
+                if !localized {
+                    complete = false;
                 }
                 warn!(%error, "code graph: incomplete source discovery");
                 continue;
@@ -3831,8 +3936,7 @@ fn discover_files_blocking(ws_path: &Path, config: &CodeGraphConfig) -> SourceDi
         let path = entry.path();
         match is_static_link_or_reparse(&entry) {
             Ok(true) => {
-                complete = false;
-                record_blocked_prefix(ws_path, path, &mut blocked_prefixes);
+                let _ = record_blocked_prefix(ws_path, path, &mut blocked_prefixes);
                 warn!(
                     path = %path.display(),
                     "code graph: blocking static link or reparse-point discovery prefix"
@@ -3841,8 +3945,9 @@ fn discover_files_blocking(ws_path: &Path, config: &CodeGraphConfig) -> SourceDi
             }
             Ok(false) => {}
             Err(error) => {
-                complete = false;
-                record_blocked_prefix(ws_path, path, &mut blocked_prefixes);
+                if !record_blocked_prefix(ws_path, path, &mut blocked_prefixes) {
+                    complete = false;
+                }
                 warn!(
                     path = %path.display(),
                     %error,
@@ -3851,10 +3956,29 @@ fn discover_files_blocking(ws_path: &Path, config: &CodeGraphConfig) -> SourceDi
                 continue;
             }
         }
-        if !entry
-            .file_type()
-            .is_some_and(|file_type| file_type.is_file())
-        {
+        let Some(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            if path != ws_path {
+                let Some(relative) = path.strip_prefix(ws_path).ok() else {
+                    complete = false;
+                    continue;
+                };
+                match ValidatedRelativePath::new(relative) {
+                    Ok(relative) => directories.push(relative.as_path().to_path_buf()),
+                    Err(error) => {
+                        complete = false;
+                        errors.push(FileError {
+                            file: relative.display().to_string(),
+                            error: error.to_string(),
+                        });
+                    }
+                }
+            }
+            continue;
+        }
+        if !file_type.is_file() {
             continue;
         }
         let lang = language_from_path(path);
@@ -3867,6 +3991,10 @@ fn discover_files_blocking(ws_path: &Path, config: &CodeGraphConfig) -> SourceDi
                 Ok(_) => files.push(path.to_path_buf()),
                 Err(error) => {
                     complete = false;
+                    errors.push(FileError {
+                        file: relative.display().to_string(),
+                        error: error.to_string(),
+                    });
                     warn!(
                         path = %path.display(),
                         %error,
@@ -3877,6 +4005,23 @@ fn discover_files_blocking(ws_path: &Path, config: &CodeGraphConfig) -> SourceDi
         }
     }
 
+    directories.sort_by(|left, right| {
+        left.components()
+            .count()
+            .cmp(&right.components().count())
+            .then_with(|| left.cmp(right))
+    });
+    directories.dedup();
+    let (ignore_layers, ignore_errors) =
+        load_capability_ignore_layers(source_reader, ws_path, &directories);
+    if !ignore_errors.is_empty() {
+        complete = false;
+        errors.extend(ignore_errors);
+    }
+    files.retain(|path| {
+        path.strip_prefix(ws_path)
+            .is_ok_and(|relative| !workspace_path_is_ignored(ws_path, relative, &ignore_layers))
+    });
     files.sort();
     blocked_prefixes.sort_by(|left, right| left.as_str().cmp(right.as_str()));
     blocked_prefixes.dedup();
@@ -3884,19 +4029,136 @@ fn discover_files_blocking(ws_path: &Path, config: &CodeGraphConfig) -> SourceDi
         files,
         complete,
         blocked_prefixes,
+        errors,
     }
+}
+
+fn load_capability_ignore_layers(
+    source_reader: &WorkspaceSourceReader,
+    ws_path: &Path,
+    directories: &[std::path::PathBuf],
+) -> (Vec<CapabilityIgnoreLayer>, Vec<FileError>) {
+    const MAX_IGNORE_BYTES: u64 = 1024 * 1024;
+
+    let mut layers = Vec::new();
+    let mut errors = Vec::new();
+    for directory in directories {
+        let mut builder = ignore::gitignore::GitignoreBuilder::new(ws_path.join(directory));
+        let mut has_rules = false;
+        for name in [".gitignore", ".ignore"] {
+            let relative = directory.join(name);
+            let validated = match ValidatedRelativePath::new(&relative) {
+                Ok(validated) => validated,
+                Err(error) => {
+                    errors.push(FileError {
+                        file: relative.display().to_string(),
+                        error: error.to_string(),
+                    });
+                    continue;
+                }
+            };
+            let source = match source_reader.read_blocking(&validated, MAX_IGNORE_BYTES) {
+                SourceRead::Snapshot(snapshot) => snapshot.source,
+                SourceRead::Oversized { size_bytes } => {
+                    errors.push(FileError {
+                        file: validated.as_str().to_owned(),
+                        error: format!(
+                            "ignore source exceeds capability read limit \
+                             ({size_bytes} > {MAX_IGNORE_BYTES} bytes)"
+                        ),
+                    });
+                    continue;
+                }
+                SourceRead::Rejected(error) if error.is_not_found() => continue,
+                SourceRead::Rejected(error) => {
+                    errors.push(FileError {
+                        file: validated.as_str().to_owned(),
+                        error: error.to_string(),
+                    });
+                    continue;
+                }
+            };
+            for (line_index, line) in source.lines().enumerate() {
+                match builder.add_line(Some(relative.clone()), line) {
+                    Ok(_) => has_rules = true,
+                    Err(error) => errors.push(FileError {
+                        file: validated.as_str().to_owned(),
+                        error: format!("invalid ignore rule on line {}: {error}", line_index + 1),
+                    }),
+                }
+            }
+        }
+        if has_rules {
+            match builder.build() {
+                Ok(matcher) => layers.push(CapabilityIgnoreLayer {
+                    directory: directory.clone(),
+                    matcher,
+                }),
+                Err(error) => errors.push(FileError {
+                    file: directory.display().to_string(),
+                    error: format!("failed to compile workspace ignore rules: {error}"),
+                }),
+            }
+        }
+    }
+    (layers, errors)
+}
+
+fn workspace_path_is_ignored(
+    ws_path: &Path,
+    relative_path: &Path,
+    layers: &[CapabilityIgnoreLayer],
+) -> bool {
+    let mut ancestor = std::path::PathBuf::new();
+    if let Some(parent) = relative_path.parent() {
+        for component in parent.components() {
+            ancestor.push(component.as_os_str());
+            if workspace_ignore_match(ws_path, &ancestor, true, layers, false) {
+                return true;
+            }
+        }
+    }
+    workspace_ignore_match(ws_path, relative_path, false, layers, true)
+}
+
+fn workspace_ignore_match(
+    ws_path: &Path,
+    relative_path: &Path,
+    is_directory: bool,
+    layers: &[CapabilityIgnoreLayer],
+    include_same_directory: bool,
+) -> bool {
+    let mut ignored = false;
+    for layer in layers {
+        let applicable = relative_path.starts_with(&layer.directory)
+            && (include_same_directory || relative_path != layer.directory);
+        if !applicable {
+            continue;
+        }
+        match layer
+            .matcher
+            .matched_path_or_any_parents(ws_path.join(relative_path), is_directory)
+        {
+            ignore::Match::Ignore(_) => ignored = true,
+            ignore::Match::Whitelist(_) => ignored = false,
+            ignore::Match::None => {}
+        }
+    }
+    ignored
 }
 
 fn record_blocked_prefix(
     ws_path: &Path,
     path: &Path,
     blocked_prefixes: &mut Vec<ValidatedRelativePath>,
-) {
+) -> bool {
     if let Ok(relative) = path.strip_prefix(ws_path) {
         if let Ok(relative) = ValidatedRelativePath::new(relative) {
             blocked_prefixes.push(relative);
+            return true;
         }
     }
+    false
 }
 
 fn ignore_error_path(error: &ignore::Error) -> Option<&Path> {

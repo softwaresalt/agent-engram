@@ -1059,6 +1059,7 @@ dependencies = [
  "pulldown-cmark",
  "rayon",
  "rmcp",
+ "rustix",
  "serde",
  "serde_json",
  "serde_yaml",

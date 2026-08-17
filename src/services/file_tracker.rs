@@ -105,7 +105,7 @@ pub async fn record_file_hash(
 
     debug!(
         path = %normalized,
-        hash = %&hash[..8],
+        hash = %utf8_prefix(&hash, 8),
         size = metadata.len(),
         "file_tracker: recording hash"
     );
@@ -136,7 +136,7 @@ pub async fn record_file_hash_precomputed(
 
     debug!(
         path = %normalized,
-        hash = %&hash[..hash.len().min(8)],
+        hash = %utf8_prefix(hash, 8),
         size = size_bytes,
         "file_tracker: recording precomputed hash"
     );
@@ -144,6 +144,13 @@ pub async fn record_file_hash_precomputed(
     queries
         .upsert_file_hash(&normalized, hash, size_bytes)
         .await
+}
+
+fn utf8_prefix(value: &str, max_chars: usize) -> &str {
+    value
+        .char_indices()
+        .nth(max_chars)
+        .map_or(value, |(byte_index, _)| &value[..byte_index])
 }
 
 /// Walk `workspace_root`, compare every non-excluded file against stored
