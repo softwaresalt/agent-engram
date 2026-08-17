@@ -3373,6 +3373,8 @@ pub(crate) fn discover_files(ws_path: &Path, config: &CodeGraphConfig) -> Vec<st
         .git_ignore(true)
         .git_global(true)
         .git_exclude(true)
+        // Workspace-local ignore rules remain authoritative without repository metadata.
+        .require_git(false)
         .follow_links(false);
 
     // Add custom exclude patterns from config using a single OverrideBuilder.
