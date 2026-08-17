@@ -1,8 +1,10 @@
 //! Tree-sitter HCL grammar service.
 //!
 //! Top-level blocks and attributes are represented as namespaced structural
-//! class symbols. Expression and reference extraction is intentionally
-//! deferred.
+//! class symbols. Plain dotted traversals are represented as conservative
+//! reference target hints without interpreting Terraform semantics.
+
+use std::collections::HashSet;
 
 use tree_sitter::{Node, Parser};
 
@@ -31,10 +33,10 @@ pub(super) fn parse_hcl_source(source: &str) -> Result<ParseResult, EngramError>
         })
     })?;
 
-    Ok(extract_top_level_declarations(tree.root_node(), source))
+    Ok(extract_hcl_items(tree.root_node(), source))
 }
 
-fn extract_top_level_declarations(root: Node<'_>, source: &str) -> ParseResult {
+fn extract_hcl_items(root: Node<'_>, source: &str) -> ParseResult {
     if root.has_error() {
         return ParseResult {
             symbols: Vec::new(),
@@ -66,7 +68,66 @@ fn extract_top_level_declarations(root: Node<'_>, source: &str) -> ParseResult {
         }
     }
 
+    let mut seen_targets = HashSet::new();
+    extract_references(root, source, &mut seen_targets, &mut edges);
+
     ParseResult { symbols, edges }
+}
+
+fn extract_references(
+    node: Node<'_>,
+    source: &str,
+    seen_targets: &mut HashSet<String>,
+    edges: &mut Vec<ExtractedEdge>,
+) {
+    if node.kind() == "expression" {
+        if let Some(target) = extract_plain_traversal(node, source)
+            && seen_targets.insert(target.clone())
+        {
+            edges.push(ExtractedEdge::References {
+                source: super::node_text(node, source),
+                target,
+            });
+        }
+        return;
+    }
+
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        extract_references(child, source, seen_targets, edges);
+    }
+}
+
+fn extract_plain_traversal(node: Node<'_>, source: &str) -> Option<String> {
+    if node.has_error() {
+        return None;
+    }
+
+    let mut cursor = node.walk();
+    let mut children = node.named_children(&mut cursor);
+    let root = children.next()?;
+    if root.kind() != "variable_expr" {
+        return None;
+    }
+
+    let mut segments = vec![extract_plain_identifier(root, source)?];
+    for child in children {
+        if child.kind() != "get_attr" {
+            return None;
+        }
+        segments.push(extract_plain_identifier(child, source)?);
+    }
+
+    (segments.len() > 1).then(|| segments.join("."))
+}
+
+fn extract_plain_identifier(node: Node<'_>, source: &str) -> Option<String> {
+    if node.has_error() || node.named_child_count() != 1 {
+        return None;
+    }
+
+    let identifier = node.named_child(0)?;
+    (identifier.kind() == "identifier").then(|| super::node_text(identifier, source))
 }
 
 fn extract_block_name(node: Node<'_>, source: &str) -> Option<String> {
