@@ -407,6 +407,13 @@ mod tests {
         assert!(!is_excluded("README.md"));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn excluded_prefixes_are_ascii_case_insensitive_on_windows() {
+        assert!(is_excluded(".GIT/objects/pack"));
+        assert!(is_excluded("TARGET/debug/engram.exe"));
+    }
+
     #[test]
     fn not_excluded_dotenv_like_dir_named_targeting() {
         // Only ".env" prefix matches, not arbitrary names starting with 't'.

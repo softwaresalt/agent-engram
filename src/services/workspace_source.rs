@@ -510,3 +510,50 @@ fn source_access_error(path: &str, reason: String) -> EngramError {
     }
     .into()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn portable_path_validation_rejects_traversal_nul_and_controls() {
+        assert!(ValidatedRelativePath::new(Path::new("../escape.rs")).is_err());
+        assert!(ValidatedRelativePath::new(Path::new("nested/../escape.rs")).is_err());
+        assert!(ValidatedRelativePath::new(Path::new("nul\0name.rs")).is_err());
+        assert!(ValidatedRelativePath::new(Path::new("line\nbreak.rs")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_path_validation_accepts_windows_specific_spellings() {
+        for path in [
+            "CON",
+            "name:stream",
+            "trailing.",
+            "trailing ",
+            r"name\part.rs",
+        ] {
+            assert!(
+                ValidatedRelativePath::new(Path::new(path)).is_ok(),
+                "Unix must preserve its native byte/case-sensitive path semantics for {path:?}"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_path_validation_rejects_ambiguous_spellings() {
+        for path in [
+            "CON",
+            "name:stream",
+            "trailing.",
+            "trailing ",
+            r"name\part.rs",
+        ] {
+            assert!(
+                ValidatedRelativePath::new(Path::new(path)).is_err(),
+                "Windows-ambiguous path must be rejected: {path:?}"
+            );
+        }
+    }
+}

@@ -129,20 +129,36 @@ fn db_identity(workspace: &Path, suffix: &str) -> (std::path::PathBuf, String) {
     )
 }
 
-async fn graph_state(
-    data_dir: &Path,
-    branch: &str,
-) -> anyhow::Result<(Vec<CodeFile>, Vec<String>)> {
+#[derive(Debug, PartialEq)]
+struct GraphState {
+    files: Vec<CodeFile>,
+    functions: Vec<(String, String)>,
+    classes: Vec<(String, String)>,
+}
+
+async fn graph_state(data_dir: &Path, branch: &str) -> anyhow::Result<GraphState> {
     let db = connect_db(data_dir, branch).await?;
     let queries = CodeGraphQueries::new(db);
     let files = queries.list_code_files().await?;
-    let classes = queries
+    let mut functions: Vec<_> = queries
+        .all_functions()
+        .await?
+        .into_iter()
+        .map(|function| (function.name, function.body))
+        .collect();
+    functions.sort();
+    let mut classes: Vec<_> = queries
         .all_classes()
         .await?
         .into_iter()
-        .map(|class| class.name)
+        .map(|class| (class.name, class.body))
         .collect();
-    Ok((files, classes))
+    classes.sort();
+    Ok(GraphState {
+        files,
+        functions,
+        classes,
+    })
 }
 
 #[derive(Debug, PartialEq)]
@@ -168,7 +184,7 @@ async fn publication_state(data_dir: &Path, branch: &str) -> anyhow::Result<Publ
                 function.id,
                 function.name,
                 function.file_path,
-                function.body_hash,
+                function.body,
             )
         })
         .collect();
@@ -177,7 +193,7 @@ async fn publication_state(data_dir: &Path, branch: &str) -> anyhow::Result<Publ
         .all_classes()
         .await?
         .into_iter()
-        .map(|class| (class.id, class.name, class.file_path, class.body_hash))
+        .map(|class| (class.id, class.name, class.file_path, class.body))
         .collect();
     classes.sort();
     Ok(PublicationState {
@@ -190,18 +206,53 @@ async fn publication_state(data_dir: &Path, branch: &str) -> anyhow::Result<Publ
     })
 }
 
-fn assert_external_absent(files: &[CodeFile], classes: &[String], marker: &str) {
+fn assert_external_absent(state: &GraphState, marker: &str) {
     assert!(
-        files.iter().all(|file| {
-            !file.content_hash.contains("OUTSIDE_SENTINEL") && !file.path.contains("outside")
-        }),
-        "RED:{marker}: external path/body metadata persisted: {files:?}"
+        state
+            .files
+            .iter()
+            .all(|file| !file.path.contains("outside")),
+        "RED:{marker}: external path metadata persisted: {:?}",
+        state.files
     );
     assert!(
-        classes
+        state
+            .functions
             .iter()
-            .all(|name| name != "hcl.block.resource.external.secret"),
-        "RED:{marker}: external HCL symbol persisted: {classes:?}"
+            .all(|(name, body)| !name.contains("external") && !body.contains("OUTSIDE_SENTINEL")),
+        "RED:{marker}: external function body persisted: {:?}",
+        state.functions
+    );
+    assert!(
+        state.classes.iter().all(|(name, body)| {
+            name != "hcl.block.resource.external.secret" && !body.contains("OUTSIDE_SENTINEL")
+        }),
+        "RED:{marker}: external HCL class body persisted: {:?}",
+        state.classes
+    );
+}
+
+fn assert_never_published(state: &GraphState, marker: &str, sentinel: &str) {
+    assert!(
+        state.files.is_empty(),
+        "RED:{marker}: abort published code files: {:?}",
+        state.files
+    );
+    assert!(
+        state
+            .functions
+            .iter()
+            .all(|(_, body)| !body.contains(sentinel)),
+        "RED:{marker}: rejected function body was admitted: {:?}",
+        state.functions
+    );
+    assert!(
+        state
+            .classes
+            .iter()
+            .all(|(_, body)| !body.contains(sentinel)),
+        "RED:{marker}: rejected class body was admitted: {:?}",
+        state.classes
     );
 }
 
@@ -240,12 +291,13 @@ async fn full_index_rejects_file_replaced_by_external_link_after_discovery() -> 
     let (indexed, controlled) = bounded_join(operation, controller).await?;
     controlled?;
     indexed?;
-    let (files, classes) = graph_state(&data_dir, &branch).await?;
-    assert_external_absent(&files, &classes, "SOURCE_FINAL_LINK_ESCAPE");
+    let state = graph_state(&data_dir, &branch).await?;
+    assert_external_absent(&state, "SOURCE_FINAL_LINK_ESCAPE");
     assert!(
-        classes
+        state
+            .classes
             .iter()
-            .any(|name| name == "hcl.block.service.control")
+            .any(|(name, _)| name == "hcl.block.service.control")
     );
     Ok(())
 }
@@ -384,6 +436,151 @@ async fn replaced_ignore_links_cannot_hide_and_delete_indexed_sources() -> anyho
 }
 
 #[tokio::test]
+async fn rejected_ignore_layers_abort_fresh_index_without_admitting_hidden_body()
+-> anyhow::Result<()> {
+    const SENTINEL: &str = "IGNORE_POLICY_SENTINEL";
+
+    for ignore_path in [".gitignore", "nested/.ignore"] {
+        let workspace = tempfile::tempdir()?;
+        let hidden_path = if ignore_path.starts_with("nested/") {
+            "nested/hidden.tf"
+        } else {
+            "hidden.tf"
+        };
+        let ignore_rule = if ignore_path.starts_with("nested/") {
+            "hidden.tf\n"
+        } else {
+            "hidden.tf\n"
+        };
+        write_source(
+            workspace.path(),
+            hidden_path,
+            &format!("resource \"ignored_policy\" \"hidden\" {{\n  value = \"{SENTINEL}\"\n}}\n"),
+        )?;
+        write_source(
+            workspace.path(),
+            "visible.tf",
+            "resource \"visible\" \"control\" {}\n",
+        )?;
+        write_source(workspace.path(), "ignore-rules.payload", ignore_rule)?;
+        if let Some(parent) = workspace.path().join(ignore_path).parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let target = if ignore_path.starts_with("nested/") {
+            Path::new("../ignore-rules.payload")
+        } else {
+            Path::new("ignore-rules.payload")
+        };
+        require_link(
+            symlink_file(target, &workspace.path().join(ignore_path)),
+            "fresh-ignore-file-link",
+        )?;
+        let (data_dir, branch) = db_identity(workspace.path(), ignore_path);
+
+        let indexed =
+            index_workspace(workspace.path(), &data_dir, &branch, &hcl_config(), true).await;
+        let state = graph_state(&data_dir, &branch).await?;
+        assert_never_published(&state, "IGNORE_LAYER_PARTIAL_PUBLICATION", SENTINEL);
+        let error = indexed.expect_err(
+            "RED:IGNORE_LAYER_REJECTION_SWALLOWED: rejected ignore layer must abort fresh index",
+        );
+        assert!(
+            error.to_string().contains(ignore_path),
+            "ignore rejection must identify {ignore_path}: {error}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn oversized_ignore_layer_aborts_fresh_index_without_admitting_hidden_body()
+-> anyhow::Result<()> {
+    const SENTINEL: &str = "OVERSIZED_IGNORE_SENTINEL";
+
+    let workspace = tempfile::tempdir()?;
+    write_source(
+        workspace.path(),
+        "hidden.tf",
+        &format!("resource \"oversized_ignore\" \"hidden\" {{\n  value = \"{SENTINEL}\"\n}}\n"),
+    )?;
+    write_source(
+        workspace.path(),
+        "visible.tf",
+        "resource \"visible\" \"control\" {}\n",
+    )?;
+    write_source(
+        workspace.path(),
+        ".gitignore",
+        &format!("hidden.tf\n#{}\n", "x".repeat(1024 * 1024)),
+    )?;
+    let (data_dir, branch) = db_identity(workspace.path(), "oversized-ignore");
+
+    let indexed = index_workspace(workspace.path(), &data_dir, &branch, &hcl_config(), true).await;
+    let state = graph_state(&data_dir, &branch).await?;
+    assert_never_published(&state, "OVERSIZED_IGNORE_PARTIAL_PUBLICATION", SENTINEL);
+    let error = indexed.expect_err(
+        "RED:OVERSIZED_IGNORE_SWALLOWED: oversized ignore layer must abort fresh index",
+    );
+    assert!(
+        error.to_string().contains(".gitignore")
+            && error.to_string().contains("exceeds capability read limit"),
+        "oversized ignore rejection must be actionable: {error}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn git_info_exclude_remains_authoritative_through_capability_reads() -> anyhow::Result<()> {
+    const SENTINEL: &str = "GIT_INFO_EXCLUDE_SENTINEL";
+
+    let workspace = tempfile::tempdir()?;
+    write_source(workspace.path(), ".git/info/exclude", "hidden.tf\n")?;
+    write_source(
+        workspace.path(),
+        "hidden.tf",
+        &format!("resource \"info_excluded\" \"hidden\" {{ value = \"{SENTINEL}\" }}\n"),
+    )?;
+    write_source(
+        workspace.path(),
+        "visible.tf",
+        "resource \"visible\" \"control\" {}\n",
+    )?;
+    let (data_dir, branch) = db_identity(workspace.path(), "git-info-exclude");
+
+    let result = index_workspace(workspace.path(), &data_dir, &branch, &hcl_config(), true).await?;
+    assert!(
+        result.errors.is_empty(),
+        "ordinary .git/info/exclude must be readable: {result:?}"
+    );
+    let state = graph_state(&data_dir, &branch).await?;
+    assert_eq!(
+        state
+            .files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect::<Vec<_>>(),
+        ["visible.tf"]
+    );
+    assert!(
+        state
+            .classes
+            .iter()
+            .any(|(name, _)| name == "hcl.block.resource.visible.control"),
+        "visible control was not indexed: {:?}",
+        state.classes
+    );
+    assert!(
+        state
+            .classes
+            .iter()
+            .all(|(name, body)| !name.contains("info_excluded") && !body.contains(SENTINEL)),
+        ".git/info/exclude hidden body was indexed: {:?}",
+        state.classes
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn regular_root_and_nested_ignore_rules_remain_authoritative() -> anyhow::Result<()> {
     let workspace = tempfile::tempdir()?;
     write_source(workspace.path(), ".gitignore", "root-hidden.tf\n")?;
@@ -396,8 +593,8 @@ async fn regular_root_and_nested_ignore_rules_remain_authoritative() -> anyhow::
     let result = sync_workspace(workspace.path(), &data_dir, &branch, &hcl_config()).await?;
 
     assert!(result.errors.is_empty(), "regular ignores must be readable");
-    let (files, _) = graph_state(&data_dir, &branch).await?;
-    let paths: Vec<_> = files.iter().map(|file| file.path.as_str()).collect();
+    let state = graph_state(&data_dir, &branch).await?;
+    let paths: Vec<_> = state.files.iter().map(|file| file.path.as_str()).collect();
     assert_eq!(paths, ["keep.tf", "nested/keep.tf"]);
     Ok(())
 }
@@ -501,6 +698,55 @@ async fn rejected_rust_prepass_aborts_forced_index_before_publication_mutation()
 }
 
 #[tokio::test]
+async fn oversized_rust_prepass_aborts_before_publication_mutation() -> anyhow::Result<()> {
+    let workspace = tempfile::tempdir()?;
+    write_source(
+        workspace.path(),
+        "Cargo.toml",
+        "[package]\nname = \"safe\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )?;
+    let rust_source = format!(
+        "#[path = \"redirect.rs\"]\npub mod unsafe_mapping;\n\
+         pub fn retained_publication() -> usize {{ 7 }}\n// {}\n",
+        "prepass-padding".repeat(64)
+    );
+    write_source(workspace.path(), "src/lib.rs", &rust_source)?;
+    let (data_dir, branch) = db_identity(workspace.path(), "prepass-oversized");
+    let initial_config = CodeGraphConfig {
+        max_file_size_bytes: 4096,
+        ..CodeGraphConfig::default()
+    };
+    index_workspace(workspace.path(), &data_dir, &branch, &initial_config, true).await?;
+    let before = publication_state(&data_dir, &branch).await?;
+    let restrictive_config = CodeGraphConfig {
+        max_file_size_bytes: 128,
+        ..CodeGraphConfig::default()
+    };
+
+    let error = index_workspace(
+        workspace.path(),
+        &data_dir,
+        &branch,
+        &restrictive_config,
+        true,
+    )
+    .await
+    .expect_err("RED:RUST_PREPASS_OVERSIZE_SWALLOWED: oversized Rust prepass must abort");
+    assert!(
+        error.to_string().contains("src/lib.rs")
+            && error.to_string().contains("Rust unsafe-module prepass")
+            && error.to_string().contains("128"),
+        "oversized Rust prepass error must identify file, phase, and limit: {error}"
+    );
+    assert_eq!(
+        publication_state(&data_dir, &branch).await?,
+        before,
+        "RED:RUST_PREPASS_OVERSIZE_MUTATED: oversized prepass changed prior publication"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn blocked_prefix_does_not_suppress_unrelated_authoritative_deletion() -> anyhow::Result<()> {
     let workspace = tempfile::tempdir()?;
     let outside = tempfile::tempdir()?;
@@ -527,28 +773,68 @@ async fn blocked_prefix_does_not_suppress_unrelated_authoritative_deletion() -> 
     )?;
     std::fs::remove_file(workspace.path().join("authoritatively-deleted.tf"))?;
     let result = sync_workspace(workspace.path(), &data_dir, &branch, &config).await?;
-    let (files, classes) = graph_state(&data_dir, &branch).await?;
+    let state = graph_state(&data_dir, &branch).await?;
 
     assert!(
-        files.iter().any(|file| file.path == "blocked/victim.tf"),
-        "blocked prefix must retain its prior graph: {files:?}"
+        state
+            .files
+            .iter()
+            .any(|file| file.path == "blocked/victim.tf"),
+        "blocked prefix must retain its prior graph: {:?}",
+        state.files
     );
     assert!(
-        files
+        state
+            .files
             .iter()
             .all(|file| file.path != "authoritatively-deleted.tf"),
         "RED:LOCAL_BLOCK_SUPPRESSED_GLOBAL_DELETE: unrelated authoritative deletion survived: \
-         {files:?}; result={result:?}"
+         {:?}; result={result:?}",
+        state.files
     );
     assert!(
-        classes
+        state
+            .classes
             .iter()
-            .any(|name| name == "hcl.block.resource.safe.old")
+            .any(|(name, _)| name == "hcl.block.resource.safe.old")
     );
     assert!(
-        classes
+        state
+            .classes
             .iter()
-            .all(|name| name != "hcl.block.resource.deleted.gone")
+            .all(|(name, _)| name != "hcl.block.resource.deleted.gone")
+    );
+    Ok(())
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn case_variant_blocked_prefix_retains_last_known_good_graph() -> anyhow::Result<()> {
+    let workspace = tempfile::tempdir()?;
+    let outside = tempfile::tempdir()?;
+    write_source(workspace.path(), "blocked/victim.tf", SAFE_OLD)?;
+    let (data_dir, branch) = db_identity(workspace.path(), "case-variant-block");
+    let config = hcl_config();
+    sync_workspace(workspace.path(), &data_dir, &branch, &config).await?;
+    let before = publication_state(&data_dir, &branch).await?;
+
+    std::fs::rename(
+        workspace.path().join("blocked"),
+        outside.path().join("blocked-target"),
+    )?;
+    require_link(
+        symlink_dir(
+            &outside.path().join("blocked-target"),
+            &workspace.path().join("BLOCKED"),
+        ),
+        "case-variant-blocked-prefix-link",
+    )?;
+    sync_workspace(workspace.path(), &data_dir, &branch, &config).await?;
+
+    assert_eq!(
+        publication_state(&data_dir, &branch).await?,
+        before,
+        "RED:WINDOWS_CASE_BLOCKED_LKG: case-variant blocked prefix deleted prior publication"
     );
     Ok(())
 }
@@ -630,12 +916,13 @@ async fn cold_sync_rejects_ancestor_replaced_by_external_link_after_discovery() 
     let (synced, controlled) = bounded_join(operation, controller).await?;
     controlled?;
     synced?;
-    let (files, classes) = graph_state(&data_dir, &branch).await?;
-    assert_external_absent(&files, &classes, "SOURCE_ANCESTOR_LINK_ESCAPE");
+    let state = graph_state(&data_dir, &branch).await?;
+    assert_external_absent(&state, "SOURCE_ANCESTOR_LINK_ESCAPE");
     assert!(
-        classes
+        state
+            .classes
             .iter()
-            .any(|name| name == "hcl.block.service.control")
+            .any(|(name, _)| name == "hcl.block.service.control")
     );
     Ok(())
 }
@@ -678,7 +965,7 @@ async fn explicit_sync_rejection_retains_last_known_good_graph() -> anyhow::Resu
     controlled?;
     synced?;
     let after = graph_state(&data_dir, &branch).await?;
-    assert_external_absent(&after.0, &after.1, "SOURCE_SYNC_LKG_ESCAPE");
+    assert_external_absent(&after, "SOURCE_SYNC_LKG_ESCAPE");
     assert_eq!(
         after, before,
         "RED:SOURCE_SYNC_LKG_REPLACED: rejected source replacement changed the graph"
@@ -715,11 +1002,12 @@ async fn regular_file_controls_remain_indexable() -> anyhow::Result<()> {
     let (indexed, controlled) = bounded_join(operation, controller).await?;
     controlled?;
     indexed?;
-    let (_, classes) = graph_state(&data_dir, &branch).await?;
+    let state = graph_state(&data_dir, &branch).await?;
     assert!(
-        classes
+        state
+            .classes
             .iter()
-            .any(|name| name == "hcl.block.resource.safe.new")
+            .any(|(name, _)| name == "hcl.block.resource.safe.new")
     );
     Ok(())
 }
