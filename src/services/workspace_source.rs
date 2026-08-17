@@ -1,11 +1,12 @@
 //! Capability-rooted source reads for code-graph indexing.
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
+use cap_fs_ext::{DirExt as _, FollowSymlinks, OpenOptionsFollowExt as _};
 use cap_std::ambient_authority;
 use cap_std::fs::{Dir, File, OpenOptions};
 use sha2::{Digest, Sha256};
@@ -247,12 +248,28 @@ impl fmt::Display for SourceRejection {
 #[derive(Clone)]
 pub(crate) struct WorkspaceSourceReader {
     root: Arc<Dir>,
+    root_path: Arc<PathBuf>,
+}
+
+/// A distinct read-only capability for Git metadata outside the workspace.
+///
+/// This type intentionally exposes only bounded metadata reads and opening a
+/// referenced metadata directory. It cannot be used for workspace source reads.
+pub(crate) struct GitMetadataReader {
+    root: Dir,
+    root_path: PathBuf,
 }
 
 impl WorkspaceSourceReader {
     pub(crate) async fn open(workspace_root: &Path) -> Result<Self, EngramError> {
-        let workspace_root = workspace_root.to_path_buf();
+        let workspace_root = std::path::absolute(workspace_root).map_err(|error| {
+            source_access_error(
+                &workspace_root.display().to_string(),
+                format!("failed to make workspace root absolute: {error}"),
+            )
+        })?;
         let display = workspace_root.display().to_string();
+        let root_path = workspace_root.clone();
         let root = tokio::task::spawn_blocking(move || {
             Dir::open_ambient_dir(workspace_root, ambient_authority())
         })
@@ -261,6 +278,7 @@ impl WorkspaceSourceReader {
         .map_err(|error| source_access_error(&display, format!("failed to open root: {error}")))?;
         Ok(Self {
             root: Arc::new(root),
+            root_path: Arc::new(root_path),
         })
     }
 
@@ -296,65 +314,14 @@ impl WorkspaceSourceReader {
         relative_path: &ValidatedRelativePath,
         max_bytes: u64,
     ) -> SourceRead {
-        let mut file = match self.open_file_nofollow(relative_path) {
-            Ok(file) => file,
-            Err(error) => {
-                return SourceRead::Rejected(SourceRejection::io(
-                    relative_path,
-                    "capability no-follow open failed",
-                    &error,
-                ));
-            }
-        };
-        let metadata = match file.metadata() {
-            Ok(metadata) => metadata,
-            Err(error) => {
-                return SourceRead::Rejected(SourceRejection::io(
-                    relative_path,
-                    "opened-file metadata failed",
-                    &error,
-                ));
-            }
-        };
-        if !metadata.is_file() {
-            return SourceRead::Rejected(SourceRejection::other(
-                relative_path,
-                "opened object is not a regular file",
-            ));
-        }
-        if metadata.len() > max_bytes {
-            return SourceRead::Oversized {
-                size_bytes: metadata.len(),
-            };
-        }
+        read_blocking_from_root(self.root.as_ref(), relative_path, max_bytes)
+    }
 
-        let read_limit = max_bytes.saturating_add(1);
-        let initial_capacity =
-            usize::try_from(metadata.len().min(max_bytes).min(64 * 1024)).unwrap_or(64 * 1024);
-        let mut bytes = Vec::with_capacity(initial_capacity);
-        if let Err(error) = file.by_ref().take(read_limit).read_to_end(&mut bytes) {
-            return SourceRead::Rejected(SourceRejection::io(
-                relative_path,
-                "opened-file read failed",
-                &error,
-            ));
-        }
-        let size_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-        if size_bytes > max_bytes {
-            return SourceRead::Oversized { size_bytes };
-        }
-        let content_hash = hex::encode(Sha256::digest(&bytes));
-        match String::from_utf8(bytes) {
-            Ok(source) => SourceRead::Snapshot(SourceSnapshot {
-                source,
-                size_bytes,
-                content_hash,
-            }),
-            Err(error) => SourceRead::Rejected(SourceRejection::content(
-                relative_path,
-                format!("source is not valid UTF-8: {error}"),
-            )),
-        }
+    pub(crate) fn open_git_metadata_directory_blocking(
+        &self,
+        path: &Path,
+    ) -> std::io::Result<GitMetadataReader> {
+        GitMetadataReader::open(resolve_metadata_path(self.root_path.as_ref(), path)?)
     }
 
     pub(crate) fn classify_root_child_nofollow_blocking(
@@ -399,52 +366,11 @@ impl WorkspaceSourceReader {
         }
     }
 
-    fn open_file_nofollow(&self, relative_path: &ValidatedRelativePath) -> std::io::Result<File> {
-        let path = relative_path.as_path();
-        let file_name = path.file_name().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "validated source path has no final component",
-            )
-        })?;
-        let mut opened_directory = None;
-        if let Some(parent) = path.parent() {
-            for component in parent.components() {
-                let Component::Normal(component) = component else {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        "validated source parent contains a non-normal component",
-                    ));
-                };
-                let base = opened_directory.as_ref().unwrap_or(self.root.as_ref());
-                opened_directory = Some(open_directory_component_nofollow(base, component)?);
-            }
-        }
-        let base = opened_directory.as_ref().unwrap_or(self.root.as_ref());
-        open_file_component_nofollow(base, file_name)
-    }
-
     fn open_directory_nofollow(
         &self,
         relative_path: &ValidatedRelativePath,
     ) -> std::io::Result<Dir> {
-        let mut opened_directory = None;
-        for component in relative_path.as_path().components() {
-            let Component::Normal(component) = component else {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "validated directory path contains a non-normal component",
-                ));
-            };
-            let base = opened_directory.as_ref().unwrap_or(self.root.as_ref());
-            opened_directory = Some(open_directory_component_nofollow(base, component)?);
-        }
-        opened_directory.ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "validated directory path is empty",
-            )
-        })
+        open_directory_nofollow_from_root(self.root.as_ref(), relative_path)
     }
 
     pub(crate) fn list_child_directories_blocking(
@@ -494,91 +420,232 @@ impl WorkspaceSourceReader {
     }
 }
 
-#[cfg(unix)]
-fn open_directory_component_nofollow(base: &Dir, component: &OsStr) -> std::io::Result<Dir> {
-    use cap_std::fs::OpenOptionsExt as _;
-    use rustix::fs::OFlags;
-
-    let flags = OFlags::NOFOLLOW | OFlags::DIRECTORY | OFlags::NONBLOCK;
-    let custom_flags = i32::try_from(flags.bits()).map_err(|error| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("directory no-follow flags are not representable: {error}"),
-        )
-    })?;
-    let mut options = OpenOptions::new();
-    options.read(true).custom_flags(custom_flags);
-    let file = base.open_with(Path::new(component), &options)?;
-    let metadata = file.metadata()?;
-    if !metadata.is_dir() || metadata.is_symlink() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "intermediate component is not a regular directory",
-        ));
+impl GitMetadataReader {
+    fn open(root_path: PathBuf) -> std::io::Result<Self> {
+        let root = open_absolute_directory_nofollow(&root_path)?;
+        Ok(Self { root, root_path })
     }
-    Ok(Dir::from_std_file(file.into_std()))
+
+    pub(crate) fn open_directory_blocking(&self, path: &Path) -> std::io::Result<Self> {
+        Self::open(resolve_metadata_path(&self.root_path, path)?)
+    }
+
+    pub(crate) fn read_blocking(
+        &self,
+        relative_path: &ValidatedRelativePath,
+        max_bytes: u64,
+    ) -> SourceRead {
+        read_blocking_from_root(&self.root, relative_path, max_bytes)
+    }
 }
 
-#[cfg(unix)]
-fn open_file_component_nofollow(base: &Dir, component: &OsStr) -> std::io::Result<File> {
-    use cap_std::fs::OpenOptionsExt as _;
-    use rustix::fs::OFlags;
+fn read_blocking_from_root(
+    root: &Dir,
+    relative_path: &ValidatedRelativePath,
+    max_bytes: u64,
+) -> SourceRead {
+    let mut file = match open_file_nofollow_from_root(root, relative_path) {
+        Ok(file) => file,
+        Err(error) => {
+            return SourceRead::Rejected(SourceRejection::io(
+                relative_path,
+                "capability no-follow open failed",
+                &error,
+            ));
+        }
+    };
+    let metadata = match file.metadata() {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            return SourceRead::Rejected(SourceRejection::io(
+                relative_path,
+                "opened-file metadata failed",
+                &error,
+            ));
+        }
+    };
+    if !metadata.is_file() {
+        return SourceRead::Rejected(SourceRejection::other(
+            relative_path,
+            "opened object is not a regular file",
+        ));
+    }
+    if metadata.len() > max_bytes {
+        return SourceRead::Oversized {
+            size_bytes: metadata.len(),
+        };
+    }
 
-    let flags = OFlags::NOFOLLOW | OFlags::NONBLOCK;
-    let custom_flags = i32::try_from(flags.bits()).map_err(|error| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("file no-follow flags are not representable: {error}"),
-        )
-    })?;
+    let read_limit = max_bytes.saturating_add(1);
+    let initial_capacity =
+        usize::try_from(metadata.len().min(max_bytes).min(64 * 1024)).unwrap_or(64 * 1024);
+    let mut bytes = Vec::with_capacity(initial_capacity);
+    if let Err(error) = file.by_ref().take(read_limit).read_to_end(&mut bytes) {
+        return SourceRead::Rejected(SourceRejection::io(
+            relative_path,
+            "opened-file read failed",
+            &error,
+        ));
+    }
+    let size_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    if size_bytes > max_bytes {
+        return SourceRead::Oversized { size_bytes };
+    }
+    let content_hash = hex::encode(Sha256::digest(&bytes));
+    match String::from_utf8(bytes) {
+        Ok(source) => SourceRead::Snapshot(SourceSnapshot {
+            source,
+            size_bytes,
+            content_hash,
+        }),
+        Err(error) => SourceRead::Rejected(SourceRejection::content(
+            relative_path,
+            format!("source is not valid UTF-8: {error}"),
+        )),
+    }
+}
+
+fn open_directory_component_nofollow(base: &Dir, component: &OsStr) -> std::io::Result<Dir> {
+    base.open_dir_nofollow(Path::new(component))
+}
+
+fn open_file_component_nofollow(base: &Dir, component: &OsStr) -> std::io::Result<File> {
     let mut options = OpenOptions::new();
-    options.read(true).custom_flags(custom_flags);
+    options.read(true).follow(FollowSymlinks::No);
+    #[cfg(unix)]
+    {
+        use cap_std::fs::OpenOptionsExt as _;
+        use rustix::fs::OFlags;
+
+        let flags = OFlags::NOFOLLOW | OFlags::NONBLOCK;
+        let custom_flags = i32::try_from(flags.bits()).map_err(|error| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("file no-follow flags are not representable: {error}"),
+            )
+        })?;
+        options.custom_flags(custom_flags);
+    }
     base.open_with(Path::new(component), &options)
 }
 
-#[cfg(windows)]
-fn open_directory_component_nofollow(base: &Dir, component: &OsStr) -> std::io::Result<Dir> {
-    use cap_std::fs::{MetadataExt as _, OpenOptionsExt as _};
-
-    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
-    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
-
-    let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS);
-    let file = base.open_with(Path::new(component), &options)?;
-    let metadata = file.metadata()?;
-    if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 || !metadata.is_dir() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "intermediate component is a reparse point or is not a directory",
-        ));
+fn open_file_nofollow_from_root(
+    root: &Dir,
+    relative_path: &ValidatedRelativePath,
+) -> std::io::Result<File> {
+    let path = relative_path.as_path();
+    let file_name = path.file_name().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "validated source path has no final component",
+        )
+    })?;
+    let mut opened_directory = None;
+    if let Some(parent) = path.parent() {
+        for component in parent.components() {
+            let Component::Normal(component) = component else {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "validated source parent contains a non-normal component",
+                ));
+            };
+            let base = opened_directory.as_ref().unwrap_or(root);
+            opened_directory = Some(open_directory_component_nofollow(base, component)?);
+        }
     }
-    Ok(Dir::from_std_file(file.into_std()))
+    let base = opened_directory.as_ref().unwrap_or(root);
+    open_file_component_nofollow(base, file_name)
 }
 
-#[cfg(windows)]
-fn open_file_component_nofollow(base: &Dir, component: &OsStr) -> std::io::Result<File> {
-    use cap_std::fs::{MetadataExt as _, OpenOptionsExt as _};
+fn open_directory_nofollow_from_root(
+    root: &Dir,
+    relative_path: &ValidatedRelativePath,
+) -> std::io::Result<Dir> {
+    let mut opened_directory = None;
+    for component in relative_path.as_path().components() {
+        let Component::Normal(component) = component else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "validated directory path contains a non-normal component",
+            ));
+        };
+        let base = opened_directory.as_ref().unwrap_or(root);
+        opened_directory = Some(open_directory_component_nofollow(base, component)?);
+    }
+    opened_directory.ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "validated directory path is empty",
+        )
+    })
+}
 
-    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
-    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-
-    let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-    let file = base.open_with(Path::new(component), &options)?;
-    let metadata = file.metadata()?;
-    if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+fn resolve_metadata_path(base: &Path, referenced: &Path) -> std::io::Result<PathBuf> {
+    let candidate = if referenced.is_absolute() {
+        referenced.to_path_buf()
+    } else {
+        base.join(referenced)
+    };
+    if !candidate.is_absolute() {
         return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "final component is a reparse point",
+            std::io::ErrorKind::InvalidInput,
+            "Git metadata path did not resolve to an absolute path",
         ));
     }
-    Ok(file)
+    let mut normalized = PathBuf::new();
+    for component in candidate.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(Path::new(std::path::MAIN_SEPARATOR_STR)),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "Git metadata path traverses above its filesystem root",
+                    ));
+                }
+            }
+            Component::Normal(component) => normalized.push(component),
+        }
+    }
+    if !normalized.is_absolute() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "normalized Git metadata path is not absolute",
+        ));
+    }
+    Ok(normalized)
+}
+
+fn open_absolute_directory_nofollow(path: &Path) -> std::io::Result<Dir> {
+    let mut anchor = PathBuf::new();
+    let mut children: Vec<OsString> = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => anchor.push(prefix.as_os_str()),
+            Component::RootDir => anchor.push(Path::new(std::path::MAIN_SEPARATOR_STR)),
+            Component::Normal(component) => children.push(component.to_os_string()),
+            Component::CurDir | Component::ParentDir => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "Git metadata path was not lexically normalized",
+                ));
+            }
+        }
+    }
+    if !anchor.is_absolute() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Git metadata path has no absolute filesystem anchor",
+        ));
+    }
+
+    let mut directory = Dir::open_ambient_dir(anchor, ambient_authority())?;
+    for component in children {
+        directory = open_directory_component_nofollow(&directory, &component)?;
+    }
+    Ok(directory)
 }
 
 fn source_access_error(path: &str, reason: String) -> EngramError {

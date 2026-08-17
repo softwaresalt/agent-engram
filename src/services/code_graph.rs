@@ -4342,6 +4342,7 @@ fn load_git_info_exclude_layer(
     errors: &mut Vec<FileError>,
 ) {
     const MAX_IGNORE_BYTES: u64 = 1024 * 1024;
+    const MAX_GIT_POINTER_BYTES: u64 = 64 * 1024;
     const GIT_DIRECTORY: &str = ".git";
     const INFO_EXCLUDE: &str = ".git/info/exclude";
 
@@ -4355,53 +4356,178 @@ fn load_git_info_exclude_layer(
             return;
         }
     };
-    match source_reader.classify_root_child_nofollow_blocking(&git_directory) {
+    let source = match source_reader.classify_root_child_nofollow_blocking(&git_directory) {
         Ok(RootChildKind::Absent) => return,
-        Ok(RootChildKind::Directory) => {}
+        Ok(RootChildKind::Directory) => {
+            let exclude_path = match ValidatedRelativePath::new(Path::new(INFO_EXCLUDE)) {
+                Ok(path) => path,
+                Err(error) => {
+                    errors.push(FileError {
+                        file: INFO_EXCLUDE.to_owned(),
+                        error: error.to_string(),
+                    });
+                    return;
+                }
+            };
+            match source_reader.read_blocking(&exclude_path, MAX_IGNORE_BYTES) {
+                SourceRead::Snapshot(snapshot) => snapshot.source,
+                SourceRead::Oversized { size_bytes } => {
+                    errors.push(FileError {
+                        file: INFO_EXCLUDE.to_owned(),
+                        error: format!(
+                            "ignore source exceeds capability read limit \
+                             ({size_bytes} > {MAX_IGNORE_BYTES} bytes)"
+                        ),
+                    });
+                    return;
+                }
+                SourceRead::Rejected(error) if error.is_not_found() => return,
+                SourceRead::Rejected(error) => {
+                    errors.push(FileError {
+                        file: INFO_EXCLUDE.to_owned(),
+                        error: error.to_string(),
+                    });
+                    return;
+                }
+            }
+        }
         Ok(RootChildKind::Other) => {
-            errors.push(FileError {
-                file: GIT_DIRECTORY.to_owned(),
-                error: "workspace .git is present but is not a real directory; Git worktree \
-                        pointer files and links are not followed for repository exclude policy"
-                    .to_owned(),
-            });
-            return;
+            let pointer = match source_reader.read_blocking(&git_directory, MAX_GIT_POINTER_BYTES) {
+                SourceRead::Snapshot(snapshot) => snapshot.source,
+                SourceRead::Oversized { size_bytes } => {
+                    errors.push(FileError {
+                        file: GIT_DIRECTORY.to_owned(),
+                        error: format!(
+                            "Git worktree pointer exceeds capability read limit \
+                             ({size_bytes} > {MAX_GIT_POINTER_BYTES} bytes)"
+                        ),
+                    });
+                    return;
+                }
+                SourceRead::Rejected(error) => {
+                    errors.push(FileError {
+                        file: GIT_DIRECTORY.to_owned(),
+                        error: error.to_string(),
+                    });
+                    return;
+                }
+            };
+            let gitdir = match parse_gitdir_pointer(&pointer) {
+                Ok(path) => path,
+                Err(error) => {
+                    errors.push(FileError {
+                        file: GIT_DIRECTORY.to_owned(),
+                        error,
+                    });
+                    return;
+                }
+            };
+            let git_reader = match source_reader
+                .open_git_metadata_directory_blocking(Path::new(&gitdir))
+            {
+                Ok(reader) => reader,
+                Err(error) => {
+                    errors.push(FileError {
+                        file: GIT_DIRECTORY.to_owned(),
+                        error: format!("failed to open linked-worktree gitdir capability: {error}"),
+                    });
+                    return;
+                }
+            };
+            let commondir_path = match ValidatedRelativePath::new(Path::new("commondir")) {
+                Ok(path) => path,
+                Err(error) => {
+                    errors.push(FileError {
+                        file: "commondir".to_owned(),
+                        error: error.to_string(),
+                    });
+                    return;
+                }
+            };
+            let common_reader =
+                match git_reader.read_blocking(&commondir_path, MAX_GIT_POINTER_BYTES) {
+                    SourceRead::Snapshot(snapshot) => {
+                        let commondir = match parse_git_metadata_path(
+                            &snapshot.source,
+                            "linked-worktree commondir",
+                        ) {
+                            Ok(path) => path,
+                            Err(error) => {
+                                errors.push(FileError {
+                                    file: "commondir".to_owned(),
+                                    error,
+                                });
+                                return;
+                            }
+                        };
+                        match git_reader.open_directory_blocking(Path::new(&commondir)) {
+                            Ok(reader) => Some(reader),
+                            Err(error) => {
+                                errors.push(FileError {
+                                    file: "commondir".to_owned(),
+                                    error: format!(
+                                        "failed to open common Git metadata capability: {error}"
+                                    ),
+                                });
+                                return;
+                            }
+                        }
+                    }
+                    SourceRead::Rejected(error) if error.is_not_found() => None,
+                    SourceRead::Rejected(error) => {
+                        errors.push(FileError {
+                            file: "commondir".to_owned(),
+                            error: error.to_string(),
+                        });
+                        return;
+                    }
+                    SourceRead::Oversized { size_bytes } => {
+                        errors.push(FileError {
+                            file: "commondir".to_owned(),
+                            error: format!(
+                                "Git commondir exceeds capability read limit \
+                                 ({size_bytes} > {MAX_GIT_POINTER_BYTES} bytes)"
+                            ),
+                        });
+                        return;
+                    }
+                };
+            let metadata_reader = common_reader.as_ref().unwrap_or(&git_reader);
+            let exclude_path = match ValidatedRelativePath::new(Path::new("info/exclude")) {
+                Ok(path) => path,
+                Err(error) => {
+                    errors.push(FileError {
+                        file: INFO_EXCLUDE.to_owned(),
+                        error: error.to_string(),
+                    });
+                    return;
+                }
+            };
+            match metadata_reader.read_blocking(&exclude_path, MAX_IGNORE_BYTES) {
+                SourceRead::Snapshot(snapshot) => snapshot.source,
+                SourceRead::Rejected(error) if error.is_not_found() => return,
+                SourceRead::Rejected(error) => {
+                    errors.push(FileError {
+                        file: INFO_EXCLUDE.to_owned(),
+                        error: error.to_string(),
+                    });
+                    return;
+                }
+                SourceRead::Oversized { size_bytes } => {
+                    errors.push(FileError {
+                        file: INFO_EXCLUDE.to_owned(),
+                        error: format!(
+                            "ignore source exceeds capability read limit \
+                             ({size_bytes} > {MAX_IGNORE_BYTES} bytes)"
+                        ),
+                    });
+                    return;
+                }
+            }
         }
         Err(error) => {
             errors.push(FileError {
                 file: GIT_DIRECTORY.to_owned(),
-                error: error.to_string(),
-            });
-            return;
-        }
-    }
-
-    let exclude_path = match ValidatedRelativePath::new(Path::new(INFO_EXCLUDE)) {
-        Ok(path) => path,
-        Err(error) => {
-            errors.push(FileError {
-                file: INFO_EXCLUDE.to_owned(),
-                error: error.to_string(),
-            });
-            return;
-        }
-    };
-    let source = match source_reader.read_blocking(&exclude_path, MAX_IGNORE_BYTES) {
-        SourceRead::Snapshot(snapshot) => snapshot.source,
-        SourceRead::Oversized { size_bytes } => {
-            errors.push(FileError {
-                file: INFO_EXCLUDE.to_owned(),
-                error: format!(
-                    "ignore source exceeds capability read limit \
-                     ({size_bytes} > {MAX_IGNORE_BYTES} bytes)"
-                ),
-            });
-            return;
-        }
-        SourceRead::Rejected(error) if error.is_not_found() => return,
-        SourceRead::Rejected(error) => {
-            errors.push(FileError {
-                file: INFO_EXCLUDE.to_owned(),
                 error: error.to_string(),
             });
             return;
@@ -4431,6 +4557,42 @@ fn load_git_info_exclude_layer(
             }),
         }
     }
+}
+
+fn parse_gitdir_pointer(source: &str) -> Result<String, String> {
+    let line = parse_git_metadata_path_line(source, ".git worktree pointer")?;
+    let Some(path) = line.strip_prefix("gitdir:") else {
+        return Err("malformed .git pointer: expected a 'gitdir:' field".to_owned());
+    };
+    let path = path.trim();
+    if path.is_empty() {
+        return Err("malformed .git pointer: gitdir path is empty".to_owned());
+    }
+    Ok(path.to_owned())
+}
+
+fn parse_git_metadata_path(source: &str, label: &str) -> Result<String, String> {
+    let path = parse_git_metadata_path_line(source, label)?.trim();
+    if path.is_empty() {
+        return Err(format!("malformed {label}: path is empty"));
+    }
+    Ok(path.to_owned())
+}
+
+fn parse_git_metadata_path_line<'a>(source: &'a str, label: &str) -> Result<&'a str, String> {
+    if source.contains('\0') {
+        return Err(format!("malformed {label}: path contains a NUL"));
+    }
+    let mut lines = source.lines();
+    let Some(line) = lines.next() else {
+        return Err(format!("malformed {label}: file is empty"));
+    };
+    if lines.any(|line| !line.trim().is_empty()) {
+        return Err(format!(
+            "malformed {label}: expected exactly one non-empty line"
+        ));
+    }
+    Ok(line)
 }
 
 fn workspace_path_is_ignored(
