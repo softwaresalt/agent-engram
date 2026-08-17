@@ -1029,6 +1029,10 @@ path = "tests/unit/hcl_security_test.rs"
 name = "hcl_indexing_test"
 path = "tests/integration/hcl_indexing_test.rs"
 
+[[test]]
+name = "hcl_grammar_abi_test"
+path = "tests/unit/hcl_grammar_abi_test.rs"
+
 [[example]]
 name = "cozo_api_spike"
 path = "examples/cozo_api_spike.rs"
