@@ -51,6 +51,8 @@ pub const FILE_TOO_LARGE: u16 = 7006;
 pub const SYNC_CONFLICT: u16 = 7007;
 /// Grammar-engine parse failure (no source location available).
 pub const PARSE_FAILED: u16 = 7008;
+/// Capability-rooted source access failure.
+pub const SOURCE_ACCESS_FAILED: u16 = 7009;
 
 /// IPC and daemon error codes (8xxx)
 pub const IPC_CONNECTION_FAILED: u16 = 8001;

@@ -40,3 +40,4 @@ pub mod retrieval_eval;
 pub mod search;
 pub(crate) mod source_traversal;
 pub mod verify;
+pub(crate) mod workspace_source;

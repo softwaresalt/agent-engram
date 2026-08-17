@@ -21,7 +21,7 @@
 //! filesystem-derived path. Full non-default-`mod` rigor lands with Unit B (D1).
 
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -295,14 +295,54 @@ pub fn discover_workspace_crates(ws_root: &Path) -> WorkspaceCrates {
         return WorkspaceCrates::new(Vec::new());
     };
 
-    let root_manifest = ws_root.join("Cargo.toml");
+    let read_manifest = |relative: &Path| {
+        let manifest = ws_root.join(relative);
+        if !manifest_within_root(&manifest, &canonical_root) {
+            return None;
+        }
+        std::fs::read_to_string(manifest).ok()
+    };
+    let list_manifest_children = |relative: &Path| {
+        let mut children = Vec::new();
+        let Ok(entries) = std::fs::read_dir(ws_root.join(relative)) else {
+            return children;
+        };
+        for entry in entries {
+            let Ok(entry) = entry else {
+                continue;
+            };
+            let candidate = entry.path().join("Cargo.toml");
+            if candidate.is_file() && manifest_within_root(&candidate, &canonical_root) {
+                if let Some(name) = entry.file_name().to_str() {
+                    children.push(name.to_owned());
+                }
+            }
+        }
+        children
+    };
+    discover_workspace_crates_with(&read_manifest, &list_manifest_children)
+}
+
+/// Enumerate workspace crates from caller-provided, workspace-relative accessors.
+///
+/// Code-graph indexing supplies capability-rooted accessors so manifest reads
+/// share the same retained workspace authority as source reads.
+pub(crate) fn discover_workspace_crates_with(
+    read_manifest: &impl Fn(&Path) -> Option<String>,
+    list_manifest_children: &impl Fn(&Path) -> Vec<String>,
+) -> WorkspaceCrates {
+    let root_manifest = PathBuf::from("Cargo.toml");
     let mut candidate_dirs: Vec<String> = vec![String::new()];
-    candidate_dirs.extend(read_workspace_member_dirs(&root_manifest));
+    candidate_dirs.extend(read_workspace_member_dirs(
+        &root_manifest,
+        read_manifest,
+        list_manifest_children,
+    ));
     // Honour `[workspace] exclude`: Cargo drops an excluded path from the
     // workspace even when a `members` glob would otherwise match it, so an
     // excluded package must not be classified as workspace-owned (fail closed —
     // never treat external code as workspace).
-    let excludes = read_workspace_exclude_dirs(&root_manifest);
+    let excludes = read_workspace_exclude_dirs(&root_manifest, read_manifest);
     candidate_dirs.retain(|dir| dir.is_empty() || !is_excluded_dir(dir, &excludes));
     candidate_dirs.sort();
     candidate_dirs.dedup();
@@ -311,19 +351,16 @@ pub fn discover_workspace_crates(ws_root: &Path) -> WorkspaceCrates {
     let mut renamed_dep_keys = Vec::new();
     for dir in candidate_dirs {
         let manifest = if dir.is_empty() {
-            ws_root.join("Cargo.toml")
+            PathBuf::from("Cargo.toml")
         } else {
-            ws_root.join(&dir).join("Cargo.toml")
+            Path::new(&dir).join("Cargo.toml")
         };
-        if !manifest_within_root(&manifest, &canonical_root) {
-            continue;
-        }
         // Collect dependency renames from EVERY in-workspace manifest, including
         // the virtual-workspace root (which carries no `[package]` but may carry
         // `[workspace.dependencies]`), so a rename shadows the colliding member
         // regardless of whether that manifest is itself a crate root (C9-1).
-        renamed_dep_keys.extend(read_dependency_rename_keys(&manifest));
-        if let Some(name) = read_crate_name(&manifest) {
+        renamed_dep_keys.extend(read_dependency_rename_keys(&manifest, read_manifest));
+        if let Some(name) = read_crate_name(&manifest, read_manifest) {
             roots.push(CrateRoot {
                 name: name.replace('-', "_"),
                 dir,
@@ -343,8 +380,12 @@ fn manifest_within_root(manifest: &Path, canonical_root: &Path) -> bool {
 /// Read `[workspace] members` from a manifest, returning workspace-relative
 /// crate directories (`"."` → the empty string; a trailing `/*` glob expands one
 /// filesystem level).
-fn read_workspace_member_dirs(manifest: &Path) -> Vec<String> {
-    let Ok(text) = std::fs::read_to_string(manifest) else {
+fn read_workspace_member_dirs(
+    manifest: &Path,
+    read_manifest: &impl Fn(&Path) -> Option<String>,
+    list_manifest_children: &impl Fn(&Path) -> Vec<String>,
+) -> Vec<String> {
+    let Some(text) = read_manifest(manifest) else {
         return Vec::new();
     };
     let Ok(value) = text.parse::<toml::Value>() else {
@@ -357,7 +398,6 @@ fn read_workspace_member_dirs(manifest: &Path) -> Vec<String> {
     else {
         return Vec::new();
     };
-    let base = manifest.parent().unwrap_or_else(|| Path::new("."));
     let mut dirs = Vec::new();
     for member in members {
         let Some(raw) = member.as_str() else { continue };
@@ -372,12 +412,8 @@ fn read_workspace_member_dirs(manifest: &Path) -> Vec<String> {
         if raw == "." {
             dirs.push(String::new());
         } else if let Some(prefix) = raw.strip_suffix("/*") {
-            if let Ok(entries) = std::fs::read_dir(base.join(prefix)) {
-                for entry in entries.flatten() {
-                    if entry.path().join("Cargo.toml").is_file() {
-                        dirs.push(format!("{prefix}/{}", entry.file_name().to_string_lossy()));
-                    }
-                }
+            for child in list_manifest_children(Path::new(prefix)) {
+                dirs.push(format!("{prefix}/{child}"));
             }
         } else {
             dirs.push(raw.trim_end_matches('/').to_owned());
@@ -394,8 +430,11 @@ fn read_workspace_member_dirs(manifest: &Path) -> Vec<String> {
 /// value differs from the (identifier-normalised) key — a plain string/path/version
 /// dependency or an identity `package` is NOT a rename. Returned keys are
 /// identifier-normalised (`-` → `_`). Fails closed (empty) on any read/parse error.
-fn read_dependency_rename_keys(manifest: &Path) -> Vec<String> {
-    let Ok(text) = std::fs::read_to_string(manifest) else {
+fn read_dependency_rename_keys(
+    manifest: &Path,
+    read_manifest: &impl Fn(&Path) -> Option<String>,
+) -> Vec<String> {
+    let Some(text) = read_manifest(manifest) else {
         return Vec::new();
     };
     let Ok(value) = text.parse::<toml::Value>() else {
@@ -449,8 +488,11 @@ fn collect_dep_renames(table: Option<&toml::Value>, out: &mut Vec<String>) {
 /// workspace-relative directory spellings. Cargo excludes these paths from the
 /// workspace even when a `members` glob would otherwise match them; malformed or
 /// empty entries are ignored.
-fn read_workspace_exclude_dirs(manifest: &Path) -> Vec<String> {
-    let Ok(text) = std::fs::read_to_string(manifest) else {
+fn read_workspace_exclude_dirs(
+    manifest: &Path,
+    read_manifest: &impl Fn(&Path) -> Option<String>,
+) -> Vec<String> {
+    let Some(text) = read_manifest(manifest) else {
         return Vec::new();
     };
     let Ok(value) = text.parse::<toml::Value>() else {
@@ -498,8 +540,11 @@ fn is_contained_member(raw: &str) -> bool {
 /// otherwise `[package] name`. A package such as `[package] name = "foo-bar"`
 /// with `[lib] name = "api"` canonicalizes under `api` (the real crate root),
 /// so cross-crate paths converge on the compiler's crate identity.
-fn read_crate_name(manifest: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(manifest).ok()?;
+fn read_crate_name(
+    manifest: &Path,
+    read_manifest: &impl Fn(&Path) -> Option<String>,
+) -> Option<String> {
+    let text = read_manifest(manifest)?;
     let value = text.parse::<toml::Value>().ok()?;
     let lib_name = value
         .get("lib")
@@ -824,7 +869,8 @@ mod tests {
         )
         .unwrap();
 
-        let keys = read_dependency_rename_keys(&manifest);
+        let keys =
+            read_dependency_rename_keys(&manifest, &|path| std::fs::read_to_string(path).ok());
         assert!(keys.contains(&"renamed_dep".to_owned()));
         assert!(keys.contains(&"dev_alias".to_owned()));
         assert!(keys.contains(&"build_alias".to_owned()));

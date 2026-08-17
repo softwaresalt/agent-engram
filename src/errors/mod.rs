@@ -108,6 +108,9 @@ pub enum CodeGraphError {
     /// Grammar-engine parse failure with no source-location information.
     #[error("Source parse failed: {reason}")]
     ParseFailed { reason: String },
+    /// A code-graph source could not be safely accessed beneath the workspace.
+    #[error("Failed to access source file '{file_path}': {reason}")]
+    SourceAccess { file_path: String, reason: String },
 }
 
 #[derive(Debug, Error)]
@@ -625,6 +628,12 @@ impl EngramError {
                     "ParseFailed",
                     inner.to_string(),
                     Some(json!({ "reason": reason })),
+                ),
+                CodeGraphError::SourceAccess { file_path, reason } => (
+                    SOURCE_ACCESS_FAILED,
+                    "SourceAccessFailed",
+                    inner.to_string(),
+                    Some(json!({ "file_path": file_path, "reason": reason })),
                 ),
             },
             EngramError::GraphQuery(inner) => match inner {
