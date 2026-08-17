@@ -11,6 +11,9 @@ use tree_sitter::{Node, Parser};
 use super::{ExtractedClass, ExtractedEdge, ExtractedSymbol, ParseResult};
 use crate::errors::{CodeGraphError, EngramError};
 
+// Direct parser calls bypass the workspace file-size guard, so bound AST depth too.
+const MAX_HCL_AST_DEPTH: usize = 128;
+
 /// Parse HCL source through the shared grammar.
 ///
 /// # Errors
@@ -69,7 +72,12 @@ fn extract_hcl_items(root: Node<'_>, source: &str) -> ParseResult {
     }
 
     let mut seen_targets = HashSet::new();
-    extract_references(root, source, &mut seen_targets, &mut edges);
+    if !extract_references(root, source, &mut seen_targets, &mut edges) {
+        return ParseResult {
+            symbols: Vec::new(),
+            edges: Vec::new(),
+        };
+    }
 
     ParseResult { symbols, edges }
 }
@@ -79,23 +87,38 @@ fn extract_references(
     source: &str,
     seen_targets: &mut HashSet<String>,
     edges: &mut Vec<ExtractedEdge>,
-) {
-    if node.kind() == "expression" {
-        if let Some(target) = extract_plain_traversal(node, source)
-            && seen_targets.insert(target.clone())
-        {
-            edges.push(ExtractedEdge::References {
-                source: super::node_text(node, source),
-                target,
-            });
+) -> bool {
+    let mut nodes = vec![(node, 0_usize)];
+
+    while let Some((node, depth)) = nodes.pop() {
+        if depth > MAX_HCL_AST_DEPTH {
+            return false;
         }
-        return;
+
+        if node.kind() == "expression" {
+            if let Some(target) = extract_plain_traversal(node, source)
+                && seen_targets.insert(target.clone())
+            {
+                edges.push(ExtractedEdge::References {
+                    source: super::node_text(node, source),
+                    target,
+                });
+            }
+            continue;
+        }
+
+        let child_depth = depth.saturating_add(1);
+        let child_start = nodes.len();
+        let mut cursor = node.walk();
+        nodes.extend(
+            node.named_children(&mut cursor)
+                .map(|child| (child, child_depth)),
+        );
+        // LIFO traversal needs reversed children to retain first-encounter source order.
+        nodes[child_start..].reverse();
     }
 
-    let mut cursor = node.walk();
-    for child in node.named_children(&mut cursor) {
-        extract_references(child, source, seen_targets, edges);
-    }
+    true
 }
 
 fn extract_plain_traversal(node: Node<'_>, source: &str) -> Option<String> {
@@ -132,17 +155,28 @@ fn extract_plain_identifier(node: Node<'_>, source: &str) -> Option<String> {
 
 fn extract_block_name(node: Node<'_>, source: &str) -> Option<String> {
     let mut cursor = node.walk();
-    let block_type = node.named_children(&mut cursor).next()?;
+    let mut children = node.named_children(&mut cursor);
+    let block_type = children.next()?;
     if block_type.kind() != "identifier" {
         return None;
     }
 
-    let block_type = super::node_text(block_type, source);
-    let block_source = super::node_text(node, source);
-    let header = block_source.strip_prefix(&block_type)?;
-    let mut segments = vec![block_type];
-    segments.extend(extract_plain_labels(header)?);
-    Some(format!("hcl.block.{}", segments.join(".")))
+    let mut segments = vec![super::node_text(block_type, source)];
+    let mut header_complete = false;
+    for child in children {
+        match child.kind() {
+            "block_start" => {
+                header_complete = true;
+                break;
+            }
+            "comment" => {}
+            "identifier" => segments.push(super::node_text(child, source)),
+            "string_lit" => segments.push(extract_plain_label(child, source)?),
+            _ => return None,
+        }
+    }
+
+    header_complete.then(|| format!("hcl.block.{}", segments.join(".")))
 }
 
 fn extract_attribute_name(node: Node<'_>, source: &str) -> Option<String> {
@@ -151,47 +185,10 @@ fn extract_attribute_name(node: Node<'_>, source: &str) -> Option<String> {
     (key.kind() == "identifier").then(|| format!("hcl.attribute.{}", super::node_text(key, source)))
 }
 
-fn extract_plain_labels(header: &str) -> Option<Vec<String>> {
-    let bytes = header.as_bytes();
-    let mut labels = Vec::new();
-    let mut offset = 0;
-
-    loop {
-        while bytes.get(offset).is_some_and(u8::is_ascii_whitespace) {
-            offset = offset.saturating_add(1);
-        }
-
-        match bytes.get(offset) {
-            Some(b'{') => return Some(labels),
-            Some(b'"') => {
-                let value_start = offset.saturating_add(1);
-                offset = value_start;
-                let mut escaped = false;
-
-                while let Some(byte) = bytes.get(offset) {
-                    if escaped {
-                        escaped = false;
-                    } else if *byte == b'\\' {
-                        escaped = true;
-                    } else if *byte == b'"' {
-                        let value = header.get(value_start..offset)?;
-                        if value.is_empty() || value.contains("${") || value.contains("%{") {
-                            return None;
-                        }
-                        labels.push(value.to_owned());
-                        offset = offset.saturating_add(1);
-                        break;
-                    }
-                    offset = offset.saturating_add(1);
-                }
-
-                if offset >= bytes.len() {
-                    return None;
-                }
-            }
-            _ => return None,
-        }
-    }
+fn extract_plain_label(node: Node<'_>, source: &str) -> Option<String> {
+    let label = super::node_text(node, source);
+    let label = label.strip_prefix('"')?.strip_suffix('"')?;
+    (!label.is_empty() && !label.contains("${") && !label.contains("%{")).then(|| label.to_owned())
 }
 
 fn extract_class(name: String, node: Node<'_>, source: &str) -> ExtractedClass {
