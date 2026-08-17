@@ -18,6 +18,32 @@ mod hcl_parser_cases;
 
 use hcl_parser_cases::{MALFORMED, TRAVERSALS};
 
+#[cfg(unix)]
+fn symlink_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(src, dst)
+}
+
+#[cfg(windows)]
+fn symlink_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_dir(src, dst)
+}
+
+fn create_symlink_dir(src: &Path, dst: &Path) -> bool {
+    match symlink_dir(src, dst) {
+        Ok(()) => true,
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::Unsupported
+            ) =>
+        {
+            eprintln!("skipping HCL link containment assertion: {error}");
+            false
+        }
+        Err(error) => panic!("create HCL fixture directory symlink: {error}"),
+    }
+}
+
 fn write_file(root: &Path, relative: &str, contents: &str) {
     let path = root.join(relative);
     if let Some(parent) = path.parent() {
@@ -119,6 +145,30 @@ fn deeply_nested_malformed_and_dynamic_inputs_are_bounded_and_conservative() {
     );
 }
 
+#[test]
+fn deeply_nested_valid_blocks_fail_closed_before_recursive_stack_growth() {
+    const NESTING_DEPTH: usize = 96;
+
+    let language = hcl_language("HCL_DEEP_BLOCK_BUDGET_MISSING");
+    let source = format!(
+        "root \"visible\" {{\n{}value = deep.reference\n{}}}\n",
+        "nested {\n".repeat(NESTING_DEPTH),
+        "}\n".repeat(NESTING_DEPTH)
+    );
+
+    let started = Instant::now();
+    let parsed = parse_source(&source, language).expect("deep valid HCL stays bounded");
+
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "deep valid HCL exceeded the two-second unit budget"
+    );
+    assert!(
+        parsed.symbols.is_empty() && parsed.edges.is_empty(),
+        "deep valid HCL must fail closed before an unbounded tree walk: {parsed:?}"
+    );
+}
+
 #[tokio::test]
 async fn ignored_and_outside_aliases_stay_contained_and_parsing_has_no_side_effects() {
     let workspace = tempfile::tempdir().expect("create contained workspace");
@@ -192,6 +242,68 @@ resource "null_resource" "probe" {{
     assert_eq!(
         std::env::vars_os().collect::<BTreeMap<_, _>>(),
         before_environment
+    );
+}
+
+#[tokio::test]
+async fn linked_external_hcl_fixture_is_never_persisted() {
+    let workspace = tempfile::tempdir().expect("create linked-fixture workspace");
+    let outside = tempfile::tempdir().expect("create external HCL fixture");
+    write_file(workspace.path(), "visible.hcl", "service \"visible\" {}\n");
+    write_file(
+        outside.path(),
+        "outside.tf",
+        "resource \"external\" \"secret\" {}\n",
+    );
+
+    if !create_symlink_dir(outside.path(), &workspace.path().join("linked-outside")) {
+        return;
+    }
+
+    let config = CodeGraphConfig {
+        supported_languages: vec!["hcl".to_owned()],
+        ..CodeGraphConfig::default()
+    };
+    let data_dir = workspace.path().join(".engram");
+    let branch = "hcl-linked-containment-red";
+    let indexed = code_graph::index_workspace(workspace.path(), &data_dir, branch, &config, true)
+        .await
+        .expect("linked containment index returns a bounded result");
+    assert!(
+        indexed.errors.is_empty(),
+        "linked containment index errors: {indexed:?}"
+    );
+
+    let db = connect_db(&data_dir, branch)
+        .await
+        .expect("connect linked containment graph DB");
+    let queries = CodeGraphQueries::new(db);
+    let files = queries
+        .list_code_files()
+        .await
+        .expect("list linked containment files");
+    let classes = queries
+        .all_classes()
+        .await
+        .expect("list linked containment classes");
+
+    assert!(
+        files.iter().all(|file| {
+            file.path != "linked-outside/outside.tf" && !file.path.contains("outside.tf")
+        }),
+        "external linked HCL path was persisted: {files:?}"
+    );
+    assert!(
+        classes
+            .iter()
+            .all(|class| class.name != "hcl.block.resource.external.secret"),
+        "external linked HCL symbol was persisted: {classes:?}"
+    );
+    assert!(
+        classes
+            .iter()
+            .any(|class| class.name == "hcl.block.service.visible"),
+        "contained control symbol was not persisted: {classes:?}"
     );
 }
 

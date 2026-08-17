@@ -72,6 +72,27 @@ fn top_level_blocks_and_attributes_are_namespaced_structural_symbols() {
 }
 
 #[test]
+fn comments_between_block_types_and_labels_preserve_normalized_names() {
+    let language = hcl_language("HCL_COMMENTED_LABEL_PARSER_MISSING");
+    let source = r#"
+resource /* type-to-label */ "aws_instance" // label-to-label
+"web" {}
+
+module # type-to-label
+"vpc" {}
+"#;
+    let parsed = parse_source(source, language).expect("parse comment-separated block labels");
+
+    assert_eq!(
+        structural_names(&parsed),
+        [
+            "hcl.block.resource.aws_instance.web",
+            "hcl.block.module.vpc",
+        ]
+    );
+}
+
+#[test]
 fn plain_traversals_are_stable_deduplicated_and_dynamic_forms_fail_closed() {
     let language = hcl_language("HCL_TRAVERSAL_PARSER_MISSING");
     let parsed = parse_source(TRAVERSALS.source, language).expect("parse valid HCL traversals");
