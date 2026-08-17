@@ -76,6 +76,7 @@ globset = "0.4"
 serde_yaml = "0.9"
 git2 = { version = "0.19", optional = true, default-features = false }
 powerbi-tmdl-parser = { path = "crates/powerbi-tmdl-parser" }
+tree-sitter-hcl = "=1.1.0"
 
 [features]
 default = ["embeddings", "cozo-backend"]
