@@ -28,6 +28,39 @@ use crate::services::parsing::{ExtractedEdge, ExtractedSymbol, Language, parse_s
 
 type RustCanonicalContext = (canonical::ModulePath, canonical::UseGraph);
 
+#[cfg(test)]
+#[derive(Clone)]
+struct SourceReadTestHook {
+    target: String,
+    reached: std::sync::Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
+    resume: std::sync::Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>>,
+}
+
+#[cfg(test)]
+tokio::task_local! {
+    static SOURCE_READ_TEST_HOOK: SourceReadTestHook;
+}
+
+#[cfg(test)]
+async fn source_read_test_barrier(relative_path: &str) {
+    let Ok(hook) = SOURCE_READ_TEST_HOOK.try_with(Clone::clone) else {
+        return;
+    };
+    if hook.target != relative_path {
+        return;
+    }
+
+    let reached = hook.reached.lock().await.take();
+    if let Some(reached) = reached {
+        let _ = reached.send(());
+    }
+
+    let resume = hook.resume.lock().await.take();
+    if let Some(resume) = resume {
+        let _ = resume.await;
+    }
+}
+
 /// Current Python namespace-canonical extraction version (096.010-T / T7).
 ///
 /// Bumped whenever the Python call-extraction or canonical-staging logic changes
@@ -1433,6 +1466,9 @@ async fn index_workspace_impl(
                 break 'file;
             };
 
+            #[cfg(test)]
+            source_read_test_barrier(&rel_path).await;
+
             // ── Early size check via filesystem metadata ────────────────
             // Avoids reading large files into memory only to discard them.
             // A metadata I/O failure is non-fatal: fall through to the
@@ -2437,6 +2473,9 @@ pub async fn sync_workspace_with_progress(
                 warn!(path = %file_path.display(), "code graph sync: file outside workspace root, skipping");
                 break 'file;
             };
+
+            #[cfg(test)]
+            source_read_test_barrier(&rel_path).await;
 
             // ── Early size check via filesystem metadata ────────────────
             // Avoids reading large files into memory only to discard them.
@@ -3541,6 +3580,10 @@ fn find_interface_id(ids: &[(String, String)], name: &str) -> Option<String> {
         .find(|(n, _)| n == name)
         .map(|(_, id)| id.clone())
 }
+
+#[cfg(test)]
+#[path = "code_graph/source_race_tests.rs"]
+mod source_race_tests;
 
 #[cfg(test)]
 mod tests {

@@ -38,35 +38,39 @@ fn symlink_file(src: &Path, dst: &Path) -> std::io::Result<()> {
     std::os::windows::fs::symlink_file(src, dst)
 }
 
-fn create_symlink_dir(src: &Path, dst: &Path) -> bool {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LinkInstall {
+    Installed,
+    UnsupportedPrivilege,
+}
+
+fn create_symlink_dir(src: &Path, dst: &Path) -> LinkInstall {
     match symlink_dir(src, dst) {
-        Ok(()) => true,
-        Err(error)
-            if matches!(
-                error.kind(),
-                std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::Unsupported
-            ) =>
-        {
-            eprintln!("skipping HCL link containment assertion: {error}");
-            false
-        }
+        Ok(()) => LinkInstall::Installed,
+        #[cfg(windows)]
+        Err(error) if error.raw_os_error() == Some(1314) => LinkInstall::UnsupportedPrivilege,
         Err(error) => panic!("create HCL fixture directory symlink: {error}"),
     }
 }
 
-fn create_symlink_file(src: &Path, dst: &Path) -> bool {
+fn create_symlink_file(src: &Path, dst: &Path) -> LinkInstall {
     match symlink_file(src, dst) {
-        Ok(()) => true,
-        Err(error)
-            if matches!(
-                error.kind(),
-                std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::Unsupported
-            ) =>
-        {
-            eprintln!("skipping HCL file-link containment assertion: {error}");
-            false
-        }
+        Ok(()) => LinkInstall::Installed,
+        #[cfg(windows)]
+        Err(error) if error.raw_os_error() == Some(1314) => LinkInstall::UnsupportedPrivilege,
         Err(error) => panic!("create HCL fixture file symlink: {error}"),
+    }
+}
+
+fn require_security_link(result: LinkInstall, kind: &str) -> bool {
+    match result {
+        LinkInstall::Installed => true,
+        LinkInstall::UnsupportedPrivilege => {
+            panic!(
+                "Windows {kind} containment coverage requires symlink privilege \
+                 (ERROR_PRIVILEGE_NOT_HELD=1314); this is not a passing skip"
+            )
+        }
     }
 }
 
@@ -282,19 +286,20 @@ async fn linked_external_hcl_fixture_is_never_persisted() {
         "resource \"external\" \"secret\" {}\n",
     );
 
-    let directory_link_created =
-        create_symlink_dir(outside.path(), &workspace.path().join("linked-outside"));
-    let file_link_created = create_symlink_file(
-        &outside.path().join("outside.tf"),
-        &workspace.path().join("linked-outside.tf"),
+    let directory_link_created = require_security_link(
+        create_symlink_dir(outside.path(), &workspace.path().join("linked-outside")),
+        "directory-link",
+    );
+    let file_link_created = require_security_link(
+        create_symlink_file(
+            &outside.path().join("outside.tf"),
+            &workspace.path().join("linked-outside.tf"),
+        ),
+        "file-link",
     );
     eprintln!(
         "HCL containment links: directory={directory_link_created}, file={file_link_created}"
     );
-    if !directory_link_created && !file_link_created {
-        return;
-    }
-
     let config = CodeGraphConfig {
         supported_languages: vec!["hcl".to_owned()],
         ..CodeGraphConfig::default()
