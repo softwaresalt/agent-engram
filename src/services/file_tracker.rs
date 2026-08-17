@@ -371,8 +371,28 @@ fn collect_recursive(root: &Path, dir: &Path, files: &mut Vec<PathBuf>) {
 pub(crate) fn is_excluded(rel: &str) -> bool {
     DEFAULT_EXCLUDE_PREFIXES.iter().any(|prefix| {
         let stem = prefix.trim_end_matches('/');
-        rel == stem || rel.starts_with(&format!("{stem}/"))
+        excluded_prefix_matches(rel, stem)
     })
+}
+
+#[cfg(not(windows))]
+fn excluded_prefix_matches(rel: &str, stem: &str) -> bool {
+    rel == stem
+        || rel
+            .strip_prefix(stem)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
+#[cfg(windows)]
+fn excluded_prefix_matches(rel: &str, stem: &str) -> bool {
+    rel.eq_ignore_ascii_case(stem)
+        || rel.get(..stem.len()).is_some_and(|prefix| {
+            prefix.eq_ignore_ascii_case(stem)
+                && rel
+                    .as_bytes()
+                    .get(stem.len())
+                    .is_some_and(|byte| *byte == b'/')
+        })
 }
 
 #[cfg(test)]

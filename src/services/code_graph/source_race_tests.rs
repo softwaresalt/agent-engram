@@ -417,7 +417,9 @@ async fn replaced_ignore_links_cannot_hide_and_delete_indexed_sources() -> anyho
             ),
             "ignore-file-link",
         )?;
-        let result = sync_workspace(workspace.path(), &data_dir, &branch, &config).await?;
+        let error = sync_workspace(workspace.path(), &data_dir, &branch, &config)
+            .await
+            .expect_err("rejected ignore layer must abort sync globally");
 
         assert_eq!(
             publication_state(&data_dir, &branch).await?,
@@ -425,11 +427,8 @@ async fn replaced_ignore_links_cannot_hide_and_delete_indexed_sources() -> anyho
             "RED:IGNORE_LINK_DELETED_LKG: {ignore_name} link hid and deleted victim.tf"
         );
         assert!(
-            result
-                .errors
-                .iter()
-                .any(|error| error.file.contains(ignore_name)),
-            "RED:IGNORE_LINK_AMBIENT_READ: {ignore_name} link was not rejected: {result:?}"
+            error.to_string().contains(ignore_name),
+            "RED:IGNORE_LINK_AMBIENT_READ: {ignore_name} link rejection was not actionable: {error}"
         );
     }
     Ok(())
@@ -534,7 +533,8 @@ async fn git_info_exclude_remains_authoritative_through_capability_reads() -> an
     const SENTINEL: &str = "GIT_INFO_EXCLUDE_SENTINEL";
 
     let workspace = tempfile::tempdir()?;
-    write_source(workspace.path(), ".git/info/exclude", "hidden.tf\n")?;
+    write_source(workspace.path(), ".git/info/exclude", "*.tf\n")?;
+    write_source(workspace.path(), ".gitignore", "!visible.tf\n")?;
     write_source(
         workspace.path(),
         "hidden.tf",
@@ -576,6 +576,42 @@ async fn git_info_exclude_remains_authoritative_through_capability_reads() -> an
             .all(|(name, body)| !name.contains("info_excluded") && !body.contains(SENTINEL)),
         ".git/info/exclude hidden body was indexed: {:?}",
         state.classes
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn git_file_pointer_is_not_followed_for_info_exclude_rules() -> anyhow::Result<()> {
+    let workspace = tempfile::tempdir()?;
+    let outside_git_directory = tempfile::tempdir()?;
+    write_source(
+        workspace.path(),
+        ".git",
+        &format!("gitdir: {}\n", outside_git_directory.path().display()),
+    )?;
+    write_source(outside_git_directory.path(), "info/exclude", "hidden.tf\n")?;
+    write_source(
+        workspace.path(),
+        "hidden.tf",
+        "resource \"worktree_pointer\" \"must_remain_visible\" {}\n",
+    )?;
+    write_source(
+        workspace.path(),
+        "visible.tf",
+        "resource \"visible\" \"control\" {}\n",
+    )?;
+    let (data_dir, branch) = db_identity(workspace.path(), "git-file-pointer");
+
+    index_workspace(workspace.path(), &data_dir, &branch, &hcl_config(), true).await?;
+    let state = graph_state(&data_dir, &branch).await?;
+    assert_eq!(
+        state
+            .files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect::<Vec<_>>(),
+        ["hidden.tf", "visible.tf"],
+        "an external gitdir pointer must not contribute ignore policy"
     );
     Ok(())
 }

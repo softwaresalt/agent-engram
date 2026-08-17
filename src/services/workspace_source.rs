@@ -27,11 +27,7 @@ impl ValidatedRelativePath {
                 "path is not valid UTF-8",
             ));
         };
-        if raw_path.is_empty()
-            || raw_path
-                .split(['/', '\\'])
-                .any(|component| component.is_empty() || matches!(component, "." | ".."))
-        {
+        if raw_path.is_empty() || has_invalid_raw_component(raw_path) {
             return Err(SourceRejection::invalid_path(
                 path,
                 "path must contain non-empty normal components only",
@@ -80,17 +76,37 @@ impl ValidatedRelativePath {
         &self.normalized
     }
 
+    #[cfg(not(windows))]
     pub(crate) fn starts_with(&self, prefix: &Self) -> bool {
         self.path.starts_with(&prefix.path)
     }
+
+    #[cfg(windows)]
+    pub(crate) fn starts_with(&self, prefix: &Self) -> bool {
+        let mut components = self.normalized.split('/');
+        prefix.normalized.split('/').all(|prefix_component| {
+            components
+                .next()
+                .is_some_and(|component| component.eq_ignore_ascii_case(prefix_component))
+        })
+    }
+}
+
+#[cfg(not(windows))]
+fn has_invalid_raw_component(path: &str) -> bool {
+    path.split('/')
+        .any(|component| component.is_empty() || matches!(component, "." | ".."))
+}
+
+#[cfg(windows)]
+fn has_invalid_raw_component(path: &str) -> bool {
+    path.split(['/', '\\'])
+        .any(|component| component.is_empty() || matches!(component, "." | ".."))
 }
 
 fn validate_component(path: &Path, component: &str) -> Result<(), SourceRejection> {
-    if component.contains([':', '\\', '\0']) {
-        return Err(SourceRejection::invalid_path(
-            path,
-            "path contains an unsupported stream, separator, or NUL spelling",
-        ));
+    if component.contains('\0') {
+        return Err(SourceRejection::invalid_path(path, "path contains a NUL"));
     }
     if component.chars().any(char::is_control) {
         return Err(SourceRejection::invalid_path(
@@ -98,7 +114,11 @@ fn validate_component(path: &Path, component: &str) -> Result<(), SourceRejectio
             "path contains control characters",
         ));
     }
-    if component.ends_with(['.', ' ']) || is_reserved_windows_name(component) {
+    #[cfg(windows)]
+    if component.contains([':', '\\'])
+        || component.ends_with(['.', ' '])
+        || is_reserved_windows_name(component)
+    {
         return Err(SourceRejection::invalid_path(
             path,
             "path contains a Windows-ambiguous component",
@@ -107,6 +127,7 @@ fn validate_component(path: &Path, component: &str) -> Result<(), SourceRejectio
     Ok(())
 }
 
+#[cfg(windows)]
 fn is_reserved_windows_name(component: &str) -> bool {
     let stem = component
         .split('.')
@@ -319,6 +340,42 @@ impl WorkspaceSourceReader {
                 format!("source is not valid UTF-8: {error}"),
             )),
         }
+    }
+
+    pub(crate) fn root_child_is_directory_nofollow_blocking(
+        &self,
+        relative_path: &ValidatedRelativePath,
+    ) -> Result<bool, SourceRejection> {
+        if relative_path.as_path().components().count() != 1 {
+            return Err(SourceRejection::other(
+                relative_path,
+                "root-child classification requires exactly one path component",
+            ));
+        }
+        let metadata = match self.root.symlink_metadata(relative_path.as_path()) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => {
+                return Err(SourceRejection::io(
+                    relative_path,
+                    "capability root-child classification failed",
+                    &error,
+                ));
+            }
+        };
+        if metadata.file_type().is_symlink() {
+            return Ok(false);
+        }
+        #[cfg(windows)]
+        {
+            use cap_std::fs::MetadataExt as _;
+
+            const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+            if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                return Ok(false);
+            }
+        }
+        Ok(metadata.is_dir())
     }
 
     fn open_file_nofollow(&self, relative_path: &ValidatedRelativePath) -> std::io::Result<File> {
@@ -543,17 +600,15 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn windows_path_validation_rejects_ambiguous_spellings() {
-        for path in [
-            "CON",
-            "name:stream",
-            "trailing.",
-            "trailing ",
-            r"name\part.rs",
-        ] {
+        for path in ["CON", "name:stream", "trailing.", "trailing "] {
             assert!(
                 ValidatedRelativePath::new(Path::new(path)).is_err(),
                 "Windows-ambiguous path must be rejected: {path:?}"
             );
         }
+        assert!(
+            ValidatedRelativePath::new(Path::new(r"name\part.rs")).is_ok(),
+            "native Windows separators must normalize as ordinary path separators"
+        );
     }
 }

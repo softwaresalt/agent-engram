@@ -185,7 +185,18 @@ pub(crate) async fn unsafe_module_prepass(
             .await?
         {
             SourceRead::Snapshot(snapshot) => snapshot,
-            SourceRead::Oversized { .. } => continue,
+            SourceRead::Oversized { size_bytes } => {
+                prepass.complete = false;
+                prepass.rejected_paths.insert(rel_path.clone());
+                prepass.errors.push(FileError {
+                    file: rel_path,
+                    error: format!(
+                        "Rust prepass source exceeds configured limit \
+                         ({size_bytes} > {max_file_size_bytes} bytes)"
+                    ),
+                });
+                continue;
+            }
             SourceRead::Rejected(error) => {
                 prepass.complete = false;
                 prepass.rejected_paths.insert(rel_path.clone());
@@ -369,7 +380,6 @@ async fn discover_workspace_crates_from_reader(
 
     let source_reader = source_reader.clone();
     tokio::task::spawn_blocking(move || {
-        let cache = RefCell::new(HashMap::<String, Option<String>>::new());
         let errors = RefCell::new(Vec::new());
         let complete = Cell::new(true);
         let read_manifest = |path: &Path| {
@@ -384,10 +394,7 @@ async fn discover_workspace_crates_from_reader(
                     return None;
                 }
             };
-            if let Some(cached) = cache.borrow().get(validated.as_str()) {
-                return cached.clone();
-            }
-            let source = match source_reader.read_blocking(&validated, MAX_MANIFEST_BYTES) {
+            match source_reader.read_blocking(&validated, MAX_MANIFEST_BYTES) {
                 SourceRead::Snapshot(snapshot) => Some(snapshot.source),
                 SourceRead::Oversized { size_bytes } => {
                     complete.set(false);
@@ -409,11 +416,7 @@ async fn discover_workspace_crates_from_reader(
                     });
                     None
                 }
-            };
-            cache
-                .borrow_mut()
-                .insert(validated.as_str().to_owned(), source.clone());
-            source
+            }
         };
         let list_manifest_children = |path: &Path| {
             let validated = match ValidatedRelativePath::new(path) {
@@ -1657,10 +1660,16 @@ async fn index_workspace_impl(
 
     // ── Step 1: Discover files ──────────────────────────────────────
     let discovery = discover_files(ws_path, config, &source_reader).await?;
+    if !discovery.complete {
+        return Err(rejected_global_context(
+            "source policy discovery",
+            &discovery.errors,
+        ));
+    }
     let files = discovery.files;
     let blocked_prefixes = discovery.blocked_prefixes;
-    let deletion_authoritative = discovery.complete;
-    let mut pass_complete = discovery.complete && blocked_prefixes.is_empty();
+    let deletion_authoritative = true;
+    let mut pass_complete = blocked_prefixes.is_empty();
     source_errors.extend(discovery.errors);
     let prepass = unsafe_module_prepass(
         ws_path,
@@ -2673,10 +2682,16 @@ async fn sync_workspace_with_progress_impl(
 
     // Discover current files on disk.
     let discovery = discover_files(ws_path, config, &source_reader).await?;
+    if !discovery.complete {
+        return Err(rejected_global_context(
+            "source policy discovery",
+            &discovery.errors,
+        ));
+    }
     let current_files = discovery.files;
     let blocked_prefixes = discovery.blocked_prefixes;
-    let deletion_authoritative = discovery.complete;
-    let mut pass_complete = discovery.complete && blocked_prefixes.is_empty();
+    let deletion_authoritative = true;
+    let mut pass_complete = blocked_prefixes.is_empty();
     source_errors.extend(discovery.errors);
     let prepass = unsafe_module_prepass(
         ws_path,
@@ -4042,6 +4057,7 @@ fn load_capability_ignore_layers(
 
     let mut layers = Vec::new();
     let mut errors = Vec::new();
+    load_git_info_exclude_layer(source_reader, ws_path, &mut layers, &mut errors);
     for directory in directories {
         let mut builder = ignore::gitignore::GitignoreBuilder::new(ws_path.join(directory));
         let mut has_rules = false;
@@ -4102,6 +4118,95 @@ fn load_capability_ignore_layers(
         }
     }
     (layers, errors)
+}
+
+fn load_git_info_exclude_layer(
+    source_reader: &WorkspaceSourceReader,
+    ws_path: &Path,
+    layers: &mut Vec<CapabilityIgnoreLayer>,
+    errors: &mut Vec<FileError>,
+) {
+    const MAX_IGNORE_BYTES: u64 = 1024 * 1024;
+    const GIT_DIRECTORY: &str = ".git";
+    const INFO_EXCLUDE: &str = ".git/info/exclude";
+
+    let git_directory = match ValidatedRelativePath::new(Path::new(GIT_DIRECTORY)) {
+        Ok(path) => path,
+        Err(error) => {
+            errors.push(FileError {
+                file: GIT_DIRECTORY.to_owned(),
+                error: error.to_string(),
+            });
+            return;
+        }
+    };
+    match source_reader.root_child_is_directory_nofollow_blocking(&git_directory) {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(error) => {
+            errors.push(FileError {
+                file: GIT_DIRECTORY.to_owned(),
+                error: error.to_string(),
+            });
+            return;
+        }
+    }
+
+    let exclude_path = match ValidatedRelativePath::new(Path::new(INFO_EXCLUDE)) {
+        Ok(path) => path,
+        Err(error) => {
+            errors.push(FileError {
+                file: INFO_EXCLUDE.to_owned(),
+                error: error.to_string(),
+            });
+            return;
+        }
+    };
+    let source = match source_reader.read_blocking(&exclude_path, MAX_IGNORE_BYTES) {
+        SourceRead::Snapshot(snapshot) => snapshot.source,
+        SourceRead::Oversized { size_bytes } => {
+            errors.push(FileError {
+                file: INFO_EXCLUDE.to_owned(),
+                error: format!(
+                    "ignore source exceeds capability read limit \
+                     ({size_bytes} > {MAX_IGNORE_BYTES} bytes)"
+                ),
+            });
+            return;
+        }
+        SourceRead::Rejected(error) if error.is_not_found() => return,
+        SourceRead::Rejected(error) => {
+            errors.push(FileError {
+                file: INFO_EXCLUDE.to_owned(),
+                error: error.to_string(),
+            });
+            return;
+        }
+    };
+
+    let mut builder = ignore::gitignore::GitignoreBuilder::new(ws_path);
+    let mut has_rules = false;
+    for (line_index, line) in source.lines().enumerate() {
+        match builder.add_line(Some(Path::new(INFO_EXCLUDE).to_path_buf()), line) {
+            Ok(_) => has_rules = true,
+            Err(error) => errors.push(FileError {
+                file: INFO_EXCLUDE.to_owned(),
+                error: format!("invalid ignore rule on line {}: {error}", line_index + 1),
+            }),
+        }
+    }
+    if has_rules {
+        match builder.build() {
+            Ok(matcher) => layers.push(CapabilityIgnoreLayer {
+                directory: std::path::PathBuf::new(),
+                matcher,
+            }),
+            Err(error) => errors.push(FileError {
+                file: INFO_EXCLUDE.to_owned(),
+                error: format!("failed to compile Git info exclude rules: {error}"),
+            }),
+        }
+    }
 }
 
 fn workspace_path_is_ignored(
