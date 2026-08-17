@@ -3405,7 +3405,10 @@ pub(crate) fn discover_files(ws_path: &Path, config: &CodeGraphConfig) -> Vec<st
     let mut files = Vec::new();
     for entry in builder.build().flatten() {
         let path = entry.path();
-        if !path.is_file() {
+        if !entry
+            .file_type()
+            .is_some_and(|file_type| file_type.is_file())
+        {
             continue;
         }
         let lang = language_from_path(path);
