@@ -4,7 +4,9 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use cozo::{DataValue, ScriptMutability};
 use engram::db::connect_db;
+use engram::db::cozo_backend::SchemaTarget;
 use engram::db::queries::CodeGraphQueries;
 use engram::models::config::CodeGraphConfig;
 use engram::services::code_graph;
@@ -190,5 +192,104 @@ resource "null_resource" "probe" {{
     assert_eq!(
         std::env::vars_os().collect::<BTreeMap<_, _>>(),
         before_environment
+    );
+}
+
+#[tokio::test]
+async fn hcl_references_stay_hint_only_while_sql_references_still_resolve() {
+    let workspace = tempfile::tempdir().expect("create isolated persistence workspace");
+    let data_dir = workspace.path().join(".engram");
+    let branch = "hcl-reference-persistence-red";
+    let config = CodeGraphConfig {
+        supported_languages: vec!["hcl".to_owned(), "sql".to_owned()],
+        ..CodeGraphConfig::default()
+    };
+
+    write_file(
+        workspace.path(),
+        "infra/schema.sql",
+        "CREATE TABLE public.users (id INT);\n",
+    );
+    let seeded = code_graph::index_workspace(workspace.path(), &data_dir, branch, &config, true)
+        .await
+        .expect("seed cross-language collision target");
+    assert!(seeded.errors.is_empty(), "seed index errors: {seeded:?}");
+
+    write_file(
+        workspace.path(),
+        "infra/main.hcl",
+        "locals {\n  selected = public.users\n}\n",
+    );
+    write_file(
+        workspace.path(),
+        "infra/query.sql",
+        "SELECT * FROM public.users;\n",
+    );
+    let indexed = code_graph::index_workspace(workspace.path(), &data_dir, branch, &config, false)
+        .await
+        .expect("index colliding HCL and SQL references");
+    assert!(
+        indexed.errors.is_empty(),
+        "reference index errors: {indexed:?}"
+    );
+
+    let db = connect_db(&data_dir, branch)
+        .await
+        .expect("connect graph DB");
+    let queries = CodeGraphQueries::new(db.clone());
+    let files = queries.list_code_files().await.expect("list code files");
+    let hcl_file = files
+        .iter()
+        .find(|file| file.path == "infra/main.hcl")
+        .expect("indexed HCL file");
+    let sql_file = files
+        .iter()
+        .find(|file| file.path == "infra/query.sql")
+        .expect("indexed SQL reference file");
+    assert_eq!(hcl_file.language, Language::Hcl.as_str());
+
+    let target_class = queries
+        .all_classes()
+        .await
+        .expect("list classes")
+        .into_iter()
+        .find(|class| class.name == "public.users")
+        .expect("seeded SQL class");
+    let persisted = db
+        .cozo_instance()
+        .expect("access persistence test handle")
+        .run_script(
+            "?[from, to, qualified_name] := *references_edge { from, to, qualified_name }",
+            BTreeMap::new(),
+            ScriptMutability::Immutable,
+        )
+        .expect("read persisted reference edges");
+
+    let hcl_source = DataValue::from(hcl_file.id.as_str());
+    let sql_source = DataValue::from(sql_file.id.as_str());
+    let hint = DataValue::from("public.users");
+    let expected_hcl = vec![hcl_source.clone(), hcl_source.clone(), hint.clone()];
+    let expected_sql = vec![
+        sql_source.clone(),
+        DataValue::from(target_class.id.as_str()),
+        hint,
+    ];
+    let hcl_rows: Vec<_> = persisted
+        .rows
+        .iter()
+        .filter(|row| row.first() == Some(&hcl_source))
+        .collect();
+    let sql_rows: Vec<_> = persisted
+        .rows
+        .iter()
+        .filter(|row| row.first() == Some(&sql_source))
+        .collect();
+
+    assert!(
+        hcl_rows == vec![&expected_hcl] && sql_rows == vec![&expected_sql],
+        "RED:U11_HCL_REFERENCE_PERSISTENCE_BOUNDARY expected HCL \
+         (file,file,target_hint) and unchanged SQL (file,class,target_hint); \
+         persisted={:?}",
+        persisted.rows
     );
 }
