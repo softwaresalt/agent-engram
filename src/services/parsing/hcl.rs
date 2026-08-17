@@ -1,10 +1,12 @@
 //! Tree-sitter HCL grammar service.
 //!
-//! Symbol and reference extraction are intentionally deferred to later units.
+//! Top-level blocks and attributes are represented as namespaced structural
+//! class symbols. Expression and reference extraction is intentionally
+//! deferred.
 
-use tree_sitter::Parser;
+use tree_sitter::{Node, Parser};
 
-use super::ParseResult;
+use super::{ExtractedClass, ExtractedEdge, ExtractedSymbol, ParseResult};
 use crate::errors::{CodeGraphError, EngramError};
 
 /// Parse HCL source through the shared grammar.
@@ -23,14 +25,128 @@ pub(super) fn parse_hcl_source(source: &str) -> Result<ParseResult, EngramError>
             })
         })?;
 
-    let _tree = parser.parse(source, None).ok_or_else(|| {
+    let tree = parser.parse(source, None).ok_or_else(|| {
         EngramError::CodeGraph(CodeGraphError::ParseFailed {
             reason: "tree-sitter returned no parse tree for HCL source".to_owned(),
         })
     })?;
 
-    Ok(ParseResult {
-        symbols: Vec::new(),
-        edges: Vec::new(),
-    })
+    Ok(extract_top_level_declarations(tree.root_node(), source))
+}
+
+fn extract_top_level_declarations(root: Node<'_>, source: &str) -> ParseResult {
+    if root.has_error() {
+        return ParseResult {
+            symbols: Vec::new(),
+            edges: Vec::new(),
+        };
+    }
+
+    let mut symbols = Vec::new();
+    let mut edges = Vec::new();
+    let mut cursor = root.walk();
+    let top_level = root
+        .named_children(&mut cursor)
+        .find(|node| node.kind() == "body")
+        .unwrap_or(root);
+    let mut cursor = top_level.walk();
+
+    for node in top_level.named_children(&mut cursor) {
+        let name = match node.kind() {
+            "block" => extract_block_name(node, source),
+            "attribute" => extract_attribute_name(node, source),
+            _ => None,
+        };
+
+        if let Some(name) = name {
+            edges.push(ExtractedEdge::Defines {
+                symbol_name: name.clone(),
+            });
+            symbols.push(ExtractedSymbol::Class(extract_class(name, node, source)));
+        }
+    }
+
+    ParseResult { symbols, edges }
+}
+
+fn extract_block_name(node: Node<'_>, source: &str) -> Option<String> {
+    let mut cursor = node.walk();
+    let block_type = node.named_children(&mut cursor).next()?;
+    if block_type.kind() != "identifier" {
+        return None;
+    }
+
+    let block_type = super::node_text(block_type, source);
+    let block_source = super::node_text(node, source);
+    let header = block_source.strip_prefix(&block_type)?;
+    let mut segments = vec![block_type];
+    segments.extend(extract_plain_labels(header)?);
+    Some(format!("hcl.block.{}", segments.join(".")))
+}
+
+fn extract_attribute_name(node: Node<'_>, source: &str) -> Option<String> {
+    let mut cursor = node.walk();
+    let key = node.named_children(&mut cursor).next()?;
+    (key.kind() == "identifier").then(|| format!("hcl.attribute.{}", super::node_text(key, source)))
+}
+
+fn extract_plain_labels(header: &str) -> Option<Vec<String>> {
+    let bytes = header.as_bytes();
+    let mut labels = Vec::new();
+    let mut offset = 0;
+
+    loop {
+        while bytes.get(offset).is_some_and(u8::is_ascii_whitespace) {
+            offset = offset.saturating_add(1);
+        }
+
+        match bytes.get(offset) {
+            Some(b'{') => return Some(labels),
+            Some(b'"') => {
+                let value_start = offset.saturating_add(1);
+                offset = value_start;
+                let mut escaped = false;
+
+                while let Some(byte) = bytes.get(offset) {
+                    if escaped {
+                        escaped = false;
+                    } else if *byte == b'\\' {
+                        escaped = true;
+                    } else if *byte == b'"' {
+                        let value = header.get(value_start..offset)?;
+                        if value.is_empty() || value.contains("${") || value.contains("%{") {
+                            return None;
+                        }
+                        labels.push(value.to_owned());
+                        offset = offset.saturating_add(1);
+                        break;
+                    }
+                    offset = offset.saturating_add(1);
+                }
+
+                if offset >= bytes.len() {
+                    return None;
+                }
+            }
+            _ => return None,
+        }
+    }
+}
+
+fn extract_class(name: String, node: Node<'_>, source: &str) -> ExtractedClass {
+    let body = super::node_text(node, source);
+    let body_hash = super::sha256_hex(&body);
+    let line_start = u32::try_from(node.start_position().row.saturating_add(1)).unwrap_or(u32::MAX);
+    let line_end = u32::try_from(node.end_position().row.saturating_add(1)).unwrap_or(u32::MAX);
+    let token_count = u32::try_from(body.len() / 4).unwrap_or(u32::MAX);
+
+    ExtractedClass {
+        name,
+        line_start,
+        line_end,
+        docstring: None,
+        body,
+        body_hash,
+        token_count,
+    }
 }
