@@ -3,34 +3,35 @@ title: "HCL family parser operational closure"
 doc_type: closure
 date: 2026-08-16
 mode: pre-merge
-readiness: READY
+readiness: BLOCKED
 source: "docs/exec-plans/2026-08-15-hcl-family-parser-plan.md"
 shipment_id: "117-S"
 feature_id: "121-F"
 task_id: "121.016-T"
 subtask_id: "121.016.001-ST"
 branch: "feat/117-s-shared-hcl-parser"
-evaluated_head: "fbe9ef0131430033aee203a40e995ecdb999eb4e"
-evaluated_tree: "3fda14160d7de05fe22a813421b04355c1b501ef"
+evaluated_head: "40c5b1fbdba38e371cc53244969ec08ca0b5bf83"
+evaluated_tree: "e12e19ee1f7a7708e28f16e6a2dca28900f45351"
 runtime_report: "docs/closure/2026-08-16-hcl-family-parser-runtime-verification.md"
-runtime_verdict: PASS
-implementation_review: "PASS WITH ACKNOWLEDGMENT"
+runtime_verdict: STALE
+implementation_review: "BLOCKED — P1 source-read TOCTOU"
 ---
 
 ## Readiness decision
 
-**READY.** Shipment `117-S` feature `121-F` is operationally ready for PR
-handoff under the monitoring and rollback plan below. This pre-merge result
-closes authoritative U16 task `121.016-T` and exact provenance/rollback
-subtask `121.016.001-ST`.
+**BLOCKED.** Shipment `117-S` feature `121-F` is not operationally ready for
+merge. Review remediation changed parser traversal, label extraction, source
+discovery, tests, and the standard test alias after the recorded U15 runtime
+verification. That runtime evidence is stale for the current implementation.
 
-READY does not authorize a merge. GitHub CI and Copilot review for the final
-branch HEAD remain pending lifecycle gates. The release is a no-go until those
-gates pass for the exact commit that would be merged.
+A continuation security review also confirmed a P1 source-read TOCTOU gap:
+discovery rejects links only at enumeration time, while later pathname metadata
+and reads can follow a replacement file or ancestor-directory link outside the
+workspace. A portable fix requires a capability-rooted shared source reader and
+broader dependency/architecture work.
 
-No required local pre-merge gate is unresolved. U15 runtime verification is
-PASS, the reviewed implementation has no P0/P1 finding, and the source, test,
-and dependency tree has not changed since the recorded full gates.
+GitHub CI or Copilot success cannot override stale runtime evidence or this
+containment blocker. No merge is authorized.
 
 ## Scope and provenance
 
@@ -40,22 +41,23 @@ and dependency tree has not changed since the recorded full gates.
 |---|---|
 | Worktree | `C:\Source\GitHub\engram\.git\ship-session-state\117-s-20260816-1618` |
 | Branch | `feat/117-s-shared-hcl-parser` |
-| Evaluated implementation HEAD | `fbe9ef0131430033aee203a40e995ecdb999eb4e` |
-| Evaluated tree | `3fda14160d7de05fe22a813421b04355c1b501ef` |
-| HEAD subject | `chore: complete U15 runtime verification state` |
-| HEAD authored | `2026-08-16T20:47:50-07:00` |
-| Initial U16 status | Clean worktree; `121.016-T` and `121.016.001-ST` active |
+| Evaluated implementation HEAD | `40c5b1fbdba38e371cc53244969ec08ca0b5bf83` |
+| Evaluated tree | `e12e19ee1f7a7708e28f16e6a2dca28900f45351` |
+| HEAD subject | `fix: reject linked source files during discovery` |
+| Initial runtime implementation | `f0f632d906cfcca885662bd7ff02c39e050112f7` |
+| Pre-merge feature state | `121-F` active; `117-S` active |
 
-The U15 source SHA was
-`f0f632d906cfcca885662bd7ff02c39e050112f7`. The only changes from that SHA
-through evaluated HEAD were the U15 report and the completed U15 backlog
-state. A path-scoped Git comparison returned no changes under `src`, `tests`,
-`Cargo.toml`, or `Cargo.lock`.
+After the initial runtime run, review remediation commits changed production
+and security behavior:
 
-The closure and U16 backlog commits made after this evaluation are
-documentation/backlog-only transitions. They do not extend the reviewed
-runtime surface. They do change branch HEAD, so GitHub CI and Copilot review
-must bind to the final post-closure HEAD.
+- `517e5ce6` bounded HCL traversal and moved label extraction to AST nodes;
+- `d4b6e4f2` made ambiguous quoted labels fail closed;
+- `40c5b1fb` rejected statically linked source entries during discovery; and
+- `2b677646` expanded security/ABI gate coverage.
+
+The U15 report therefore does not verify the evaluated implementation. The
+[source-read TOCTOU security review](2026-08-16-hcl-source-read-toctou-security-review.md)
+records the additional unresolved containment gap.
 
 ### Exact shipment manifest
 
@@ -79,6 +81,7 @@ Authoritative inputs are:
 * [Grammar compatibility spike](../decisions/2026-08-15-tree-sitter-hcl-compatibility-spike.md)
 * [Stage adversarial review](2026-08-15-hcl-family-parser-stage-adversarial-review.md)
 * [U15 runtime verification](2026-08-16-hcl-family-parser-runtime-verification.md)
+* [Source-read TOCTOU security review](2026-08-16-hcl-source-read-toctou-security-review.md)
 
 Historical U1-U10 and U1-U14 sections are non-authoritative append-only
 history. Only final U1-U16 governed this release.
@@ -363,8 +366,10 @@ Only a GitHub **merge commit** is permitted. Squash and rebase merge are
 forbidden. Before merging, verify repository settings allow merge commits and
 disable squash/rebase choices.
 
-GitHub CI and Copilot review are still pending for the final current HEAD.
-After the closure and U16 backlog commits are pushed, the merge gate requires:
+Even if GitHub CI and Copilot review pass for the final current HEAD, the
+shipment remains blocked until capability-rooted containment is implemented
+and final-implementation runtime verification is rerun. The eventual merge gate
+still requires:
 
 1. Every required CI check succeeds for the final branch HEAD.
 2. A Copilot review exists whose `commit_id` exactly equals that HEAD.
@@ -409,13 +414,14 @@ remote operator awareness.
 
 ## Final handoff
 
-* Operational readiness: **READY**
-* Runtime verification: **PASS**
-* Implementation review: **PASS WITH ACKNOWLEDGMENT**
-* Local gates: **PASS**
+* Operational readiness: **BLOCKED**
+* Runtime verification: **STALE after production review fixes**
+* Implementation review: **BLOCKED — P1 source-read TOCTOU**
+* Local gates: **previously PASS; insufficient to waive containment**
 * Monitoring owner/window: release operator, 30 minutes
 * Rollback readiness: rehearsed configuration-plus-binary restoration and
   forced reconciliation with a zero-HCL completion gate
-* Remaining gate: final-HEAD GitHub CI and Copilot review, then
-  merge-commit-only merge
+* Remaining gate: capability-rooted containment architecture, RED/green
+  security coverage, final-implementation runtime verification, then
+  final-HEAD CI/Copilot and merge-commit-only merge
 * Feature/shipment state: `121-F` active; `117-S` active
