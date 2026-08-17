@@ -124,6 +124,7 @@ pub(crate) struct UnsafeModulePrepass {
     unsafe_prefixes: HashSet<String>,
     rust_contexts: HashMap<String, CachedRustCanonicalContext>,
     rejected_paths: HashSet<String>,
+    oversized_paths: HashMap<String, u64>,
     errors: Vec<FileError>,
     complete: bool,
 }
@@ -134,6 +135,7 @@ impl Default for UnsafeModulePrepass {
             unsafe_prefixes: HashSet::new(),
             rust_contexts: HashMap::new(),
             rejected_paths: HashSet::new(),
+            oversized_paths: HashMap::new(),
             errors: Vec::new(),
             complete: true,
         }
@@ -204,25 +206,20 @@ pub(crate) async fn unsafe_module_prepass(
         {
             SourceRead::Snapshot(snapshot) => snapshot,
             SourceRead::Oversized { size_bytes } => {
-                prepass.complete = false;
                 prepass.rejected_paths.insert(rel_path.clone());
-                let error =
-                    if remaining_budget < max_file_size_bytes && size_bytes > remaining_budget {
-                        format!(
+                if remaining_budget < max_file_size_bytes && size_bytes > remaining_budget {
+                    prepass.complete = false;
+                    prepass.errors.push(FileError {
+                        file: rel_path,
+                        error: format!(
                             "Rust prepass aggregate snapshot exceeds security budget \
                          ({retained_bytes} retained + {size_bytes} input > \
                          {MAX_RUST_PREPASS_SNAPSHOT_BYTES} bytes)"
-                        )
-                    } else {
-                        format!(
-                            "Rust prepass source exceeds configured limit \
-                         ({size_bytes} > {max_file_size_bytes} bytes)"
-                        )
-                    };
-                prepass.errors.push(FileError {
-                    file: rel_path,
-                    error,
-                });
+                        ),
+                    });
+                } else {
+                    prepass.oversized_paths.insert(rel_path, size_bytes);
+                }
                 continue;
             }
             SourceRead::Rejected(error) => {
@@ -307,6 +304,9 @@ async fn verify_rust_prepass_snapshots(
             }
         };
         let rel_path = relative_path.as_str();
+        if prepass.oversized_paths.contains_key(rel_path) {
+            continue;
+        }
         let Some(retained) = prepass.rust_contexts.get(rel_path) else {
             errors.push(FileError {
                 file: rel_path.to_owned(),
@@ -1785,6 +1785,24 @@ async fn index_workspace_impl(
             &prepass.errors,
         ));
     }
+    if force && !prepass.oversized_paths.is_empty() {
+        let errors: Vec<FileError> = prepass
+            .oversized_paths
+            .iter()
+            .map(|(file, size_bytes)| FileError {
+                file: file.clone(),
+                error: format!(
+                    "Rust prepass source exceeds configured limit \
+                     ({size_bytes} > {} bytes)",
+                    config.max_file_size_bytes
+                ),
+            })
+            .collect();
+        return Err(rejected_global_context(
+            "Rust unsafe-module prepass (rust canonical post-pass preflight)",
+            &errors,
+        ));
+    }
     let unsafe_prefixes = prepass.unsafe_prefixes.clone();
 
     #[cfg(test)]
@@ -1923,6 +1941,19 @@ async fn index_workspace_impl(
             };
             let rel_path = relative_path.as_str().to_owned();
 
+            if let Some(size_bytes) = prepass.oversized_paths.get(&rel_path) {
+                let stale_file_id = format!("code_file:{}", sha256_short(&rel_path));
+                let _orphaned = handle_deleted_file(&queries, &rel_path, &stale_file_id).await?;
+                warn!(
+                    path = %rel_path,
+                    size_bytes,
+                    limit_bytes = config.max_file_size_bytes,
+                    "code graph: skipping oversized Rust file"
+                );
+                result.oversized_files_skipped += 1;
+                result.files_skipped += 1;
+                break 'file;
+            }
             if prepass.rejected_paths.contains(&rel_path) {
                 result.files_skipped += 1;
                 break 'file;
@@ -3037,6 +3068,19 @@ async fn sync_workspace_with_progress_impl(
             };
             let rel_path = relative_path.as_str().to_owned();
 
+            if let Some(size_bytes) = prepass.oversized_paths.get(&rel_path) {
+                let stale_file_id = format!("code_file:{}", sha256_short(&rel_path));
+                let orphaned = handle_deleted_file(&queries, &rel_path, &stale_file_id).await?;
+                result.concerns_orphaned += orphaned;
+                warn!(
+                    path = %rel_path,
+                    size_bytes,
+                    limit_bytes = config.max_file_size_bytes,
+                    "code graph sync: skipping oversized Rust file"
+                );
+                result.oversized_files_skipped += 1;
+                break 'file;
+            }
             if prepass.rejected_paths.contains(&rel_path) {
                 break 'file;
             }
