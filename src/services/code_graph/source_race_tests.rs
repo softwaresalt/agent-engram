@@ -446,11 +446,6 @@ async fn rejected_ignore_layers_abort_fresh_index_without_admitting_hidden_body(
         } else {
             "hidden.tf"
         };
-        let ignore_rule = if ignore_path.starts_with("nested/") {
-            "hidden.tf\n"
-        } else {
-            "hidden.tf\n"
-        };
         write_source(
             workspace.path(),
             hidden_path,
@@ -461,7 +456,7 @@ async fn rejected_ignore_layers_abort_fresh_index_without_admitting_hidden_body(
             "visible.tf",
             "resource \"visible\" \"control\" {}\n",
         )?;
-        write_source(workspace.path(), "ignore-rules.payload", ignore_rule)?;
+        write_source(workspace.path(), "ignore-rules.payload", "hidden.tf\n")?;
         if let Some(parent) = workspace.path().join(ignore_path).parent() {
             std::fs::create_dir_all(parent)?;
         }
