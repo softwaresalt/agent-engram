@@ -93,6 +93,27 @@ module # type-to-label
 }
 
 #[test]
+fn ambiguous_quoted_block_labels_fail_closed_without_changing_plain_labels() {
+    let language = hcl_language("HCL_AMBIGUOUS_LABEL_GUARD_MISSING");
+    let source = r#"
+resource "a.b" "c" {}
+resource "a" "b.c" {}
+resource "aws_instance" "web-2" {}
+module "network_01" {}
+"#;
+    let parsed = parse_source(source, language).expect("parse quoted HCL block labels");
+
+    assert_eq!(
+        structural_names(&parsed),
+        [
+            "hcl.block.resource.aws_instance.web-2",
+            "hcl.block.module.network_01",
+        ],
+        "dotted labels must not collapse into a fabricated block identity"
+    );
+}
+
+#[test]
 fn plain_traversals_are_stable_deduplicated_and_dynamic_forms_fail_closed() {
     let language = hcl_language("HCL_TRAVERSAL_PARSER_MISSING");
     let parsed = parse_source(TRAVERSALS.source, language).expect("parse valid HCL traversals");
