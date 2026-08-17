@@ -1244,6 +1244,33 @@ fn advance_progress(
     emit_progress(progress, *completed, total);
 }
 
+/// Persist a parser-normalized reference hint without interpreting HCL
+/// traversals as workspace-global symbol names.
+async fn persist_reference_edge(
+    queries: &CodeGraphQueries,
+    language: Language,
+    file_id: &str,
+    target_hint: &str,
+) -> Result<(), EngramError> {
+    if matches!(language, Language::Hcl) {
+        return queries
+            .create_references_edge(file_id, file_id, Some(target_hint))
+            .await;
+    }
+
+    let resolved_id = queries.resolve_reference_target(target_hint).await?;
+    if let Some(class_id) = resolved_id {
+        queries
+            .create_references_edge(file_id, &class_id, Some(target_hint))
+            .await?;
+    } else {
+        queries
+            .create_references_edge(file_id, file_id, Some(target_hint))
+            .await?;
+    }
+    Ok(())
+}
+
 /// Discover, parse, and index all supported source files in the workspace.
 ///
 /// Uses the `ignore` crate for .gitignore-aware file traversal, filters by
@@ -1929,18 +1956,10 @@ async fn index_workspace_impl(
                     }
                     // Defines edge already handled during symbol upsert.
                     ExtractedEdge::Defines { .. } => {}
-                    // SQL References: resolve target to a Class node or self-loop (033.001-T).
+                    // HCL traversals remain hint-only; all other languages retain
+                    // the existing global resolver behavior.
                     ExtractedEdge::References { target, .. } => {
-                        let resolved_id = queries.resolve_reference_target(target).await?;
-                        if let Some(class_id) = resolved_id {
-                            queries
-                                .create_references_edge(&file_id, &class_id, Some(target))
-                                .await?;
-                        } else {
-                            queries
-                                .create_references_edge(&file_id, &file_id, Some(target))
-                                .await?;
-                        }
+                        persist_reference_edge(&queries, lang_enum, &file_id, target).await?;
                         result.edges_created += 1;
                     }
                 }
@@ -3029,18 +3048,10 @@ pub async fn sync_workspace_with_progress(
                     }
                     // Defines edge already handled during symbol upsert.
                     ExtractedEdge::Defines { .. } => {}
-                    // SQL References: resolve target to a Class node or self-loop (033.001-T).
+                    // HCL traversals remain hint-only; all other languages retain
+                    // the existing global resolver behavior.
                     ExtractedEdge::References { target, .. } => {
-                        let resolved_id = queries.resolve_reference_target(target).await?;
-                        if let Some(class_id) = resolved_id {
-                            queries
-                                .create_references_edge(&file_id, &class_id, Some(target))
-                                .await?;
-                        } else {
-                            queries
-                                .create_references_edge(&file_id, &file_id, Some(target))
-                                .await?;
-                        }
+                        persist_reference_edge(&queries, lang_enum, &file_id, target).await?;
                         result.edges_created += 1;
                     }
                 }
