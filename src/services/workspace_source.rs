@@ -87,9 +87,16 @@ impl ValidatedRelativePath {
         prefix.normalized.split('/').all(|prefix_component| {
             components
                 .next()
-                .is_some_and(|component| component.eq_ignore_ascii_case(prefix_component))
+                .is_some_and(|component| unicode_lowercase_eq(component, prefix_component))
         })
     }
+}
+
+#[cfg(windows)]
+fn unicode_lowercase_eq(left: &str, right: &str) -> bool {
+    left.chars()
+        .flat_map(char::to_lowercase)
+        .eq(right.chars().flat_map(char::to_lowercase))
 }
 
 #[cfg(not(windows))]
@@ -161,6 +168,14 @@ pub(crate) enum SourceRead {
     Snapshot(SourceSnapshot),
     Oversized { size_bytes: u64 },
     Rejected(SourceRejection),
+}
+
+/// No-follow classification of one direct child of the workspace capability.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RootChildKind {
+    Absent,
+    Directory,
+    Other,
 }
 
 /// Structured rejection of an unsafe or unreadable source candidate.
@@ -342,10 +357,10 @@ impl WorkspaceSourceReader {
         }
     }
 
-    pub(crate) fn root_child_is_directory_nofollow_blocking(
+    pub(crate) fn classify_root_child_nofollow_blocking(
         &self,
         relative_path: &ValidatedRelativePath,
-    ) -> Result<bool, SourceRejection> {
+    ) -> Result<RootChildKind, SourceRejection> {
         if relative_path.as_path().components().count() != 1 {
             return Err(SourceRejection::other(
                 relative_path,
@@ -354,7 +369,9 @@ impl WorkspaceSourceReader {
         }
         let metadata = match self.root.symlink_metadata(relative_path.as_path()) {
             Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(RootChildKind::Absent);
+            }
             Err(error) => {
                 return Err(SourceRejection::io(
                     relative_path,
@@ -364,7 +381,7 @@ impl WorkspaceSourceReader {
             }
         };
         if metadata.file_type().is_symlink() {
-            return Ok(false);
+            return Ok(RootChildKind::Other);
         }
         #[cfg(windows)]
         {
@@ -372,10 +389,14 @@ impl WorkspaceSourceReader {
 
             const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
             if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-                return Ok(false);
+                return Ok(RootChildKind::Other);
             }
         }
-        Ok(metadata.is_dir())
+        if metadata.is_dir() {
+            Ok(RootChildKind::Directory)
+        } else {
+            Ok(RootChildKind::Other)
+        }
     }
 
     fn open_file_nofollow(&self, relative_path: &ValidatedRelativePath) -> std::io::Result<File> {
