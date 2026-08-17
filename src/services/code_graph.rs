@@ -47,6 +47,14 @@ tokio::task_local! {
 }
 
 #[cfg(test)]
+tokio::task_local! {
+    static FORCE_OVERRIDE_BUILD_FAILURE: bool;
+}
+
+#[cfg(test)]
+const POST_PREPASS_TEST_BARRIER: &str = "<post-rust-prepass>";
+
+#[cfg(test)]
 fn take_test_channel<T>(slot: &std::sync::Mutex<Option<T>>) -> Option<T> {
     match slot.lock() {
         Ok(mut guard) => guard.take(),
@@ -1688,6 +1696,9 @@ async fn index_workspace_impl(
     source_errors.extend(prepass.errors);
     let unsafe_prefixes = prepass.unsafe_prefixes.clone();
 
+    #[cfg(test)]
+    source_read_test_barrier(POST_PREPASS_TEST_BARRIER).await;
+
     let db = connect_db(data_dir, branch).await?;
     let queries = CodeGraphQueries::new(db);
 
@@ -2709,6 +2720,9 @@ async fn sync_workspace_with_progress_impl(
     }
     source_errors.extend(prepass.errors);
     let unsafe_prefixes = prepass.unsafe_prefixes.clone();
+
+    #[cfg(test)]
+    source_read_test_barrier(POST_PREPASS_TEST_BARRIER).await;
 
     let db = connect_db(data_dir, branch).await?;
     let queries = CodeGraphQueries::new(db);
@@ -3878,21 +3892,35 @@ async fn discover_files(
     let display = ws_path.display().to_string();
     let config = config.clone();
     let source_reader = source_reader.clone();
-    tokio::task::spawn_blocking(move || discover_files_blocking(&ws_path, &config, &source_reader))
-        .await
-        .map_err(|error| {
-            CodeGraphError::SourceAccess {
-                file_path: display,
-                reason: format!("source discovery task failed: {error}"),
-            }
-            .into()
-        })
+    #[cfg(test)]
+    let force_override_build_failure = FORCE_OVERRIDE_BUILD_FAILURE
+        .try_with(|force| *force)
+        .unwrap_or(false);
+    #[cfg(not(test))]
+    let force_override_build_failure = false;
+    tokio::task::spawn_blocking(move || {
+        discover_files_blocking(
+            &ws_path,
+            &config,
+            &source_reader,
+            force_override_build_failure,
+        )
+    })
+    .await
+    .map_err(|error| {
+        CodeGraphError::SourceAccess {
+            file_path: display,
+            reason: format!("source discovery task failed: {error}"),
+        }
+        .into()
+    })
 }
 
 fn discover_files_blocking(
     ws_path: &Path,
     config: &CodeGraphConfig,
     source_reader: &WorkspaceSourceReader,
+    force_override_build_failure: bool,
 ) -> SourceDiscovery {
     let mut builder = ignore::WalkBuilder::new(ws_path);
     builder
@@ -3913,7 +3941,12 @@ fn discover_files_blocking(
                 warn!(pattern = %pattern, "code graph: invalid exclude pattern, skipping");
             }
         }
-        match ob.build() {
+        let overrides = if force_override_build_failure {
+            Err(ignore::Error::InvalidDefinition)
+        } else {
+            ob.build()
+        };
+        match overrides {
             Ok(overrides) => {
                 builder.overrides(overrides);
             }

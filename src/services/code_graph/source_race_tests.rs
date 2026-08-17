@@ -115,6 +115,15 @@ fn write_source(root: &Path, relative: &str, source: &str) -> anyhow::Result<()>
     Ok(())
 }
 
+fn write_bytes(root: &Path, relative: &str, source: &[u8]) -> anyhow::Result<()> {
+    let path = root.join(relative);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, source)?;
+    Ok(())
+}
+
 fn hcl_config() -> CodeGraphConfig {
     CodeGraphConfig {
         supported_languages: vec!["hcl".to_owned()],
@@ -576,7 +585,9 @@ async fn git_info_exclude_remains_authoritative_through_capability_reads() -> an
 }
 
 #[tokio::test]
-async fn git_file_pointer_is_not_followed_for_info_exclude_rules() -> anyhow::Result<()> {
+async fn git_file_pointer_aborts_before_source_publication() -> anyhow::Result<()> {
+    const SENTINEL: &str = "WORKTREE_POINTER_SENTINEL";
+
     let workspace = tempfile::tempdir()?;
     let outside_git_directory = tempfile::tempdir()?;
     write_source(
@@ -588,7 +599,9 @@ async fn git_file_pointer_is_not_followed_for_info_exclude_rules() -> anyhow::Re
     write_source(
         workspace.path(),
         "hidden.tf",
-        "resource \"worktree_pointer\" \"must_remain_visible\" {}\n",
+        &format!(
+            "resource \"worktree_pointer\" \"must_not_publish\" {{ value = \"{SENTINEL}\" }}\n"
+        ),
     )?;
     write_source(
         workspace.path(),
@@ -597,16 +610,168 @@ async fn git_file_pointer_is_not_followed_for_info_exclude_rules() -> anyhow::Re
     )?;
     let (data_dir, branch) = db_identity(workspace.path(), "git-file-pointer");
 
-    index_workspace(workspace.path(), &data_dir, &branch, &hcl_config(), true).await?;
+    let indexed = index_workspace(workspace.path(), &data_dir, &branch, &hcl_config(), true).await;
     let state = graph_state(&data_dir, &branch).await?;
+    assert_never_published(&state, "GIT_FILE_POINTER_PARTIAL_PUBLICATION", SENTINEL);
+    let error = indexed
+        .expect_err("RED:GIT_FILE_POINTER_ACCEPTED: a present non-directory .git must fail closed");
+    assert!(
+        error.to_string().contains(".git")
+            && (error.to_string().contains("directory") || error.to_string().contains("worktree")),
+        "worktree-pointer rejection must be actionable: {error}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn invalid_configured_exclude_pattern_aborts_before_publication() -> anyhow::Result<()> {
+    const SENTINEL: &str = "INVALID_EXCLUDE_SENTINEL";
+
+    let workspace = tempfile::tempdir()?;
+    write_source(
+        workspace.path(),
+        "hidden.tf",
+        &format!("resource \"excluded\" \"hidden\" {{ value = \"{SENTINEL}\" }}\n"),
+    )?;
+    write_source(
+        workspace.path(),
+        "visible.tf",
+        "resource \"visible\" \"control\" {}\n",
+    )?;
+    let (data_dir, branch) = db_identity(workspace.path(), "invalid-configured-exclude");
+    let mut config = hcl_config();
+    config.exclude_patterns = vec!["hidden.tf".to_owned(), "[".to_owned()];
+
+    let indexed = index_workspace(workspace.path(), &data_dir, &branch, &config, true).await;
+    let state = graph_state(&data_dir, &branch).await?;
+    assert_never_published(
+        &state,
+        "INVALID_EXCLUDE_PATTERN_PARTIAL_PUBLICATION",
+        SENTINEL,
+    );
+    let error = indexed.expect_err(
+        "RED:INVALID_EXCLUDE_PATTERN_ACCEPTED: invalid configured excludes must be fatal",
+    );
+    assert!(
+        error.to_string().contains("exclude") && error.to_string().contains('['),
+        "invalid configured exclude rejection must identify the pattern: {error}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn exclude_override_build_failure_aborts_before_publication() -> anyhow::Result<()> {
+    const SENTINEL: &str = "OVERRIDE_BUILD_SENTINEL";
+
+    let workspace = tempfile::tempdir()?;
+    write_source(
+        workspace.path(),
+        "hidden.tf",
+        &format!("resource \"excluded\" \"hidden\" {{ value = \"{SENTINEL}\" }}\n"),
+    )?;
+    write_source(
+        workspace.path(),
+        "visible.tf",
+        "resource \"visible\" \"control\" {}\n",
+    )?;
+    let (data_dir, branch) = db_identity(workspace.path(), "override-build-failure");
+    let mut config = hcl_config();
+    config.exclude_patterns = vec!["hidden.tf".to_owned()];
+
+    let indexed = FORCE_OVERRIDE_BUILD_FAILURE
+        .scope(
+            true,
+            index_workspace(workspace.path(), &data_dir, &branch, &config, true),
+        )
+        .await;
+    let state = graph_state(&data_dir, &branch).await?;
+    assert_never_published(
+        &state,
+        "OVERRIDE_BUILD_FAILURE_PARTIAL_PUBLICATION",
+        SENTINEL,
+    );
+    let error = indexed
+        .expect_err("RED:OVERRIDE_BUILD_FAILURE_ACCEPTED: override build failure must be fatal");
+    assert!(
+        error.to_string().contains("exclude") && error.to_string().contains("build"),
+        "override build rejection must identify the failed policy phase: {error}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn ignored_subtree_diagnostics_do_not_abort_or_suppress_certification() -> anyhow::Result<()>
+{
+    const SENTINEL: &str = "IGNORED_SUBTREE_SENTINEL";
+
+    let workspace = tempfile::tempdir()?;
+    let outside = tempfile::tempdir()?;
+    write_source(workspace.path(), ".gitignore", "ignored/\n")?;
+    write_source(workspace.path(), "ignore-rules.payload", "*.tf\n")?;
+    write_source(
+        workspace.path(),
+        "ignored/hidden.tf",
+        &format!("resource \"ignored\" \"hidden\" {{ value = \"{SENTINEL}\" }}\n"),
+    )?;
+    require_link(
+        symlink_file(
+            Path::new("../ignore-rules.payload"),
+            &workspace.path().join("ignored/.gitignore"),
+        ),
+        "ignored-subtree-ignore-link",
+    )?;
+    write_bytes(workspace.path(), "ignored/.ignore", &[0xff, 0xfe, b'\n'])?;
+    write_source(outside.path(), "outside.tf", EXTERNAL_SENTINEL)?;
+    require_link(
+        symlink_dir(outside.path(), &workspace.path().join("ignored/blocked")),
+        "ignored-subtree-blocked-link",
+    )?;
+    write_source(workspace.path(), "active/.ignore", "hidden.tf\n")?;
+    write_source(workspace.path(), "active/hidden.tf", INTERNAL_SENTINEL)?;
+    write_source(workspace.path(), "active/visible.tf", SAFE_NEW)?;
+    write_source(
+        workspace.path(),
+        "visible.tf",
+        "resource \"visible\" \"control\" {}\n",
+    )?;
+    let (data_dir, branch) = db_identity(workspace.path(), "ignored-subtree-diagnostics");
+
+    let result = index_workspace(workspace.path(), &data_dir, &branch, &hcl_config(), true)
+        .await
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "RED:IGNORED_SUBTREE_DIAGNOSTIC_ABORT: ignored diagnostics aborted publication: \
+                 {error}"
+            )
+        })?;
+    assert!(
+        result.errors.is_empty(),
+        "ignored-subtree diagnostics must be localized: {result:?}"
+    );
+    let state = publication_state(&data_dir, &branch).await?;
     assert_eq!(
         state
             .files
             .iter()
             .map(|file| file.path.as_str())
             .collect::<Vec<_>>(),
-        ["hidden.tf", "visible.tf"],
-        "an external gitdir pointer must not contribute ignore policy"
+        ["active/visible.tf", "visible.tf"],
+        "nested ignore semantics outside the excluded tree must remain authoritative"
+    );
+    assert!(
+        state
+            .classes
+            .iter()
+            .all(|(_, _, _, body)| !body.contains(SENTINEL) && !body.contains("OUTSIDE_SENTINEL")),
+        "ignored or blocked subtree source was published: {:?}",
+        state.classes
+    );
+    assert!(
+        state.canonical_workspace.is_some()
+            && state.python_marker.as_deref() == Some(PYTHON_CANONICAL_EXTRACTION_VERSION)
+            && state.generation_marker.as_deref() == Some(CODE_GRAPH_EXTRACTION_GENERATION),
+        "RED:IGNORED_SUBTREE_SUPPRESSED_CERTIFICATION: ignored diagnostics suppressed markers: \
+         {state:?}"
     );
     Ok(())
 }
@@ -778,6 +943,61 @@ async fn oversized_rust_prepass_aborts_before_publication_mutation() -> anyhow::
 }
 
 #[tokio::test]
+async fn rust_rewrite_after_prepass_aborts_before_publication_mutation() -> anyhow::Result<()> {
+    const SAFE_SOURCE: &str = "pub fn retained_publication() -> usize { 7 }\n";
+    const REMAPPED_SOURCE: &str = "#[path = \"redirect.rs\"]\npub mod remapped;\n\
+         #[cfg(unix)]\npub mod conditional;\n\
+         pub fn retained_publication() -> usize { 11 }\n";
+
+    for (suffix, prepass_source, rewritten_source) in [
+        ("adds-remap", SAFE_SOURCE, REMAPPED_SOURCE),
+        ("removes-remap", REMAPPED_SOURCE, SAFE_SOURCE),
+    ] {
+        let workspace = tempfile::tempdir()?;
+        write_source(
+            workspace.path(),
+            "Cargo.toml",
+            "[package]\nname = \"safe\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )?;
+        write_source(workspace.path(), "src/lib.rs", prepass_source)?;
+        let (data_dir, branch) = db_identity(workspace.path(), suffix);
+        let config = CodeGraphConfig::default();
+        index_workspace(workspace.path(), &data_dir, &branch, &config, true).await?;
+        let before = publication_state(&data_dir, &branch).await?;
+        let mut barrier = BarrierControl::new(POST_PREPASS_TEST_BARRIER);
+        let hook = barrier.take_hook()?;
+        let workspace_path = workspace.path().to_path_buf();
+
+        let operation = SOURCE_READ_TEST_HOOK.scope(
+            hook,
+            index_workspace(workspace.path(), &data_dir, &branch, &config, true),
+        );
+        let controller = async move {
+            barrier.wait_until_reached().await?;
+            std::fs::write(workspace_path.join("src/lib.rs"), rewritten_source)?;
+            barrier.release();
+            Ok::<(), anyhow::Error>(())
+        };
+        let (indexed, controlled) = bounded_join(operation, controller).await?;
+        controlled?;
+        let error = indexed
+            .expect_err("RED:RUST_POST_PREPASS_REWRITE_ACCEPTED: regular Rust rewrite must abort");
+        assert!(
+            error.to_string().contains("src/lib.rs")
+                && (error.to_string().contains("snapshot")
+                    || error.to_string().contains("changed")),
+            "Rust snapshot mismatch must identify the changed input: {error}"
+        );
+        assert_eq!(
+            publication_state(&data_dir, &branch).await?,
+            before,
+            "RED:RUST_POST_PREPASS_REWRITE_MUTATED: {suffix} changed graph/snapshot/markers"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn blocked_prefix_does_not_suppress_unrelated_authoritative_deletion() -> anyhow::Result<()> {
     let workspace = tempfile::tempdir()?;
     let outside = tempfile::tempdir()?;
@@ -840,23 +1060,23 @@ async fn blocked_prefix_does_not_suppress_unrelated_authoritative_deletion() -> 
 
 #[cfg(windows)]
 #[tokio::test]
-async fn case_variant_blocked_prefix_retains_last_known_good_graph() -> anyhow::Result<()> {
+async fn unicode_case_variant_blocked_prefix_retains_last_known_good_graph() -> anyhow::Result<()> {
     let workspace = tempfile::tempdir()?;
     let outside = tempfile::tempdir()?;
-    write_source(workspace.path(), "blocked/victim.tf", SAFE_OLD)?;
+    write_source(workspace.path(), "blöcked/victim.tf", SAFE_OLD)?;
     let (data_dir, branch) = db_identity(workspace.path(), "case-variant-block");
     let config = hcl_config();
     sync_workspace(workspace.path(), &data_dir, &branch, &config).await?;
     let before = publication_state(&data_dir, &branch).await?;
 
     std::fs::rename(
-        workspace.path().join("blocked"),
+        workspace.path().join("blöcked"),
         outside.path().join("blocked-target"),
     )?;
     require_link(
         symlink_dir(
             &outside.path().join("blocked-target"),
-            &workspace.path().join("BLOCKED"),
+            &workspace.path().join("BLÖCKED"),
         ),
         "case-variant-blocked-prefix-link",
     )?;
@@ -865,7 +1085,8 @@ async fn case_variant_blocked_prefix_retains_last_known_good_graph() -> anyhow::
     assert_eq!(
         publication_state(&data_dir, &branch).await?,
         before,
-        "RED:WINDOWS_CASE_BLOCKED_LKG: case-variant blocked prefix deleted prior publication"
+        "RED:WINDOWS_UNICODE_CASE_BLOCKED_LKG: Unicode case-variant blocked prefix deleted prior \
+         publication"
     );
     Ok(())
 }
