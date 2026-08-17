@@ -1006,6 +1006,28 @@ name = "integration_staged_call_restart_resolution"
 path = "tests/integration/staged_call_restart_resolution_test.rs"
 required-features = ["cozo-backend", "embeddings"]
 
+# ── 121-F: Shared HCL parser ─────────────────────────────────────────────────
+
+[[test]]
+name = "hcl_parser_contract_test"
+path = "tests/contract/hcl_parser_contract_test.rs"
+
+[[test]]
+name = "hcl_parsing_test"
+path = "tests/unit/hcl_parsing_test.rs"
+
+[[test]]
+name = "hcl_routing_test"
+path = "tests/unit/hcl_routing_test.rs"
+
+[[test]]
+name = "hcl_security_test"
+path = "tests/unit/hcl_security_test.rs"
+
+[[test]]
+name = "hcl_indexing_test"
+path = "tests/integration/hcl_indexing_test.rs"
+
 [[example]]
 name = "cozo_api_spike"
 path = "examples/cozo_api_spike.rs"
