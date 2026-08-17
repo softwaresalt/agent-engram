@@ -585,17 +585,23 @@ async fn git_info_exclude_remains_authoritative_through_capability_reads() -> an
 }
 
 #[tokio::test]
-async fn git_file_pointer_aborts_before_source_publication() -> anyhow::Result<()> {
+async fn linked_worktree_common_git_info_exclude_remains_authoritative() -> anyhow::Result<()> {
     const SENTINEL: &str = "WORKTREE_POINTER_SENTINEL";
 
     let workspace = tempfile::tempdir()?;
-    let outside_git_directory = tempfile::tempdir()?;
+    let linked_git_directory = tempfile::tempdir()?;
+    let common_git_directory = tempfile::tempdir()?;
     write_source(
         workspace.path(),
         ".git",
-        &format!("gitdir: {}\n", outside_git_directory.path().display()),
+        &format!("gitdir: {}\n", linked_git_directory.path().display()),
     )?;
-    write_source(outside_git_directory.path(), "info/exclude", "hidden.tf\n")?;
+    write_source(
+        linked_git_directory.path(),
+        "commondir",
+        &format!("{}\n", common_git_directory.path().display()),
+    )?;
+    write_source(common_git_directory.path(), "info/exclude", "hidden.tf\n")?;
     write_source(
         workspace.path(),
         "hidden.tf",
@@ -610,17 +616,134 @@ async fn git_file_pointer_aborts_before_source_publication() -> anyhow::Result<(
     )?;
     let (data_dir, branch) = db_identity(workspace.path(), "git-file-pointer");
 
-    let indexed = index_workspace(workspace.path(), &data_dir, &branch, &hcl_config(), true).await;
-    let state = graph_state(&data_dir, &branch).await?;
-    assert_never_published(&state, "GIT_FILE_POINTER_PARTIAL_PUBLICATION", SENTINEL);
-    let error = indexed
-        .expect_err("RED:GIT_FILE_POINTER_ACCEPTED: a present non-directory .git must fail closed");
+    let indexed =
+        index_workspace(workspace.path(), &data_dir, &branch, &hcl_config(), true).await?;
     assert!(
-        error.to_string().contains(".git")
-            && (error.to_string().contains("directory") || error.to_string().contains("worktree")),
-        "worktree-pointer rejection must be actionable: {error}"
+        indexed.errors.is_empty(),
+        "linked-worktree metadata should load safely: {indexed:?}"
+    );
+    let state = graph_state(&data_dir, &branch).await?;
+    assert!(
+        state.files.iter().all(|file| file.path != "hidden.tf"),
+        "RED:LINKED_WORKTREE_EXCLUDE_IGNORED: hidden file was indexed: {:?}",
+        state.files
+    );
+    assert!(
+        state
+            .classes
+            .iter()
+            .all(|(_, body)| !body.contains(SENTINEL)),
+        "linked-worktree excluded sentinel body was persisted: {:?}",
+        state.classes
+    );
+    assert!(
+        state.files.iter().any(|file| file.path == "visible.tf"),
+        "visible control must remain indexable"
     );
     Ok(())
+}
+
+#[tokio::test]
+async fn malformed_git_pointer_aborts_before_source_publication() -> anyhow::Result<()> {
+    const SENTINEL: &str = "MALFORMED_GIT_POINTER_SENTINEL";
+
+    let workspace = tempfile::tempdir()?;
+    write_source(workspace.path(), ".git", "not-a-gitdir-pointer\n")?;
+    write_source(
+        workspace.path(),
+        "victim.tf",
+        &format!("resource \"malformed\" \"pointer\" {{ value = \"{SENTINEL}\" }}\n"),
+    )?;
+    let (data_dir, branch) = db_identity(workspace.path(), "malformed-git-pointer");
+
+    let indexed = index_workspace(workspace.path(), &data_dir, &branch, &hcl_config(), true).await;
+    let state = graph_state(&data_dir, &branch).await?;
+    assert_never_published(&state, "MALFORMED_GIT_POINTER_PUBLICATION", SENTINEL);
+    let error = indexed.expect_err("malformed .git pointer must fail closed");
+    assert!(
+        error.to_string().contains(".git") && error.to_string().contains("gitdir"),
+        "malformed pointer rejection must identify the gitdir field: {error}"
+    );
+    Ok(())
+}
+
+async fn assert_linked_metadata_replacement_rejected(replace_ancestor: bool) -> anyhow::Result<()> {
+    const SENTINEL: &str = "LINKED_METADATA_REPLACEMENT_SENTINEL";
+
+    let workspace = tempfile::tempdir()?;
+    let linked_git_directory = tempfile::tempdir()?;
+    let common_git_directory = tempfile::tempdir()?;
+    let external_metadata = tempfile::tempdir()?;
+    write_source(
+        workspace.path(),
+        ".git",
+        &format!("gitdir: {}\n", linked_git_directory.path().display()),
+    )?;
+    write_source(
+        linked_git_directory.path(),
+        "commondir",
+        &format!("{}\n", common_git_directory.path().display()),
+    )?;
+    write_source(common_git_directory.path(), "info/exclude", "safe.tf\n")?;
+    write_source(
+        external_metadata.path(),
+        "info/exclude",
+        &format!("victim.tf\n# {SENTINEL}\n"),
+    )?;
+    write_source(
+        workspace.path(),
+        "victim.tf",
+        &format!("resource \"metadata\" \"victim\" {{ value = \"{SENTINEL}\" }}\n"),
+    )?;
+
+    if replace_ancestor {
+        std::fs::rename(
+            common_git_directory.path().join("info"),
+            common_git_directory.path().join("info-original"),
+        )?;
+        require_link(
+            symlink_dir(
+                &external_metadata.path().join("info"),
+                &common_git_directory.path().join("info"),
+            ),
+            "linked-metadata-ancestor",
+        )?;
+    } else {
+        std::fs::remove_file(common_git_directory.path().join("info/exclude"))?;
+        require_link(
+            symlink_file(
+                &external_metadata.path().join("info/exclude"),
+                &common_git_directory.path().join("info/exclude"),
+            ),
+            "linked-metadata-final",
+        )?;
+    }
+
+    let suffix = if replace_ancestor {
+        "linked-metadata-ancestor"
+    } else {
+        "linked-metadata-final"
+    };
+    let (data_dir, branch) = db_identity(workspace.path(), suffix);
+    let indexed = index_workspace(workspace.path(), &data_dir, &branch, &hcl_config(), true).await;
+    let state = graph_state(&data_dir, &branch).await?;
+    assert_never_published(&state, "LINKED_METADATA_REPLACEMENT_PUBLICATION", SENTINEL);
+    let error = indexed.expect_err("linked metadata replacement must fail closed");
+    assert!(
+        error.to_string().contains("exclude") || error.to_string().contains(".git"),
+        "metadata replacement rejection must be actionable: {error}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn linked_metadata_final_replacement_aborts_before_publication() -> anyhow::Result<()> {
+    assert_linked_metadata_replacement_rejected(false).await
+}
+
+#[tokio::test]
+async fn linked_metadata_ancestor_replacement_aborts_before_publication() -> anyhow::Result<()> {
+    assert_linked_metadata_replacement_rejected(true).await
 }
 
 #[tokio::test]

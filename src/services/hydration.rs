@@ -987,6 +987,149 @@ pub fn has_speckit_features(workspace_root: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
+
+    use crate::db::{connect_db, queries::CodeGraphQueries};
+    use crate::services::workspace_source::{
+        SourceRead, ValidatedRelativePath, WorkspaceSourceReader,
+    };
+
+    #[cfg(unix)]
+    fn symlink_file(source: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(source, link)
+    }
+
+    #[cfg(windows)]
+    fn symlink_file(source: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_file(source, link)
+    }
+
+    #[cfg(unix)]
+    fn symlink_dir(source: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(source, link)
+    }
+
+    #[cfg(windows)]
+    fn symlink_dir(source: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_dir(source, link)
+    }
+
+    fn source_hash(source: &str) -> String {
+        hex::encode(Sha256::digest(source.as_bytes()))
+    }
+
+    fn write_hydration_nodes(
+        data_dir: &Path,
+        branch: &str,
+        node_type: &str,
+        indexed_hash: &str,
+    ) -> anyhow::Result<()> {
+        let graph_dir = data_dir.join("code-graph").join(branch);
+        std::fs::create_dir_all(&graph_dir)?;
+        let code_file = serde_json::json!({
+            "id": "code_file:src/victim.rs",
+            "type": "code_file",
+            "path": "src/victim.rs",
+            "language": "rust",
+            "size_bytes": 13,
+            "content_hash": indexed_hash,
+            "last_indexed_at": "2026-08-17T00:00:00Z"
+        });
+        let symbol = serde_json::json!({
+            "id": format!("{node_type}:sentinel"),
+            "type": node_type,
+            "name": "sentinel",
+            "file_path": "src/victim.rs",
+            "line_start": 1,
+            "line_end": 1,
+            "signature": "fn sentinel()",
+            "body_hash": "indexed-body-hash",
+            "token_count": 1,
+            "embed_type": "explicit_code",
+            "embedding": [],
+            "summary": "sentinel"
+        });
+        std::fs::write(
+            graph_dir.join("nodes.jsonl"),
+            format!("{code_file}\n{symbol}\n"),
+        )?;
+        Ok(())
+    }
+
+    async fn assert_replaced_body_is_degraded(
+        replace_ancestor: bool,
+        node_type: &str,
+    ) -> anyhow::Result<()> {
+        const SAFE: &str = "fn safe() {}\n";
+        const SENTINEL: &str = "EXTERNAL_HYDRATION_SENTINEL\n";
+
+        let workspace = tempfile::tempdir()?;
+        let outside = tempfile::tempdir()?;
+        std::fs::create_dir_all(workspace.path().join("src"))?;
+        std::fs::create_dir_all(outside.path().join("src"))?;
+        std::fs::write(workspace.path().join("src/victim.rs"), SAFE)?;
+        std::fs::write(outside.path().join("src/victim.rs"), SENTINEL)?;
+
+        let data_dir = workspace.path().join("hydration-data");
+        let branch = format!("hydration-security-{node_type}-{replace_ancestor}");
+        write_hydration_nodes(&data_dir, &branch, node_type, &source_hash(SAFE))?;
+
+        if replace_ancestor {
+            std::fs::rename(
+                workspace.path().join("src"),
+                workspace.path().join("src-original"),
+            )?;
+            symlink_dir(&outside.path().join("src"), &workspace.path().join("src"))?;
+        } else {
+            std::fs::remove_file(workspace.path().join("src/victim.rs"))?;
+            symlink_file(
+                &outside.path().join("src/victim.rs"),
+                &workspace.path().join("src/victim.rs"),
+            )?;
+        }
+
+        let reader = WorkspaceSourceReader::open(workspace.path()).await?;
+        let relative = ValidatedRelativePath::new(Path::new("src/victim.rs"))
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        assert!(
+            matches!(
+                reader.read_blocking(&relative, 1024),
+                SourceRead::Rejected(_)
+            ),
+            "capability read surface must reject the replacement"
+        );
+
+        let db = connect_db(&workspace.path().join("db"), &branch).await?;
+        let queries = CodeGraphQueries::new(db);
+        let result = hydrate_code_graph(workspace.path(), &data_dir, &branch, &queries).await?;
+        assert_eq!(result.nodes_loaded, 2);
+
+        let body = if node_type == "function" {
+            queries
+                .all_functions()
+                .await?
+                .into_iter()
+                .find(|function| function.name == "sentinel")
+                .map(|function| function.body)
+        } else {
+            queries
+                .all_classes()
+                .await?
+                .into_iter()
+                .find(|class| class.name == "sentinel")
+                .map(|class| class.body)
+        }
+        .ok_or_else(|| anyhow::anyhow!("hydrated {node_type} was not persisted"))?;
+        assert!(
+            body.is_empty(),
+            "RED:HYDRATION_PERSISTED_EXTERNAL_BODY: ancestor={replace_ancestor}; body={body:?}"
+        );
+        assert!(
+            !body.contains(SENTINEL),
+            "external sentinel bytes must never be persisted"
+        );
+        Ok(())
+    }
 
     #[test]
     fn stale_detection_no_lastflush() {
@@ -1081,6 +1224,46 @@ mod tests {
             .expect("write");
         let body = read_body_lines(tmp.path(), "f.rs", 0, 1).await;
         assert!(body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn final_replacement_persists_degraded_function_body() -> anyhow::Result<()> {
+        assert_replaced_body_is_degraded(false, "function").await
+    }
+
+    #[tokio::test]
+    async fn ancestor_replacement_persists_degraded_class_body() -> anyhow::Result<()> {
+        assert_replaced_body_is_degraded(true, "class").await
+    }
+
+    #[tokio::test]
+    async fn indexed_hash_mismatch_persists_degraded_body() -> anyhow::Result<()> {
+        const INDEXED: &str = "fn indexed() {}\n";
+        const DRIFTED: &str = "fn DRIFTED_HYDRATION_SENTINEL() {}\n";
+
+        let workspace = tempfile::tempdir()?;
+        std::fs::create_dir_all(workspace.path().join("src"))?;
+        std::fs::write(workspace.path().join("src/victim.rs"), DRIFTED)?;
+        let data_dir = workspace.path().join("hydration-data");
+        let branch = "hydration-hash-mismatch";
+        write_hydration_nodes(&data_dir, branch, "function", &source_hash(INDEXED))?;
+
+        let db = connect_db(&workspace.path().join("db"), branch).await?;
+        let queries = CodeGraphQueries::new(db);
+        hydrate_code_graph(workspace.path(), &data_dir, branch, &queries).await?;
+        let body = queries
+            .all_functions()
+            .await?
+            .into_iter()
+            .find(|function| function.name == "sentinel")
+            .map(|function| function.body)
+            .ok_or_else(|| anyhow::anyhow!("hydrated function was not persisted"))?;
+        assert!(
+            body.is_empty(),
+            "RED:HYDRATION_PERSISTED_HASH_MISMATCH: {body:?}"
+        );
+        assert!(!body.contains("DRIFTED_HYDRATION_SENTINEL"));
+        Ok(())
     }
 
     #[test]

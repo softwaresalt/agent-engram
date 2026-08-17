@@ -593,6 +593,26 @@ fn source_access_error(path: &str, reason: String) -> EngramError {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    fn symlink_file(source: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(source, link)
+    }
+
+    #[cfg(windows)]
+    fn symlink_file(source: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_file(source, link)
+    }
+
+    #[cfg(unix)]
+    fn symlink_dir(source: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(source, link)
+    }
+
+    #[cfg(windows)]
+    fn symlink_dir(source: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_dir(source, link)
+    }
+
     #[test]
     fn portable_path_validation_rejects_traversal_nul_and_controls() {
         assert!(ValidatedRelativePath::new(Path::new("../escape.rs")).is_err());
@@ -631,5 +651,71 @@ mod tests {
             ValidatedRelativePath::new(Path::new(r"name\part.rs")).is_ok(),
             "native Windows separators must normalize as ordinary path separators"
         );
+    }
+
+    #[tokio::test]
+    async fn semantic_nofollow_rejects_final_and_ancestor_replacements() -> anyhow::Result<()> {
+        const SENTINEL: &str = "SEMANTIC_NOFOLLOW_EXTERNAL_SENTINEL";
+
+        for external in [false, true] {
+            for replace_ancestor in [false, true] {
+                let workspace = tempfile::tempdir()?;
+                let outside = tempfile::tempdir()?;
+                std::fs::create_dir_all(workspace.path().join("nested"))?;
+                std::fs::create_dir_all(workspace.path().join("replacement"))?;
+                std::fs::write(workspace.path().join("nested/victim.rs"), "fn safe() {}\n")?;
+                std::fs::write(
+                    workspace.path().join("replacement/victim.rs"),
+                    "fn internal_replacement() {}\n",
+                )?;
+                std::fs::write(outside.path().join("victim.rs"), SENTINEL)?;
+
+                let reader = WorkspaceSourceReader::open(workspace.path()).await?;
+                let relative = ValidatedRelativePath::new(Path::new("nested/victim.rs"))
+                    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+
+                if replace_ancestor {
+                    std::fs::rename(
+                        workspace.path().join("nested"),
+                        workspace.path().join("nested-original"),
+                    )?;
+                    let target = if external {
+                        outside.path()
+                    } else {
+                        Path::new("replacement")
+                    };
+                    symlink_dir(target, &workspace.path().join("nested"))?;
+                } else {
+                    std::fs::remove_file(workspace.path().join("nested/victim.rs"))?;
+                    let target = if external {
+                        outside.path().join("victim.rs")
+                    } else {
+                        PathBuf::from("../replacement/victim.rs")
+                    };
+                    symlink_file(&target, &workspace.path().join("nested/victim.rs"))?;
+                }
+
+                match reader.read_blocking(&relative, 1024) {
+                    SourceRead::Rejected(_) => {}
+                    SourceRead::Snapshot(snapshot) => {
+                        assert!(
+                            !snapshot.source.contains(SENTINEL),
+                            "RED:SEMANTIC_NOFOLLOW_OPENED_EXTERNAL_BYTES: \
+                             final={}; external={}",
+                            !replace_ancestor,
+                            external
+                        );
+                        panic!(
+                            "RED:SEMANTIC_NOFOLLOW_ACCEPTED_LINK: final={}; external={}",
+                            !replace_ancestor, external
+                        );
+                    }
+                    SourceRead::Oversized { .. } => {
+                        panic!("replacement link must be rejected, not classified as oversized");
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 }

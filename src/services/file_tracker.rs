@@ -230,6 +230,8 @@ fn compare_disk_to_stored(
 ) -> Vec<FileChange> {
     let mut changes = Vec::new();
     let disk_files = collect_workspace_files(root);
+    #[cfg(test)]
+    run_post_collection_test_hook();
 
     for abs_path in disk_files {
         let rel = match abs_path.strip_prefix(root) {
@@ -367,6 +369,24 @@ fn collect_recursive(root: &Path, dir: &Path, files: &mut Vec<PathBuf>) {
     }
 }
 
+#[cfg(test)]
+type PostCollectionTestHook = Box<dyn FnOnce() + Send>;
+
+#[cfg(test)]
+static POST_COLLECTION_TEST_HOOK: std::sync::Mutex<Option<PostCollectionTestHook>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(test)]
+fn run_post_collection_test_hook() {
+    let hook = match POST_COLLECTION_TEST_HOOK.lock() {
+        Ok(mut guard) => guard.take(),
+        Err(poisoned) => poisoned.into_inner().take(),
+    };
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
 /// Return `true` when a workspace-relative path falls under an excluded prefix.
 pub(crate) fn is_excluded(rel: &str) -> bool {
     DEFAULT_EXCLUDE_PREFIXES.iter().any(|prefix| {
@@ -398,6 +418,90 @@ fn excluded_prefix_matches(rel: &str, stem: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
+
+    #[cfg(unix)]
+    fn symlink_file(source: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(source, link)
+    }
+
+    #[cfg(windows)]
+    fn symlink_file(source: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_file(source, link)
+    }
+
+    #[cfg(unix)]
+    fn symlink_dir(source: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(source, link)
+    }
+
+    #[cfg(windows)]
+    fn symlink_dir(source: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_dir(source, link)
+    }
+
+    fn install_post_collection_hook(hook: impl FnOnce() + Send + 'static) {
+        match POST_COLLECTION_TEST_HOOK.lock() {
+            Ok(mut slot) => *slot = Some(Box::new(hook)),
+            Err(poisoned) => *poisoned.into_inner() = Some(Box::new(hook)),
+        }
+    }
+
+    fn replacement_after_collection_is_not_hashed(replace_ancestor: bool) {
+        const SAFE: &str = "fn safe() {}\n";
+        const SENTINEL: &str = "fn external_tracker_sentinel() {}\n";
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        let outside = tempfile::tempdir().expect("outside");
+        std::fs::create_dir_all(workspace.path().join("nested")).expect("workspace nested");
+        std::fs::create_dir_all(outside.path().join("nested")).expect("outside nested");
+        std::fs::write(workspace.path().join("nested/victim.rs"), SAFE).expect("safe source");
+        std::fs::write(outside.path().join("nested/victim.rs"), SENTINEL)
+            .expect("external sentinel");
+
+        let victim = workspace.path().join("nested/victim.rs");
+        let workspace_path = workspace.path().to_path_buf();
+        let outside_path = outside.path().to_path_buf();
+        install_post_collection_hook(move || {
+            if replace_ancestor {
+                std::fs::rename(
+                    workspace_path.join("nested"),
+                    workspace_path.join("nested-original"),
+                )
+                .expect("move discovered ancestor");
+                symlink_dir(&outside_path.join("nested"), &workspace_path.join("nested"))
+                    .expect("replace ancestor with external link");
+            } else {
+                std::fs::remove_file(&victim).expect("remove discovered file");
+                symlink_file(
+                    &outside_path.join("nested/victim.rs"),
+                    &workspace_path.join("nested/victim.rs"),
+                )
+                .expect("replace final file with external link");
+            }
+        });
+
+        let stored = HashMap::from([(
+            "nested/victim.rs".to_owned(),
+            ("indexed-safe-hash".to_owned(), SAFE.len() as u64),
+        )]);
+        let changes = compare_disk_to_stored(workspace.path(), stored);
+        let external_hash = hex::encode(Sha256::digest(SENTINEL.as_bytes()));
+        let victim_change = changes
+            .iter()
+            .find(|change| change.path == "nested/victim.rs")
+            .expect("replacement must be safely accounted");
+        assert_eq!(victim_change.kind, FileChangeKind::Modified);
+        assert_ne!(
+            victim_change.current_hash.as_deref(),
+            Some(external_hash.as_str()),
+            "RED:TRACKER_HASHED_EXTERNAL_SENTINEL: ancestor={replace_ancestor}"
+        );
+        assert!(
+            victim_change.current_hash.is_none(),
+            "rejected replacement must not publish a current hash: {victim_change:?}"
+        );
+    }
 
     #[test]
     fn excluded_git_dir() {
@@ -438,5 +542,17 @@ mod tests {
     fn not_excluded_dotenv_like_dir_named_targeting() {
         // Only ".env" prefix matches, not arbitrary names starting with 't'.
         assert!(!is_excluded("targeting/foo.rs"));
+    }
+
+    #[test]
+    #[serial]
+    fn final_replacement_after_collection_is_not_hashed() {
+        replacement_after_collection_is_not_hashed(false);
+    }
+
+    #[test]
+    #[serial]
+    fn ancestor_replacement_after_collection_is_not_hashed() {
+        replacement_after_collection_is_not_hashed(true);
     }
 }
