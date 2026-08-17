@@ -223,7 +223,7 @@ pub(crate) async fn unsafe_module_prepass(
                 continue;
             }
             SourceRead::Rejected(error) => {
-                prepass.complete = false;
+                prepass.complete &= !error.is_capability_boundary();
                 prepass.rejected_paths.insert(rel_path.clone());
                 prepass.errors.push(FileError {
                     file: rel_path,
@@ -304,7 +304,7 @@ async fn verify_rust_prepass_snapshots(
             }
         };
         let rel_path = relative_path.as_str();
-        if prepass.oversized_paths.contains_key(rel_path) {
+        if prepass.rejected_paths.contains(rel_path) {
             continue;
         }
         let Some(retained) = prepass.rust_contexts.get(rel_path) else {
