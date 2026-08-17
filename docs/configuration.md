@@ -135,11 +135,53 @@ log_format = "pretty"
 [code_graph]
 max_traversal_depth = 5
 max_traversal_nodes = 50
-supported_languages = ["rust", "python", "typescript", "tsx", "javascript", "go", "csharp"]
+supported_languages = ["rust", "python", "typescript", "tsx", "javascript", "go", "csharp", "hcl"]
 
 [code_graph.embedding]
 token_limit = 512
 ```
+
+## HCL and Terraform-family files
+
+`hcl` is the only language identity for HCL-family indexing. The
+case-sensitive `.hcl`, `.tf`, and `.tfvars` file extensions all map to `hcl`;
+`terraform`, `.HCL`, `.TF`, and `.TFVARS` are not HCL aliases.
+
+`hcl` is included in `code_graph.supported_languages` by default. Zero-config
+startup discovery and explicit sync therefore persist the same canonical
+`hcl` file identity for all three extensions. Created and modified live-sync
+events use the same extension classifier and route to file reindexing after
+the existing watcher containment and exclusion filters. Existing delete and
+rename handling is unchanged.
+
+HCL extraction is structural and syntactic:
+
+| Source form | Graph output |
+|---|---|
+| Top-level block with plain header labels | Structural symbol named `hcl.block.<header-segments>` |
+| Top-level attribute | Structural symbol named `hcl.attribute.<key>` |
+| Plain dotted traversal | File self-reference with a normalized dotted `target_hint` |
+
+For example, `resource "aws_instance" "web" {}` produces
+`hcl.block.resource.aws_instance.web`, while `region = var.region` contributes
+the `var.region` target hint. Repeated traversal hints in one file are
+deduplicated in first-encounter order. Index, splat, template, function, and
+other dynamic expression forms are skipped rather than approximated. HCL
+references never use workspace-global name resolution, even when an unrelated
+symbol has the same name.
+
+Existing containment and resource limits apply to every HCL-family alias:
+
+* Files excluded by ignore rules or outside the workspace are not indexed
+* Files over `code_graph.max_file_size_bytes` are skipped before parsing
+* Malformed source contributes no HCL symbols or references instead of
+  fabricated graph output
+* Parsing reads the supplied source as syntax only and performs no file,
+  environment, network, or subprocess side effects
+
+This support does not evaluate Terraform expressions, plans, or state. It does
+not infer provider, module, type, or schema semantics; download providers or
+modules; or bind HCL traversal hints to global graph targets.
 
 ## `registry.yaml` basics
 
