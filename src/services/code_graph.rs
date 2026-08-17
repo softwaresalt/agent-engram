@@ -38,13 +38,21 @@ type SourceSnapshotCache = HashMap<String, Arc<SourceSnapshot>>;
 #[derive(Clone)]
 struct SourceReadTestHook {
     target: String,
-    reached: std::sync::Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
-    resume: std::sync::Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>>,
+    reached: std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
+    resume: std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>>,
 }
 
 #[cfg(test)]
 tokio::task_local! {
     static SOURCE_READ_TEST_HOOK: SourceReadTestHook;
+}
+
+#[cfg(test)]
+fn take_test_channel<T>(slot: &std::sync::Mutex<Option<T>>) -> Option<T> {
+    match slot.lock() {
+        Ok(mut guard) => guard.take(),
+        Err(poisoned) => poisoned.into_inner().take(),
+    }
 }
 
 #[cfg(test)]
@@ -56,12 +64,12 @@ async fn source_read_test_barrier(relative_path: &str) {
         return;
     }
 
-    let reached = hook.reached.lock().await.take();
+    let reached = take_test_channel(&hook.reached);
     if let Some(reached) = reached {
         let _ = reached.send(());
     }
 
-    let resume = hook.resume.lock().await.take();
+    let resume = take_test_channel(&hook.resume);
     if let Some(resume) = resume {
         let _ = resume.await;
     }
@@ -167,6 +175,8 @@ pub(crate) async fn unsafe_module_prepass(
             }
         };
         let rel_path = relative_path.as_str().to_owned();
+        #[cfg(test)]
+        source_read_test_barrier(&rel_path).await;
         let snapshot = match source_reader
             .read_validated(&relative_path, max_file_size_bytes)
             .await?

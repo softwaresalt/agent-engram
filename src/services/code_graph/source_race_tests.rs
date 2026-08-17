@@ -1,7 +1,9 @@
+use std::future::Future;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::oneshot;
 
 use super::*;
 
@@ -9,9 +11,12 @@ const SAFE_OLD: &str = "resource \"safe\" \"old\" {\n  value = var.old\n}\n";
 const SAFE_NEW: &str = "resource \"safe\" \"new\" {\n  value = var.new\n}\n";
 const EXTERNAL_SENTINEL: &str =
     "resource \"external\" \"secret\" {\n  secret = \"OUTSIDE_SENTINEL\"\n}\n";
+const INTERNAL_SENTINEL: &str =
+    "resource \"internal\" \"replacement\" {\n  secret = \"INTERNAL_SENTINEL\"\n}\n";
+const TEST_WATCHDOG: Duration = Duration::from_secs(30);
 
 struct BarrierControl {
-    hook: SourceReadTestHook,
+    hook: Option<SourceReadTestHook>,
     reached: Option<oneshot::Receiver<()>>,
     resume: Option<oneshot::Sender<()>>,
 }
@@ -21,14 +26,20 @@ impl BarrierControl {
         let (reached_tx, reached) = oneshot::channel();
         let (resume, resume_rx) = oneshot::channel();
         Self {
-            hook: SourceReadTestHook {
+            hook: Some(SourceReadTestHook {
                 target: target.to_owned(),
-                reached: Arc::new(Mutex::new(Some(reached_tx))),
-                resume: Arc::new(Mutex::new(Some(resume_rx))),
-            },
+                reached: Arc::new(std::sync::Mutex::new(Some(reached_tx))),
+                resume: Arc::new(std::sync::Mutex::new(Some(resume_rx))),
+            }),
             reached: Some(reached),
             resume: Some(resume),
         }
+    }
+
+    fn take_hook(&mut self) -> anyhow::Result<SourceReadTestHook> {
+        self.hook
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("source-read barrier hook already consumed"))
     }
 
     async fn wait_until_reached(&mut self) -> anyhow::Result<()> {
@@ -44,6 +55,15 @@ impl BarrierControl {
             let _ = resume.send(());
         }
     }
+}
+
+async fn bounded_join<T, U>(
+    operation: impl Future<Output = T>,
+    controller: impl Future<Output = U>,
+) -> anyhow::Result<(T, U)> {
+    tokio::time::timeout(TEST_WATCHDOG, async { tokio::join!(operation, controller) })
+        .await
+        .map_err(|_| anyhow::anyhow!("RED:SOURCE_BARRIER_WATCHDOG: source-read test deadlocked"))
 }
 
 impl Drop for BarrierControl {
@@ -125,6 +145,51 @@ async fn graph_state(
     Ok((files, classes))
 }
 
+#[derive(Debug, PartialEq)]
+struct PublicationState {
+    files: Vec<CodeFile>,
+    functions: Vec<(String, String, String, String)>,
+    classes: Vec<(String, String, String, String)>,
+    canonical_workspace: Option<canonical::CanonicalWorkspace>,
+    python_marker: Option<String>,
+    generation_marker: Option<String>,
+}
+
+async fn publication_state(data_dir: &Path, branch: &str) -> anyhow::Result<PublicationState> {
+    let db = connect_db(data_dir, branch).await?;
+    let queries = CodeGraphQueries::new(db);
+    let files = queries.list_code_files().await?;
+    let mut functions: Vec<_> = queries
+        .all_functions()
+        .await?
+        .into_iter()
+        .map(|function| {
+            (
+                function.id,
+                function.name,
+                function.file_path,
+                function.body_hash,
+            )
+        })
+        .collect();
+    functions.sort();
+    let mut classes: Vec<_> = queries
+        .all_classes()
+        .await?
+        .into_iter()
+        .map(|class| (class.id, class.name, class.file_path, class.body_hash))
+        .collect();
+    classes.sort();
+    Ok(PublicationState {
+        files,
+        functions,
+        classes,
+        canonical_workspace: queries.load_index_canonical_workspace_snapshot().await?,
+        python_marker: queries.python_extraction_version()?,
+        generation_marker: queries.code_graph_extraction_generation()?,
+    })
+}
+
 fn assert_external_absent(files: &[CodeFile], classes: &[String], marker: &str) {
     assert!(
         files.iter().all(|file| {
@@ -150,19 +215,21 @@ async fn full_index_rejects_file_replaced_by_external_link_after_discovery() -> 
     let (data_dir, branch) = db_identity(workspace.path(), "final-file");
     let config = hcl_config();
     let mut barrier = BarrierControl::new("victim.tf");
-    let hook = barrier.hook.clone();
+    let hook = barrier.take_hook()?;
+    let workspace_path = workspace.path().to_path_buf();
+    let outside_path = outside.path().to_path_buf();
 
     let operation = SOURCE_READ_TEST_HOOK.scope(
         hook,
         index_workspace(workspace.path(), &data_dir, &branch, &config, true),
     );
-    let controller = async {
+    let controller = async move {
         barrier.wait_until_reached().await?;
-        std::fs::remove_file(workspace.path().join("victim.tf"))?;
+        std::fs::remove_file(workspace_path.join("victim.tf"))?;
         require_link(
             symlink_file(
-                &outside.path().join("secret.tfvars"),
-                &workspace.path().join("victim.tf"),
+                &outside_path.join("secret.tfvars"),
+                &workspace_path.join("victim.tf"),
             ),
             "file-link",
         )?;
@@ -170,7 +237,7 @@ async fn full_index_rejects_file_replaced_by_external_link_after_discovery() -> 
         Ok::<(), anyhow::Error>(())
     };
 
-    let (indexed, controlled) = tokio::join!(operation, controller);
+    let (indexed, controlled) = bounded_join(operation, controller).await?;
     controlled?;
     indexed?;
     let (files, classes) = graph_state(&data_dir, &branch).await?;
@@ -180,6 +247,350 @@ async fn full_index_rejects_file_replaced_by_external_link_after_discovery() -> 
             .iter()
             .any(|name| name == "hcl.block.service.control")
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn sync_rejects_file_replaced_by_internal_link_after_discovery() -> anyhow::Result<()> {
+    let workspace = tempfile::tempdir()?;
+    write_source(workspace.path(), "victim.tf", SAFE_OLD)?;
+    write_source(workspace.path(), "replacement.payload", INTERNAL_SENTINEL)?;
+    let (data_dir, branch) = db_identity(workspace.path(), "internal-final");
+    let config = hcl_config();
+    sync_workspace(workspace.path(), &data_dir, &branch, &config).await?;
+    let before = publication_state(&data_dir, &branch).await?;
+    let mut barrier = BarrierControl::new("victim.tf");
+    let hook = barrier.take_hook()?;
+    let workspace_path = workspace.path().to_path_buf();
+
+    let operation = SOURCE_READ_TEST_HOOK.scope(
+        hook,
+        sync_workspace(workspace.path(), &data_dir, &branch, &config),
+    );
+    let controller = async move {
+        barrier.wait_until_reached().await?;
+        std::fs::remove_file(workspace_path.join("victim.tf"))?;
+        require_link(
+            symlink_file(
+                Path::new("replacement.payload"),
+                &workspace_path.join("victim.tf"),
+            ),
+            "internal-file-link",
+        )?;
+        barrier.release();
+        Ok::<(), anyhow::Error>(())
+    };
+
+    let (synced, controlled) = bounded_join(operation, controller).await?;
+    controlled?;
+    let result = synced?;
+    assert!(
+        result.errors.iter().any(|error| error.file == "victim.tf"),
+        "RED:SOURCE_INTERNAL_FINAL_ACCEPTED: internal final link was not rejected: {result:?}"
+    );
+    assert_eq!(
+        publication_state(&data_dir, &branch).await?,
+        before,
+        "RED:SOURCE_INTERNAL_FINAL_LKG: internal final link changed graph/publication state"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn sync_rejects_ancestor_replaced_by_internal_link_after_discovery() -> anyhow::Result<()> {
+    let workspace = tempfile::tempdir()?;
+    write_source(workspace.path(), "nested/victim.tf", SAFE_OLD)?;
+    let (data_dir, branch) = db_identity(workspace.path(), "internal-ancestor");
+    let config = hcl_config();
+    sync_workspace(workspace.path(), &data_dir, &branch, &config).await?;
+    let before = publication_state(&data_dir, &branch).await?;
+    let mut barrier = BarrierControl::new("nested/victim.tf");
+    let hook = barrier.take_hook()?;
+    let workspace_path = workspace.path().to_path_buf();
+
+    let operation = SOURCE_READ_TEST_HOOK.scope(
+        hook,
+        sync_workspace(workspace.path(), &data_dir, &branch, &config),
+    );
+    let controller = async move {
+        barrier.wait_until_reached().await?;
+        std::fs::rename(
+            workspace_path.join("nested"),
+            workspace_path.join("nested-original"),
+        )?;
+        write_source(&workspace_path, "replacement/victim.tf", INTERNAL_SENTINEL)?;
+        require_link(
+            symlink_dir(Path::new("replacement"), &workspace_path.join("nested")),
+            "internal-directory-link",
+        )?;
+        barrier.release();
+        Ok::<(), anyhow::Error>(())
+    };
+
+    let (synced, controlled) = bounded_join(operation, controller).await?;
+    controlled?;
+    let result = synced?;
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|error| error.file == "nested/victim.tf"),
+        "RED:SOURCE_INTERNAL_ANCESTOR_ACCEPTED: internal ancestor link was not rejected: {result:?}"
+    );
+    assert_eq!(
+        publication_state(&data_dir, &branch).await?,
+        before,
+        "RED:SOURCE_INTERNAL_ANCESTOR_LKG: internal ancestor link changed graph/publication state"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn replaced_ignore_links_cannot_hide_and_delete_indexed_sources() -> anyhow::Result<()> {
+    for ignore_name in [".gitignore", ".ignore"] {
+        let workspace = tempfile::tempdir()?;
+        write_source(workspace.path(), "victim.tf", SAFE_OLD)?;
+        write_source(workspace.path(), ignore_name, "")?;
+        write_source(workspace.path(), "ignore-rules.payload", "victim.tf\n")?;
+        let (data_dir, branch) = db_identity(workspace.path(), ignore_name);
+        let config = hcl_config();
+        sync_workspace(workspace.path(), &data_dir, &branch, &config).await?;
+        let before = publication_state(&data_dir, &branch).await?;
+
+        std::fs::remove_file(workspace.path().join(ignore_name))?;
+        require_link(
+            symlink_file(
+                Path::new("ignore-rules.payload"),
+                &workspace.path().join(ignore_name),
+            ),
+            "ignore-file-link",
+        )?;
+        let result = sync_workspace(workspace.path(), &data_dir, &branch, &config).await?;
+
+        assert_eq!(
+            publication_state(&data_dir, &branch).await?,
+            before,
+            "RED:IGNORE_LINK_DELETED_LKG: {ignore_name} link hid and deleted victim.tf"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|error| error.file.contains(ignore_name)),
+            "RED:IGNORE_LINK_AMBIENT_READ: {ignore_name} link was not rejected: {result:?}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn regular_root_and_nested_ignore_rules_remain_authoritative() -> anyhow::Result<()> {
+    let workspace = tempfile::tempdir()?;
+    write_source(workspace.path(), ".gitignore", "root-hidden.tf\n")?;
+    write_source(workspace.path(), "root-hidden.tf", INTERNAL_SENTINEL)?;
+    write_source(workspace.path(), "keep.tf", SAFE_OLD)?;
+    write_source(workspace.path(), "nested/.ignore", "hidden.tf\n")?;
+    write_source(workspace.path(), "nested/hidden.tf", INTERNAL_SENTINEL)?;
+    write_source(workspace.path(), "nested/keep.tf", SAFE_NEW)?;
+    let (data_dir, branch) = db_identity(workspace.path(), "regular-ignore");
+    let result = sync_workspace(workspace.path(), &data_dir, &branch, &hcl_config()).await?;
+
+    assert!(result.errors.is_empty(), "regular ignores must be readable");
+    let (files, _) = graph_state(&data_dir, &branch).await?;
+    let paths: Vec<_> = files.iter().map(|file| file.path.as_str()).collect();
+    assert_eq!(paths, ["keep.tf", "nested/keep.tf"]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn rejected_manifest_aborts_forced_index_before_publication_mutation() -> anyhow::Result<()> {
+    let workspace = tempfile::tempdir()?;
+    write_source(
+        workspace.path(),
+        "Cargo.toml",
+        "[package]\nname = \"safe\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )?;
+    write_source(workspace.path(), "src/lib.rs", "pub fn safe() {}\n")?;
+    write_source(
+        workspace.path(),
+        "alternate-manifest.payload",
+        "[package]\nname = \"replacement\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )?;
+    let (data_dir, branch) = db_identity(workspace.path(), "manifest-reject");
+    let config = CodeGraphConfig::default();
+    index_workspace(workspace.path(), &data_dir, &branch, &config, true).await?;
+    let before = publication_state(&data_dir, &branch).await?;
+
+    std::fs::remove_file(workspace.path().join("Cargo.toml"))?;
+    require_link(
+        symlink_file(
+            Path::new("alternate-manifest.payload"),
+            &workspace.path().join("Cargo.toml"),
+        ),
+        "manifest-file-link",
+    )?;
+    let error = index_workspace(workspace.path(), &data_dir, &branch, &config, true)
+        .await
+        .expect_err("RED:MANIFEST_REJECTION_SWALLOWED: rejected manifest must abort");
+    assert!(
+        error.to_string().contains("Cargo.toml"),
+        "manifest rejection must identify Cargo.toml: {error}"
+    );
+    assert_eq!(
+        publication_state(&data_dir, &branch).await?,
+        before,
+        "RED:MANIFEST_REJECTION_MUTATED: rejected manifest changed graph/snapshot/markers"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn rejected_rust_prepass_aborts_forced_index_before_publication_mutation()
+-> anyhow::Result<()> {
+    let workspace = tempfile::tempdir()?;
+    write_source(
+        workspace.path(),
+        "Cargo.toml",
+        "[package]\nname = \"safe\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )?;
+    write_source(workspace.path(), "src/lib.rs", "pub fn safe() {}\n")?;
+    write_source(
+        workspace.path(),
+        "replacement.payload",
+        "#[path = \"redirect.rs\"]\npub mod unsafe_replacement;\n",
+    )?;
+    let (data_dir, branch) = db_identity(workspace.path(), "prepass-reject");
+    let config = CodeGraphConfig::default();
+    index_workspace(workspace.path(), &data_dir, &branch, &config, true).await?;
+    let before = publication_state(&data_dir, &branch).await?;
+    let mut barrier = BarrierControl::new("src/lib.rs");
+    let hook = barrier.take_hook()?;
+    let workspace_path = workspace.path().to_path_buf();
+
+    let operation = SOURCE_READ_TEST_HOOK.scope(
+        hook,
+        index_workspace(workspace.path(), &data_dir, &branch, &config, true),
+    );
+    let controller = async move {
+        barrier.wait_until_reached().await?;
+        std::fs::remove_file(workspace_path.join("src/lib.rs"))?;
+        require_link(
+            symlink_file(
+                Path::new("../replacement.payload"),
+                &workspace_path.join("src/lib.rs"),
+            ),
+            "Rust-prepass-file-link",
+        )?;
+        barrier.release();
+        Ok::<(), anyhow::Error>(())
+    };
+    let (indexed, controlled) = bounded_join(operation, controller).await?;
+    controlled?;
+    let error =
+        indexed.expect_err("RED:RUST_PREPASS_REJECTION_SWALLOWED: rejected prepass must abort");
+    assert!(
+        error.to_string().contains("src/lib.rs"),
+        "prepass rejection must identify src/lib.rs: {error}"
+    );
+    assert_eq!(
+        publication_state(&data_dir, &branch).await?,
+        before,
+        "RED:RUST_PREPASS_MUTATED: rejected prepass changed graph/snapshot/markers"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn blocked_prefix_does_not_suppress_unrelated_authoritative_deletion() -> anyhow::Result<()> {
+    let workspace = tempfile::tempdir()?;
+    let outside = tempfile::tempdir()?;
+    write_source(workspace.path(), "blocked/victim.tf", SAFE_OLD)?;
+    write_source(
+        workspace.path(),
+        "authoritatively-deleted.tf",
+        "resource \"deleted\" \"gone\" {}\n",
+    )?;
+    let (data_dir, branch) = db_identity(workspace.path(), "localized-block");
+    let config = hcl_config();
+    sync_workspace(workspace.path(), &data_dir, &branch, &config).await?;
+
+    std::fs::rename(
+        workspace.path().join("blocked"),
+        outside.path().join("blocked-target"),
+    )?;
+    require_link(
+        symlink_dir(
+            &outside.path().join("blocked-target"),
+            &workspace.path().join("blocked"),
+        ),
+        "blocked-prefix-link",
+    )?;
+    std::fs::remove_file(workspace.path().join("authoritatively-deleted.tf"))?;
+    let result = sync_workspace(workspace.path(), &data_dir, &branch, &config).await?;
+    let (files, classes) = graph_state(&data_dir, &branch).await?;
+
+    assert!(
+        files.iter().any(|file| file.path == "blocked/victim.tf"),
+        "blocked prefix must retain its prior graph: {files:?}"
+    );
+    assert!(
+        files
+            .iter()
+            .all(|file| file.path != "authoritatively-deleted.tf"),
+        "RED:LOCAL_BLOCK_SUPPRESSED_GLOBAL_DELETE: unrelated authoritative deletion survived: \
+         {files:?}; result={result:?}"
+    );
+    assert!(
+        classes
+            .iter()
+            .any(|name| name == "hcl.block.resource.safe.old")
+    );
+    assert!(
+        classes
+            .iter()
+            .all(|name| name != "hcl.block.resource.deleted.gone")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn barrier_observes_operation_early_exit_without_deadlock() -> anyhow::Result<()> {
+    let mut barrier = BarrierControl::new("never-reached.tf");
+    let hook = barrier.take_hook()?;
+    let operation = SOURCE_READ_TEST_HOOK.scope(hook, async {
+        Err::<(), anyhow::Error>(anyhow::anyhow!("intentional operation early exit"))
+    });
+    let controller = async move {
+        let closed = barrier.wait_until_reached().await;
+        assert!(
+            closed.is_err(),
+            "operation exit must close the barrier reached channel"
+        );
+        Ok::<(), anyhow::Error>(())
+    };
+
+    let (operation_result, controller_result) = bounded_join(operation, controller).await?;
+    assert!(operation_result.is_err());
+    controller_result?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn barrier_controller_error_resumes_waiting_operation() -> anyhow::Result<()> {
+    let mut barrier = BarrierControl::new("victim.tf");
+    let hook = barrier.take_hook()?;
+    let operation = SOURCE_READ_TEST_HOOK.scope(hook, async {
+        source_read_test_barrier("victim.tf").await;
+        Ok::<(), anyhow::Error>(())
+    });
+    let controller = async move {
+        barrier.wait_until_reached().await?;
+        Err::<(), anyhow::Error>(anyhow::anyhow!("intentional controller early exit"))
+    };
+
+    let (operation_result, controller_result) = bounded_join(operation, controller).await?;
+    operation_result?;
+    assert!(controller_result.is_err());
     Ok(())
 }
 
@@ -194,27 +605,29 @@ async fn cold_sync_rejects_ancestor_replaced_by_external_link_after_discovery() 
     let (data_dir, branch) = db_identity(workspace.path(), "ancestor");
     let config = hcl_config();
     let mut barrier = BarrierControl::new("nested/victim.tf");
-    let hook = barrier.hook.clone();
+    let hook = barrier.take_hook()?;
+    let workspace_path = workspace.path().to_path_buf();
+    let outside_path = outside.path().to_path_buf();
 
     let operation = SOURCE_READ_TEST_HOOK.scope(
         hook,
         sync_workspace(workspace.path(), &data_dir, &branch, &config),
     );
-    let controller = async {
+    let controller = async move {
         barrier.wait_until_reached().await?;
         std::fs::rename(
-            workspace.path().join("nested"),
-            workspace.path().join("nested-original"),
+            workspace_path.join("nested"),
+            workspace_path.join("nested-original"),
         )?;
         require_link(
-            symlink_dir(outside.path(), &workspace.path().join("nested")),
+            symlink_dir(&outside_path, &workspace_path.join("nested")),
             "directory-link",
         )?;
         barrier.release();
         Ok::<(), anyhow::Error>(())
     };
 
-    let (synced, controlled) = tokio::join!(operation, controller);
+    let (synced, controlled) = bounded_join(operation, controller).await?;
     controlled?;
     synced?;
     let (files, classes) = graph_state(&data_dir, &branch).await?;
@@ -239,19 +652,21 @@ async fn explicit_sync_rejection_retains_last_known_good_graph() -> anyhow::Resu
     write_source(workspace.path(), "victim.tf", SAFE_NEW)?;
     let before = graph_state(&data_dir, &branch).await?;
     let mut barrier = BarrierControl::new("victim.tf");
-    let hook = barrier.hook.clone();
+    let hook = barrier.take_hook()?;
+    let workspace_path = workspace.path().to_path_buf();
+    let outside_path = outside.path().to_path_buf();
 
     let operation = SOURCE_READ_TEST_HOOK.scope(
         hook,
         sync_workspace(workspace.path(), &data_dir, &branch, &config),
     );
-    let controller = async {
+    let controller = async move {
         barrier.wait_until_reached().await?;
-        std::fs::remove_file(workspace.path().join("victim.tf"))?;
+        std::fs::remove_file(workspace_path.join("victim.tf"))?;
         require_link(
             symlink_file(
-                &outside.path().join("secret.tf"),
-                &workspace.path().join("victim.tf"),
+                &outside_path.join("secret.tf"),
+                &workspace_path.join("victim.tf"),
             ),
             "file-link",
         )?;
@@ -259,7 +674,7 @@ async fn explicit_sync_rejection_retains_last_known_good_graph() -> anyhow::Resu
         Ok::<(), anyhow::Error>(())
     };
 
-    let (synced, controlled) = tokio::join!(operation, controller);
+    let (synced, controlled) = bounded_join(operation, controller).await?;
     controlled?;
     synced?;
     let after = graph_state(&data_dir, &branch).await?;
@@ -279,24 +694,25 @@ async fn regular_file_controls_remain_indexable() -> anyhow::Result<()> {
     let (data_dir, branch) = db_identity(workspace.path(), "regular");
     let config = hcl_config();
     let mut barrier = BarrierControl::new("victim.tf");
-    let hook = barrier.hook.clone();
+    let hook = barrier.take_hook()?;
+    let workspace_path = workspace.path().to_path_buf();
 
     let operation = SOURCE_READ_TEST_HOOK.scope(
         hook,
         index_workspace(workspace.path(), &data_dir, &branch, &config, true),
     );
-    let controller = async {
+    let controller = async move {
         barrier.wait_until_reached().await?;
-        std::fs::remove_file(workspace.path().join("victim.tf"))?;
+        std::fs::remove_file(workspace_path.join("victim.tf"))?;
         std::fs::rename(
-            workspace.path().join("replacement.tmp"),
-            workspace.path().join("victim.tf"),
+            workspace_path.join("replacement.tmp"),
+            workspace_path.join("victim.tf"),
         )?;
         barrier.release();
         Ok::<(), anyhow::Error>(())
     };
 
-    let (indexed, controlled) = tokio::join!(operation, controller);
+    let (indexed, controlled) = bounded_join(operation, controller).await?;
     controlled?;
     indexed?;
     let (_, classes) = graph_state(&data_dir, &branch).await?;
