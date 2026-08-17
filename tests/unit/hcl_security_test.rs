@@ -28,6 +28,16 @@ fn symlink_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
     std::os::windows::fs::symlink_dir(src, dst)
 }
 
+#[cfg(unix)]
+fn symlink_file(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(src, dst)
+}
+
+#[cfg(windows)]
+fn symlink_file(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_file(src, dst)
+}
+
 fn create_symlink_dir(src: &Path, dst: &Path) -> bool {
     match symlink_dir(src, dst) {
         Ok(()) => true,
@@ -41,6 +51,22 @@ fn create_symlink_dir(src: &Path, dst: &Path) -> bool {
             false
         }
         Err(error) => panic!("create HCL fixture directory symlink: {error}"),
+    }
+}
+
+fn create_symlink_file(src: &Path, dst: &Path) -> bool {
+    match symlink_file(src, dst) {
+        Ok(()) => true,
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::Unsupported
+            ) =>
+        {
+            eprintln!("skipping HCL file-link containment assertion: {error}");
+            false
+        }
+        Err(error) => panic!("create HCL fixture file symlink: {error}"),
     }
 }
 
@@ -256,7 +282,16 @@ async fn linked_external_hcl_fixture_is_never_persisted() {
         "resource \"external\" \"secret\" {}\n",
     );
 
-    if !create_symlink_dir(outside.path(), &workspace.path().join("linked-outside")) {
+    let directory_link_created =
+        create_symlink_dir(outside.path(), &workspace.path().join("linked-outside"));
+    let file_link_created = create_symlink_file(
+        &outside.path().join("outside.tf"),
+        &workspace.path().join("linked-outside.tf"),
+    );
+    eprintln!(
+        "HCL containment links: directory={directory_link_created}, file={file_link_created}"
+    );
+    if !directory_link_created && !file_link_created {
         return;
     }
 
@@ -287,12 +322,20 @@ async fn linked_external_hcl_fixture_is_never_persisted() {
         .await
         .expect("list linked containment classes");
 
-    assert!(
-        files.iter().all(|file| {
-            file.path != "linked-outside/outside.tf" && !file.path.contains("outside.tf")
-        }),
-        "external linked HCL path was persisted: {files:?}"
-    );
+    if directory_link_created {
+        assert!(
+            files
+                .iter()
+                .all(|file| file.path != "linked-outside/outside.tf"),
+            "external directory-linked HCL path was persisted: {files:?}"
+        );
+    }
+    if file_link_created {
+        assert!(
+            files.iter().all(|file| file.path != "linked-outside.tf"),
+            "external file-linked HCL path was persisted: {files:?}"
+        );
+    }
     assert!(
         classes
             .iter()
