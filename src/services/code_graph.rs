@@ -3425,24 +3425,11 @@ pub(crate) fn discover_files(ws_path: &Path, config: &CodeGraphConfig) -> Vec<st
 /// Unrecognized extensions fall through to the raw extension; a path with no
 /// extension is `"unknown"`.
 pub(crate) fn language_from_path(path: &Path) -> String {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .map(|ext| match ext {
-            "rs" => "rust",
-            "py" => "python",
-            "js" | "jsx" => "javascript",
-            "ts" => "typescript",
-            "tsx" => "tsx",
-            "go" => "go",
-            "cs" => "csharp",
-            "c" | "h" => "c",
-            "cpp" | "cc" | "cxx" | "hpp" | "hh" | "hxx" | "h++" => "cpp",
-            "swift" => "swift",
-            "sql" => "sql",
-            "kt" | "kts" => "kotlin",
-            "md" => "markdown",
-            _ => ext,
-        })
+    Language::from_path(path)
+        .map_or_else(
+            || path.extension().and_then(|extension| extension.to_str()),
+            |language| Some(language.as_str()),
+        )
         .unwrap_or("unknown")
         .to_owned()
 }
