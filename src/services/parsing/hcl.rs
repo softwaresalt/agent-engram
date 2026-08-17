@@ -188,7 +188,14 @@ fn extract_attribute_name(node: Node<'_>, source: &str) -> Option<String> {
 fn extract_plain_label(node: Node<'_>, source: &str) -> Option<String> {
     let label = super::node_text(node, source);
     let label = label.strip_prefix('"')?.strip_suffix('"')?;
-    (!label.is_empty() && !label.contains("${") && !label.contains("%{")).then(|| label.to_owned())
+    is_supported_plain_label(label).then(|| label.to_owned())
+}
+
+fn is_supported_plain_label(label: &str) -> bool {
+    !label.is_empty()
+        && label
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
 }
 
 fn extract_class(name: String, node: Node<'_>, source: &str) -> ExtractedClass {
