@@ -46,6 +46,8 @@ opentelemetry_sdk = { version = "0.26", optional = true, features = ["rt-tokio"]
 opentelemetry-otlp = { version = "0.26", optional = true, features = ["grpc-tonic"] }
 thiserror = "1"
 anyhow = "1"
+cap-std = "=4.0.2"
+cap-fs-ext = "=4.0.2"
 uuid = { version = "1", features = ["v4"] }
 similar = "2"
 chrono = { version = "0.4", features = ["serde"] }
@@ -76,6 +78,12 @@ globset = "0.4"
 serde_yaml = "0.9"
 git2 = { version = "0.19", optional = true, default-features = false }
 powerbi-tmdl-parser = { path = "crates/powerbi-tmdl-parser" }
+tree-sitter-hcl = "=1.1.0"
+
+[target.'cfg(unix)'.dependencies]
+# Already locked transitively through cap-std. Used only for portable O_NOFOLLOW,
+# O_DIRECTORY, and O_NONBLOCK constants on capability-relative opens.
+rustix = { version = "=1.1.3", features = ["fs"] }
 
 [features]
 default = ["embeddings", "cozo-backend"]
@@ -1005,6 +1013,32 @@ required-features = ["cozo-backend"]
 name = "integration_staged_call_restart_resolution"
 path = "tests/integration/staged_call_restart_resolution_test.rs"
 required-features = ["cozo-backend", "embeddings"]
+
+# ── 121-F: Shared HCL parser ─────────────────────────────────────────────────
+
+[[test]]
+name = "hcl_parser_contract_test"
+path = "tests/contract/hcl_parser_contract_test.rs"
+
+[[test]]
+name = "hcl_parsing_test"
+path = "tests/unit/hcl_parsing_test.rs"
+
+[[test]]
+name = "hcl_routing_test"
+path = "tests/unit/hcl_routing_test.rs"
+
+[[test]]
+name = "hcl_security_test"
+path = "tests/unit/hcl_security_test.rs"
+
+[[test]]
+name = "hcl_indexing_test"
+path = "tests/integration/hcl_indexing_test.rs"
+
+[[test]]
+name = "hcl_grammar_abi_test"
+path = "tests/unit/hcl_grammar_abi_test.rs"
 
 [[example]]
 name = "cozo_api_spike"

@@ -1,0 +1,460 @@
+//! RED security and resource harness for untrusted HCL input (121.004-T).
+
+use std::collections::BTreeMap;
+use std::path::Path;
+use std::time::{Duration, Instant};
+
+use cozo::{DataValue, ScriptMutability};
+use engram::db::connect_db;
+use engram::db::cozo_backend::SchemaTarget;
+use engram::db::queries::CodeGraphQueries;
+use engram::models::config::CodeGraphConfig;
+use engram::services::code_graph;
+use engram::services::parsing::{ExtractedEdge, Language, parse_source};
+
+#[allow(dead_code)]
+#[path = "../fixtures/hcl_parser_cases.rs"]
+mod hcl_parser_cases;
+
+use hcl_parser_cases::{MALFORMED, TRAVERSALS};
+
+#[cfg(unix)]
+fn symlink_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(src, dst)
+}
+
+#[cfg(windows)]
+fn symlink_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_dir(src, dst)
+}
+
+#[cfg(unix)]
+fn symlink_file(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(src, dst)
+}
+
+#[cfg(windows)]
+fn symlink_file(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_file(src, dst)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LinkInstall {
+    Installed,
+    #[cfg(windows)]
+    UnsupportedPrivilege,
+}
+
+fn create_symlink_dir(src: &Path, dst: &Path) -> LinkInstall {
+    match symlink_dir(src, dst) {
+        Ok(()) => LinkInstall::Installed,
+        #[cfg(windows)]
+        Err(error) if error.raw_os_error() == Some(1314) => LinkInstall::UnsupportedPrivilege,
+        Err(error) => panic!("create HCL fixture directory symlink: {error}"),
+    }
+}
+
+fn create_symlink_file(src: &Path, dst: &Path) -> LinkInstall {
+    match symlink_file(src, dst) {
+        Ok(()) => LinkInstall::Installed,
+        #[cfg(windows)]
+        Err(error) if error.raw_os_error() == Some(1314) => LinkInstall::UnsupportedPrivilege,
+        Err(error) => panic!("create HCL fixture file symlink: {error}"),
+    }
+}
+
+fn require_security_link(result: LinkInstall, kind: &str) -> bool {
+    #[cfg(not(windows))]
+    let _ = kind;
+
+    match result {
+        LinkInstall::Installed => true,
+        #[cfg(windows)]
+        LinkInstall::UnsupportedPrivilege => {
+            panic!(
+                "Windows {kind} containment coverage requires symlink privilege \
+                 (ERROR_PRIVILEGE_NOT_HELD=1314); this is not a passing skip"
+            )
+        }
+    }
+}
+
+fn write_file(root: &Path, relative: &str, contents: &str) {
+    let path = root.join(relative);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("create fixture parent");
+    }
+    std::fs::write(path, contents).expect("write security fixture");
+}
+
+fn hcl_language(marker: &str) -> Language {
+    let language = Language::try_from("hcl");
+    assert!(
+        language.is_ok(),
+        "RED:{marker} secure HCL parser boundary is unavailable: {language:?}"
+    );
+    language.expect("asserted HCL support")
+}
+
+fn references(result: &engram::services::parsing::ParseResult) -> Vec<&str> {
+    result
+        .edges
+        .iter()
+        .filter_map(|edge| match edge {
+            ExtractedEdge::References { target, .. } => Some(target.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn directory_entries(path: &Path) -> Vec<String> {
+    let mut entries: Vec<String> = std::fs::read_dir(path)
+        .expect("read side-effect directory")
+        .map(|entry| {
+            entry
+                .expect("read side-effect entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    entries.sort();
+    entries
+}
+
+#[tokio::test]
+async fn oversized_hcl_reuses_the_existing_pre_parse_file_guard() {
+    let workspace = tempfile::tempdir().expect("create isolated workspace");
+    write_file(
+        workspace.path(),
+        "oversized.hcl",
+        &format!("payload = \"{}\"\n", "x".repeat(256)),
+    );
+    let config = CodeGraphConfig {
+        max_file_size_bytes: 32,
+        supported_languages: vec!["hcl".to_owned()],
+        ..CodeGraphConfig::default()
+    };
+
+    let result = code_graph::index_workspace(
+        workspace.path(),
+        &workspace.path().join(".engram"),
+        "hcl-oversize-red",
+        &config,
+        true,
+    )
+    .await
+    .expect("oversize policy must return a bounded index result");
+
+    assert_eq!(result.files_parsed, 0);
+    assert_eq!(result.oversized_files_skipped, 1);
+    assert!(result.errors.is_empty());
+    let _ = hcl_language("HCL_OVERSIZE_GUARD_PARSER_MISSING");
+}
+
+#[test]
+fn deeply_nested_malformed_and_dynamic_inputs_are_bounded_and_conservative() {
+    let language = hcl_language("HCL_BOUNDED_PARSE_MISSING");
+    let nested = format!(
+        "locals {{\n  nested = {}0{}\n}}\n",
+        "[".repeat(256),
+        "]".repeat(256)
+    );
+
+    let started = Instant::now();
+    let nested_result = parse_source(&nested, language).expect("deep HCL input stays parseable");
+    let traversal_result =
+        parse_source(TRAVERSALS.source, language).expect("dynamic HCL input stays parseable");
+    let malformed_result =
+        parse_source(MALFORMED.source, language).expect("malformed HCL input stays bounded");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "bounded HCL fixtures exceeded the two-second unit budget"
+    );
+
+    assert!(references(&nested_result).is_empty());
+    assert_eq!(references(&traversal_result), TRAVERSALS.references);
+    assert!(
+        malformed_result.symbols.is_empty() && malformed_result.edges.is_empty(),
+        "malformed HCL must not fabricate graph output: {malformed_result:?}"
+    );
+}
+
+#[test]
+fn deeply_nested_valid_blocks_fail_closed_before_recursive_stack_growth() {
+    const NESTING_DEPTH: usize = 96;
+
+    let language = hcl_language("HCL_DEEP_BLOCK_BUDGET_MISSING");
+    let source = format!(
+        "root \"visible\" {{\n{}value = deep.reference\n{}}}\n",
+        "nested {\n".repeat(NESTING_DEPTH),
+        "}\n".repeat(NESTING_DEPTH)
+    );
+
+    let started = Instant::now();
+    let parsed = parse_source(&source, language).expect("deep valid HCL stays bounded");
+
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "deep valid HCL exceeded the two-second unit budget"
+    );
+    assert!(
+        parsed.symbols.is_empty() && parsed.edges.is_empty(),
+        "deep valid HCL must fail closed before an unbounded tree walk: {parsed:?}"
+    );
+}
+
+#[tokio::test]
+async fn ignored_and_outside_aliases_stay_contained_and_parsing_has_no_side_effects() {
+    let workspace = tempfile::tempdir().expect("create contained workspace");
+    let outside = tempfile::tempdir().expect("create outside control directory");
+    write_file(workspace.path(), ".gitignore", "ignored.tf\n");
+    write_file(
+        workspace.path(),
+        "ignored.tf",
+        "resource \"ignored\" \"inside\" {}\n",
+    );
+    write_file(workspace.path(), "visible.hcl", "service \"visible\" {}\n");
+    write_file(
+        outside.path(),
+        "outside.tfvars",
+        "escaped = \"must-not-index\"\n",
+    );
+
+    let config = CodeGraphConfig {
+        supported_languages: vec!["hcl".to_owned()],
+        ..CodeGraphConfig::default()
+    };
+    let data_dir = workspace.path().join(".engram");
+    let branch = "hcl-containment-red";
+    let _ = code_graph::index_workspace(workspace.path(), &data_dir, branch, &config, true)
+        .await
+        .expect("contained index returns a bounded result");
+
+    let db = connect_db(&data_dir, branch)
+        .await
+        .expect("connect graph DB");
+    let files = CodeGraphQueries::new(db)
+        .list_code_files()
+        .await
+        .expect("list contained files");
+    assert!(
+        files
+            .iter()
+            .all(|file| file.path != "ignored.tf" && !file.path.contains("outside.tfvars")),
+        "ignored or outside HCL alias escaped containment: {files:?}"
+    );
+
+    let language = hcl_language("HCL_SIDE_EFFECT_BOUNDARY_MISSING");
+    let side_effects = tempfile::tempdir().expect("create side-effect control directory");
+    let sentinel = side_effects.path().join("sentinel.txt");
+    std::fs::write(&sentinel, "unchanged").expect("write sentinel");
+    let before_entries = directory_entries(side_effects.path());
+    let before_environment: BTreeMap<_, _> = std::env::vars_os().collect();
+    let source = format!(
+        r#"
+module "remote" {{
+  source = "https://example.invalid/module.zip"
+}}
+
+resource "null_resource" "probe" {{
+  input = file("{}")
+  environment = env.SECRET_VALUE
+  provisioner "local-exec" {{
+    command = "write executed.txt"
+  }}
+}}
+"#,
+        sentinel.display().to_string().replace('\\', "/")
+    );
+
+    let _ = parse_source(&source, language).expect("parse side-effect-shaped HCL as syntax only");
+    assert_eq!(
+        std::fs::read_to_string(&sentinel).expect("read sentinel"),
+        "unchanged"
+    );
+    assert_eq!(directory_entries(side_effects.path()), before_entries);
+    assert_eq!(
+        std::env::vars_os().collect::<BTreeMap<_, _>>(),
+        before_environment
+    );
+}
+
+#[tokio::test]
+async fn linked_external_hcl_fixture_is_never_persisted() {
+    let workspace = tempfile::tempdir().expect("create linked-fixture workspace");
+    let outside = tempfile::tempdir().expect("create external HCL fixture");
+    write_file(workspace.path(), "visible.hcl", "service \"visible\" {}\n");
+    write_file(
+        outside.path(),
+        "outside.tf",
+        "resource \"external\" \"secret\" {}\n",
+    );
+
+    let directory_link_created = require_security_link(
+        create_symlink_dir(outside.path(), &workspace.path().join("linked-outside")),
+        "directory-link",
+    );
+    let file_link_created = require_security_link(
+        create_symlink_file(
+            &outside.path().join("outside.tf"),
+            &workspace.path().join("linked-outside.tf"),
+        ),
+        "file-link",
+    );
+    eprintln!(
+        "HCL containment links: directory={directory_link_created}, file={file_link_created}"
+    );
+    let config = CodeGraphConfig {
+        supported_languages: vec!["hcl".to_owned()],
+        ..CodeGraphConfig::default()
+    };
+    let data_dir = workspace.path().join(".engram");
+    let branch = "hcl-linked-containment-red";
+    let indexed = code_graph::index_workspace(workspace.path(), &data_dir, branch, &config, true)
+        .await
+        .expect("linked containment index returns a bounded result");
+    assert!(
+        indexed.errors.is_empty(),
+        "linked containment index errors: {indexed:?}"
+    );
+
+    let db = connect_db(&data_dir, branch)
+        .await
+        .expect("connect linked containment graph DB");
+    let queries = CodeGraphQueries::new(db);
+    let files = queries
+        .list_code_files()
+        .await
+        .expect("list linked containment files");
+    let classes = queries
+        .all_classes()
+        .await
+        .expect("list linked containment classes");
+
+    if directory_link_created {
+        assert!(
+            files
+                .iter()
+                .all(|file| file.path != "linked-outside/outside.tf"),
+            "external directory-linked HCL path was persisted: {files:?}"
+        );
+    }
+    if file_link_created {
+        assert!(
+            files.iter().all(|file| file.path != "linked-outside.tf"),
+            "external file-linked HCL path was persisted: {files:?}"
+        );
+    }
+    assert!(
+        classes
+            .iter()
+            .all(|class| class.name != "hcl.block.resource.external.secret"),
+        "external linked HCL symbol was persisted: {classes:?}"
+    );
+    assert!(
+        classes
+            .iter()
+            .any(|class| class.name == "hcl.block.service.visible"),
+        "contained control symbol was not persisted: {classes:?}"
+    );
+}
+
+#[tokio::test]
+async fn hcl_references_stay_hint_only_while_sql_references_still_resolve() {
+    let workspace = tempfile::tempdir().expect("create isolated persistence workspace");
+    let data_dir = workspace.path().join(".engram");
+    let branch = "hcl-reference-persistence-red";
+    let config = CodeGraphConfig {
+        supported_languages: vec!["hcl".to_owned(), "sql".to_owned()],
+        ..CodeGraphConfig::default()
+    };
+
+    write_file(
+        workspace.path(),
+        "infra/schema.sql",
+        "CREATE TABLE public.users (id INT);\n",
+    );
+    let seeded = code_graph::index_workspace(workspace.path(), &data_dir, branch, &config, true)
+        .await
+        .expect("seed cross-language collision target");
+    assert!(seeded.errors.is_empty(), "seed index errors: {seeded:?}");
+
+    write_file(
+        workspace.path(),
+        "infra/main.hcl",
+        "locals {\n  selected = public.users\n}\n",
+    );
+    write_file(
+        workspace.path(),
+        "infra/query.sql",
+        "SELECT * FROM public.users;\n",
+    );
+    let indexed = code_graph::index_workspace(workspace.path(), &data_dir, branch, &config, false)
+        .await
+        .expect("index colliding HCL and SQL references");
+    assert!(
+        indexed.errors.is_empty(),
+        "reference index errors: {indexed:?}"
+    );
+
+    let db = connect_db(&data_dir, branch)
+        .await
+        .expect("connect graph DB");
+    let queries = CodeGraphQueries::new(db.clone());
+    let files = queries.list_code_files().await.expect("list code files");
+    let hcl_file = files
+        .iter()
+        .find(|file| file.path == "infra/main.hcl")
+        .expect("indexed HCL file");
+    let sql_file = files
+        .iter()
+        .find(|file| file.path == "infra/query.sql")
+        .expect("indexed SQL reference file");
+    assert_eq!(hcl_file.language, Language::Hcl.as_str());
+
+    let target_class = queries
+        .all_classes()
+        .await
+        .expect("list classes")
+        .into_iter()
+        .find(|class| class.name == "public.users")
+        .expect("seeded SQL class");
+    let persisted = db
+        .cozo_instance()
+        .expect("access persistence test handle")
+        .run_script(
+            "?[from, to, qualified_name] := *references_edge { from, to, qualified_name }",
+            BTreeMap::new(),
+            ScriptMutability::Immutable,
+        )
+        .expect("read persisted reference edges");
+
+    let hcl_source = DataValue::from(hcl_file.id.as_str());
+    let sql_source = DataValue::from(sql_file.id.as_str());
+    let hint = DataValue::from("public.users");
+    let expected_hcl = vec![hcl_source.clone(), hcl_source.clone(), hint.clone()];
+    let expected_sql = vec![
+        sql_source.clone(),
+        DataValue::from(target_class.id.as_str()),
+        hint,
+    ];
+    let hcl_rows: Vec<_> = persisted
+        .rows
+        .iter()
+        .filter(|row| row.first() == Some(&hcl_source))
+        .collect();
+    let sql_rows: Vec<_> = persisted
+        .rows
+        .iter()
+        .filter(|row| row.first() == Some(&sql_source))
+        .collect();
+
+    assert!(
+        hcl_rows == vec![&expected_hcl] && sql_rows == vec![&expected_sql],
+        "RED:U11_HCL_REFERENCE_PERSISTENCE_BOUNDARY expected HCL \
+         (file,file,target_hint) and unchanged SQL (file,class,target_hint); \
+         persisted={:?}",
+        persisted.rows
+    );
+}

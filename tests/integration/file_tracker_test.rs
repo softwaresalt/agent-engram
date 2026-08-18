@@ -9,7 +9,9 @@ use std::fs;
 
 use engram::db::connect_db;
 use engram::db::queries::CodeGraphQueries;
-use engram::services::file_tracker::{FileChangeKind, detect_offline_changes, record_file_hash};
+use engram::services::file_tracker::{
+    FileChangeKind, detect_offline_changes, record_file_hash, record_file_hash_precomputed,
+};
 use tempfile::TempDir;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -245,4 +247,20 @@ async fn s074_excluded_dirs_not_reported() {
 
     let added: Vec<_> = changes.iter().filter(|c| c.path == "real.rs").collect();
     assert_eq!(added.len(), 1, "real.rs should be reported as Added");
+}
+
+#[tokio::test]
+async fn arbitrary_utf8_hash_preview_does_not_panic() {
+    let ws = TempDir::new().expect("tempdir");
+    let queries = open_queries(&ws).await;
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .finish(),
+    )
+    .expect("install debug subscriber");
+
+    record_file_hash_precomputed("unicode.rs", "€€€", 9, &queries)
+        .await
+        .expect("RED:FILE_HASH_UTF8_PREVIEW: arbitrary UTF-8 hash text must not panic");
 }

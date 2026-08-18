@@ -2,7 +2,7 @@
 rustflags = ["-Dwarnings"]
 
 [alias]
-dev-test = "test --lib"
+dev-test = "test --lib --test hcl_parser_contract_test --test hcl_grammar_abi_test --test hcl_parsing_test --test hcl_routing_test --test hcl_security_test --test hcl_indexing_test"
 full-test = "test"
 debug-build = "build --profile debugging"
 debug-test = "test --profile debugging --lib"

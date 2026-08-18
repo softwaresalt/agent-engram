@@ -176,6 +176,7 @@ fn default_supported_languages() -> Vec<String> {
         "javascript".to_owned(),
         "go".to_owned(),
         "csharp".to_owned(),
+        "hcl".to_owned(),
     ]
 }
 

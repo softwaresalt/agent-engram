@@ -24,6 +24,7 @@ use std::path::Path;
 pub use notify_debouncer_full::DebounceEventResult;
 
 use crate::models::{WatchEventKind, WatcherEvent};
+use crate::services::parsing::Language;
 
 /// Source-file extensions whose changes should trigger code-graph re-indexing.
 ///
@@ -126,6 +127,7 @@ fn is_code_file(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
         .is_some_and(|ext| INDEXED_EXTENSIONS.contains(&ext))
+        || matches!(Language::from_path(path), Some(Language::Hcl))
 }
 
 /// Return `true` if `path` is a markdown document eligible for content reingest.

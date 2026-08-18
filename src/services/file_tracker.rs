@@ -105,7 +105,7 @@ pub async fn record_file_hash(
 
     debug!(
         path = %normalized,
-        hash = %&hash[..8],
+        hash = %utf8_prefix(&hash, 8),
         size = metadata.len(),
         "file_tracker: recording hash"
     );
@@ -136,7 +136,7 @@ pub async fn record_file_hash_precomputed(
 
     debug!(
         path = %normalized,
-        hash = %&hash[..hash.len().min(8)],
+        hash = %utf8_prefix(hash, 8),
         size = size_bytes,
         "file_tracker: recording precomputed hash"
     );
@@ -144,6 +144,13 @@ pub async fn record_file_hash_precomputed(
     queries
         .upsert_file_hash(&normalized, hash, size_bytes)
         .await
+}
+
+fn utf8_prefix(value: &str, max_chars: usize) -> &str {
+    value
+        .char_indices()
+        .nth(max_chars)
+        .map_or(value, |(byte_index, _)| &value[..byte_index])
 }
 
 /// Walk `workspace_root`, compare every non-excluded file against stored
@@ -364,8 +371,28 @@ fn collect_recursive(root: &Path, dir: &Path, files: &mut Vec<PathBuf>) {
 pub(crate) fn is_excluded(rel: &str) -> bool {
     DEFAULT_EXCLUDE_PREFIXES.iter().any(|prefix| {
         let stem = prefix.trim_end_matches('/');
-        rel == stem || rel.starts_with(&format!("{stem}/"))
+        excluded_prefix_matches(rel, stem)
     })
+}
+
+#[cfg(not(windows))]
+fn excluded_prefix_matches(rel: &str, stem: &str) -> bool {
+    rel == stem
+        || rel
+            .strip_prefix(stem)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
+#[cfg(windows)]
+fn excluded_prefix_matches(rel: &str, stem: &str) -> bool {
+    rel.eq_ignore_ascii_case(stem)
+        || rel.get(..stem.len()).is_some_and(|prefix| {
+            prefix.eq_ignore_ascii_case(stem)
+                && rel
+                    .as_bytes()
+                    .get(stem.len())
+                    .is_some_and(|byte| *byte == b'/')
+        })
 }
 
 #[cfg(test)]
@@ -398,6 +425,13 @@ mod tests {
     fn not_excluded_src() {
         assert!(!is_excluded("src/main.rs"));
         assert!(!is_excluded("README.md"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn excluded_prefixes_are_ascii_case_insensitive_on_windows() {
+        assert!(is_excluded(".GIT/objects/pack"));
+        assert!(is_excluded("TARGET/debug/engram.exe"));
     }
 
     #[test]

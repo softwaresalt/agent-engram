@@ -11,6 +11,7 @@ mod cpp;
 mod csharp;
 pub mod frontmatter;
 mod go_lang;
+mod hcl;
 mod javascript;
 mod kotlin;
 mod markdown;
@@ -60,6 +61,8 @@ pub enum Language {
     Kotlin,
     /// Markdown (`.md`)
     Markdown,
+    /// HashiCorp Configuration Language (`.hcl`, `.tf`, `.tfvars`)
+    Hcl,
 }
 
 impl Language {
@@ -80,6 +83,29 @@ impl Language {
             Language::Sql => "sql",
             Language::Kotlin => "kotlin",
             Language::Markdown => "markdown",
+            Language::Hcl => "hcl",
+        }
+    }
+
+    /// Classify a source path using the canonical, case-sensitive extension map.
+    #[must_use]
+    pub fn from_path(path: &std::path::Path) -> Option<Self> {
+        match path.extension()?.to_str()? {
+            "rs" => Some(Self::Rust),
+            "py" => Some(Self::Python),
+            "ts" => Some(Self::TypeScript),
+            "tsx" => Some(Self::Tsx),
+            "js" | "jsx" => Some(Self::JavaScript),
+            "go" => Some(Self::Go),
+            "cs" => Some(Self::CSharp),
+            "c" | "h" => Some(Self::C),
+            "cpp" | "cc" | "cxx" | "hpp" | "hh" | "hxx" | "h++" => Some(Self::Cpp),
+            "swift" => Some(Self::Swift),
+            "sql" => Some(Self::Sql),
+            "kt" | "kts" => Some(Self::Kotlin),
+            "md" => Some(Self::Markdown),
+            "hcl" | "tf" | "tfvars" => Some(Self::Hcl),
+            _ => None,
         }
     }
 }
@@ -102,6 +128,7 @@ impl TryFrom<&str> for Language {
             "sql" => Ok(Language::Sql),
             "kotlin" => Ok(Language::Kotlin),
             "markdown" => Ok(Language::Markdown),
+            "hcl" => Ok(Language::Hcl),
             _ => Err(EngramError::CodeGraph(CodeGraphError::ParseFailed {
                 reason: format!("unsupported language: {value}"),
             })),
@@ -279,6 +306,7 @@ pub fn parse_source(source: &str, language: Language) -> Result<ParseResult, Eng
         Language::Sql => sql::parse_sql_source(source),
         Language::Kotlin => kotlin::parse_kotlin_source(source),
         Language::Markdown => markdown::parse_markdown_source(source),
+        Language::Hcl => hcl::parse_hcl_source(source),
     }
 }
 

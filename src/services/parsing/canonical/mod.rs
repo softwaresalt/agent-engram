@@ -28,6 +28,7 @@ pub mod reexport;
 pub mod resolver;
 pub mod use_graph;
 
+pub(crate) use module_path::discover_workspace_crates_with;
 pub use module_path::{
     CanonicalWorkspace, ModulePath, WorkspaceCrates, discover_workspace_crates,
     module_path_for_file,

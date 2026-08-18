@@ -32,6 +32,35 @@ The default experience is:
 * **Diagnostics and observability** — health checks, branch metrics, and
   token-delivery reports built in
 
+## Default supported languages
+
+The default code-graph parser inventory is:
+
+| Canonical language | Case-sensitive file extensions |
+|---|---|
+| `rust` | `.rs` |
+| `python` | `.py` |
+| `typescript` | `.ts` |
+| `tsx` | `.tsx` |
+| `javascript` | `.js`, `.jsx` |
+| `go` | `.go` |
+| `csharp` | `.cs` |
+| `hcl` | `.hcl`, `.tf`, `.tfvars` |
+
+HCL-family files use only the canonical `hcl` identity; `terraform` and
+uppercase extension variants are not aliases. Default startup indexing,
+explicit sync, and created or modified live-sync events share this routing.
+The parser emits namespaced top-level `hcl.block.*` and `hcl.attribute.*`
+structural symbols. Plain dotted traversals become normalized `target_hint`
+references without global target binding. Malformed, oversized, ignored, and
+out-of-workspace input stays within the existing fail-closed indexing
+boundaries.
+
+Engram does not evaluate Terraform or infer provider, module, type, or schema
+semantics. See
+[HCL and Terraform-family files](docs/configuration.md#hcl-and-terraform-family-files)
+for the extraction and containment contract.
+
 ## QuickStart
 
 Install the latest release with a single command:
