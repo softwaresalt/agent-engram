@@ -23,6 +23,36 @@ and metrics changes remain unharvested Stage follow-ups.
 This decision is a triage result, not implementation authorization. It does
 not modify the active shipment manifest or PR [#342](https://github.com/softwaresalt/agent-engram/pull/342).
 
+## Pre-boundary correction/addendum — `35254714`
+
+New evidence from Ship after the freeze-scope reset and scoped reintegration
+shows that full `cargo dev-test --locked` has exactly seven failures. All
+seven were introduced by pre-boundary mixed commit
+`352547142f937edbd43a203a01832e31f0b80308` (`test(security): prove
+shipment-wide external bytes stay unopened`). Its relevant split is:
+
+* **Classification: `mixed-extract-only`.**
+* **Retain for `117-S`:** only the
+  `src/services/code_graph/source_race_tests.rs` hunks and portions of
+  `src/services/workspace_source.rs` needed by the scoped code-graph
+  no-follow implementation.
+* **Defer to `EE8C4E35`:** two `file_tracker` replacement-race tests,
+  three hydration replacement/hash-race tests, and two `retrieval_eval`
+  replacement-race tests. These seven harnesses and their observed failures
+  remain future acceptance evidence for lifecycle source-read migration.
+* **Fix location:** the production fixes for the seven deferred harnesses
+  begin in excluded post-boundary surfaces at `d62d7cb2`.
+* **Ship correction:** reverse or remove those seven deferred test hunks from
+  the scoped branch. Do not implement their out-of-scope production fixes in
+  `117-S` merely to make the inherited tests pass.
+
+This corrects the historical interpretation of
+`22df6ce50f8e89b54f2bf65a9d3917c97dbb0e54`: the scoped no-follow
+implementation was valid, but the boundary was mixed because it inherited
+broad RED harnesses from `35254714`. The required next action for the deferred
+work remains `deliberate`; it is not authorized for harvesting or
+implementation.
+
 ## Scope test
 
 A reintegration candidate must be narrowly necessary to close the confirmed
@@ -125,11 +155,13 @@ Each entry is unharvested and contains full source commit references, the
 
 ## Accounting
 
-All 31 commits are represented exactly once as table rows: two pure
+All 31 **post-boundary** commits are represented exactly once as table rows:
+two pure
 reintegration candidates, three mixed extraction-only commits, and 26
 follow-ups. Every follow-up or out-of-scope hunk in a mixed commit maps to one
 or more of the seven stash clusters. The two pure candidates require no stash
-destination.
+destination. The pre-boundary `35254714` correction is accounted for
+separately above and does not change the 31-commit range count.
 
 ## Evidence
 
