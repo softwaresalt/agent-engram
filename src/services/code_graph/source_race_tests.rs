@@ -312,6 +312,45 @@ async fn full_index_rejects_file_replaced_by_external_link_after_discovery() -> 
 }
 
 #[tokio::test]
+async fn invalid_utf8_rust_nonforce_sync_retains_last_known_good_without_aborting()
+-> anyhow::Result<()> {
+    let workspace = tempfile::tempdir()?;
+    write_source(
+        workspace.path(),
+        "Cargo.toml",
+        "[package]\nname = \"invalid-content-sync\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )?;
+    write_source(
+        workspace.path(),
+        "src/lib.rs",
+        "pub fn retained_after_invalid_content() -> usize { 7 }\n",
+    )?;
+    let (data_dir, branch) = db_identity(workspace.path(), "invalid-content-sync");
+    let config = CodeGraphConfig::default();
+    index_workspace(workspace.path(), &data_dir, &branch, &config, true).await?;
+    let before = publication_state(&data_dir, &branch).await?;
+    std::fs::write(workspace.path().join("src/lib.rs"), [0xff, 0xfe, 0xfd])?;
+
+    let result = sync_workspace(workspace.path(), &data_dir, &branch, &config)
+        .await
+        .expect(
+            "RED:RUST_PREPASS_CONTENT_REJECTION_ABORTED: invalid source content must retain LKG \
+             without converting a content error into a capability-boundary abort",
+        );
+    assert!(
+        result.errors.iter().any(|error| error.file == "src/lib.rs"),
+        "invalid source content must remain observable: {result:?}"
+    );
+    assert_eq!(
+        publication_state(&data_dir, &branch).await?,
+        before,
+        "RED:RUST_PREPASS_CONTENT_REJECTION_MUTATED: invalid source content changed prior \
+         publication"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn sync_rejects_file_replaced_by_internal_link_after_discovery() -> anyhow::Result<()> {
     let workspace = tempfile::tempdir()?;
     write_source(workspace.path(), "victim.tf", SAFE_OLD)?;
