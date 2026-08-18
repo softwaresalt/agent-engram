@@ -84,6 +84,8 @@ Apply these controls:
   `deliberate` or `spike` before planning or implementation
 * Treat security relevance as evidence of priority, not expanded authority
 * Treat a passing test suite as correctness evidence, not expanded authority
+* Apply scope checks to test-only commits too: adding broad RED harnesses can
+  silently obligate out-of-scope implementation
 * Prohibit mixed commits; extract only scoped hunks or split the work before
   commit
 * Check scope at every commit and every phase transition, including movement

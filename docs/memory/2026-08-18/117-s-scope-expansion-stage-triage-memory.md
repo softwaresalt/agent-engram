@@ -65,3 +65,19 @@ The following stash entries remain unharvested:
    test-first; mixed commits remain extraction-only.
 3. Stage processes each stash entry through its required `deliberate` or
    `spike` gate before planning, harvesting, or implementation.
+
+## Pre-boundary amendment
+
+Ship reported that the correctly reset and scoped branch has exactly seven
+`cargo dev-test --locked` failures inherited from pre-boundary mixed commit
+`352547142f937edbd43a203a01832e31f0b80308`: two `file_tracker`, three
+hydration, and two `retrieval_eval` replacement/hash-race tests. Stage
+classified the commit `mixed-extract-only`: retain only the code-graph and
+workspace-source hunks needed by `117-S`, and defer the seven broad harnesses
+to `EE8C4E35` as future acceptance evidence.
+
+`EE8C4E35` remains high-priority and unharvested with required next action
+`deliberate`. Ship must reverse or remove the seven deferred test hunks from
+the scoped branch rather than implement their excluded production fixes, which
+begin in post-boundary surfaces at `d62d7cb2`. No shipment, source, Ship
+worktree, PR #342, build, or test-suite mutation was performed by Stage.
