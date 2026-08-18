@@ -93,6 +93,9 @@ fn symlink_dir(source: &Path, link: &Path) -> std::io::Result<()> {
 }
 
 fn require_link(result: std::io::Result<()>, kind: &str) -> anyhow::Result<()> {
+    #[cfg(not(windows))]
+    let _ = kind;
+
     match result {
         Ok(()) => Ok(()),
         #[cfg(windows)]
