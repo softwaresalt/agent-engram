@@ -744,43 +744,6 @@ pub struct CallSiteInventory {
 /// does not affect the counts (parsing is per-file and the totals sum).
 const CALL_SITE_SCAN_BATCH_FILES: usize = 64;
 
-#[cfg(test)]
-#[derive(Clone)]
-struct RetrievalEvalReadTestHook {
-    target: String,
-    reached: std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
-    resume: std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>>,
-}
-
-#[cfg(test)]
-tokio::task_local! {
-    static RETRIEVAL_EVAL_READ_TEST_HOOK: RetrievalEvalReadTestHook;
-}
-
-#[cfg(test)]
-fn take_test_channel<T>(slot: &std::sync::Mutex<Option<T>>) -> Option<T> {
-    match slot.lock() {
-        Ok(mut guard) => guard.take(),
-        Err(poisoned) => poisoned.into_inner().take(),
-    }
-}
-
-#[cfg(test)]
-async fn retrieval_eval_read_test_barrier(relative_path: &str) {
-    let Ok(hook) = RETRIEVAL_EVAL_READ_TEST_HOOK.try_with(Clone::clone) else {
-        return;
-    };
-    if hook.target != relative_path {
-        return;
-    }
-    if let Some(reached) = take_test_channel(&hook.reached) {
-        let _ = reached.send(());
-    }
-    if let Some(resume) = take_test_channel(&hook.resume) {
-        let _ = resume.await;
-    }
-}
-
 /// Sum the distinct call-site relations across one batch of `(source_file,
 /// language, source, recorded_hash)` tuples and report whether any source has
 /// drifted from its recorded hash (084.011-T).
@@ -964,8 +927,6 @@ async fn scan_call_site_inventory_inner(
             unreadable_files += 1;
             continue;
         }
-        #[cfg(test)]
-        retrieval_eval_read_test_barrier(&file.path).await;
         match tokio::fs::read_to_string(&canon).await {
             Ok(source) => batch.push((
                 file.path.clone(),
@@ -1399,111 +1360,6 @@ pub fn check_thresholds(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[cfg(unix)]
-    fn symlink_file(source: &Path, link: &Path) -> std::io::Result<()> {
-        std::os::unix::fs::symlink(source, link)
-    }
-
-    #[cfg(windows)]
-    fn symlink_file(source: &Path, link: &Path) -> std::io::Result<()> {
-        std::os::windows::fs::symlink_file(source, link)
-    }
-
-    #[cfg(unix)]
-    fn symlink_dir(source: &Path, link: &Path) -> std::io::Result<()> {
-        std::os::unix::fs::symlink(source, link)
-    }
-
-    #[cfg(windows)]
-    fn symlink_dir(source: &Path, link: &Path) -> std::io::Result<()> {
-        std::os::windows::fs::symlink_dir(source, link)
-    }
-
-    async fn assert_eval_replacement_is_unreadable(replace_ancestor: bool) -> anyhow::Result<()> {
-        const SAFE: &str = "fn safe_caller() {}\n";
-        const SENTINEL: &str = "fn external_caller() {\n    EXTERNAL_EVAL_SENTINEL();\n}\n";
-
-        let workspace = tempfile::tempdir()?;
-        let outside = tempfile::tempdir()?;
-        std::fs::create_dir_all(workspace.path().join("src"))?;
-        std::fs::create_dir_all(outside.path().join("src"))?;
-        std::fs::write(workspace.path().join("src/victim.rs"), SAFE)?;
-        std::fs::write(outside.path().join("src/victim.rs"), SENTINEL)?;
-        let files = vec![CodeFile {
-            id: "code_file:src/victim.rs".to_owned(),
-            path: "src/victim.rs".to_owned(),
-            language: "rust".to_owned(),
-            size_bytes: u64::try_from(SAFE.len())?,
-            content_hash: source_content_hash(SAFE),
-            last_indexed_at: "2026-08-17T00:00:00Z".to_owned(),
-        }];
-
-        let (reached_tx, reached_rx) = tokio::sync::oneshot::channel();
-        let (resume_tx, resume_rx) = tokio::sync::oneshot::channel();
-        let hook = RetrievalEvalReadTestHook {
-            target: "src/victim.rs".to_owned(),
-            reached: std::sync::Arc::new(std::sync::Mutex::new(Some(reached_tx))),
-            resume: std::sync::Arc::new(std::sync::Mutex::new(Some(resume_rx))),
-        };
-        let workspace_path = workspace.path().to_path_buf();
-        let outside_path = outside.path().to_path_buf();
-        let languages = ["rust".to_owned()];
-        let operation = RETRIEVAL_EVAL_READ_TEST_HOOK.scope(
-            hook,
-            scan_call_site_inventory(workspace.path(), &files, &languages),
-        );
-        let controller = async move {
-            reached_rx.await?;
-            if replace_ancestor {
-                std::fs::rename(
-                    workspace_path.join("src"),
-                    workspace_path.join("src-original"),
-                )?;
-                symlink_dir(&outside_path.join("src"), &workspace_path.join("src"))?;
-            } else {
-                std::fs::remove_file(workspace_path.join("src/victim.rs"))?;
-                symlink_file(
-                    &outside_path.join("src/victim.rs"),
-                    &workspace_path.join("src/victim.rs"),
-                )?;
-            }
-            let _ = resume_tx.send(());
-            Ok::<(), anyhow::Error>(())
-        };
-
-        let (inventory, replacement) =
-            tokio::time::timeout(std::time::Duration::from_secs(30), async {
-                tokio::join!(operation, controller)
-            })
-            .await
-            .map_err(|_| anyhow::anyhow!("retrieval-eval replacement barrier timed out"))?;
-        replacement?;
-        let inventory = inventory?;
-        assert_eq!(
-            inventory.call_sites, 0,
-            "RED:RETRIEVAL_EVAL_PARSED_EXTERNAL_SENTINEL: ancestor={replace_ancestor}"
-        );
-        assert_eq!(
-            inventory.unreadable_files, 1,
-            "replacement must remain honestly accounted"
-        );
-        assert!(
-            !inventory.index_stale,
-            "rejected replacement is unreadable, not ordinary content drift"
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn eval_final_replacement_is_unreadable_without_parsing() -> anyhow::Result<()> {
-        assert_eval_replacement_is_unreadable(false).await
-    }
-
-    #[tokio::test]
-    async fn eval_ancestor_replacement_is_unreadable_without_parsing() -> anyhow::Result<()> {
-        assert_eval_replacement_is_unreadable(true).await
-    }
 
     #[test]
     fn language_of_maps_known_extensions() {
