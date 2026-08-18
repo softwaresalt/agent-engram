@@ -115,9 +115,15 @@ CLI syntax correction; it did not change source or invalidate the smoke.
 ## Monitoring and rollback
 
 The release-operator window is `2026-08-18T18:54:22Z` through
-`2026-08-18T19:24:22Z`. Initial status is **HEALTHY / ACTIVE**. Rollback is
-triggered by valid-HCL errors, daemon or IPC failure, canonical-identity drift,
-stale graph state, containment failure, or advisory recurrence.
+`2026-08-18T19:24:22Z`. Final status is **HEALTHY / COMPLETE**. The final
+checkpoint modified `main.tf`, created `observation.tfvars`, and exercised
+final-file plus directory-link controls. Explicit sync reported one modified
+and one added file with `errors=[]`; forced index reported two real files,
+three classes, five edges, and `errors=[]`. No external sentinel symbol entered
+the graph. Daemon health remained green, PID `11680` was stopped, and
+`h2 v0.4.16` remained resolved. Rollback is triggered by valid-HCL errors,
+daemon or IPC failure, canonical-identity drift, stale graph state,
+containment failure, or advisory recurrence.
 
 After approval, exclude `hcl`, restart only the affected daemon, force
 reconciliation, and require exact `0/0/0` HCL files/symbols/edges with no
@@ -131,5 +137,4 @@ Recovery ref `safety/117-s-scope-expansion-2f528aff` remains local and
 unpushed at `2f528aff6b6f05c0a88a66349f03f3e421c4c2eb`. The retained fixture
 remains ignored for reproduction. No owned process remains.
 
-Next step: the release operator completes the active monitoring window and
-records its final `healthy`, `degraded`, or `rolled back` outcome.
+The monitoring window is complete. No further `117-S` action is pending.

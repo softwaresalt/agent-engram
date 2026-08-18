@@ -11,7 +11,7 @@ branch: "post-merge/117-s-hcl-parser-closure"
 pr_number: 342
 merge_commit_sha: "c879d7196af7fb90b950560d120ae1b00baa90ec"
 runtime_verdict: PASS
-monitoring_status: HEALTHY_ACTIVE
+monitoring_status: HEALTHY_COMPLETE
 ---
 
 ## Closure decision
@@ -23,9 +23,10 @@ and lockfile had no diff from that commit. The retained fixture indexed
 canonical HCL symbols with no errors. The only daemon started by the smoke was
 stopped by exact PID and confirmed absent.
 
-This post-merge record closes shipment `117-S` and feature `121-F`. It does not
-claim that the separate 30-minute release-operator observation window has
-elapsed; its initial checkpoint is healthy and active.
+This post-merge record closes shipment `117-S` and feature `121-F`. The full
+30-minute release-operator observation window elapsed, and its final
+create/modify, containment, forced-index, health, process, and advisory
+checkpoints completed healthy.
 
 ## Closure inputs
 
@@ -299,10 +300,24 @@ owns the manual observation window.
 | Process ownership | Owned PID absent after stop | Owned PID remains | Healthy |
 
 The post-merge window opened at `2026-08-18T18:54:22Z`, when the merged daemon
-indexed the fixture, and runs through `2026-08-18T19:24:22Z`. Status at the
-bounded closure checkpoint is **HEALTHY / ACTIVE**. At window close, the
-release operator records `healthy`, `degraded`, or `rolled back` using the
-pre-merge monitoring plan.
+indexed the fixture, and ran through `2026-08-18T19:24:22Z`. The final
+checkpoint began at `2026-08-18T19:25:08Z` and completed **HEALTHY**.
+
+Final checkpoint evidence:
+
+* Appended a valid HCL comment to `infra/main.tf`
+* Created `infra/observation.tfvars`
+* Added final-file and directory symlinks to contained external sentinel
+  fixtures
+* Explicit sync: one file modified, one added, two edges created,
+  `errors=[]`
+* Canonical symbols: exactly three expected in-workspace HCL symbols; no
+  external sentinel symbol
+* Forced index: two real files, three classes, five edges, `errors=[]`
+* Static linked file and linked directory remained excluded
+* Daemon health: overall green, no offline changes, IPC reachable
+* Owned PID `11680` stopped by exact PID
+* `cargo tree --locked --invert h2 --depth 0` resolved `h2 v0.4.16`
 
 ## Rollback trigger and procedure
 
@@ -339,7 +354,7 @@ deleted, committed, or pushed during closure.
 * Operational readiness: **READY**
 * Shipment status: **CLOSED / archived as shipped**
 * Post-merge smoke: **PASS**
-* Monitoring: **HEALTHY / ACTIVE**
+* Monitoring: **HEALTHY / COMPLETE**
 * Owned processes: **none**
 * Retained fixtures: **one**
 * Commit or push: **none**
