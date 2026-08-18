@@ -179,6 +179,21 @@ pub(crate) enum RootChildKind {
     Other,
 }
 
+/// No-follow type classification for a capability-enumerated directory entry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CapabilityEntryKind {
+    Directory,
+    File,
+    Other,
+}
+
+/// One UTF-8 child name enumerated from an opened directory capability.
+#[derive(Debug)]
+pub(crate) struct CapabilityDirectoryEntry {
+    pub(crate) name: String,
+    pub(crate) kind: CapabilityEntryKind,
+}
+
 /// Structured rejection of an unsafe or unreadable source candidate.
 #[derive(Debug)]
 pub(crate) struct SourceRejection {
@@ -416,6 +431,84 @@ impl WorkspaceSourceReader {
             }
         }
         children.sort();
+        Ok(children)
+    }
+
+    pub(crate) fn list_directory_blocking(
+        &self,
+        relative_path: Option<&ValidatedRelativePath>,
+    ) -> Result<Vec<CapabilityDirectoryEntry>, SourceRejection> {
+        let directory = match relative_path {
+            Some(relative_path) => {
+                self.open_directory_nofollow(relative_path)
+                    .map_err(|error| {
+                        SourceRejection::io(
+                            relative_path,
+                            "capability no-follow directory open failed",
+                            &error,
+                        )
+                    })?
+            }
+            None => self.root.try_clone().map_err(|error| SourceRejection {
+                relative_path: ".".to_owned(),
+                reason: format!("capability root clone failed: {error}"),
+                not_found: false,
+                capability_boundary: true,
+            })?,
+        };
+        let entries = directory.entries().map_err(|error| SourceRejection {
+            relative_path: relative_path.map_or_else(
+                || ".".to_owned(),
+                |relative_path| relative_path.as_str().to_owned(),
+            ),
+            reason: format!("capability directory read failed: {error}"),
+            not_found: error.kind() == std::io::ErrorKind::NotFound,
+            capability_boundary: true,
+        })?;
+        let mut children = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|error| SourceRejection {
+                relative_path: relative_path.map_or_else(
+                    || ".".to_owned(),
+                    |relative_path| relative_path.as_str().to_owned(),
+                ),
+                reason: format!("capability directory entry failed: {error}"),
+                not_found: error.kind() == std::io::ErrorKind::NotFound,
+                capability_boundary: true,
+            })?;
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                return Err(SourceRejection {
+                    relative_path: relative_path.map_or_else(
+                        || ".".to_owned(),
+                        |relative_path| relative_path.as_str().to_owned(),
+                    ),
+                    reason: "directory entry is not valid UTF-8".to_owned(),
+                    not_found: false,
+                    capability_boundary: true,
+                });
+            };
+            let file_type = entry.file_type().map_err(|error| SourceRejection {
+                relative_path: name.to_owned(),
+                reason: format!("capability directory entry type failed: {error}"),
+                not_found: error.kind() == std::io::ErrorKind::NotFound,
+                capability_boundary: true,
+            })?;
+            let kind = if file_type.is_symlink() {
+                CapabilityEntryKind::Other
+            } else if file_type.is_dir() {
+                CapabilityEntryKind::Directory
+            } else if file_type.is_file() {
+                CapabilityEntryKind::File
+            } else {
+                CapabilityEntryKind::Other
+            };
+            children.push(CapabilityDirectoryEntry {
+                name: name.to_owned(),
+                kind,
+            });
+        }
+        children.sort_by(|left, right| left.name.cmp(&right.name));
         Ok(children)
     }
 }
