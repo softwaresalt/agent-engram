@@ -1386,3 +1386,96 @@ async fn regular_file_controls_remain_indexable() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn capability_directory_enumeration_classifies_without_following_links() -> anyhow::Result<()>
+{
+    use crate::services::workspace_source::CapabilityEntryKind;
+
+    let workspace = tempfile::tempdir()?;
+    let outside = tempfile::tempdir()?;
+    write_source(workspace.path(), "visible.tf", SAFE_OLD)?;
+    write_source(
+        workspace.path(),
+        "nested/child.hcl",
+        "service \"child\" {}\n",
+    )?;
+    write_source(outside.path(), "external.tf", EXTERNAL_SENTINEL)?;
+    require_link(
+        symlink_file(
+            &outside.path().join("external.tf"),
+            &workspace.path().join("linked.tf"),
+        ),
+        "enumeration-file-link",
+    )?;
+
+    let reader = WorkspaceSourceReader::open(workspace.path()).await?;
+    let entries = reader
+        .list_directory_blocking(None)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+
+    assert!(
+        entries
+            .iter()
+            .any(|entry| { entry.name == "visible.tf" && entry.kind == CapabilityEntryKind::File })
+    );
+    assert!(
+        entries.iter().any(|entry| {
+            entry.name == "nested" && entry.kind == CapabilityEntryKind::Directory
+        })
+    );
+    assert!(
+        entries
+            .iter()
+            .any(|entry| { entry.name == "linked.tf" && entry.kind == CapabilityEntryKind::Other })
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn oversized_rust_nonforce_sync_evicts_stale_file_without_aborting() -> anyhow::Result<()> {
+    let workspace = tempfile::tempdir()?;
+    write_source(
+        workspace.path(),
+        "Cargo.toml",
+        "[package]\nname = \"oversized-sync\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )?;
+    let source = format!(
+        "pub fn stale_oversized_symbol() -> usize {{ 7 }}\n// {}\n",
+        "oversized-sync-padding".repeat(64)
+    );
+    write_source(workspace.path(), "src/lib.rs", &source)?;
+    let (data_dir, branch) = db_identity(workspace.path(), "oversized-nonforce-sync");
+    let initial_config = CodeGraphConfig {
+        max_file_size_bytes: 4096,
+        ..CodeGraphConfig::default()
+    };
+    index_workspace(workspace.path(), &data_dir, &branch, &initial_config, true).await?;
+    let restrictive_config = CodeGraphConfig {
+        max_file_size_bytes: 128,
+        ..CodeGraphConfig::default()
+    };
+
+    let result = sync_workspace(workspace.path(), &data_dir, &branch, &restrictive_config)
+        .await
+        .expect(
+            "RED:RUST_PREPASS_OVERSIZE_NONFORCE_ABORTED: routine sync must evict an oversized Rust \
+         file without aborting the workspace pass",
+        );
+    assert_eq!(result.oversized_files_skipped, 1);
+    let state = graph_state(&data_dir, &branch).await?;
+    assert!(
+        state.files.iter().all(|file| file.path != "src/lib.rs"),
+        "RED:RUST_PREPASS_OVERSIZE_STALE_FILE: oversized Rust code_file survived: {:?}",
+        state.files
+    );
+    assert!(
+        state
+            .functions
+            .iter()
+            .all(|(name, _)| name != "stale_oversized_symbol"),
+        "RED:RUST_PREPASS_OVERSIZE_STALE_SYMBOL: oversized Rust symbol survived: {:?}",
+        state.functions
+    );
+    Ok(())
+}
