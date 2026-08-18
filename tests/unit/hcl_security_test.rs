@@ -41,6 +41,7 @@ fn symlink_file(src: &Path, dst: &Path) -> std::io::Result<()> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LinkInstall {
     Installed,
+    #[cfg(windows)]
     UnsupportedPrivilege,
 }
 
@@ -63,8 +64,12 @@ fn create_symlink_file(src: &Path, dst: &Path) -> LinkInstall {
 }
 
 fn require_security_link(result: LinkInstall, kind: &str) -> bool {
+    #[cfg(not(windows))]
+    let _ = kind;
+
     match result {
         LinkInstall::Installed => true,
+        #[cfg(windows)]
         LinkInstall::UnsupportedPrivilege => {
             panic!(
                 "Windows {kind} containment coverage requires symlink privilege \
