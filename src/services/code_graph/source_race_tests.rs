@@ -1220,6 +1220,88 @@ async fn blocked_prefix_does_not_suppress_unrelated_authoritative_deletion() -> 
     Ok(())
 }
 
+#[cfg(unix)]
+async fn assert_discovery_root_replacement_preserves_lkg(
+    replace_ancestor: bool,
+) -> anyhow::Result<()> {
+    let base = tempfile::tempdir()?;
+    let database = tempfile::tempdir()?;
+    let selected = base.path().join("selected");
+    let workspace = selected.join("workspace");
+    std::fs::create_dir_all(&workspace)?;
+    write_source(&workspace, "retained.tf", SAFE_OLD)?;
+    write_source(
+        &workspace,
+        "authoritatively-deleted.tf",
+        "resource \"deleted\" \"gone\" {}\n",
+    )?;
+    let branch = format!(
+        "source-race-discovery-root-{}-{}",
+        replace_ancestor,
+        Uuid::new_v4()
+    );
+    let config = hcl_config();
+    sync_workspace(&workspace, database.path(), &branch, &config).await?;
+    std::fs::remove_file(workspace.join("authoritatively-deleted.tf"))?;
+
+    let mut barrier = BarrierControl::new(SOURCE_DISCOVERY_TEST_BARRIER);
+    let hook = barrier.take_hook()?;
+    let worker_workspace = workspace.clone();
+    let controller_workspace = workspace.clone();
+    let controller_selected = selected.clone();
+    let operation = SOURCE_READ_TEST_HOOK.scope(
+        hook,
+        sync_workspace(&worker_workspace, database.path(), &branch, &config),
+    );
+    let controller = async move {
+        barrier.wait_until_reached().await?;
+        if replace_ancestor {
+            std::fs::rename(&controller_selected, base.path().join("selected-original"))?;
+            std::fs::create_dir_all(&controller_workspace)?;
+        } else {
+            std::fs::rename(
+                &controller_workspace,
+                controller_selected.join("workspace-original"),
+            )?;
+            std::fs::create_dir_all(&controller_workspace)?;
+        }
+        barrier.release();
+        Ok::<(), anyhow::Error>(())
+    };
+
+    let (synced, controlled) = bounded_join(operation, controller).await?;
+    controlled?;
+    synced?;
+    let state = graph_state(database.path(), &branch).await?;
+    assert!(
+        state.files.iter().any(|file| file.path == "retained.tf"),
+        "RED:DISCOVERY_ROOT_REPLACEMENT_DELETED_LKG: retained source was evicted after \
+         replacement; ancestor={replace_ancestor}; files={:?}",
+        state.files
+    );
+    assert!(
+        state
+            .files
+            .iter()
+            .all(|file| file.path != "authoritatively-deleted.tf"),
+        "unrelated authoritative deletion must still reconcile; ancestor={replace_ancestor}"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn final_workspace_replacement_cannot_redirect_discovery_or_deletion() -> anyhow::Result<()> {
+    assert_discovery_root_replacement_preserves_lkg(false).await
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn workspace_ancestor_replacement_cannot_redirect_discovery_or_deletion() -> anyhow::Result<()>
+{
+    assert_discovery_root_replacement_preserves_lkg(true).await
+}
+
 #[cfg(windows)]
 #[tokio::test]
 async fn unicode_case_variant_blocked_prefix_retains_last_known_good_graph() -> anyhow::Result<()> {

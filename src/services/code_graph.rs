@@ -60,6 +60,8 @@ tokio::task_local! {
 
 #[cfg(test)]
 const POST_PREPASS_TEST_BARRIER: &str = "<post-rust-prepass>";
+#[cfg(test)]
+const SOURCE_DISCOVERY_TEST_BARRIER: &str = "<source-discovery>";
 
 #[cfg(test)]
 fn take_test_channel<T>(slot: &std::sync::Mutex<Option<T>>) -> Option<T> {
@@ -4081,6 +4083,9 @@ async fn discover_files(
     config: &CodeGraphConfig,
     source_reader: &WorkspaceSourceReader,
 ) -> Result<SourceDiscovery, EngramError> {
+    #[cfg(test)]
+    source_read_test_barrier(SOURCE_DISCOVERY_TEST_BARRIER).await;
+
     let ws_path = ws_path.to_path_buf();
     let display = ws_path.display().to_string();
     let config = config.clone();
