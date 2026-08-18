@@ -1252,6 +1252,10 @@ async fn assert_discovery_root_replacement_preserves_lkg(
     let worker_workspace = workspace.clone();
     let controller_workspace = workspace.clone();
     let controller_selected = selected.clone();
+    // Keep the TempDir owner alive until both futures finish. Moving `base`
+    // into the controller would delete the renamed, capability-held tree as
+    // soon as the barrier is released, turning this into a deletion race.
+    let controller_base = base.path().to_path_buf();
     let operation = SOURCE_READ_TEST_HOOK.scope(
         hook,
         sync_workspace(&worker_workspace, database.path(), &branch, &config),
@@ -1259,7 +1263,10 @@ async fn assert_discovery_root_replacement_preserves_lkg(
     let controller = async move {
         barrier.wait_until_reached().await?;
         if replace_ancestor {
-            std::fs::rename(&controller_selected, base.path().join("selected-original"))?;
+            std::fs::rename(
+                &controller_selected,
+                controller_base.join("selected-original"),
+            )?;
             std::fs::create_dir_all(&controller_workspace)?;
         } else {
             std::fs::rename(
