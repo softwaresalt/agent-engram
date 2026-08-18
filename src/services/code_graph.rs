@@ -27,7 +27,8 @@ use crate::services::parsing::python_canonical::{
 };
 use crate::services::parsing::{ExtractedEdge, ExtractedSymbol, Language, parse_source};
 use crate::services::workspace_source::{
-    RootChildKind, SourceRead, SourceSnapshot, ValidatedRelativePath, WorkspaceSourceReader,
+    CapabilityEntryKind, RootChildKind, SourceRead, SourceSnapshot, ValidatedRelativePath,
+    WorkspaceSourceReader,
 };
 
 type RustCanonicalContext = (canonical::ModulePath, canonical::UseGraph);
@@ -4120,19 +4121,12 @@ fn discover_files_blocking(
     source_reader: &WorkspaceSourceReader,
     force_override_build_failure: bool,
 ) -> SourceDiscovery {
-    let mut builder = ignore::WalkBuilder::new(ws_path);
     let mut policy_errors = Vec::new();
-    builder
-        .hidden(true)
-        .parents(false)
-        .ignore(false)
-        .git_ignore(false)
-        .git_global(false)
-        .git_exclude(false)
-        .follow_links(false);
 
     // Add custom exclude patterns from config using a single OverrideBuilder.
-    if !config.exclude_patterns.is_empty() {
+    let overrides = if config.exclude_patterns.is_empty() {
+        None
+    } else {
         let mut ob = ignore::overrides::OverrideBuilder::new(ws_path);
         for (index, pattern) in config.exclude_patterns.iter().enumerate() {
             if let Err(error) = ob.add(&format!("!{pattern}")) {
@@ -4149,18 +4143,17 @@ fn discover_files_blocking(
             ob.build()
         };
         match overrides {
-            Ok(overrides) => {
-                builder.overrides(overrides);
-            }
+            Ok(overrides) => Some(overrides),
             Err(e) => {
                 policy_errors.push(FileError {
                     file: "code_graph.exclude_patterns".to_owned(),
                     error: format!("failed to build exclude overrides: {e}"),
                 });
                 warn!(error = %e, "code graph: failed to build exclude overrides");
+                None
             }
         }
-    }
+    };
 
     let supported: std::collections::HashSet<&str> = config
         .supported_languages
@@ -4173,89 +4166,17 @@ fn discover_files_blocking(
     let mut blocked_prefixes = Vec::new();
     let mut directories = vec![std::path::PathBuf::new()];
     let mut errors = policy_errors;
-    for entry in builder.build() {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(error) => {
-                let localized = ignore_error_path(&error).is_some_and(|path| {
-                    record_blocked_prefix(ws_path, path, &mut blocked_prefixes)
-                });
-                if !localized {
-                    unlocalized_incomplete = true;
-                }
-                warn!(%error, "code graph: incomplete source discovery");
-                continue;
-            }
-        };
-        let path = entry.path();
-        match is_static_link_or_reparse(&entry) {
-            Ok(true) => {
-                let _ = record_blocked_prefix(ws_path, path, &mut blocked_prefixes);
-                warn!(
-                    path = %path.display(),
-                    "code graph: blocking static link or reparse-point discovery prefix"
-                );
-                continue;
-            }
-            Ok(false) => {}
-            Err(error) => {
-                if !record_blocked_prefix(ws_path, path, &mut blocked_prefixes) {
-                    unlocalized_incomplete = true;
-                }
-                warn!(
-                    path = %path.display(),
-                    %error,
-                    "code graph: unable to classify discovery entry"
-                );
-                continue;
-            }
-        }
-        let Some(file_type) = entry.file_type() else {
-            continue;
-        };
-        if file_type.is_dir() {
-            if path != ws_path {
-                let Some(relative) = path.strip_prefix(ws_path).ok() else {
-                    unlocalized_incomplete = true;
-                    continue;
-                };
-                match ValidatedRelativePath::new(relative) {
-                    Ok(relative) => directories.push(relative.as_path().to_path_buf()),
-                    Err(error) => {
-                        errors.push(FileError {
-                            file: relative.display().to_string(),
-                            error: error.to_string(),
-                        });
-                    }
-                }
-            }
-            continue;
-        }
-        if !file_type.is_file() {
-            continue;
-        }
-        let lang = language_from_path(path);
-        if supported.contains(lang.as_str()) {
-            let Some(relative) = path.strip_prefix(ws_path).ok() else {
-                unlocalized_incomplete = true;
-                continue;
-            };
-            match ValidatedRelativePath::new(relative) {
-                Ok(_) => files.push(path.to_path_buf()),
-                Err(error) => {
-                    errors.push(FileError {
-                        file: relative.display().to_string(),
-                        error: error.to_string(),
-                    });
-                    warn!(
-                        path = %path.display(),
-                        %error,
-                        "code graph: rejecting invalid discovery path"
-                    );
-                }
-            }
-        }
-    }
+    discover_capability_files(
+        source_reader,
+        ws_path,
+        overrides.as_ref(),
+        &supported,
+        &mut files,
+        &mut directories,
+        &mut blocked_prefixes,
+        &mut errors,
+        &mut unlocalized_incomplete,
+    );
 
     directories.sort_by(|left, right| {
         left.components()
@@ -4285,6 +4206,105 @@ fn discover_files_blocking(
         complete,
         blocked_prefixes,
         errors,
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "traversal accumulators distinguish localized failures from policy errors"
+)]
+fn discover_capability_files(
+    source_reader: &WorkspaceSourceReader,
+    ws_path: &Path,
+    overrides: Option<&ignore::overrides::Override>,
+    supported: &std::collections::HashSet<&str>,
+    files: &mut Vec<std::path::PathBuf>,
+    directories: &mut Vec<std::path::PathBuf>,
+    blocked_prefixes: &mut Vec<ValidatedRelativePath>,
+    errors: &mut Vec<FileError>,
+    unlocalized_incomplete: &mut bool,
+) {
+    let mut pending = vec![std::path::PathBuf::new()];
+    while let Some(directory) = pending.pop() {
+        let validated_directory = if directory.as_os_str().is_empty() {
+            None
+        } else {
+            match ValidatedRelativePath::new(&directory) {
+                Ok(path) => Some(path),
+                Err(error) => {
+                    errors.push(FileError {
+                        file: directory.display().to_string(),
+                        error: error.to_string(),
+                    });
+                    continue;
+                }
+            }
+        };
+        let entries = match source_reader.list_directory_blocking(validated_directory.as_ref()) {
+            Ok(entries) => entries,
+            Err(error) => {
+                if let Some(prefix) = validated_directory {
+                    warn!(
+                        path = %prefix.as_str(),
+                        %error,
+                        "code graph: localized capability source traversal failure"
+                    );
+                    blocked_prefixes.push(prefix);
+                } else {
+                    *unlocalized_incomplete = true;
+                    errors.push(FileError {
+                        file: ".".to_owned(),
+                        error: error.to_string(),
+                    });
+                }
+                continue;
+            }
+        };
+
+        for entry in entries.into_iter().rev() {
+            // `WalkBuilder::hidden(true)` excluded hidden entries. Ignore
+            // controls are loaded separately through the retained capability.
+            if entry.name.starts_with('.') {
+                continue;
+            }
+            let relative = directory.join(&entry.name);
+            let validated = match ValidatedRelativePath::new(&relative) {
+                Ok(path) => path,
+                Err(error) => {
+                    errors.push(FileError {
+                        file: relative.display().to_string(),
+                        error: error.to_string(),
+                    });
+                    continue;
+                }
+            };
+            let absolute = ws_path.join(validated.as_path());
+            let is_directory = entry.kind == CapabilityEntryKind::Directory;
+            if overrides.is_some_and(|matcher| matcher.matched(&absolute, is_directory).is_ignore())
+            {
+                continue;
+            }
+
+            match entry.kind {
+                CapabilityEntryKind::Directory => {
+                    directories.push(validated.as_path().to_path_buf());
+                    pending.push(validated.as_path().to_path_buf());
+                }
+                CapabilityEntryKind::File => {
+                    let language = language_from_path(&absolute);
+                    if supported.contains(language.as_str()) {
+                        files.push(absolute);
+                    }
+                }
+                CapabilityEntryKind::Other => {
+                    warn!(
+                        path = %validated.as_str(),
+                        "code graph: blocking link, reparse point, or special discovery prefix"
+                    );
+                    blocked_prefixes.push(validated);
+                }
+            }
+        }
     }
 }
 
@@ -4702,53 +4722,6 @@ fn workspace_ignore_match(
         }
     }
     ignored
-}
-
-fn record_blocked_prefix(
-    ws_path: &Path,
-    path: &Path,
-    blocked_prefixes: &mut Vec<ValidatedRelativePath>,
-) -> bool {
-    if let Ok(relative) = path.strip_prefix(ws_path) {
-        if let Ok(relative) = ValidatedRelativePath::new(relative) {
-            blocked_prefixes.push(relative);
-            return true;
-        }
-    }
-    false
-}
-
-fn ignore_error_path(error: &ignore::Error) -> Option<&Path> {
-    match error {
-        ignore::Error::Partial(errors) => errors.iter().find_map(ignore_error_path),
-        ignore::Error::WithLineNumber { err, .. } | ignore::Error::WithDepth { err, .. } => {
-            ignore_error_path(err)
-        }
-        ignore::Error::WithPath { path, .. } => Some(path),
-        ignore::Error::Loop { child, .. } => Some(child),
-        ignore::Error::Io(_)
-        | ignore::Error::Glob { .. }
-        | ignore::Error::UnrecognizedFileType(_)
-        | ignore::Error::InvalidDefinition => None,
-    }
-}
-
-fn is_static_link_or_reparse(entry: &ignore::DirEntry) -> std::io::Result<bool> {
-    if entry.path_is_symlink() {
-        return Ok(true);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-
-        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-        let metadata = std::fs::symlink_metadata(entry.path())?;
-        Ok(metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0)
-    }
-    #[cfg(not(windows))]
-    {
-        Ok(false)
-    }
 }
 
 /// Map a file extension to a language identifier.
