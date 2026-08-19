@@ -1,6 +1,9 @@
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 
+use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt as _};
+use cap_std::ambient_authority;
+use cap_std::fs::{Dir, OpenOptions};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -241,7 +244,7 @@ pub fn load_or_create_workspace_id(path: &Path) -> Result<Uuid, EngramError> {
     }
 
     let id_path = canonical_engram.join(".workspace-id");
-    if id_path.exists() {
+    if workspace_id_entry_exists(&id_path)? {
         return read_workspace_id(&id_path);
     }
 
@@ -261,11 +264,9 @@ pub fn load_or_create_workspace_id(path: &Path) -> Result<Uuid, EngramError> {
             path: id_path.display().to_string(),
         })
     })?;
-    match temp_file.persist(&id_path) {
+    match temp_file.persist_noclobber(&id_path) {
         Ok(_) => Ok(workspace_id),
-        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
-            read_workspace_id(&id_path)
-        }
+        Err(_) if workspace_id_entry_exists(&id_path)? => read_workspace_id(&id_path),
         Err(_) => Err(EngramError::System(SystemError::FlushFailed {
             path: id_path.display().to_string(),
         })),
@@ -297,7 +298,7 @@ pub fn daemon_key_for_workspace(path: &Path) -> Result<String, EngramError> {
             path: path.display().to_string(),
         })?);
     let id_path = workspace_id_path(&canonical);
-    if id_path.exists() {
+    if workspace_id_entry_exists(&id_path)? {
         return workspace_key(&canonical);
     }
 
@@ -320,16 +321,120 @@ fn workspace_id_path(path: &Path) -> PathBuf {
     path.join(".engram").join(".workspace-id")
 }
 
+fn workspace_id_entry_exists(id_path: &Path) -> Result<bool, EngramError> {
+    match std::fs::symlink_metadata(id_path) {
+        Ok(metadata) => {
+            if is_workspace_id_link_or_reparse(&metadata) {
+                return Err(unsafe_workspace_id_error(
+                    id_path,
+                    "linked or reparse leaves are not allowed",
+                ));
+            }
+            if !metadata.is_file() {
+                return Err(unsafe_workspace_id_error(
+                    id_path,
+                    "the identity leaf must be a regular file",
+                ));
+            }
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(_) => Err(workspace_id_io_error(id_path)),
+    }
+}
+
+fn is_workspace_id_link_or_reparse(metadata: &std::fs::Metadata) -> bool {
+    let is_link = metadata.file_type().is_symlink();
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt as _;
+
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+        is_link || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    {
+        is_link
+    }
+}
+
 fn read_workspace_id(id_path: &Path) -> Result<Uuid, EngramError> {
-    let raw = std::fs::read_to_string(id_path).map_err(|_| {
-        EngramError::System(SystemError::FlushFailed {
-            path: id_path.display().to_string(),
-        })
+    if !workspace_id_entry_exists(id_path)? {
+        return Err(workspace_id_io_error(id_path));
+    }
+
+    let parent = id_path.parent().ok_or_else(|| {
+        unsafe_workspace_id_error(id_path, "the identity leaf has no parent directory")
     })?;
+    let file_name = id_path
+        .file_name()
+        .ok_or_else(|| unsafe_workspace_id_error(id_path, "the identity leaf has no file name"))?;
+    let directory = Dir::open_ambient_dir(parent, ambient_authority())
+        .map_err(|_| workspace_id_io_error(id_path))?;
+    let mut options = OpenOptions::new();
+    options.read(true).follow(FollowSymlinks::No);
+    #[cfg(unix)]
+    {
+        use cap_std::fs::OpenOptionsExt as _;
+        use rustix::fs::OFlags;
+
+        let flags = OFlags::NOFOLLOW | OFlags::NONBLOCK;
+        let custom_flags = i32::try_from(flags.bits()).map_err(|error| {
+            unsafe_workspace_id_error(
+                id_path,
+                format!("no-follow flags are not representable: {error}"),
+            )
+        })?;
+        options.custom_flags(custom_flags);
+    }
+    let mut file = directory
+        .open_with(Path::new(file_name), &options)
+        .map_err(|_| workspace_id_io_error(id_path))?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| workspace_id_io_error(id_path))?;
+    #[cfg(windows)]
+    {
+        use cap_std::fs::MetadataExt as _;
+
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(unsafe_workspace_id_error(
+                id_path,
+                "linked or reparse leaves are not allowed",
+            ));
+        }
+    }
+    if !metadata.is_file() {
+        return Err(unsafe_workspace_id_error(
+            id_path,
+            "the opened identity leaf is not a regular file",
+        ));
+    }
+
+    let mut raw = String::new();
+    file.read_to_string(&mut raw)
+        .map_err(|_| workspace_id_io_error(id_path))?;
     Uuid::parse_str(raw.trim()).map_err(|e| {
         EngramError::System(SystemError::InvalidParams {
             reason: format!("invalid workspace-id '{}': {e}", id_path.display()),
         })
+    })
+}
+
+fn workspace_id_io_error(id_path: &Path) -> EngramError {
+    EngramError::System(SystemError::FlushFailed {
+        path: id_path.display().to_string(),
+    })
+}
+
+fn unsafe_workspace_id_error(id_path: &Path, reason: impl Into<String>) -> EngramError {
+    EngramError::System(SystemError::InvalidParams {
+        reason: format!(
+            "unsafe workspace-id '{}': {}",
+            id_path.display(),
+            reason.into()
+        ),
     })
 }
 
@@ -455,13 +560,34 @@ fn normalize_for_containment(path: &Path) -> PathBuf {
 mod tests {
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
 
     use tempfile::TempDir;
     use uuid::Uuid;
 
+    use super::daemon_key_for_workspace;
     use super::is_data_dir_within_workspace;
     use super::load_or_create_workspace_id;
     use crate::errors::{EngramError, WorkspaceError};
+
+    #[cfg(unix)]
+    fn symlink_file(source: &std::path::Path, link: &std::path::Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(source, link)
+    }
+
+    #[cfg(windows)]
+    fn symlink_file(source: &std::path::Path, link: &std::path::Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_file(source, link)
+    }
+
+    fn create_symlink_file(source: &std::path::Path, link: &std::path::Path) -> bool {
+        match symlink_file(source, link) {
+            Ok(()) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => false,
+            Err(error) => panic!("create file symlink: {error}"),
+        }
+    }
 
     fn create_workspace() -> TempDir {
         let workspace = tempfile::tempdir().expect("workspace tempdir");
@@ -540,6 +666,82 @@ mod tests {
         let persisted = fs::read_to_string(&id_path).expect("read persisted workspace-id");
 
         assert_eq!(persisted.trim(), created.to_string());
+    }
+
+    #[test]
+    fn concurrent_cold_starts_share_the_atomically_created_workspace_id() {
+        const STARTERS: usize = 32;
+
+        let workspace = create_workspace();
+        fs::create_dir(workspace.path().join(".engram")).expect("create .engram");
+        let workspace_path = Arc::new(workspace.path().to_path_buf());
+        let start = Arc::new(Barrier::new(STARTERS));
+        let handles: Vec<_> = (0..STARTERS)
+            .map(|_| {
+                let workspace_path = Arc::clone(&workspace_path);
+                let start = Arc::clone(&start);
+                thread::spawn(move || {
+                    start.wait();
+                    load_or_create_workspace_id(&workspace_path)
+                })
+            })
+            .collect();
+
+        let returned_ids: Vec<_> = handles
+            .into_iter()
+            .map(|handle| {
+                handle
+                    .join()
+                    .expect("workspace-id starter must not panic")
+                    .expect("workspace-id starter must succeed")
+            })
+            .collect();
+        let persisted_id = fs::read_to_string(workspace.path().join(".engram/.workspace-id"))
+            .expect("read winning workspace-id");
+
+        assert!(
+            returned_ids.windows(2).all(|pair| pair[0] == pair[1]),
+            "every concurrent cold start must return the winning persisted identity: {returned_ids:?}"
+        );
+        assert_eq!(
+            returned_ids[0].to_string(),
+            persisted_id.trim(),
+            "the identity returned to every starter must match the persisted winner"
+        );
+    }
+
+    #[test]
+    fn workspace_id_symlink_leaf_is_rejected_by_load_and_daemon_discovery() {
+        let workspace = create_workspace();
+        let outside = tempfile::tempdir().expect("outside tempdir");
+        let external_id = Uuid::new_v4();
+        let external_id_path = outside.path().join("external-workspace-id");
+        fs::write(&external_id_path, format!("{external_id}\n"))
+            .expect("write external workspace-id");
+
+        let engram_dir = workspace.path().join(".engram");
+        fs::create_dir(&engram_dir).expect("create .engram");
+        let id_path = engram_dir.join(".workspace-id");
+        if !create_symlink_file(&external_id_path, &id_path) {
+            return;
+        }
+
+        let load_result = load_or_create_workspace_id(workspace.path());
+        let daemon_key_result = daemon_key_for_workspace(workspace.path());
+
+        assert!(
+            load_result.is_err(),
+            "workspace-id load must not source identity through a symlink leaf"
+        );
+        assert!(
+            daemon_key_result.is_err(),
+            "daemon discovery must not treat a workspace-id symlink as a legacy or readable leaf"
+        );
+        assert_eq!(
+            fs::read_to_string(external_id_path).expect("read external workspace-id"),
+            format!("{external_id}\n"),
+            "rejected identity lookup must not alter the external target"
+        );
     }
 
     #[test]

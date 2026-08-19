@@ -8,6 +8,7 @@
 
 use std::path::Path;
 use std::time::Duration;
+use std::{future::Future, process::ExitStatus};
 
 use serde_json::Value;
 use tracing::{debug, info, instrument};
@@ -27,6 +28,10 @@ const INITIAL_BACKOFF_MS: u64 = 10;
 const MAX_BACKOFF_MS: u64 = 500;
 /// Default total wall-clock budget allowed for the ready-wait loop (milliseconds).
 const DEFAULT_READY_TIMEOUT_MS: u64 = 30_000;
+/// Brief budget for a concurrent winner to publish readiness or PID metadata.
+const WINNER_PUBLICATION_GRACE_MS: u64 = 750;
+/// Poll interval used only after this shim's exact child exits.
+const WINNER_PUBLICATION_POLL_MS: u64 = 25;
 /// Maximum number of daemon respawns per shim invocation.
 pub(crate) const MAX_RESPAWN_ATTEMPTS: u8 = 1;
 /// Maximum duration for a live-daemon pipe reachability probe.
@@ -521,6 +526,68 @@ fn live_daemon_pid(workspace: &Path) -> Result<Option<PidFile>, EngramError> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConcurrentWinner {
+    EndpointReady,
+    PidPublished,
+}
+
+async fn wait_for_concurrent_winner<Ready, ReadyFuture, LivePid>(
+    mut endpoint_ready: Ready,
+    mut independently_owned_pid_is_live: LivePid,
+    timeout: Duration,
+    poll_interval: Duration,
+) -> Result<Option<ConcurrentWinner>, EngramError>
+where
+    Ready: FnMut() -> ReadyFuture,
+    ReadyFuture: Future<Output = Result<bool, EngramError>>,
+    LivePid: FnMut() -> Result<bool, EngramError>,
+{
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    loop {
+        if endpoint_ready().await? {
+            return Ok(Some(ConcurrentWinner::EndpointReady));
+        }
+        if independently_owned_pid_is_live()? {
+            return Ok(Some(ConcurrentWinner::PidPublished));
+        }
+
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Ok(None);
+        }
+        tokio::time::sleep(poll_interval.min(remaining)).await;
+    }
+}
+
+async fn resolve_spawned_child_exit(
+    workspace: &Path,
+    endpoint: &str,
+    spawned_pid: Option<u32>,
+    status: ExitStatus,
+) -> Result<ConcurrentWinner, EngramError> {
+    let winner = wait_for_concurrent_winner(
+        || daemon_ready(endpoint),
+        || {
+            live_daemon_pid(workspace)
+                .map(|pid_file| pid_file.is_some_and(|pid_file| Some(pid_file.pid) != spawned_pid))
+        },
+        Duration::from_millis(WINNER_PUBLICATION_GRACE_MS),
+        Duration::from_millis(WINNER_PUBLICATION_POLL_MS),
+    )
+    .await?;
+
+    winner.ok_or_else(|| {
+        EngramError::Daemon(DaemonError::SpawnFailed {
+            reason: format!(
+                "spawned daemon exited before readiness with status {status}; \
+                 no concurrent winner published within {WINNER_PUBLICATION_GRACE_MS} ms"
+            ),
+        })
+    })
+}
+
 /// Poll the health endpoint with exponential backoff until the daemon is ready.
 ///
 /// Polls with exponential backoff (capped at [`MAX_BACKOFF_MS`]) until the
@@ -548,6 +615,7 @@ async fn poll_until_ready(
         }
 
         if let Some(child) = spawned_child.as_deref_mut() {
+            let spawned_pid = child.id();
             let exit_status = child.try_wait().map_err(|error| {
                 EngramError::Daemon(DaemonError::SpawnFailed {
                     reason: format!("failed to inspect spawned daemon status: {error}"),
@@ -555,20 +623,24 @@ async fn poll_until_ready(
             })?;
             if let Some(status) = exit_status {
                 // A concurrent shim can win the workspace lock while our exact
-                // child exits. Keep waiting only when independently-owned PID
-                // metadata proves that another daemon is alive.
-                if live_daemon_pid(workspace)?.is_some() {
-                    info!(
-                        %status,
-                        "spawned daemon exited after a concurrent daemon won startup"
-                    );
-                    spawned_child = None;
-                } else {
-                    return Err(EngramError::Daemon(DaemonError::SpawnFailed {
-                        reason: format!(
-                            "spawned daemon exited before readiness with status {status}"
-                        ),
-                    }));
+                // child exits. Its ready endpoint or independently-owned PID
+                // metadata may be published just after the child exit becomes
+                // visible, so allow only a brief grace window for that proof.
+                match resolve_spawned_child_exit(workspace, endpoint, spawned_pid, status).await? {
+                    ConcurrentWinner::EndpointReady => {
+                        info!(
+                            %status,
+                            "spawned daemon exited after a concurrent daemon became ready"
+                        );
+                        return Ok(());
+                    }
+                    ConcurrentWinner::PidPublished => {
+                        info!(
+                            %status,
+                            "spawned daemon exited after a concurrent daemon published PID metadata"
+                        );
+                        spawned_child = None;
+                    }
                 }
             }
         }
@@ -622,6 +694,25 @@ mod tests {
             parse_timeout_ms(Some("not_a_number")),
             DEFAULT_READY_TIMEOUT_MS
         );
+    }
+
+    #[tokio::test]
+    async fn concurrent_winner_publication_grace_observes_delayed_independent_pid() {
+        let mut pid_checks = 0_u8;
+        let winner = wait_for_concurrent_winner(
+            || async { Ok(false) },
+            || {
+                pid_checks += 1;
+                Ok(pid_checks == 3)
+            },
+            Duration::from_secs(1),
+            Duration::from_millis(1),
+        )
+        .await
+        .expect("winner publication helper");
+
+        assert_eq!(winner, Some(ConcurrentWinner::PidPublished));
+        assert_eq!(pid_checks, 3);
     }
 
     #[test]
