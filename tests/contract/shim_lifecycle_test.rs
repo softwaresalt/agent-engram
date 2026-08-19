@@ -7,17 +7,203 @@
 //! - S005: Cold start completes within 2 s (production SLA; debug budget 30 s)
 //! - S008: Unknown method → method-not-found error forwarded faithfully
 
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use engram::daemon::protocol::IpcRequest;
 use engram::shim::ipc_client::send_request;
 use engram::shim::lifecycle::check_health;
 use serde_json::json;
+use tempfile::TempDir;
+use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 
 #[path = "../helpers/mod.rs"]
 mod helpers;
 
 use helpers::DaemonHarness;
+
+fn run_git(repo: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .expect("run git fixture command");
+    assert!(
+        output.status.success(),
+        "git {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn create_real_linked_worktree() -> (TempDir, PathBuf) {
+    let fixture = TempDir::new().expect("fixture tempdir");
+    let primary = fixture.path().join("primary");
+    let linked = fixture.path().join("linked");
+    fs::create_dir(&primary).expect("create primary checkout");
+    run_git(&primary, &["init", "--initial-branch=main"]);
+    run_git(&primary, &["config", "user.name", "Engram Test"]);
+    run_git(
+        &primary,
+        &["config", "user.email", "engram-test@example.invalid"],
+    );
+    fs::write(primary.join("README.md"), "# fixture\n").expect("write tracked fixture");
+    run_git(&primary, &["add", "README.md"]);
+    run_git(&primary, &["commit", "-m", "fixture"]);
+
+    let output = Command::new("git")
+        .args(["worktree", "add", "-b", "feature/mcp-worktree"])
+        .arg(&linked)
+        .current_dir(&primary)
+        .output()
+        .expect("create linked worktree");
+    assert!(
+        output.status.success(),
+        "git worktree add failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    (fixture, linked)
+}
+
+async fn request_daemon_shutdown(endpoint: &str) {
+    let request = IpcRequest {
+        jsonrpc: "2.0".to_owned(),
+        id: Some(json!(9001)),
+        method: "_shutdown".to_owned(),
+        params: None,
+    };
+    let _ = send_request(endpoint, &request, Duration::from_secs(2)).await;
+}
+
+// ── 122.004-T: worktree MCP startup contract ─────────────────────────────────
+
+#[tokio::test]
+async fn mcp_shim_handshake_is_bounded_and_stdout_clean_in_real_worktree() {
+    let (_fixture, linked) = create_real_linked_worktree();
+    let workspace = linked
+        .to_str()
+        .expect("linked worktree path must be valid UTF-8");
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_engram"))
+        .args(["shim", "--workspace", workspace])
+        .env_remove("ENGRAM_DATA_DIR")
+        .env("ENGRAM_READY_TIMEOUT_MS", "15000")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn MCP shim");
+    let mut stdin = child.stdin.take().expect("capture shim stdin");
+    let stdout = child.stdout.take().expect("capture shim stdout");
+
+    stdin
+        .write_all(
+            br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"worktree-contract","version":"1.0"}}}
+"#,
+        )
+        .await
+        .expect("write MCP initialize frame");
+
+    let started = Instant::now();
+    let mut response_line = String::new();
+    let read_result = tokio::time::timeout(
+        Duration::from_secs(20),
+        BufReader::new(stdout).read_line(&mut response_line),
+    )
+    .await;
+    let endpoint = engram::daemon::ipc_server::ipc_endpoint(&linked).ok();
+    if let Some(endpoint) = endpoint.as_deref() {
+        request_daemon_shutdown(endpoint).await;
+    }
+    drop(stdin);
+    let wait_result = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
+
+    let bytes_read = read_result
+        .expect("MCP initialize response must be bounded")
+        .expect("read MCP initialize response");
+    assert!(bytes_read > 0, "shim exited without an MCP response");
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "worktree MCP startup exceeded its explicit contract budget"
+    );
+    let response: serde_json::Value =
+        serde_json::from_str(response_line.trim()).expect("stdout must contain only an MCP frame");
+    assert_eq!(response["jsonrpc"], "2.0");
+    assert_eq!(response["id"], 1);
+    assert!(
+        response["result"]["capabilities"]["tools"].is_object(),
+        "initialize response must advertise tools: {response}"
+    );
+    assert!(
+        wait_result.is_ok(),
+        "shim must exit after its MCP stdin closes"
+    );
+}
+
+#[test]
+fn shim_reports_spawned_daemon_early_exit_before_readiness_budget() {
+    let workspace = TempDir::new().expect("workspace tempdir");
+    fs::create_dir(workspace.path().join(".git")).expect("create git metadata");
+    fs::write(
+        workspace.path().join(".git").join("HEAD"),
+        "ref: refs/heads/main\n",
+    )
+    .expect("write HEAD");
+    let current_test_exe = std::env::current_exe().expect("resolve current test executable");
+    let started = Instant::now();
+    let output = Command::new(env!("CARGO_BIN_EXE_engram"))
+        .args(["shim", "--workspace"])
+        .arg(workspace.path())
+        .env_remove("ENGRAM_DATA_DIR")
+        .env("CARGO_BIN_EXE_engram", current_test_exe)
+        .env("ENGRAM_READY_TIMEOUT_MS", "30000")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run shim with early-exiting daemon executable");
+
+    assert!(
+        !output.status.success(),
+        "shim must fail when its exact spawned daemon exits"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(15),
+        "spawned daemon exit must fail fast instead of consuming the 30 s readiness budget"
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "startup diagnostics must not contaminate MCP protocol stdout"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("exited") || stderr.contains("status"),
+        "startup error must report the child exit status; stderr: {stderr}"
+    );
+}
+
+#[test]
+fn shim_rejects_invalid_workspace_without_consuming_readiness_budget() {
+    let workspace = TempDir::new().expect("invalid workspace tempdir");
+    let started = Instant::now();
+    let output = Command::new(env!("CARGO_BIN_EXE_engram"))
+        .args(["shim", "--workspace"])
+        .arg(workspace.path())
+        .env_remove("ENGRAM_DATA_DIR")
+        .env("ENGRAM_READY_TIMEOUT_MS", "30000")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run shim for invalid workspace");
+
+    assert!(!output.status.success(), "invalid workspace must fail");
+    assert!(
+        started.elapsed() < Duration::from_secs(15),
+        "invalid workspace must fail before daemon readiness polling"
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "invalid startup diagnostics must remain off MCP stdout"
+    );
+}
 
 // ── T020 / S001: Cold start ───────────────────────────────────────────────────
 

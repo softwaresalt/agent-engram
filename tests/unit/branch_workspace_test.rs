@@ -12,9 +12,124 @@
 
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 
-use engram::db::workspace::{resolve_git_branch, workspace_hash};
+use engram::db::workspace::{canonicalize_workspace, resolve_git_branch, workspace_hash};
 use tempfile::TempDir;
+
+fn run_git(repo: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .expect("run git fixture command");
+    assert!(
+        output.status.success(),
+        "git {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn create_real_linked_worktree() -> (TempDir, std::path::PathBuf) {
+    let fixture = TempDir::new().expect("fixture tempdir");
+    let primary = fixture.path().join("primary");
+    let linked = fixture.path().join("linked");
+    fs::create_dir(&primary).expect("create primary checkout");
+    run_git(&primary, &["init", "--initial-branch=main"]);
+    run_git(&primary, &["config", "user.name", "Engram Test"]);
+    run_git(
+        &primary,
+        &["config", "user.email", "engram-test@example.invalid"],
+    );
+    fs::write(primary.join("README.md"), "# fixture\n").expect("write tracked fixture");
+    run_git(&primary, &["add", "README.md"]);
+    run_git(&primary, &["commit", "-m", "fixture"]);
+
+    let output = Command::new("git")
+        .args(["worktree", "add", "-b", "feature/linked-startup"])
+        .arg(&linked)
+        .current_dir(&primary)
+        .output()
+        .expect("create linked worktree");
+    assert!(
+        output.status.success(),
+        "git worktree add failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    (fixture, linked)
+}
+
+// ── 122.002-T: linked-worktree security contract ─────────────────────────────
+
+#[test]
+fn real_linked_worktree_is_admitted_with_its_active_branch() {
+    let (_fixture, linked) = create_real_linked_worktree();
+    assert!(
+        linked.join(".git").is_file(),
+        "the fixture must exercise a real linked-worktree gitfile"
+    );
+
+    let canonical = canonicalize_workspace(
+        linked
+            .to_str()
+            .expect("linked worktree path must be valid UTF-8"),
+    )
+    .expect("a real linked worktree must be admitted");
+    assert_eq!(
+        canonical,
+        linked.canonicalize().expect("canonical linked worktree")
+    );
+    assert_eq!(
+        resolve_git_branch(&linked).expect("resolve linked-worktree branch"),
+        "feature__linked-startup",
+        "branch identity must come from the active linked worktree, not the primary checkout"
+    );
+}
+
+#[test]
+fn hostile_or_malformed_gitfiles_are_rejected() {
+    let fixture = TempDir::new().expect("fixture tempdir");
+    let external = fixture.path().join("external");
+    fs::create_dir(&external).expect("create external metadata");
+    fs::write(external.join("HEAD"), "ref: refs/heads/hostile\n").expect("write hostile HEAD");
+
+    let cases = [
+        ("traversal", "gitdir: ../external\n".to_owned()),
+        (
+            "absolute-unowned",
+            format!("gitdir: {}\n", external.display()),
+        ),
+        (
+            "multiple-directives",
+            format!(
+                "gitdir: {}\ngitdir: {}\n",
+                external.display(),
+                external.display()
+            ),
+        ),
+        ("missing-prefix", external.to_string_lossy().into_owned()),
+        ("empty", String::new()),
+    ];
+
+    for (name, gitfile) in cases {
+        let workspace = fixture.path().join(name);
+        fs::create_dir(&workspace).expect("create hostile workspace");
+        fs::write(workspace.join(".git"), &gitfile).expect("write hostile gitfile");
+        let workspace_text = workspace
+            .to_str()
+            .expect("hostile workspace path must be valid UTF-8");
+
+        assert!(
+            canonicalize_workspace(workspace_text).is_err(),
+            "{name} gitfile must not admit a repository"
+        );
+        assert!(
+            resolve_git_branch(&workspace).is_err(),
+            "{name} gitfile must not expose external branch metadata"
+        );
+    }
+}
 
 // ── S075: Standard branch ref ─────────────────────────────────────────────────
 
