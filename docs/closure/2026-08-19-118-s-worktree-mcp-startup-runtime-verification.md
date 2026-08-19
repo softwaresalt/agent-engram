@@ -10,8 +10,6 @@ merge_sha: 08676d341d94fd97b9d7ea3ea30562e63c5c9bba
 verdict: PASS WITH FOLLOW-UP
 ---
 
-# Shipment 118-S Worktree MCP Startup Runtime Verification
-
 ## Verdict
 
 **PASS WITH FOLLOW-UP.** The merged MCP, direct-CLI, launcher, daemon-reuse,
@@ -173,4 +171,3 @@ or rewrite history.
 * `22DF3329` — static MCP initialization before full daemon readiness
 * `C2413934` — canonical `cargo dev-test` target coverage
 * `DE460A88` — independent MCP catalog oracle
-

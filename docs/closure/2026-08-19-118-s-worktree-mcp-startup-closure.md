@@ -10,8 +10,6 @@ merge_sha: 08676d341d94fd97b9d7ea3ea30562e63c5c9bba
 readiness: READY WITH CONDITIONS
 ---
 
-# Shipment 118-S Worktree MCP Startup Operational Closure
-
 ## Readiness
 
 **READY WITH CONDITIONS** for shipment reconciliation and archival. The code
@@ -151,4 +149,3 @@ unverified product regression.
 Operational closure is complete enough to reconcile and archive shipment
 `118-S`. The post-release observation window remains owned by the repository
 maintainer/operator, with the rollback triggers above.
-

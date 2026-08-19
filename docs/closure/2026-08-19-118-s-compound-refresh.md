@@ -6,8 +6,6 @@ feature: 122-F
 mode: apply
 ---
 
-# 118-S Post-Merge Compound Refresh
-
 ## Scope
 
 Reviewed only the compound entries directly implicated by linked-worktree
