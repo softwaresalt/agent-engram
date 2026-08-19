@@ -43,11 +43,9 @@ pub async fn run(workspace_override: Option<&str>) -> Result<(), EngramError> {
             })
         })?;
 
-    let workspace_path = std::fs::canonicalize(&workspace).map_err(|_| {
-        EngramError::Workspace(WorkspaceError::NotFound {
-            path: workspace.clone(),
-        })
-    })?;
+    // Admission must precede endpoint derivation because deriving an endpoint
+    // may persist workspace identity under `.engram`.
+    let workspace_path = crate::db::workspace::canonicalize_workspace(&workspace)?;
 
     lifecycle::ensure_daemon_running(&workspace_path).await?;
 

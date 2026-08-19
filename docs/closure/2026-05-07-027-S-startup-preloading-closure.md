@@ -43,6 +43,22 @@ The `--remote @args` pass-through on the Copilot launch line was also preserved 
 
 All four invariants are satisfied by the current implementation.
 
+## Historical Correction — 2026-08-19
+
+Shipment 118-S supersedes the earlier conclusion that a blocking pre-warm was
+impossible. A non-fatal exit-code check runs only after a synchronous child
+process returns, so it cannot protect Copilot startup when that child hangs.
+Native Git worktrees also exposed a second startup path: their `.git` file was
+rejected after daemon IPC initialization, leaving the shim to consume its
+readiness budget.
+
+The current launcher gives direct and daemon-backed Engram pre-warm attempts
+one shared deadline, cleans up only the process it started, and then fails open
+to Copilot. Engram now validates linked-worktree metadata and reports early
+daemon exit without consuming the full readiness timeout. The original closure
+remains as historical evidence; its "considered impossible" failure assessment
+must not be used as current operational guidance.
+
 ## Pre-Deploy Audit
 
 | Check | Result |
@@ -91,8 +107,8 @@ auto-spawn daemon design confirmed via source code; `--quiet` flag semantics con
 ## Failure Signals
 
 - `start.ps1` hangs indefinitely (would indicate the `$LASTEXITCODE` check is not
-  protecting against a blocking call — considered impossible given the non-terminating
-  error model, but monitor on first use)
+  protecting against a blocking call; shipment 118-S confirmed this was possible
+  before the shared pre-warm deadline was added)
 - Copilot does not launch after engram sync step
 
 ## Monitoring Plan

@@ -30,6 +30,49 @@ fn init_git(dir: &Path) {
     fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").expect("write HEAD");
 }
 
+fn run_git(repo: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .expect("run git fixture command");
+    assert!(
+        output.status.success(),
+        "git {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn create_real_linked_worktree() -> (TempDir, PathBuf) {
+    let fixture = TempDir::new().expect("fixture tempdir");
+    let primary = fixture.path().join("primary");
+    let linked = fixture.path().join("linked");
+    fs::create_dir(&primary).expect("create primary checkout");
+    run_git(&primary, &["init", "--initial-branch=main"]);
+    run_git(&primary, &["config", "user.name", "Engram Test"]);
+    run_git(
+        &primary,
+        &["config", "user.email", "engram-test@example.invalid"],
+    );
+    fs::write(primary.join("README.md"), "# fixture\n").expect("write tracked fixture");
+    run_git(&primary, &["add", "README.md"]);
+    run_git(&primary, &["commit", "-m", "fixture"]);
+
+    let output = Command::new("git")
+        .args(["worktree", "add", "-b", "feature/direct-worktree"])
+        .arg(&linked)
+        .current_dir(&primary)
+        .output()
+        .expect("create linked worktree");
+    assert!(
+        output.status.success(),
+        "git worktree add failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    (fixture, linked)
+}
+
 /// Run `engram <args>` with isolated data dir. Returns `(exit_code, stdout, stderr)`.
 fn run_direct(workspace: &Path, extra_args: &[&str]) -> (i32, String, String) {
     let bin = engram_bin();
@@ -66,6 +109,39 @@ fn run_with_env_direct(workspace: &Path, extra_args: &[&str]) -> (i32, String, S
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
+
+/// 122.003-T: direct sync admits a real linked worktree and isolates data by
+/// that worktree's active branch rather than the primary checkout branch.
+#[test]
+fn direct_sync_from_real_linked_worktree_uses_active_branch() {
+    let (_fixture, linked) = create_real_linked_worktree();
+    assert!(
+        linked.join(".git").is_file(),
+        "fixture must use the linked-worktree gitfile representation"
+    );
+
+    let (code, stdout, stderr) = run_direct(&linked, &["sync", "--direct", "--json"]);
+    assert_eq!(
+        code, 0,
+        "sync --direct must admit a real linked worktree; stdout: {stdout}; stderr: {stderr}"
+    );
+    assert!(
+        linked
+            .join(".engram-test-data")
+            .join("cozo")
+            .join("feature__direct-worktree")
+            .is_dir(),
+        "direct sync data must use the linked worktree's active branch identity"
+    );
+    assert!(
+        !linked
+            .join(".engram-test-data")
+            .join("cozo")
+            .join("main")
+            .exists(),
+        "direct sync must not silently fall back to the primary checkout branch"
+    );
+}
 
 /// `engram sync --direct --json` exits 0 on a valid empty workspace.
 #[test]

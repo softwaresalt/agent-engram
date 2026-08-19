@@ -24,7 +24,10 @@ function Invoke-EngramCommandWithProgress {
     [string]$Activity,
 
     [Parameter(Mandatory = $true)]
-    [string]$Status
+    [string]$Status,
+
+    [Parameter(Mandatory = $true)]
+    [DateTimeOffset]$Deadline
   )
 
   Write-Host "$Activity — $Status"
@@ -34,11 +37,53 @@ function Invoke-EngramCommandWithProgress {
   $engramArguments += $Subcommand
   $engramArguments += $Arguments
 
-  & $Executable @engramArguments
-  $exitCode = $LASTEXITCODE
+  $remainingMs = [Math]::Floor(($Deadline - [DateTimeOffset]::UtcNow).TotalMilliseconds)
+  if ($remainingMs -le 0) {
+    throw "Engram pre-warm exceeded its shared wall-clock budget before $Subcommand could start."
+  }
 
-  if ($exitCode -ne 0) {
-    throw "engram $Subcommand failed with exit code $exitCode."
+  $process = $null
+  try {
+    $processExecutable = $Executable
+    $processArguments = $engramArguments
+    if ([IO.Path]::GetExtension($Executable) -ieq ".ps1") {
+      $pwshCommand = Get-Command pwsh -ErrorAction Stop
+      $processExecutable = $pwshCommand.Source
+      $processArguments = @("-NoProfile", "-NonInteractive", "-File", $Executable)
+      $processArguments += $engramArguments
+    }
+
+    $process = Start-Process `
+      -FilePath $processExecutable `
+      -ArgumentList $processArguments `
+      -NoNewWindow `
+      -PassThru
+
+    if (-not $process.WaitForExit([int]$remainingMs)) {
+      try {
+        # Terminate only the command process started above. A daemon-backed
+        # command may auto-spawn a reusable daemon that outlives this pre-warm;
+        # the launcher does not own that descendant and must not kill it.
+        $process.Kill()
+        $cleanupTimeoutMs = 1000
+        if (-not $process.WaitForExit($cleanupTimeoutMs)) {
+          Write-Warning "Timed-out Engram pre-warm process did not exit within $cleanupTimeoutMs ms; continuing fail-open."
+        }
+      }
+      catch {
+        Write-Warning "Timed-out Engram pre-warm process cleanup failed: $_"
+      }
+      throw "engram $Subcommand exceeded the shared Engram pre-warm wall-clock budget."
+    }
+
+    if ($process.ExitCode -ne 0) {
+      throw "engram $Subcommand failed with exit code $($process.ExitCode)."
+    }
+  }
+  finally {
+    if ($null -ne $process) {
+      $process.Dispose()
+    }
   }
 }
 
@@ -114,6 +159,22 @@ try {
 
   $engramCmd = Get-Command engram -ErrorAction SilentlyContinue
   if ($engramCmd) {
+    $prewarmTimeoutMs = 15000
+    if ($env:ENGRAM_PREWARM_TIMEOUT_MS) {
+      $configuredTimeoutMs = 0
+      if (
+        [int]::TryParse($env:ENGRAM_PREWARM_TIMEOUT_MS, [ref]$configuredTimeoutMs) -and
+        $configuredTimeoutMs -gt 0 -and
+        $configuredTimeoutMs -le 30000
+      ) {
+        $prewarmTimeoutMs = $configuredTimeoutMs
+      }
+      else {
+        Write-Warning "Ignoring invalid ENGRAM_PREWARM_TIMEOUT_MS; expected 1..30000 milliseconds."
+      }
+    }
+    $prewarmDeadline = [DateTimeOffset]::UtcNow.AddMilliseconds($prewarmTimeoutMs)
+
     try {
       Invoke-EngramCommandWithProgress `
         -Executable $engramCmd.Source `
@@ -121,21 +182,25 @@ try {
         -GlobalArguments @("--timeout", "300") `
         -Arguments @("--direct") `
         -Activity "Synchronizing Engram index" `
-        -Status "Direct pre-warm before Copilot startup"
+        -Status "Direct pre-warm before Copilot startup" `
+        -Deadline $prewarmDeadline
     }
     catch {
       Write-Warning "engram direct pre-warm failed; retrying via daemon sync: $_"
       try {
-        & $engramCmd.Source --format text bind
-        if ($LASTEXITCODE -ne 0) {
-          Write-Warning "engram bind exited with code $LASTEXITCODE; workspace may not be bound before the fallback sync."
-        }
+        Invoke-EngramCommandWithProgress `
+          -Executable $engramCmd.Source `
+          -Subcommand "bind" `
+          -Activity "Binding Engram workspace" `
+          -Status "Daemon-backed pre-warm fallback" `
+          -Deadline $prewarmDeadline
         Invoke-EngramCommandWithProgress `
           -Executable $engramCmd.Source `
           -Subcommand "sync" `
           -GlobalArguments @("--timeout", "300") `
           -Activity "Synchronizing Engram index" `
-          -Status "Daemon-backed pre-warm fallback"
+          -Status "Daemon-backed pre-warm fallback" `
+          -Deadline $prewarmDeadline
       }
       catch {
         Write-Warning "engram sync failed (non-fatal): $_"

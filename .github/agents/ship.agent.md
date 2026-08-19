@@ -104,6 +104,29 @@ this fallback order:
 Do not jump directly to `grep`, `glob`, or raw file reads when an engram MCP
 or CLI path is available.
 
+### Worktree-Safe Engram Diagnostics
+
+Ship feature worktrees are valid Engram workspaces even though native Git
+represents `.git` as a file. Treat a worktree rejection or early daemon exit as
+a bounded diagnostic failure, not as a reason to pin execution to the primary
+checkout.
+
+1. Confirm the active worktree and branch with Git before querying Engram.
+2. Perform one daemon-health and workspace-binding verification for the
+   explicit worktree path.
+3. Bound Engram CLI diagnostics with `--timeout`; do not retry a failing
+   startup surface indefinitely.
+4. If the worktree cannot be admitted or the daemon exits during startup,
+   declare Engram degraded and continue with the documented direct-read
+   fallback when the task can proceed safely.
+5. Record startup status, branch identity, and elapsed time in runtime evidence.
+
+Ship consumes Engram health and search capabilities; it does not own the
+daemon lifecycle. Do not kill daemon PIDs, remove runtime state, or repeatedly
+rebind a workspace to repair startup. Process cleanup and daemon reuse are
+verified through the product's lifecycle contracts and graceful protocol
+surfaces.
+
 ## Execution Pipeline
 
 ### Step 0.0: Tool Availability Gate (P-012)

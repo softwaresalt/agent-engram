@@ -289,6 +289,10 @@ name = "contract_shim_lifecycle"
 path = "tests/contract/shim_lifecycle_test.rs"
 
 [[test]]
+name = "contract_start_launcher"
+path = "tests/contract/start_launcher_test.rs"
+
+[[test]]
 name = "integration_shim_error"
 path = "tests/integration/shim_error_test.rs"
 

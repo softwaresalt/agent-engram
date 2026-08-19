@@ -1,6 +1,9 @@
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 
+use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt as _};
+use cap_std::ambient_authority;
+use cap_std::fs::{Dir, OpenOptions};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -56,29 +59,192 @@ pub(crate) fn normalize_canonical(path: PathBuf) -> PathBuf {
 
 /// Canonicalize and validate a workspace path; ensures .git exists at root.
 pub fn canonicalize_workspace(path: &str) -> Result<PathBuf, WorkspaceError> {
-    let candidate = Path::new(path);
-    if !candidate.exists() {
-        return Err(WorkspaceError::NotFound {
-            path: path.to_string(),
+    resolve_git_metadata(Path::new(path)).map(|metadata| metadata.workspace)
+}
+
+#[derive(Debug)]
+struct GitMetadata {
+    workspace: PathBuf,
+    head_path: PathBuf,
+}
+
+/// Resolve the workspace's Git metadata without following an unvalidated
+/// gitfile. Linked-worktree metadata is outside the workspace by design, so
+/// every native backlink is checked before the admin directory is trusted.
+fn resolve_git_metadata(path: &Path) -> Result<GitMetadata, WorkspaceError> {
+    let canonical_workspace = path.canonicalize().map_err(|_| WorkspaceError::NotFound {
+        path: path.display().to_string(),
+    })?;
+    let workspace = normalize_canonical(canonical_workspace.clone());
+    let git_entry = workspace.join(".git");
+    let entry_metadata =
+        std::fs::symlink_metadata(&git_entry).map_err(|_| WorkspaceError::NotGitRoot {
+            path: workspace.display().to_string(),
+        })?;
+
+    if entry_metadata.file_type().is_symlink() {
+        return Err(not_git_root(&workspace));
+    }
+
+    if entry_metadata.is_dir() {
+        let canonical_git_dir = canonical_path(&git_entry, &workspace)?;
+        if canonical_git_dir.parent() != Some(workspace.as_path()) {
+            return Err(not_git_root(&workspace));
+        }
+        return Ok(GitMetadata {
+            workspace,
+            head_path: canonical_git_dir.join("HEAD"),
         });
     }
 
-    let canonical =
-        normalize_canonical(
-            candidate
-                .canonicalize()
-                .map_err(|_| WorkspaceError::NotFound {
-                    path: path.to_string(),
-                })?,
-        );
-
-    if !canonical.join(".git").is_dir() {
-        return Err(WorkspaceError::NotGitRoot {
-            path: canonical.display().to_string(),
-        });
+    if !entry_metadata.is_file() {
+        return Err(not_git_root(&workspace));
     }
 
-    Ok(canonical)
+    let gitfile = read_metadata_file(&git_entry, &workspace)?;
+    let directive = parse_single_line(&gitfile, &workspace)?;
+    let admin_text = directive
+        .strip_prefix("gitdir: ")
+        .ok_or_else(|| not_git_root(&workspace))?;
+    if admin_text.is_empty() || admin_text.trim() != admin_text {
+        return Err(not_git_root(&workspace));
+    }
+    let admin_candidate = resolve_metadata_pointer(admin_text, &workspace, &workspace)?;
+    let admin_dir = canonical_path(&admin_candidate, &workspace)?;
+    require_plain_directory(&admin_candidate, &workspace)?;
+    if normalize_metadata_pointer(admin_text, &admin_candidate) != admin_dir {
+        return Err(not_git_root(&workspace));
+    }
+
+    let commondir_path = admin_dir.join("commondir");
+    let commondir_content = read_metadata_file(&commondir_path, &workspace)?;
+    let common_directive = parse_single_line(&commondir_content, &workspace)?;
+    if common_directive.is_empty() || common_directive.trim() != common_directive {
+        return Err(not_git_root(&workspace));
+    }
+    let commondir_path = PathBuf::from(common_directive);
+    let common_candidate = if commondir_path.is_absolute() {
+        commondir_path
+    } else {
+        admin_dir.join(commondir_path)
+    };
+    require_plain_directory(&common_candidate, &workspace)?;
+    let common_dir = canonical_path(&common_candidate, &workspace)?;
+
+    let worktrees_candidate = common_dir.join("worktrees");
+    require_plain_directory(&worktrees_candidate, &workspace)?;
+    require_plain_directory(&common_dir.join("objects"), &workspace)?;
+    require_plain_reference_storage(&common_dir, &workspace)?;
+    let worktrees_dir = canonical_path(&worktrees_candidate, &workspace)?;
+    let _ = read_metadata_file(&common_dir.join("HEAD"), &workspace)?;
+    if admin_dir.parent() != Some(worktrees_dir.as_path()) {
+        return Err(not_git_root(&workspace));
+    }
+
+    let backlink_path = admin_dir.join("gitdir");
+    let backlink_content = read_metadata_file(&backlink_path, &workspace)?;
+    let backlink = parse_single_line(&backlink_content, &workspace)?;
+    if backlink.is_empty() || backlink.trim() != backlink {
+        return Err(not_git_root(&workspace));
+    }
+    let backlink_candidate = resolve_metadata_pointer(backlink, &admin_dir, &workspace)?;
+    if normalize_metadata_pointer(backlink, &backlink_candidate) != git_entry {
+        return Err(not_git_root(&workspace));
+    }
+    let canonical_backlink = canonical_path(&backlink_candidate, &workspace)?;
+    let canonical_gitfile = canonical_path(&git_entry, &workspace)?;
+    if canonical_backlink != canonical_gitfile {
+        return Err(not_git_root(&workspace));
+    }
+
+    let head_path = admin_dir.join("HEAD");
+    let _ = read_metadata_file(&head_path, &workspace)?;
+    Ok(GitMetadata {
+        // Match the platform's canonical spelling for linked worktrees; the
+        // native admin backlink is defined in terms of that same identity.
+        workspace: canonical_workspace,
+        head_path,
+    })
+}
+
+fn is_parent_component(component: std::path::Component<'_>) -> bool {
+    matches!(component, std::path::Component::ParentDir)
+}
+
+fn resolve_metadata_pointer(
+    directive: &str,
+    containing_dir: &Path,
+    workspace: &Path,
+) -> Result<PathBuf, WorkspaceError> {
+    let pointer = PathBuf::from(directive);
+    if pointer.is_absolute() {
+        if pointer.components().any(is_parent_component) {
+            return Err(not_git_root(workspace));
+        }
+        Ok(pointer)
+    } else {
+        Ok(containing_dir.join(pointer))
+    }
+}
+
+fn normalize_metadata_pointer(directive: &str, resolved: &Path) -> PathBuf {
+    if Path::new(directive).is_absolute() {
+        normalize_canonical(resolved.to_path_buf())
+    } else {
+        normalize_lexical(resolved)
+    }
+}
+
+fn not_git_root(workspace: &Path) -> WorkspaceError {
+    WorkspaceError::NotGitRoot {
+        path: workspace.display().to_string(),
+    }
+}
+
+fn canonical_path(path: &Path, workspace: &Path) -> Result<PathBuf, WorkspaceError> {
+    path.canonicalize()
+        .map(normalize_canonical)
+        .map_err(|_| not_git_root(workspace))
+}
+
+fn require_plain_directory(path: &Path, workspace: &Path) -> Result<(), WorkspaceError> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| not_git_root(workspace))?;
+    if metadata.is_dir() && !metadata.file_type().is_symlink() {
+        Ok(())
+    } else {
+        Err(not_git_root(workspace))
+    }
+}
+
+fn require_plain_reference_storage(
+    common_dir: &Path,
+    workspace: &Path,
+) -> Result<(), WorkspaceError> {
+    let refs = common_dir.join("refs");
+    match std::fs::symlink_metadata(&refs) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            require_plain_directory(&common_dir.join("reftable"), workspace)
+        }
+        Ok(_) | Err(_) => Err(not_git_root(workspace)),
+    }
+}
+
+fn read_metadata_file(path: &Path, workspace: &Path) -> Result<String, WorkspaceError> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| not_git_root(workspace))?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(not_git_root(workspace));
+    }
+    std::fs::read_to_string(path).map_err(|_| not_git_root(workspace))
+}
+
+fn parse_single_line<'a>(content: &'a str, workspace: &Path) -> Result<&'a str, WorkspaceError> {
+    let mut lines = content.lines();
+    let line = lines.next().ok_or_else(|| not_git_root(workspace))?;
+    if line.is_empty() || lines.next().is_some() {
+        return Err(not_git_root(workspace));
+    }
+    Ok(line)
 }
 
 /// Load or create the persisted workspace identifier for a workspace root.
@@ -89,15 +255,7 @@ pub fn canonicalize_workspace(path: &str) -> Result<PathBuf, WorkspaceError> {
 /// the workspace root, or the persisted `.workspace-id` file cannot be read or
 /// written safely.
 pub fn load_or_create_workspace_id(path: &Path) -> Result<Uuid, EngramError> {
-    let canonical =
-        normalize_canonical(path.canonicalize().map_err(|_| WorkspaceError::NotFound {
-            path: path.display().to_string(),
-        })?);
-    if !canonical.join(".git").is_dir() {
-        return Err(EngramError::Workspace(WorkspaceError::NotGitRoot {
-            path: canonical.display().to_string(),
-        }));
-    }
+    let canonical = normalize_canonical(resolve_git_metadata(path)?.workspace);
 
     let engram_dir = canonical.join(".engram");
     std::fs::create_dir_all(&engram_dir).map_err(|_| {
@@ -118,7 +276,7 @@ pub fn load_or_create_workspace_id(path: &Path) -> Result<Uuid, EngramError> {
     }
 
     let id_path = canonical_engram.join(".workspace-id");
-    if id_path.exists() {
+    if workspace_id_entry_exists(&id_path)? {
         return read_workspace_id(&id_path);
     }
 
@@ -138,11 +296,9 @@ pub fn load_or_create_workspace_id(path: &Path) -> Result<Uuid, EngramError> {
             path: id_path.display().to_string(),
         })
     })?;
-    match temp_file.persist(&id_path) {
+    match temp_file.persist_noclobber(&id_path) {
         Ok(_) => Ok(workspace_id),
-        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
-            read_workspace_id(&id_path)
-        }
+        Err(_) if workspace_id_entry_exists(&id_path)? => read_workspace_id(&id_path),
         Err(_) => Err(EngramError::System(SystemError::FlushFailed {
             path: id_path.display().to_string(),
         })),
@@ -174,7 +330,7 @@ pub fn daemon_key_for_workspace(path: &Path) -> Result<String, EngramError> {
             path: path.display().to_string(),
         })?);
     let id_path = workspace_id_path(&canonical);
-    if id_path.exists() {
+    if workspace_id_entry_exists(&id_path)? {
         return workspace_key(&canonical);
     }
 
@@ -197,16 +353,120 @@ fn workspace_id_path(path: &Path) -> PathBuf {
     path.join(".engram").join(".workspace-id")
 }
 
+fn workspace_id_entry_exists(id_path: &Path) -> Result<bool, EngramError> {
+    match std::fs::symlink_metadata(id_path) {
+        Ok(metadata) => {
+            if is_workspace_id_link_or_reparse(&metadata) {
+                return Err(unsafe_workspace_id_error(
+                    id_path,
+                    "linked or reparse leaves are not allowed",
+                ));
+            }
+            if !metadata.is_file() {
+                return Err(unsafe_workspace_id_error(
+                    id_path,
+                    "the identity leaf must be a regular file",
+                ));
+            }
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(_) => Err(workspace_id_io_error(id_path)),
+    }
+}
+
+fn is_workspace_id_link_or_reparse(metadata: &std::fs::Metadata) -> bool {
+    let is_link = metadata.file_type().is_symlink();
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt as _;
+
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+        is_link || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    {
+        is_link
+    }
+}
+
 fn read_workspace_id(id_path: &Path) -> Result<Uuid, EngramError> {
-    let raw = std::fs::read_to_string(id_path).map_err(|_| {
-        EngramError::System(SystemError::FlushFailed {
-            path: id_path.display().to_string(),
-        })
+    if !workspace_id_entry_exists(id_path)? {
+        return Err(workspace_id_io_error(id_path));
+    }
+
+    let parent = id_path.parent().ok_or_else(|| {
+        unsafe_workspace_id_error(id_path, "the identity leaf has no parent directory")
     })?;
+    let file_name = id_path
+        .file_name()
+        .ok_or_else(|| unsafe_workspace_id_error(id_path, "the identity leaf has no file name"))?;
+    let directory = Dir::open_ambient_dir(parent, ambient_authority())
+        .map_err(|_| workspace_id_io_error(id_path))?;
+    let mut options = OpenOptions::new();
+    options.read(true).follow(FollowSymlinks::No);
+    #[cfg(unix)]
+    {
+        use cap_std::fs::OpenOptionsExt as _;
+        use rustix::fs::OFlags;
+
+        let flags = OFlags::NOFOLLOW | OFlags::NONBLOCK;
+        let custom_flags = i32::try_from(flags.bits()).map_err(|error| {
+            unsafe_workspace_id_error(
+                id_path,
+                format!("no-follow flags are not representable: {error}"),
+            )
+        })?;
+        options.custom_flags(custom_flags);
+    }
+    let mut file = directory
+        .open_with(Path::new(file_name), &options)
+        .map_err(|_| workspace_id_io_error(id_path))?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| workspace_id_io_error(id_path))?;
+    #[cfg(windows)]
+    {
+        use cap_std::fs::MetadataExt as _;
+
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(unsafe_workspace_id_error(
+                id_path,
+                "linked or reparse leaves are not allowed",
+            ));
+        }
+    }
+    if !metadata.is_file() {
+        return Err(unsafe_workspace_id_error(
+            id_path,
+            "the opened identity leaf is not a regular file",
+        ));
+    }
+
+    let mut raw = String::new();
+    file.read_to_string(&mut raw)
+        .map_err(|_| workspace_id_io_error(id_path))?;
     Uuid::parse_str(raw.trim()).map_err(|e| {
         EngramError::System(SystemError::InvalidParams {
             reason: format!("invalid workspace-id '{}': {e}", id_path.display()),
         })
+    })
+}
+
+fn workspace_id_io_error(id_path: &Path) -> EngramError {
+    EngramError::System(SystemError::FlushFailed {
+        path: id_path.display().to_string(),
+    })
+}
+
+fn unsafe_workspace_id_error(id_path: &Path, reason: impl Into<String>) -> EngramError {
+    EngramError::System(SystemError::InvalidParams {
+        reason: format!(
+            "unsafe workspace-id '{}': {}",
+            id_path.display(),
+            reason.into()
+        ),
     })
 }
 
@@ -231,11 +491,9 @@ pub fn workspace_hash(path: &Path, branch: &str) -> String {
 /// Reads `.git/HEAD` directly (no subprocess) and extracts the branch name.
 /// Returns a truncated commit SHA when HEAD is detached.
 pub fn resolve_git_branch(workspace: &Path) -> Result<String, WorkspaceError> {
-    let head_path = workspace.join(".git").join("HEAD");
-    let head_content =
-        std::fs::read_to_string(&head_path).map_err(|_| WorkspaceError::NotGitRoot {
-            path: workspace.display().to_string(),
-        })?;
+    let metadata = resolve_git_metadata(workspace)?;
+    let head_path = metadata.head_path;
+    let head_content = read_metadata_file(&head_path, &metadata.workspace)?;
 
     let head = head_content.trim();
     if let Some(branch) = head.strip_prefix("ref: refs/heads/") {
@@ -334,13 +592,34 @@ fn normalize_for_containment(path: &Path) -> PathBuf {
 mod tests {
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
 
     use tempfile::TempDir;
     use uuid::Uuid;
 
+    use super::daemon_key_for_workspace;
     use super::is_data_dir_within_workspace;
     use super::load_or_create_workspace_id;
     use crate::errors::{EngramError, WorkspaceError};
+
+    #[cfg(unix)]
+    fn symlink_file(source: &std::path::Path, link: &std::path::Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(source, link)
+    }
+
+    #[cfg(windows)]
+    fn symlink_file(source: &std::path::Path, link: &std::path::Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_file(source, link)
+    }
+
+    fn create_symlink_file(source: &std::path::Path, link: &std::path::Path) -> bool {
+        match symlink_file(source, link) {
+            Ok(()) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => false,
+            Err(error) => panic!("create file symlink: {error}"),
+        }
+    }
 
     fn create_workspace() -> TempDir {
         let workspace = tempfile::tempdir().expect("workspace tempdir");
@@ -419,6 +698,82 @@ mod tests {
         let persisted = fs::read_to_string(&id_path).expect("read persisted workspace-id");
 
         assert_eq!(persisted.trim(), created.to_string());
+    }
+
+    #[test]
+    fn concurrent_cold_starts_share_the_atomically_created_workspace_id() {
+        const STARTERS: usize = 32;
+
+        let workspace = create_workspace();
+        fs::create_dir(workspace.path().join(".engram")).expect("create .engram");
+        let workspace_path = Arc::new(workspace.path().to_path_buf());
+        let start = Arc::new(Barrier::new(STARTERS));
+        let handles: Vec<_> = (0..STARTERS)
+            .map(|_| {
+                let workspace_path = Arc::clone(&workspace_path);
+                let start = Arc::clone(&start);
+                thread::spawn(move || {
+                    start.wait();
+                    load_or_create_workspace_id(&workspace_path)
+                })
+            })
+            .collect();
+
+        let returned_ids: Vec<_> = handles
+            .into_iter()
+            .map(|handle| {
+                handle
+                    .join()
+                    .expect("workspace-id starter must not panic")
+                    .expect("workspace-id starter must succeed")
+            })
+            .collect();
+        let persisted_id = fs::read_to_string(workspace.path().join(".engram/.workspace-id"))
+            .expect("read winning workspace-id");
+
+        assert!(
+            returned_ids.windows(2).all(|pair| pair[0] == pair[1]),
+            "every concurrent cold start must return the winning persisted identity: {returned_ids:?}"
+        );
+        assert_eq!(
+            returned_ids[0].to_string(),
+            persisted_id.trim(),
+            "the identity returned to every starter must match the persisted winner"
+        );
+    }
+
+    #[test]
+    fn workspace_id_symlink_leaf_is_rejected_by_load_and_daemon_discovery() {
+        let workspace = create_workspace();
+        let outside = tempfile::tempdir().expect("outside tempdir");
+        let external_id = Uuid::new_v4();
+        let external_id_path = outside.path().join("external-workspace-id");
+        fs::write(&external_id_path, format!("{external_id}\n"))
+            .expect("write external workspace-id");
+
+        let engram_dir = workspace.path().join(".engram");
+        fs::create_dir(&engram_dir).expect("create .engram");
+        let id_path = engram_dir.join(".workspace-id");
+        if !create_symlink_file(&external_id_path, &id_path) {
+            return;
+        }
+
+        let load_result = load_or_create_workspace_id(workspace.path());
+        let daemon_key_result = daemon_key_for_workspace(workspace.path());
+
+        assert!(
+            load_result.is_err(),
+            "workspace-id load must not source identity through a symlink leaf"
+        );
+        assert!(
+            daemon_key_result.is_err(),
+            "daemon discovery must not treat a workspace-id symlink as a legacy or readable leaf"
+        );
+        assert_eq!(
+            fs::read_to_string(external_id_path).expect("read external workspace-id"),
+            format!("{external_id}\n"),
+            "rejected identity lookup must not alter the external target"
+        );
     }
 
     #[test]

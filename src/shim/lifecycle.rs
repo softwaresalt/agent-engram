@@ -8,12 +8,14 @@
 
 use std::path::Path;
 use std::time::Duration;
+use std::{future::Future, process::ExitStatus};
 
 use serde_json::Value;
 use tracing::{debug, info, instrument};
 
 use crate::daemon::ipc_server::ipc_endpoint;
 use crate::daemon::protocol::{HealthCheckResult, IpcRequest};
+use crate::db::workspace::{canonicalize_workspace, normalize_canonical};
 use crate::errors::{DaemonError, EngramError, IpcError};
 use crate::shim::pidfile::PidFile;
 use crate::shim::version::ensure_protocol_compatible;
@@ -26,6 +28,10 @@ const INITIAL_BACKOFF_MS: u64 = 10;
 const MAX_BACKOFF_MS: u64 = 500;
 /// Default total wall-clock budget allowed for the ready-wait loop (milliseconds).
 const DEFAULT_READY_TIMEOUT_MS: u64 = 30_000;
+/// Brief budget for a concurrent winner to publish readiness or PID metadata.
+const WINNER_PUBLICATION_GRACE_MS: u64 = 750;
+/// Poll interval used only after this shim's exact child exits.
+const WINNER_PUBLICATION_POLL_MS: u64 = 25;
 /// Maximum number of daemon respawns per shim invocation.
 pub(crate) const MAX_RESPAWN_ATTEMPTS: u8 = 1;
 /// Maximum duration for a live-daemon pipe reachability probe.
@@ -143,9 +149,10 @@ async fn daemon_ready(endpoint: &str) -> Result<bool, EngramError> {
 /// - The daemon does not become healthy within the configured timeout ms.
 #[instrument(fields(workspace = %workspace.display()))]
 pub async fn ensure_daemon_running(workspace: &Path) -> Result<(), EngramError> {
-    let endpoint = ipc_endpoint(workspace)?;
+    let canonical = normalize_canonical(canonicalize_workspace(&workspace.to_string_lossy())?);
+    let endpoint = ipc_endpoint(&canonical)?;
 
-    ensure_daemon_running_with_endpoint(workspace, endpoint).await
+    ensure_daemon_running_inner(&canonical, endpoint, MAX_RESPAWN_ATTEMPTS).await
 }
 
 /// Ensure the daemon is running for `workspace`, starting from a specific
@@ -162,7 +169,8 @@ pub async fn ensure_daemon_running_with_endpoint(
     workspace: &Path,
     endpoint: String,
 ) -> Result<(), EngramError> {
-    ensure_daemon_running_inner(workspace, endpoint, MAX_RESPAWN_ATTEMPTS).await
+    let canonical = normalize_canonical(canonicalize_workspace(&workspace.to_string_lossy())?);
+    ensure_daemon_running_inner(&canonical, endpoint, MAX_RESPAWN_ATTEMPTS).await
 }
 
 async fn ensure_daemon_running_inner(
@@ -231,7 +239,7 @@ async fn ensure_daemon_running_inner(
                         pid = pid_file.pid,
                         "reusing reachable daemon from PID metadata"
                     );
-                    return poll_until_ready(&endpoint).await;
+                    return poll_until_ready(workspace, &endpoint, None).await;
                 }
                 Err(e) if respawns_remaining > 0 => {
                     info!(
@@ -259,9 +267,9 @@ async fn ensure_daemon_running_inner(
         }
     }
 
-    spawn_daemon(workspace)?;
+    let mut child = spawn_daemon(workspace)?;
     let endpoint = ipc_endpoint(workspace)?;
-    poll_until_ready(&endpoint).await
+    poll_until_ready(workspace, &endpoint, Some(&mut child)).await
 }
 
 /// Build a daemon-spawn error for the debug-only capture seam.
@@ -354,7 +362,7 @@ fn open_test_autospawn_trace_files(
 }
 
 /// Spawn the daemon as a detached child process for the given workspace.
-fn spawn_daemon(workspace: &Path) -> Result<(), EngramError> {
+fn spawn_daemon(workspace: &Path) -> Result<tokio::process::Child, EngramError> {
     let workspace_str = workspace.to_str().ok_or_else(|| {
         EngramError::Daemon(DaemonError::SpawnFailed {
             reason: "workspace path contains non-UTF-8 characters".to_owned(),
@@ -403,9 +411,7 @@ fn spawn_daemon(workspace: &Path) -> Result<(), EngramError> {
         EngramError::Daemon(DaemonError::SpawnFailed {
             reason: format!("failed to spawn daemon: {e}"),
         })
-    })?;
-
-    Ok(())
+    })
 }
 
 async fn respawn_daemon(
@@ -415,9 +421,9 @@ async fn respawn_daemon(
 ) -> Result<String, EngramError> {
     request_shutdown(endpoint).await;
     wait_for_daemon_exit(endpoint, pid_hint).await?;
-    spawn_daemon(workspace)?;
+    let mut child = spawn_daemon(workspace)?;
     let endpoint = ipc_endpoint(workspace)?;
-    poll_until_ready(&endpoint).await?;
+    poll_until_ready(workspace, &endpoint, Some(&mut child)).await?;
     Ok(endpoint)
 }
 
@@ -520,13 +526,79 @@ fn live_daemon_pid(workspace: &Path) -> Result<Option<PidFile>, EngramError> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConcurrentWinner {
+    EndpointReady,
+    PidPublished,
+}
+
+async fn wait_for_concurrent_winner<Ready, ReadyFuture, LivePid>(
+    mut endpoint_ready: Ready,
+    mut independently_owned_pid_is_live: LivePid,
+    timeout: Duration,
+    poll_interval: Duration,
+) -> Result<Option<ConcurrentWinner>, EngramError>
+where
+    Ready: FnMut() -> ReadyFuture,
+    ReadyFuture: Future<Output = Result<bool, EngramError>>,
+    LivePid: FnMut() -> Result<bool, EngramError>,
+{
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    loop {
+        if endpoint_ready().await? {
+            return Ok(Some(ConcurrentWinner::EndpointReady));
+        }
+        if independently_owned_pid_is_live()? {
+            return Ok(Some(ConcurrentWinner::PidPublished));
+        }
+
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Ok(None);
+        }
+        tokio::time::sleep(poll_interval.min(remaining)).await;
+    }
+}
+
+async fn resolve_spawned_child_exit(
+    workspace: &Path,
+    endpoint: &str,
+    spawned_pid: Option<u32>,
+    status: ExitStatus,
+) -> Result<ConcurrentWinner, EngramError> {
+    let winner = wait_for_concurrent_winner(
+        || daemon_ready(endpoint),
+        || {
+            live_daemon_pid(workspace)
+                .map(|pid_file| pid_file.is_some_and(|pid_file| Some(pid_file.pid) != spawned_pid))
+        },
+        Duration::from_millis(WINNER_PUBLICATION_GRACE_MS),
+        Duration::from_millis(WINNER_PUBLICATION_POLL_MS),
+    )
+    .await?;
+
+    winner.ok_or_else(|| {
+        EngramError::Daemon(DaemonError::SpawnFailed {
+            reason: format!(
+                "spawned daemon exited before readiness with status {status}; \
+                 no concurrent winner published within {WINNER_PUBLICATION_GRACE_MS} ms"
+            ),
+        })
+    })
+}
+
 /// Poll the health endpoint with exponential backoff until the daemon is ready.
 ///
 /// Polls with exponential backoff (capped at [`MAX_BACKOFF_MS`]) until the
 /// wall-clock deadline computed from [`ready_timeout_ms()`] is exceeded. One
 /// final probe is made after the deadline to handle the race where a
 /// concurrent shim spawned the daemon just ahead of us.
-async fn poll_until_ready(endpoint: &str) -> Result<(), EngramError> {
+async fn poll_until_ready(
+    workspace: &Path,
+    endpoint: &str,
+    mut spawned_child: Option<&mut tokio::process::Child>,
+) -> Result<(), EngramError> {
     let timeout_ms = ready_timeout_ms();
     let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
     let mut delay_ms = INITIAL_BACKOFF_MS;
@@ -540,6 +612,37 @@ async fn poll_until_ready(endpoint: &str) -> Result<(), EngramError> {
         if daemon_ready(endpoint).await? {
             info!(attempt, "daemon reached ready state");
             return Ok(());
+        }
+
+        if let Some(child) = spawned_child.as_deref_mut() {
+            let spawned_pid = child.id();
+            let exit_status = child.try_wait().map_err(|error| {
+                EngramError::Daemon(DaemonError::SpawnFailed {
+                    reason: format!("failed to inspect spawned daemon status: {error}"),
+                })
+            })?;
+            if let Some(status) = exit_status {
+                // A concurrent shim can win the workspace lock while our exact
+                // child exits. Its ready endpoint or independently-owned PID
+                // metadata may be published just after the child exit becomes
+                // visible, so allow only a brief grace window for that proof.
+                match resolve_spawned_child_exit(workspace, endpoint, spawned_pid, status).await? {
+                    ConcurrentWinner::EndpointReady => {
+                        info!(
+                            %status,
+                            "spawned daemon exited after a concurrent daemon became ready"
+                        );
+                        return Ok(());
+                    }
+                    ConcurrentWinner::PidPublished => {
+                        info!(
+                            %status,
+                            "spawned daemon exited after a concurrent daemon published PID metadata"
+                        );
+                        spawned_child = None;
+                    }
+                }
+            }
         }
 
         if tokio::time::Instant::now() >= deadline {
@@ -591,6 +694,25 @@ mod tests {
             parse_timeout_ms(Some("not_a_number")),
             DEFAULT_READY_TIMEOUT_MS
         );
+    }
+
+    #[tokio::test]
+    async fn concurrent_winner_publication_grace_observes_delayed_independent_pid() {
+        let mut pid_checks = 0_u8;
+        let winner = wait_for_concurrent_winner(
+            || async { Ok(false) },
+            || {
+                pid_checks += 1;
+                Ok(pid_checks == 3)
+            },
+            Duration::from_secs(1),
+            Duration::from_millis(1),
+        )
+        .await
+        .expect("winner publication helper");
+
+        assert_eq!(winner, Some(ConcurrentWinner::PidPublished));
+        assert_eq!(pid_checks, 3);
     }
 
     #[test]
