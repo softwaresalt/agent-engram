@@ -14,6 +14,7 @@ use tracing::{debug, info, instrument};
 
 use crate::daemon::ipc_server::ipc_endpoint;
 use crate::daemon::protocol::{HealthCheckResult, IpcRequest};
+use crate::db::workspace::{canonicalize_workspace, normalize_canonical};
 use crate::errors::{DaemonError, EngramError, IpcError};
 use crate::shim::pidfile::PidFile;
 use crate::shim::version::ensure_protocol_compatible;
@@ -143,9 +144,10 @@ async fn daemon_ready(endpoint: &str) -> Result<bool, EngramError> {
 /// - The daemon does not become healthy within the configured timeout ms.
 #[instrument(fields(workspace = %workspace.display()))]
 pub async fn ensure_daemon_running(workspace: &Path) -> Result<(), EngramError> {
-    let endpoint = ipc_endpoint(workspace)?;
+    let canonical = normalize_canonical(canonicalize_workspace(&workspace.to_string_lossy())?);
+    let endpoint = ipc_endpoint(&canonical)?;
 
-    ensure_daemon_running_with_endpoint(workspace, endpoint).await
+    ensure_daemon_running_inner(&canonical, endpoint, MAX_RESPAWN_ATTEMPTS).await
 }
 
 /// Ensure the daemon is running for `workspace`, starting from a specific
@@ -162,7 +164,8 @@ pub async fn ensure_daemon_running_with_endpoint(
     workspace: &Path,
     endpoint: String,
 ) -> Result<(), EngramError> {
-    ensure_daemon_running_inner(workspace, endpoint, MAX_RESPAWN_ATTEMPTS).await
+    let canonical = normalize_canonical(canonicalize_workspace(&workspace.to_string_lossy())?);
+    ensure_daemon_running_inner(&canonical, endpoint, MAX_RESPAWN_ATTEMPTS).await
 }
 
 async fn ensure_daemon_running_inner(
@@ -231,7 +234,7 @@ async fn ensure_daemon_running_inner(
                         pid = pid_file.pid,
                         "reusing reachable daemon from PID metadata"
                     );
-                    return poll_until_ready(&endpoint).await;
+                    return poll_until_ready(workspace, &endpoint, None).await;
                 }
                 Err(e) if respawns_remaining > 0 => {
                     info!(
@@ -259,9 +262,9 @@ async fn ensure_daemon_running_inner(
         }
     }
 
-    spawn_daemon(workspace)?;
+    let mut child = spawn_daemon(workspace)?;
     let endpoint = ipc_endpoint(workspace)?;
-    poll_until_ready(&endpoint).await
+    poll_until_ready(workspace, &endpoint, Some(&mut child)).await
 }
 
 /// Build a daemon-spawn error for the debug-only capture seam.
@@ -354,7 +357,7 @@ fn open_test_autospawn_trace_files(
 }
 
 /// Spawn the daemon as a detached child process for the given workspace.
-fn spawn_daemon(workspace: &Path) -> Result<(), EngramError> {
+fn spawn_daemon(workspace: &Path) -> Result<tokio::process::Child, EngramError> {
     let workspace_str = workspace.to_str().ok_or_else(|| {
         EngramError::Daemon(DaemonError::SpawnFailed {
             reason: "workspace path contains non-UTF-8 characters".to_owned(),
@@ -403,9 +406,7 @@ fn spawn_daemon(workspace: &Path) -> Result<(), EngramError> {
         EngramError::Daemon(DaemonError::SpawnFailed {
             reason: format!("failed to spawn daemon: {e}"),
         })
-    })?;
-
-    Ok(())
+    })
 }
 
 async fn respawn_daemon(
@@ -415,9 +416,9 @@ async fn respawn_daemon(
 ) -> Result<String, EngramError> {
     request_shutdown(endpoint).await;
     wait_for_daemon_exit(endpoint, pid_hint).await?;
-    spawn_daemon(workspace)?;
+    let mut child = spawn_daemon(workspace)?;
     let endpoint = ipc_endpoint(workspace)?;
-    poll_until_ready(&endpoint).await?;
+    poll_until_ready(workspace, &endpoint, Some(&mut child)).await?;
     Ok(endpoint)
 }
 
@@ -526,7 +527,11 @@ fn live_daemon_pid(workspace: &Path) -> Result<Option<PidFile>, EngramError> {
 /// wall-clock deadline computed from [`ready_timeout_ms()`] is exceeded. One
 /// final probe is made after the deadline to handle the race where a
 /// concurrent shim spawned the daemon just ahead of us.
-async fn poll_until_ready(endpoint: &str) -> Result<(), EngramError> {
+async fn poll_until_ready(
+    workspace: &Path,
+    endpoint: &str,
+    mut spawned_child: Option<&mut tokio::process::Child>,
+) -> Result<(), EngramError> {
     let timeout_ms = ready_timeout_ms();
     let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
     let mut delay_ms = INITIAL_BACKOFF_MS;
@@ -540,6 +545,32 @@ async fn poll_until_ready(endpoint: &str) -> Result<(), EngramError> {
         if daemon_ready(endpoint).await? {
             info!(attempt, "daemon reached ready state");
             return Ok(());
+        }
+
+        if let Some(child) = spawned_child.as_deref_mut() {
+            let exit_status = child.try_wait().map_err(|error| {
+                EngramError::Daemon(DaemonError::SpawnFailed {
+                    reason: format!("failed to inspect spawned daemon status: {error}"),
+                })
+            })?;
+            if let Some(status) = exit_status {
+                // A concurrent shim can win the workspace lock while our exact
+                // child exits. Keep waiting only when independently-owned PID
+                // metadata proves that another daemon is alive.
+                if live_daemon_pid(workspace)?.is_some() {
+                    info!(
+                        %status,
+                        "spawned daemon exited after a concurrent daemon won startup"
+                    );
+                    spawned_child = None;
+                } else {
+                    return Err(EngramError::Daemon(DaemonError::SpawnFailed {
+                        reason: format!(
+                            "spawned daemon exited before readiness with status {status}"
+                        ),
+                    }));
+                }
+            }
         }
 
         if tokio::time::Instant::now() >= deadline {

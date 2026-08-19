@@ -56,29 +56,160 @@ pub(crate) fn normalize_canonical(path: PathBuf) -> PathBuf {
 
 /// Canonicalize and validate a workspace path; ensures .git exists at root.
 pub fn canonicalize_workspace(path: &str) -> Result<PathBuf, WorkspaceError> {
-    let candidate = Path::new(path);
-    if !candidate.exists() {
-        return Err(WorkspaceError::NotFound {
-            path: path.to_string(),
+    resolve_git_metadata(Path::new(path)).map(|metadata| metadata.workspace)
+}
+
+#[derive(Debug)]
+struct GitMetadata {
+    workspace: PathBuf,
+    head_path: PathBuf,
+}
+
+/// Resolve the workspace's Git metadata without following an unvalidated
+/// gitfile. Linked-worktree metadata is outside the workspace by design, so
+/// every native backlink is checked before the admin directory is trusted.
+fn resolve_git_metadata(path: &Path) -> Result<GitMetadata, WorkspaceError> {
+    let canonical_workspace = path.canonicalize().map_err(|_| WorkspaceError::NotFound {
+        path: path.display().to_string(),
+    })?;
+    let workspace = normalize_canonical(canonical_workspace.clone());
+    let git_entry = workspace.join(".git");
+    let entry_metadata =
+        std::fs::symlink_metadata(&git_entry).map_err(|_| WorkspaceError::NotGitRoot {
+            path: workspace.display().to_string(),
+        })?;
+
+    if entry_metadata.file_type().is_symlink() {
+        return Err(not_git_root(&workspace));
+    }
+
+    if entry_metadata.is_dir() {
+        let canonical_git_dir = canonical_path(&git_entry, &workspace)?;
+        if canonical_git_dir.parent() != Some(workspace.as_path()) {
+            return Err(not_git_root(&workspace));
+        }
+        return Ok(GitMetadata {
+            workspace,
+            head_path: canonical_git_dir.join("HEAD"),
         });
     }
 
-    let canonical =
-        normalize_canonical(
-            candidate
-                .canonicalize()
-                .map_err(|_| WorkspaceError::NotFound {
-                    path: path.to_string(),
-                })?,
-        );
-
-    if !canonical.join(".git").is_dir() {
-        return Err(WorkspaceError::NotGitRoot {
-            path: canonical.display().to_string(),
-        });
+    if !entry_metadata.is_file() {
+        return Err(not_git_root(&workspace));
     }
 
-    Ok(canonical)
+    let gitfile = read_metadata_file(&git_entry, &workspace)?;
+    let directive = parse_single_line(&gitfile, &workspace)?;
+    let admin_text = directive
+        .strip_prefix("gitdir: ")
+        .ok_or_else(|| not_git_root(&workspace))?;
+    if admin_text.is_empty() || admin_text.trim() != admin_text {
+        return Err(not_git_root(&workspace));
+    }
+    let admin_path = PathBuf::from(admin_text);
+    if !admin_path.is_absolute() || admin_path.components().any(is_parent_component) {
+        return Err(not_git_root(&workspace));
+    }
+    let admin_dir = canonical_path(&admin_path, &workspace)?;
+    require_plain_directory(&admin_path, &workspace)?;
+    if normalize_canonical(admin_path) != admin_dir {
+        return Err(not_git_root(&workspace));
+    }
+
+    let commondir_path = admin_dir.join("commondir");
+    let commondir_content = read_metadata_file(&commondir_path, &workspace)?;
+    let common_directive = parse_single_line(&commondir_content, &workspace)?;
+    if common_directive.is_empty() || common_directive.trim() != common_directive {
+        return Err(not_git_root(&workspace));
+    }
+    let commondir_path = PathBuf::from(common_directive);
+    let common_candidate = if commondir_path.is_absolute() {
+        commondir_path
+    } else {
+        admin_dir.join(commondir_path)
+    };
+    require_plain_directory(&common_candidate, &workspace)?;
+    let common_dir = canonical_path(&common_candidate, &workspace)?;
+
+    let worktrees_candidate = common_dir.join("worktrees");
+    require_plain_directory(&worktrees_candidate, &workspace)?;
+    require_plain_directory(&common_dir.join("objects"), &workspace)?;
+    require_plain_directory(&common_dir.join("refs"), &workspace)?;
+    let worktrees_dir = canonical_path(&worktrees_candidate, &workspace)?;
+    let _ = read_metadata_file(&common_dir.join("HEAD"), &workspace)?;
+    if admin_dir.parent() != Some(worktrees_dir.as_path()) {
+        return Err(not_git_root(&workspace));
+    }
+
+    let backlink_path = admin_dir.join("gitdir");
+    let backlink_content = read_metadata_file(&backlink_path, &workspace)?;
+    let backlink = parse_single_line(&backlink_content, &workspace)?;
+    if backlink.is_empty() || backlink.trim() != backlink {
+        return Err(not_git_root(&workspace));
+    }
+    let backlink = PathBuf::from(backlink);
+    if !backlink.is_absolute() || backlink.components().any(is_parent_component) {
+        return Err(not_git_root(&workspace));
+    }
+    if normalize_canonical(backlink.clone()) != git_entry {
+        return Err(not_git_root(&workspace));
+    }
+    let canonical_backlink = canonical_path(&backlink, &workspace)?;
+    let canonical_gitfile = canonical_path(&git_entry, &workspace)?;
+    if canonical_backlink != canonical_gitfile {
+        return Err(not_git_root(&workspace));
+    }
+
+    let head_path = admin_dir.join("HEAD");
+    let _ = read_metadata_file(&head_path, &workspace)?;
+    Ok(GitMetadata {
+        // Match the platform's canonical spelling for linked worktrees; the
+        // native admin backlink is defined in terms of that same identity.
+        workspace: canonical_workspace,
+        head_path,
+    })
+}
+
+fn is_parent_component(component: std::path::Component<'_>) -> bool {
+    matches!(component, std::path::Component::ParentDir)
+}
+
+fn not_git_root(workspace: &Path) -> WorkspaceError {
+    WorkspaceError::NotGitRoot {
+        path: workspace.display().to_string(),
+    }
+}
+
+fn canonical_path(path: &Path, workspace: &Path) -> Result<PathBuf, WorkspaceError> {
+    path.canonicalize()
+        .map(normalize_canonical)
+        .map_err(|_| not_git_root(workspace))
+}
+
+fn require_plain_directory(path: &Path, workspace: &Path) -> Result<(), WorkspaceError> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| not_git_root(workspace))?;
+    if metadata.is_dir() && !metadata.file_type().is_symlink() {
+        Ok(())
+    } else {
+        Err(not_git_root(workspace))
+    }
+}
+
+fn read_metadata_file(path: &Path, workspace: &Path) -> Result<String, WorkspaceError> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| not_git_root(workspace))?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(not_git_root(workspace));
+    }
+    std::fs::read_to_string(path).map_err(|_| not_git_root(workspace))
+}
+
+fn parse_single_line<'a>(content: &'a str, workspace: &Path) -> Result<&'a str, WorkspaceError> {
+    let mut lines = content.lines();
+    let line = lines.next().ok_or_else(|| not_git_root(workspace))?;
+    if line.is_empty() || lines.next().is_some() {
+        return Err(not_git_root(workspace));
+    }
+    Ok(line)
 }
 
 /// Load or create the persisted workspace identifier for a workspace root.
@@ -89,15 +220,7 @@ pub fn canonicalize_workspace(path: &str) -> Result<PathBuf, WorkspaceError> {
 /// the workspace root, or the persisted `.workspace-id` file cannot be read or
 /// written safely.
 pub fn load_or_create_workspace_id(path: &Path) -> Result<Uuid, EngramError> {
-    let canonical =
-        normalize_canonical(path.canonicalize().map_err(|_| WorkspaceError::NotFound {
-            path: path.display().to_string(),
-        })?);
-    if !canonical.join(".git").is_dir() {
-        return Err(EngramError::Workspace(WorkspaceError::NotGitRoot {
-            path: canonical.display().to_string(),
-        }));
-    }
+    let canonical = normalize_canonical(resolve_git_metadata(path)?.workspace);
 
     let engram_dir = canonical.join(".engram");
     std::fs::create_dir_all(&engram_dir).map_err(|_| {
@@ -231,11 +354,9 @@ pub fn workspace_hash(path: &Path, branch: &str) -> String {
 /// Reads `.git/HEAD` directly (no subprocess) and extracts the branch name.
 /// Returns a truncated commit SHA when HEAD is detached.
 pub fn resolve_git_branch(workspace: &Path) -> Result<String, WorkspaceError> {
-    let head_path = workspace.join(".git").join("HEAD");
-    let head_content =
-        std::fs::read_to_string(&head_path).map_err(|_| WorkspaceError::NotGitRoot {
-            path: workspace.display().to_string(),
-        })?;
+    let metadata = resolve_git_metadata(workspace)?;
+    let head_path = metadata.head_path;
+    let head_content = read_metadata_file(&head_path, &metadata.workspace)?;
 
     let head = head_content.trim();
     if let Some(branch) = head.strip_prefix("ref: refs/heads/") {
