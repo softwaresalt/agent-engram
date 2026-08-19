@@ -109,13 +109,10 @@ fn resolve_git_metadata(path: &Path) -> Result<GitMetadata, WorkspaceError> {
     if admin_text.is_empty() || admin_text.trim() != admin_text {
         return Err(not_git_root(&workspace));
     }
-    let admin_path = PathBuf::from(admin_text);
-    if !admin_path.is_absolute() || admin_path.components().any(is_parent_component) {
-        return Err(not_git_root(&workspace));
-    }
-    let admin_dir = canonical_path(&admin_path, &workspace)?;
-    require_plain_directory(&admin_path, &workspace)?;
-    if normalize_canonical(admin_path) != admin_dir {
+    let admin_candidate = resolve_metadata_pointer(admin_text, &workspace, &workspace)?;
+    let admin_dir = canonical_path(&admin_candidate, &workspace)?;
+    require_plain_directory(&admin_candidate, &workspace)?;
+    if normalize_metadata_pointer(admin_text, &admin_candidate) != admin_dir {
         return Err(not_git_root(&workspace));
     }
 
@@ -137,7 +134,7 @@ fn resolve_git_metadata(path: &Path) -> Result<GitMetadata, WorkspaceError> {
     let worktrees_candidate = common_dir.join("worktrees");
     require_plain_directory(&worktrees_candidate, &workspace)?;
     require_plain_directory(&common_dir.join("objects"), &workspace)?;
-    require_plain_directory(&common_dir.join("refs"), &workspace)?;
+    require_plain_reference_storage(&common_dir, &workspace)?;
     let worktrees_dir = canonical_path(&worktrees_candidate, &workspace)?;
     let _ = read_metadata_file(&common_dir.join("HEAD"), &workspace)?;
     if admin_dir.parent() != Some(worktrees_dir.as_path()) {
@@ -150,14 +147,11 @@ fn resolve_git_metadata(path: &Path) -> Result<GitMetadata, WorkspaceError> {
     if backlink.is_empty() || backlink.trim() != backlink {
         return Err(not_git_root(&workspace));
     }
-    let backlink = PathBuf::from(backlink);
-    if !backlink.is_absolute() || backlink.components().any(is_parent_component) {
+    let backlink_candidate = resolve_metadata_pointer(backlink, &admin_dir, &workspace)?;
+    if normalize_metadata_pointer(backlink, &backlink_candidate) != git_entry {
         return Err(not_git_root(&workspace));
     }
-    if normalize_canonical(backlink.clone()) != git_entry {
-        return Err(not_git_root(&workspace));
-    }
-    let canonical_backlink = canonical_path(&backlink, &workspace)?;
+    let canonical_backlink = canonical_path(&backlink_candidate, &workspace)?;
     let canonical_gitfile = canonical_path(&git_entry, &workspace)?;
     if canonical_backlink != canonical_gitfile {
         return Err(not_git_root(&workspace));
@@ -175,6 +169,30 @@ fn resolve_git_metadata(path: &Path) -> Result<GitMetadata, WorkspaceError> {
 
 fn is_parent_component(component: std::path::Component<'_>) -> bool {
     matches!(component, std::path::Component::ParentDir)
+}
+
+fn resolve_metadata_pointer(
+    directive: &str,
+    containing_dir: &Path,
+    workspace: &Path,
+) -> Result<PathBuf, WorkspaceError> {
+    let pointer = PathBuf::from(directive);
+    if pointer.is_absolute() {
+        if pointer.components().any(is_parent_component) {
+            return Err(not_git_root(workspace));
+        }
+        Ok(pointer)
+    } else {
+        Ok(containing_dir.join(pointer))
+    }
+}
+
+fn normalize_metadata_pointer(directive: &str, resolved: &Path) -> PathBuf {
+    if Path::new(directive).is_absolute() {
+        normalize_canonical(resolved.to_path_buf())
+    } else {
+        normalize_lexical(resolved)
+    }
 }
 
 fn not_git_root(workspace: &Path) -> WorkspaceError {
@@ -195,6 +213,20 @@ fn require_plain_directory(path: &Path, workspace: &Path) -> Result<(), Workspac
         Ok(())
     } else {
         Err(not_git_root(workspace))
+    }
+}
+
+fn require_plain_reference_storage(
+    common_dir: &Path,
+    workspace: &Path,
+) -> Result<(), WorkspaceError> {
+    let refs = common_dir.join("refs");
+    match std::fs::symlink_metadata(&refs) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            require_plain_directory(&common_dir.join("reftable"), workspace)
+        }
+        Ok(_) | Err(_) => Err(not_git_root(workspace)),
     }
 }
 

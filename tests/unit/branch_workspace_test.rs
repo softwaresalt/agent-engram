@@ -31,25 +31,26 @@ fn run_git(repo: &Path, args: &[&str]) {
     );
 }
 
-fn create_real_linked_worktree() -> (TempDir, std::path::PathBuf) {
-    let fixture = TempDir::new().expect("fixture tempdir");
-    let primary = fixture.path().join("primary");
-    let linked = fixture.path().join("linked");
-    fs::create_dir(&primary).expect("create primary checkout");
-    run_git(&primary, &["init", "--initial-branch=main"]);
-    run_git(&primary, &["config", "user.name", "Engram Test"]);
+fn initialize_primary(primary: &Path, extra_init_args: &[&str]) {
+    fs::create_dir(primary).expect("create primary checkout");
+    let mut init_args = vec!["init", "--initial-branch=main"];
+    init_args.extend_from_slice(extra_init_args);
+    run_git(primary, &init_args);
+    run_git(primary, &["config", "user.name", "Engram Test"]);
     run_git(
-        &primary,
+        primary,
         &["config", "user.email", "engram-test@example.invalid"],
     );
     fs::write(primary.join("README.md"), "# fixture\n").expect("write tracked fixture");
-    run_git(&primary, &["add", "README.md"]);
-    run_git(&primary, &["commit", "-m", "fixture"]);
+    run_git(primary, &["add", "README.md"]);
+    run_git(primary, &["commit", "-m", "fixture"]);
+}
 
+fn add_linked_worktree(primary: &Path, linked: &Path, branch: &str) {
     let output = Command::new("git")
-        .args(["worktree", "add", "-b", "feature/linked-startup"])
-        .arg(&linked)
-        .current_dir(&primary)
+        .args(["worktree", "add", "-b", branch])
+        .arg(linked)
+        .current_dir(primary)
         .output()
         .expect("create linked worktree");
     assert!(
@@ -57,7 +58,22 @@ fn create_real_linked_worktree() -> (TempDir, std::path::PathBuf) {
         "git worktree add failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn create_real_linked_worktree() -> (TempDir, std::path::PathBuf) {
+    let fixture = TempDir::new().expect("fixture tempdir");
+    let primary = fixture.path().join("primary");
+    let linked = fixture.path().join("linked");
+    initialize_primary(&primary, &[]);
+    add_linked_worktree(&primary, &linked, "feature/linked-startup");
     (fixture, linked)
+}
+
+fn reftable_is_unsupported(stderr: &str) -> bool {
+    (stderr.contains("unknown option") && stderr.contains("ref-format"))
+        || ((stderr.contains("unknown ref storage format")
+            || stderr.contains("unsupported ref storage format"))
+            && stderr.contains("reftable"))
 }
 
 // ── 122.002-T: linked-worktree security contract ─────────────────────────────
@@ -84,6 +100,108 @@ fn real_linked_worktree_is_admitted_with_its_active_branch() {
         resolve_git_branch(&linked).expect("resolve linked-worktree branch"),
         "feature__linked-startup",
         "branch identity must come from the active linked worktree, not the primary checkout"
+    );
+}
+
+#[test]
+fn real_reftable_linked_worktree_is_admitted_when_git_supports_it() {
+    let fixture = TempDir::new().expect("fixture tempdir");
+    let primary = fixture.path().join("primary");
+    let linked = fixture.path().join("linked");
+    fs::create_dir(&primary).expect("create primary checkout");
+
+    let init = Command::new("git")
+        .args(["init", "--initial-branch=main", "--ref-format=reftable"])
+        .current_dir(&primary)
+        .output()
+        .expect("probe reftable support with git init");
+    if !init.status.success() {
+        let stderr = String::from_utf8_lossy(&init.stderr);
+        assert!(
+            reftable_is_unsupported(&stderr),
+            "git init reftable fixture failed for a reason other than unsupported capability: {stderr}"
+        );
+        return;
+    }
+
+    run_git(&primary, &["config", "user.name", "Engram Test"]);
+    run_git(
+        &primary,
+        &["config", "user.email", "engram-test@example.invalid"],
+    );
+    fs::write(primary.join("README.md"), "# fixture\n").expect("write tracked fixture");
+    run_git(&primary, &["add", "README.md"]);
+    run_git(&primary, &["commit", "-m", "fixture"]);
+    add_linked_worktree(&primary, &linked, "feature/reftable-startup");
+
+    assert!(
+        primary.join(".git").join("reftable").is_dir(),
+        "the fixture must use Git's reftable reference backend"
+    );
+    let legacy_refs = primary.join(".git").join("refs");
+    if legacy_refs.exists() {
+        fs::remove_dir_all(&legacy_refs)
+            .expect("remove optional empty files-backend compatibility directory");
+    }
+    assert!(
+        !legacy_refs.exists(),
+        "the fixture must exercise a reftable repository without a refs directory"
+    );
+    let canonical = canonicalize_workspace(
+        linked
+            .to_str()
+            .expect("linked worktree path must be valid UTF-8"),
+    )
+    .expect("a native reftable linked worktree must be admitted");
+    assert_eq!(
+        canonical,
+        linked.canonicalize().expect("canonical linked worktree")
+    );
+}
+
+#[test]
+fn real_relative_path_linked_worktree_is_admitted_with_its_active_branch() {
+    let fixture = TempDir::new().expect("fixture tempdir");
+    let primary = fixture.path().join("primary");
+    let linked = fixture.path().join("linked");
+    initialize_primary(&primary, &[]);
+    run_git(&primary, &["config", "worktree.useRelativePaths", "true"]);
+    add_linked_worktree(&primary, &linked, "feature/relative-startup");
+
+    let gitfile = fs::read_to_string(linked.join(".git")).expect("read linked gitfile");
+    let admin_pointer = gitfile
+        .trim()
+        .strip_prefix("gitdir: ")
+        .expect("native linked gitfile directive");
+    assert!(
+        !Path::new(admin_pointer).is_absolute(),
+        "worktree.useRelativePaths must produce a relative gitdir pointer"
+    );
+    let admin_dir = linked
+        .join(admin_pointer)
+        .canonicalize()
+        .expect("resolve native relative admin pointer");
+    let backlink =
+        fs::read_to_string(admin_dir.join("gitdir")).expect("read linked admin backlink");
+    assert!(
+        !Path::new(backlink.trim()).is_absolute(),
+        "worktree.useRelativePaths must produce a relative admin backlink"
+    );
+
+    let canonical = canonicalize_workspace(
+        linked
+            .to_str()
+            .expect("linked worktree path must be valid UTF-8"),
+    )
+    .expect("a native relative-path linked worktree must be admitted");
+    assert_eq!(
+        canonical,
+        linked.canonicalize().expect("canonical linked worktree")
+    );
+    assert_eq!(
+        resolve_git_branch(&linked).expect("resolve relative linked-worktree branch"),
+        "feature__relative-startup",
+        "branch identity must come from the active relative-path linked worktree"
     );
 }
 

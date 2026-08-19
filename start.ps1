@@ -61,7 +61,10 @@ function Invoke-EngramCommandWithProgress {
 
     if (-not $process.WaitForExit([int]$remainingMs)) {
       try {
-        $process.Kill($true)
+        # Terminate only the command process started above. A daemon-backed
+        # command may auto-spawn a reusable daemon that outlives this pre-warm;
+        # the launcher does not own that descendant and must not kill it.
+        $process.Kill()
         $process.WaitForExit()
       }
       catch {
