@@ -65,7 +65,10 @@ function Invoke-EngramCommandWithProgress {
         # command may auto-spawn a reusable daemon that outlives this pre-warm;
         # the launcher does not own that descendant and must not kill it.
         $process.Kill()
-        $process.WaitForExit()
+        $cleanupTimeoutMs = 1000
+        if (-not $process.WaitForExit($cleanupTimeoutMs)) {
+          Write-Warning "Timed-out Engram pre-warm process did not exit within $cleanupTimeoutMs ms; continuing fail-open."
+        }
       }
       catch {
         Write-Warning "Timed-out Engram pre-warm process cleanup failed: $_"

@@ -12,6 +12,21 @@ fn write_batch(path: &Path, body: &str) {
 }
 
 #[test]
+fn launcher_timeout_cleanup_wait_is_explicitly_bounded() {
+    let launcher = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("start.ps1"))
+        .expect("read launcher");
+
+    assert!(
+        launcher.contains("$process.WaitForExit($cleanupTimeoutMs)"),
+        "timeout cleanup must use its explicit bounded wait"
+    );
+    assert!(
+        !launcher.contains("$process.WaitForExit()"),
+        "timeout cleanup must not wait indefinitely after killing the exact process"
+    );
+}
+
+#[test]
 fn launcher_fails_open_to_copilot_within_one_prewarm_budget() {
     let fixture = TempDir::new().expect("launcher fixture");
     let launcher = fixture.path().join("start.ps1");
@@ -27,7 +42,7 @@ fn launcher_fails_open_to_copilot_within_one_prewarm_budget() {
     );
     fs::write(
         fixture.path().join("engram.ps1"),
-        "Start-Sleep -Seconds 2\nexit 1\n",
+        "Start-Sleep -Seconds 10\nexit 1\n",
     )
     .expect("write slow Engram fixture");
     fs::write(
@@ -71,8 +86,10 @@ fn launcher_fails_open_to_copilot_within_one_prewarm_budget() {
         "Copilot fixture must be invoked after bounded pre-warm"
     );
     assert!(
-        elapsed < Duration::from_secs(3),
-        "Engram direct/fallback pre-warm must share one wall-clock budget; elapsed: {elapsed:?}"
+        elapsed < Duration::from_secs(8),
+        "Engram direct/fallback pre-warm must share one wall-clock budget; the 8s limit allows \
+         hosted-runner process startup overhead while remaining below the >20s sequential path; \
+         elapsed: {elapsed:?}"
     );
 }
 
