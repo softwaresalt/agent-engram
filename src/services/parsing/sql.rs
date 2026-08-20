@@ -716,7 +716,11 @@ pub(super) mod sql_lineage {
             // lineage → no edge, same as CREATE VIEW/FUNCTION below.
             let procedure =
                 extract_sql_lineage("CREATE PROCEDURE foo() BEGIN END", &ctx).expect("procedure");
-            assert_eq!(procedure.len(), 0, "non-lineage statements resolve zero edges");
+            assert_eq!(
+                procedure.len(),
+                0,
+                "non-lineage statements resolve zero edges"
+            );
 
             // CREATE VIEW is not table lineage → no edge even when resolvable.
             let view =

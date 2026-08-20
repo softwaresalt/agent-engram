@@ -1356,7 +1356,10 @@ fn test_sql_malformed_statement_graceful() {
     let source = "CREATE PROCEDURE ( BEGIN SELEKT * FRUM;;; )) GARBAGE ~~~";
     let result = parse_sql_source(source).expect("malformed SQL must not panic");
     // No strict assertion on symbol count: the only contract is "no panic".
-    assert!(result.symbols.len() <= 1, "unexpected symbol over-extraction from malformed input");
+    assert!(
+        result.symbols.len() <= 1,
+        "unexpected symbol over-extraction from malformed input"
+    );
 }
 
 /// INSERT INTO must produce at least one `ExtractedEdge::References` edge.
