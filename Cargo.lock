@@ -4760,8 +4760,7 @@ dependencies = [
 [[package]]
 name = "tree-sitter-sequel"
 version = "0.3.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d198ad3c319c02e43c21efa1ec796b837afcb96ffaef1a40c1978fbdcec7d17"
+source = "git+https://github.com/softwaresalt/tree-sitter-sql?rev=50837582b5ba15c7acff3be7bf585a1082d90528#50837582b5ba15c7acff3be7bf585a1082d90528"
 dependencies = [
  "cc",
  "tree-sitter-language",
