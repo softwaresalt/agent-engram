@@ -6,14 +6,17 @@
 **Related decision**: `docs/decisions/2026-08-20-tree-sitter-sequel-compatibility-fork-provenance.md`
 **Task**: 123.006-T — runtime verification, observation, and rollback closure
 
-## Runtime Verification (Release-Equivalent Binary)
+## Runtime Verification (Release Binary)
 
-The locally built `engram` binary (`cargo build`, matching the commit under
-review) was run against a representative, isolated SQL workspace containing
-`CREATE TABLE`, `CREATE VIEW`, `CREATE FUNCTION`, and `CREATE PROCEDURE`
-statements, using the full daemon indexing pipeline (`engram install` →
-`.engram/config.toml` with `sql` added to `supported_languages` → `engram
-index` → `engram symbols`).
+The locally built `engram` binary — built via `cargo build --release`,
+matching the release workflow's build profile
+(`.github/workflows/release.yml`, `cargo build --locked --release --target
+... --bin engram`) rather than a debug build — was run against a
+representative, isolated SQL workspace containing `CREATE TABLE`,
+`CREATE VIEW`, `CREATE FUNCTION`, and `CREATE PROCEDURE` statements, using
+the full daemon indexing pipeline (`engram install` → `.engram/config.toml`
+with `sql` added to `supported_languages` → `engram index` → `engram
+symbols`).
 
 ### Fixture
 
@@ -39,7 +42,8 @@ entries:
 | `total_orders` | function | `CREATE FUNCTION` (unchanged) |
 | `archive_old_orders` | function | `CREATE PROCEDURE` (new) |
 
-This confirms, against the actual compiled binary (not only `cargo test`):
+This confirms, against the actual `--release`-built binary (not only
+`cargo test`):
 
 * exactly one `Function` symbol for the procedure, matching the harvested
   contract,
@@ -72,10 +76,27 @@ workspace-policy behavior, not introduced or altered by 123-F.
 * **Fork-level CI** (already recorded in the provenance decision): fork
   revision `50837582b5ba15c7acff3be7bf585a1082d90528`, run
   [32412941837](https://github.com/softwaresalt/tree-sitter-sql/actions/runs/32412941837)
-  — `ubuntu-latest`, `windows-2025`, `macos-latest` all `success`.
-* **Repository CI** (this PR): `ci.yml` runs on `ubuntu-latest` and
-  `windows-latest`; verified locally on Windows (below) and expected to be
-  confirmed green by CI on push as part of the PR lifecycle gate.
+  — `ubuntu-latest`, `windows-2025`, `macos-latest` all `success`. This
+  validates the grammar crate's own generated C parser in isolation on all
+  three platforms, not `agent-engram` linking against it.
+* **Repository CI (this PR)**: `ci.yml`'s `build` job (full `fmt` → `clippy`
+  → `test` → `audit` sequence, including compiling and testing against the
+  new `tree-sitter-sequel` fork pin) runs on `ubuntu-latest` only. The
+  `start-launcher-windows` job on `windows-latest` compiles the workspace
+  (exercising the native C build on Windows) but only exercises the
+  `contract_start_launcher` test subset, not the full SQL parsing test
+  suite. The `release.yml` cross-platform matrix (`ubuntu-24.04`,
+  `windows-latest`, `macos-latest`) that fully builds and links
+  `agent-engram` against this dependency on all three platforms is
+  tag-triggered only and does not run on this PR.
+* **Known gap**: full-suite `cargo dev-test` against the adopted fork pin is
+  therefore verified on Linux (PR CI) and Windows (local, this task) but not
+  on macOS pre-merge. This is accepted as a residual gap for this shipment,
+  mitigated by the fork's own macOS CI success (above) and the 72-hour
+  post-merge observation window (below), which explicitly covers a
+  supported-platform build/ABI failure as a rollback trigger. The next
+  tagged release will exercise the full macOS build via `release.yml`
+  before any release artifact is published.
 * **Local (Windows) verification performed in this task**:
   * `cargo fmt --all -- --check` — pass
   * `cargo clippy --all-targets -- -D warnings -D clippy::pedantic` — 0 warnings

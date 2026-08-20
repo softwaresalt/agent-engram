@@ -11,9 +11,13 @@
 //!   `CREATE PROCEDURE` support is provided by the approved immutable
 //!   `tree-sitter-sequel` compatibility fork (123-F; see
 //!   `docs/decisions/2026-08-20-tree-sitter-sequel-compatibility-fork-provenance.md`).
-//!   A procedure body (`BEGIN ... END`) accepts a single unterminated inner
-//!   statement; a `;` immediately before `END` currently parses as a nested
-//!   `ERROR` node rather than a statement separator.
+//!   Bare T-SQL-style procedure bodies (`BEGIN <stmt> END`, no dialect
+//!   keyword) accept a single statement without a trailing `;` before
+//!   `END`; a `;` immediately before `END` in that form currently parses as
+//!   a nested `ERROR` node. This is an observed characteristic of that one
+//!   fixture shape, not a categorical limit on the grammar as a whole — the
+//!   fork also supports `BEGIN ATOMIC ... END` and dollar-quoted bodies
+//!   whose semicolon-terminated multi-statement forms are unaffected.
 //! - `from` (SELECT from-clause, sibling inside `statement`),
 //!   including JOIN clauses (`join`, `cross_join`, `lateral_join`,
 //!   `lateral_cross_join`)
