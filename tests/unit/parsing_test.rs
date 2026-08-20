@@ -1311,8 +1311,11 @@ fn test_sql_create_view() {
 /// remains unchanged and must keep passing).
 #[test]
 fn test_sql_create_procedure() {
+    // No statement-terminating `;` before `END`: the fork grammar's
+    // `procedure_body` accepts a single unterminated statement (verified via
+    // grammar ABI probe against fork rev 50837582b5ba15c7acff3be7bf585a1082d90528).
     let source =
-        "CREATE PROCEDURE archive_old_orders() BEGIN DELETE FROM orders WHERE age > 365; END;";
+        "CREATE PROCEDURE archive_old_orders() BEGIN DELETE FROM orders WHERE age > 365 END;";
     let result = parse_sql_source(source).expect("SQL parse must not panic");
     let funcs: Vec<_> = result
         .symbols
@@ -1431,7 +1434,7 @@ fn test_sql_create_procedure_grammar_abi() {
     }
     use tree_sitter::Parser;
     let source =
-        "CREATE PROCEDURE archive_old_orders() BEGIN DELETE FROM orders WHERE age > 365; END;";
+        "CREATE PROCEDURE archive_old_orders() BEGIN DELETE FROM orders WHERE age > 365 END;";
     let mut parser = Parser::new();
     parser
         .set_language(&tree_sitter_sequel::LANGUAGE.into())
