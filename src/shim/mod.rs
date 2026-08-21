@@ -20,7 +20,7 @@
 //! returns a structured error naming the cause (see
 //! [`transport::ShimHandler::call_tool`]), and the shim's own process exit
 //! code and a durable startup-failure record carry the classified cause for
-//! offline diagnosis (see [`record_startup_failure`]).
+//! offline diagnosis (see [`spawn_record_startup_failure`]).
 
 pub mod ipc_client;
 pub mod lifecycle;
