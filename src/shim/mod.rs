@@ -105,7 +105,8 @@ async fn compute_startup_outcome(workspace_arg: &str) -> StartupOutcome {
                 workspace_arg,
                 ShimFailureClass::AdmissionFailure,
                 &err.to_string(),
-            );
+            )
+            .await;
             return outcome;
         }
     };
@@ -116,7 +117,8 @@ async fn compute_startup_outcome(workspace_arg: &str) -> StartupOutcome {
             &workspace_path.display().to_string(),
             ShimFailureClass::ReadinessTimeout,
             &err.to_string(),
-        );
+        )
+        .await;
         return outcome;
     }
 
@@ -129,7 +131,8 @@ async fn compute_startup_outcome(workspace_arg: &str) -> StartupOutcome {
                 &workspace_path.display().to_string(),
                 ShimFailureClass::EndpointDerivationFailure,
                 &err.to_string(),
-            );
+            )
+            .await;
             outcome
         }
     }
@@ -142,8 +145,19 @@ async fn compute_startup_outcome(workspace_arg: &str) -> StartupOutcome {
 /// credentials, tokens, environment variable values, or paths outside the
 /// workspace. Failures to persist the record are swallowed — the record is
 /// supplementary diagnostics, not the primary failure signal (the process
-/// exit code and stderr line are).
-fn record_startup_failure(workspace_hint: &str, class: ShimFailureClass, message: &str) {
+/// exit code and stderr line are). Runs on a blocking-pool thread
+/// (`tokio::task::spawn_blocking`) so its synchronous file I/O never stalls
+/// an async runtime worker thread.
+async fn record_startup_failure(workspace_hint: &str, class: ShimFailureClass, message: &str) {
+    let workspace_hint = workspace_hint.to_owned();
+    let message = message.to_owned();
+    let _ = tokio::task::spawn_blocking(move || {
+        write_startup_failure_record(&workspace_hint, class, &message);
+    })
+    .await;
+}
+
+fn write_startup_failure_record(workspace_hint: &str, class: ShimFailureClass, message: &str) {
     let workspace_root = Path::new(workspace_hint);
     if !workspace_root.is_dir() {
         return;
@@ -210,12 +224,28 @@ pub async fn run(workspace_override: Option<&str>) -> Result<(), EngramError> {
 
     let session_result = transport::run_shim(outcome_rx, Duration::from_secs(60)).await;
 
-    let outcome = startup_task
-        .await
-        .unwrap_or_else(|join_err| StartupOutcome::Degraded {
+    // The MCP session has already ended (client disconnected or transport
+    // closed). The background precondition task's own result is only needed
+    // to classify the final exit code/diagnostics — it must not block
+    // process teardown for however long `ensure_daemon_running`'s internal
+    // readiness budget (up to 30s+) takes if the client vanished before any
+    // `tools/call` ever needed the outcome. Bound the join with a short
+    // grace period; if the task is still pending, exit cleanly rather than
+    // linger (the background task is dropped/cancelled when the runtime
+    // shuts down at process exit).
+    let outcome = match tokio::time::timeout(Duration::from_secs(2), startup_task).await {
+        Ok(join_result) => join_result.unwrap_or_else(|join_err| StartupOutcome::Degraded {
             class: ShimFailureClass::TransportFailure,
             message: format!("startup precondition task did not complete: {join_err}"),
-        });
+        }),
+        Err(_elapsed) => {
+            // No definitive classification available in time; treat as a
+            // benign, unclassified session end rather than guessing a cause.
+            StartupOutcome::Ready {
+                endpoint: String::new(),
+            }
+        }
+    };
 
     // A transport-level failure (e.g. the stdio transport failed to bind, or
     // the MCP session ended with a protocol error) takes precedence over the

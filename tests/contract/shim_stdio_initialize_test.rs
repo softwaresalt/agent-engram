@@ -166,20 +166,32 @@ async fn shim_serves_initialize_and_tools_list_then_degrades_tool_calls_on_daemo
     let call_response: Value =
         serde_json::from_str(call_line.trim()).expect("tools/call stdout must be one MCP frame");
     assert_eq!(call_response["id"], 3);
+    // A degraded startup precondition is a tool-level failure (the request
+    // was valid and routed, but the shim cannot execute it), so it is
+    // reported as `result.isError == true` with structured content — NOT a
+    // protocol-level JSON-RPC `error`, which MCP clients typically render
+    // opaquely without surfacing the message (`rmcp::model::CallToolResult`
+    // "When to use this vs `Err(ErrorData)`" doc comment).
     assert!(
-        call_response.get("error").is_some(),
-        "no tools/call may succeed while the session is degraded: {call_response}"
-    );
-    let error_message = call_response["error"]["message"]
-        .as_str()
-        .expect("degraded tools/call error must carry a message");
-    assert!(
-        error_message.contains("readiness_timeout"),
-        "degraded tools/call error must name the startup failure cause: {error_message}"
+        call_response.get("error").is_none(),
+        "a degraded tools/call must be a successful JSON-RPC response carrying \
+         result.isError=true, not a protocol-level error: {call_response}"
     );
     assert_eq!(
-        call_response["error"]["data"]["failure_class"], "readiness_timeout",
-        "degraded tools/call error data must carry the failure_class: {call_response}"
+        call_response["result"]["isError"], true,
+        "no tools/call may succeed while the session is degraded: {call_response}"
+    );
+    let structured = &call_response["result"]["structuredContent"];
+    assert_eq!(
+        structured["failure_class"], "readiness_timeout",
+        "degraded tools/call structured content must carry the failure_class: {call_response}"
+    );
+    let content_text = call_response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("degraded tools/call must carry visible content text");
+    assert!(
+        content_text.contains("readiness_timeout"),
+        "degraded tools/call content must name the startup failure cause: {content_text}"
     );
 
     // ── Close the session and assert the documented exit-code taxonomy ─────
@@ -339,12 +351,17 @@ async fn shim_degrades_tools_call_and_exits_with_admission_failure_code_for_inva
     let call_response: Value =
         serde_json::from_str(call_line.trim()).expect("tools/call stdout must be one MCP frame");
     assert!(
-        call_response.get("error").is_some(),
+        call_response.get("error").is_none(),
+        "a degraded tools/call must be a successful JSON-RPC response carrying \
+         result.isError=true, not a protocol-level error: {call_response}"
+    );
+    assert_eq!(
+        call_response["result"]["isError"], true,
         "no tools/call may succeed for an inadmissible workspace: {call_response}"
     );
     assert_eq!(
-        call_response["error"]["data"]["failure_class"], "admission_failure",
-        "degraded tools/call error data must name admission_failure: {call_response}"
+        call_response["result"]["structuredContent"]["failure_class"], "admission_failure",
+        "degraded tools/call structured content must name admission_failure: {call_response}"
     );
 
     stdin.shutdown().await.expect("close MCP stdin");

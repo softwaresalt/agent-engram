@@ -128,7 +128,7 @@ impl ServerHandler for ShimHandler {
             let endpoint = match self.await_startup_outcome().await {
                 StartupOutcome::Ready { endpoint } => endpoint,
                 StartupOutcome::Degraded { class, message } => {
-                    return Err(degraded_to_mcp(class, &message));
+                    return Ok(degraded_call_tool_result(class, &message));
                 }
             };
 
@@ -198,20 +198,32 @@ fn domain_to_mcp(err: EngramError) -> ErrorData {
     ErrorData::internal_error(err.to_string(), None)
 }
 
-/// Translate a degraded startup outcome into a structured MCP error naming
-/// the classified cause (124-F U4). The wire code is the failure class's
-/// dedicated 15xxx code so clients can distinguish startup-degraded errors
-/// from ordinary tool failures.
-fn degraded_to_mcp(class: ShimFailureClass, message: &str) -> ErrorData {
+/// Translate a degraded startup outcome into a tool-level `CallToolResult`
+/// naming the classified cause (124-F U4).
+///
+/// MCP distinguishes tool-level failures (`Ok(CallToolResult{ is_error: true,
+/// .. })`, caller-visible) from protocol-level failures (`Err(ErrorData)`,
+/// which MCP clients typically render opaquely without surfacing the
+/// message). A degraded startup precondition is squarely a tool-level
+/// failure — the request was valid and routed, but the shim currently cannot
+/// execute it for a known, communicable reason — so it MUST be reported as a
+/// `CallToolResult` for the calling agent to actually see the cause,
+/// consistent with `rmcp::model::CallToolResult::error`'s documented
+/// guidance. Uses `structured_error` so the `engram_code`/`failure_class`
+/// (matching the `-32603` + `data.engram_code` convention used by
+/// `daemon::ipc_server` and `cli::runner::friendly_error_message`) are both
+/// machine-parseable via `structured_content` and human-visible in the
+/// rendered `content` text.
+fn degraded_call_tool_result(class: ShimFailureClass, message: &str) -> CallToolResult {
     let err = EngramError::ShimStartup(ShimStartupError {
         class,
         message: message.to_owned(),
     });
-    ErrorData::new(
-        rmcp::model::ErrorCode(i32::from(class.wire_code())),
-        err.to_string(),
-        Some(serde_json::json!({ "failure_class": class.as_str() })),
-    )
+    CallToolResult::structured_error(serde_json::json!({
+        "engram_code": class.wire_code(),
+        "failure_class": class.as_str(),
+        "message": err.to_string(),
+    }))
 }
 
 // ── Server entry point ────────────────────────────────────────────────────────
