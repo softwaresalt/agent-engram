@@ -94,3 +94,15 @@ pub const METRICS_PARSE_ERROR: u16 = 13_003;
 /// Policy engine error codes (14xxx)
 pub const POLICY_DENIED: u16 = 14_001;
 pub const POLICY_CONFIG_INVALID: u16 = 14_002;
+
+/// Shim startup contract error codes (15xxx).
+///
+/// These classify a precondition failure discovered *after* the MCP stdio
+/// transport has already answered `initialize` (serve-first, degrade-in-session;
+/// 124-F, stash 870B1AFF). They are surfaced both as `tools/call` error codes
+/// during a degraded session and as the `failure_class` field of the durable
+/// startup-failure record.
+pub const SHIM_ADMISSION_FAILURE: u16 = 15_001;
+pub const SHIM_READINESS_TIMEOUT: u16 = 15_002;
+pub const SHIM_ENDPOINT_DERIVATION_FAILED: u16 = 15_003;
+pub const SHIM_TRANSPORT_FAILURE: u16 = 15_004;

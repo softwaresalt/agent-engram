@@ -262,6 +262,73 @@ pub enum PolicyError {
     ConfigInvalid { reason: String },
 }
 
+/// Classifies why the shim's deferred startup preconditions (workspace
+/// admission, daemon readiness, IPC endpoint derivation) or the MCP stdio
+/// transport itself failed (124-F, stash 870B1AFF).
+///
+/// Under the serve-first, degrade-in-session contract, a shim session always
+/// answers `initialize` and serves the static `tools/list` catalog regardless
+/// of these outcomes. This classification names the cause surfaced to
+/// `tools/call` callers, recorded in the durable startup-failure record, and
+/// reflected in the shim process's documented exit code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShimFailureClass {
+    /// Workspace admission failed (e.g. path not found, not a Git root).
+    AdmissionFailure,
+    /// The daemon failed to reach a ready state within its startup budget.
+    ReadinessTimeout,
+    /// The daemon IPC endpoint could not be derived for the workspace.
+    EndpointDerivationFailure,
+    /// The MCP stdio transport itself failed to bind or ended abnormally.
+    TransportFailure,
+}
+
+impl ShimFailureClass {
+    /// Documented process exit code for this failure class (124-F U5).
+    #[must_use]
+    pub const fn exit_code(self) -> i32 {
+        match self {
+            ShimFailureClass::AdmissionFailure => 10,
+            ShimFailureClass::ReadinessTimeout => 11,
+            ShimFailureClass::EndpointDerivationFailure => 12,
+            ShimFailureClass::TransportFailure => 13,
+        }
+    }
+
+    /// Stable machine-readable name used in the startup-failure record and
+    /// structured `tools/call` error data.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ShimFailureClass::AdmissionFailure => "admission_failure",
+            ShimFailureClass::ReadinessTimeout => "readiness_timeout",
+            ShimFailureClass::EndpointDerivationFailure => "endpoint_derivation_failure",
+            ShimFailureClass::TransportFailure => "transport_failure",
+        }
+    }
+
+    /// Numeric wire error code for this failure class (15xxx range).
+    #[must_use]
+    pub const fn wire_code(self) -> u16 {
+        match self {
+            ShimFailureClass::AdmissionFailure => SHIM_ADMISSION_FAILURE,
+            ShimFailureClass::ReadinessTimeout => SHIM_READINESS_TIMEOUT,
+            ShimFailureClass::EndpointDerivationFailure => SHIM_ENDPOINT_DERIVATION_FAILED,
+            ShimFailureClass::TransportFailure => SHIM_TRANSPORT_FAILURE,
+        }
+    }
+}
+
+/// A classified shim startup failure carrying a sanitized, attributable
+/// message. The message MUST NOT contain credentials, tokens, environment
+/// variable values, or paths outside the workspace root.
+#[derive(Debug, Error, Clone)]
+#[error("shim startup precondition failed ({}): {message}", class.as_str())]
+pub struct ShimStartupError {
+    pub class: ShimFailureClass,
+    pub message: String,
+}
+
 #[derive(Debug, Error)]
 pub enum EngramError {
     #[error(transparent)]
@@ -298,6 +365,20 @@ pub enum EngramError {
     Metrics(#[from] MetricsError),
     #[error(transparent)]
     Policy(#[from] PolicyError),
+    #[error(transparent)]
+    ShimStartup(#[from] ShimStartupError),
+}
+
+impl EngramError {
+    /// Returns the documented shim process exit code when this error is a
+    /// classified [`ShimStartupError`] (124-F U5), otherwise `None`.
+    #[must_use]
+    pub fn shim_exit_code(&self) -> Option<i32> {
+        match self {
+            EngramError::ShimStartup(inner) => Some(inner.class.exit_code()),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -729,6 +810,12 @@ impl EngramError {
                     Some(json!({ "reason": reason })),
                 ),
             },
+            EngramError::ShimStartup(inner) => (
+                inner.class.wire_code(),
+                "ShimStartupFailed",
+                inner.to_string(),
+                Some(json!({ "failure_class": inner.class.as_str() })),
+            ),
         };
 
         ErrorResponse {
