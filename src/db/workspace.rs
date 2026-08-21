@@ -65,7 +65,10 @@ pub fn canonicalize_workspace(path: &str) -> Result<PathBuf, WorkspaceError> {
 #[derive(Debug)]
 struct GitMetadata {
     workspace: PathBuf,
-    head_path: PathBuf,
+    // `None` for a primary checkout whose `.git/HEAD` is absent or unreadable —
+    // resolving the workspace identity never required HEAD, only branch
+    // resolution does. A linked worktree always carries a validated HEAD.
+    head_content: Option<String>,
 }
 
 // Test-only interception seam for the metadata-resolution TOCTOU windows.
@@ -98,115 +101,340 @@ fn toctou_checkpoint(name: &str) {
 #[cfg(not(test))]
 fn toctou_checkpoint(_name: &str) {}
 
-/// Resolve the workspace's Git metadata without following an unvalidated
-/// gitfile. Linked-worktree metadata is outside the workspace by design, so
-/// every native backlink is checked before the admin directory is trusted.
+/// `FILE_ATTRIBUTE_REPARSE_POINT` — set on every Windows reparse object
+/// (symlinks, junctions/mount points, and any other reparse tag such as cloud
+/// placeholders or container-isolation links). The uniform gate rejects the
+/// whole class rather than the `SYMLINK`/`MOUNT_POINT` subset `is_symlink()`
+/// covers.
+#[cfg(windows)]
+const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+
+/// The one shared reparse/symlink rejection policy (U6). Every handle-derived
+/// metadata in the validated chain — the Git backlink chain and `.workspace-id`
+/// alike — flows through this single predicate so the two never diverge.
+///
+/// `windows_attributes` is ignored off Windows; on Unix a symlink is the only
+/// reparse-equivalent and `is_symlink` already captures it.
+fn is_link_or_reparse(is_symlink: bool, windows_attributes: u32) -> bool {
+    #[cfg(windows)]
+    {
+        is_symlink || (windows_attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = windows_attributes;
+        is_symlink
+    }
+}
+
+/// Apply the uniform policy to handle-derived `cap_std` metadata.
+fn cap_metadata_is_link_or_reparse(metadata: &cap_std::fs::Metadata) -> bool {
+    let is_symlink = metadata.file_type().is_symlink();
+    #[cfg(windows)]
+    {
+        use cap_std::fs::MetadataExt as _;
+        is_link_or_reparse(is_symlink, metadata.file_attributes())
+    }
+    #[cfg(not(windows))]
+    {
+        is_link_or_reparse(is_symlink, 0)
+    }
+}
+
+/// Classification of a directory entry, taken from handle-derived, no-follow
+/// metadata. `NotFound` is distinguished from every other I/O error so the
+/// `.git` dir-vs-file dispatch and the `refs`-vs-`reftable` fallback can tell
+/// "absent" apart from "present but unreadable".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChildKind {
+    Dir,
+    File,
+    Absent,
+    Other,
+}
+
+/// A retained, capability-rooted directory handle.
+///
+/// `dir` is the load-bearing authority: every child is reached from it with an
+/// `openat`-style no-follow operation, one component at a time, so validation
+/// and use address the same object. `display` is carried for error messages
+/// only and is NEVER re-resolved for access (invariant 1).
+struct CapRoot {
+    dir: Dir,
+    display: PathBuf,
+}
+
+impl CapRoot {
+    /// The single ambient (full-path) resolution. Used for exactly two roots:
+    /// the workspace root, and — for a linked worktree — the common Git dir.
+    fn open_anchor(path: &Path) -> Result<Self, WorkspaceError> {
+        let dir =
+            Dir::open_ambient_dir(path, ambient_authority()).map_err(|_| not_git_root(path))?;
+        Ok(Self {
+            dir,
+            display: path.to_path_buf(),
+        })
+    }
+
+    /// Classify a single child component from handle-derived no-follow metadata.
+    fn child_kind(&self, name: &str) -> ChildKind {
+        match self.dir.symlink_metadata(name) {
+            Ok(metadata) => {
+                if cap_metadata_is_link_or_reparse(&metadata) {
+                    ChildKind::Other
+                } else if metadata.is_dir() {
+                    ChildKind::Dir
+                } else if metadata.is_file() {
+                    ChildKind::File
+                } else {
+                    ChildKind::Other
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => ChildKind::Absent,
+            Err(_) => ChildKind::Other,
+        }
+    }
+
+    /// Open a single child directory with `open_dir_nofollow`, then validate it
+    /// through HANDLE-DERIVED metadata: it must be a directory and must pass the
+    /// uniform reparse gate. `name` is always exactly one component.
+    fn open_child_dir(&self, name: &str) -> Result<Self, WorkspaceError> {
+        use cap_fs_ext::DirExt as _;
+
+        let child = self
+            .dir
+            .open_dir_nofollow(name)
+            .map_err(|_| not_git_root(&self.display))?;
+        let metadata = child
+            .dir_metadata()
+            .map_err(|_| not_git_root(&self.display))?;
+        if !metadata.is_dir() || cap_metadata_is_link_or_reparse(&metadata) {
+            return Err(not_git_root(&self.display));
+        }
+        Ok(Self {
+            dir: child,
+            display: self.display.join(name),
+        })
+    }
+
+    /// Open + validate + drop a child directory, for existence proofs.
+    fn require_child_dir(&self, name: &str) -> Result<(), WorkspaceError> {
+        self.open_child_dir(name).map(|_| ())
+    }
+
+    /// Read a single child file. The metadata is taken from the OPEN FILE HANDLE
+    /// and the content is read from that SAME handle — never a reopen by path
+    /// (the load-bearing P0 constraint from plan review S1).
+    fn read_child_file(&self, name: &str) -> Result<String, WorkspaceError> {
+        let mut file = self.open_child_file_nofollow(name)?;
+        let metadata = file.metadata().map_err(|_| not_git_root(&self.display))?;
+        let is_reparse = {
+            #[cfg(windows)]
+            {
+                use cap_std::fs::MetadataExt as _;
+                is_link_or_reparse(
+                    metadata.file_type().is_symlink(),
+                    metadata.file_attributes(),
+                )
+            }
+            #[cfg(not(windows))]
+            {
+                is_link_or_reparse(metadata.file_type().is_symlink(), 0)
+            }
+        };
+        if !metadata.is_file() || is_reparse {
+            return Err(not_git_root(&self.display));
+        }
+        let mut raw = String::new();
+        file.read_to_string(&mut raw)
+            .map_err(|_| not_git_root(&self.display))?;
+        Ok(raw)
+    }
+
+    /// Open a child file no-follow using the same `OFlags::NOFOLLOW |
+    /// OFlags::NONBLOCK` custom-flags pattern `read_workspace_id` established.
+    fn open_child_file_nofollow(&self, name: &str) -> Result<cap_std::fs::File, WorkspaceError> {
+        let mut options = OpenOptions::new();
+        options.read(true).follow(FollowSymlinks::No);
+        #[cfg(unix)]
+        {
+            use cap_std::fs::OpenOptionsExt as _;
+            use rustix::fs::OFlags;
+
+            let flags = OFlags::NOFOLLOW | OFlags::NONBLOCK;
+            let custom_flags =
+                i32::try_from(flags.bits()).map_err(|_| not_git_root(&self.display))?;
+            options.custom_flags(custom_flags);
+        }
+        self.dir
+            .open_with(Path::new(name), &options)
+            .map_err(|_| not_git_root(&self.display))
+    }
+}
+
+/// Resolve the workspace's Git metadata over retained, capability-rooted,
+/// no-follow handles. A linked worktree's admin metadata lives outside the
+/// workspace root by design, so the common Git directory gets its own retained
+/// anchor (invariant 5); every backlink value is read from an already-validated
+/// handle and the admitted objects are proven identical to the validated ones.
 fn resolve_git_metadata(path: &Path) -> Result<GitMetadata, WorkspaceError> {
     let canonical_workspace = path.canonicalize().map_err(|_| WorkspaceError::NotFound {
         path: path.display().to_string(),
     })?;
     let workspace = normalize_canonical(canonical_workspace.clone());
+
+    // Root #1: the retained workspace root. This is one of only two ambient
+    // resolutions in the whole proof.
+    let root = CapRoot::open_anchor(&workspace)?;
     let git_entry = workspace.join(".git");
-    let entry_metadata =
-        std::fs::symlink_metadata(&git_entry).map_err(|_| WorkspaceError::NotGitRoot {
-            path: workspace.display().to_string(),
-        })?;
 
-    if entry_metadata.file_type().is_symlink() {
-        return Err(not_git_root(&workspace));
-    }
-
-    if entry_metadata.is_dir() {
-        let canonical_git_dir = canonical_path(&git_entry, &workspace)?;
-        if canonical_git_dir.parent() != Some(workspace.as_path()) {
-            return Err(not_git_root(&workspace));
+    match root.child_kind(".git") {
+        ChildKind::Dir => {
+            // Primary checkout: `.git` is a plain directory under the root.
+            let git_dir = root.open_child_dir(".git")?;
+            // HEAD is read best-effort: identity resolution has never required
+            // it (only `resolve_git_branch` does), so a `.git` directory without
+            // a readable HEAD still admits, exactly as before.
+            let head_content = git_dir.read_child_file("HEAD").ok();
+            // Primary branches return the normalized workspace (today's behaviour).
+            Ok(GitMetadata {
+                workspace,
+                head_content,
+            })
         }
-        return Ok(GitMetadata {
-            workspace,
-            head_path: canonical_git_dir.join("HEAD"),
-        });
+        ChildKind::File => {
+            let head_content = resolve_linked_worktree(&root, &workspace, &git_entry)?;
+            Ok(GitMetadata {
+                // Linked worktrees keep the platform's canonical spelling; the
+                // native admin backlink is defined in terms of that identity.
+                workspace: canonical_workspace,
+                head_content: Some(head_content),
+            })
+        }
+        ChildKind::Absent | ChildKind::Other => Err(not_git_root(&workspace)),
     }
+}
 
-    if !entry_metadata.is_file() {
-        return Err(not_git_root(&workspace));
-    }
-
-    let gitfile = read_metadata_file(&git_entry, &workspace)?;
-    let directive = parse_single_line(&gitfile, &workspace)?;
+/// Prove a native linked worktree and return its `HEAD` content in a single
+/// pass over retained, capability-rooted, no-follow handles.
+///
+/// The two anchors (the common Git directory and, through it, the admin
+/// directory) and every child handle are opened once and **kept alive** until
+/// every value the proof depends on has been read from them. Holding the
+/// capability handles for the whole resolution IS the defence against a
+/// check/use swap: on Unix an open directory fd keeps addressing the original
+/// object regardless of any rename above it, and on Windows the OS refuses to
+/// rename a directory that has an open handle to it or to a descendant, so the
+/// swap is prevented outright. Attacker-controlled content therefore cannot
+/// influence the result — the proof reads the legitimate object or fails
+/// closed. Structural preconditions are computed lexically.
+fn resolve_linked_worktree(
+    root: &CapRoot,
+    workspace: &Path,
+    git_entry: &Path,
+) -> Result<String, WorkspaceError> {
+    // The gitfile is read from the workspace root handle, no-follow.
+    let gitfile = root.read_child_file(".git")?;
+    let directive = parse_single_line(&gitfile, workspace)?;
     let admin_text = directive
         .strip_prefix("gitdir: ")
-        .ok_or_else(|| not_git_root(&workspace))?;
+        .ok_or_else(|| not_git_root(workspace))?;
     if admin_text.is_empty() || admin_text.trim() != admin_text {
-        return Err(not_git_root(&workspace));
+        return Err(not_git_root(workspace));
     }
-    let admin_candidate = resolve_metadata_pointer(admin_text, &workspace, &workspace)?;
-    let admin_dir = canonical_path(&admin_candidate, &workspace)?;
-    require_plain_directory(&admin_candidate, &workspace)?;
-    if normalize_metadata_pointer(admin_text, &admin_candidate) != admin_dir {
-        return Err(not_git_root(&workspace));
+    let admin_candidate = resolve_metadata_pointer(admin_text, workspace, workspace)?;
+    let admin_lexical = normalize_lexical(&admin_candidate);
+
+    // Structural preconditions, computed lexically: `.../worktrees/<name>`.
+    let worktrees_lexical = admin_lexical
+        .parent()
+        .ok_or_else(|| not_git_root(workspace))?;
+    if worktrees_lexical.file_name() != Some(std::ffi::OsStr::new("worktrees")) {
+        return Err(not_git_root(workspace));
     }
+    let common_lexical = worktrees_lexical
+        .parent()
+        .ok_or_else(|| not_git_root(workspace))?
+        .to_path_buf();
+    let admin_name = admin_lexical
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .ok_or_else(|| not_git_root(workspace))?
+        .to_owned();
 
-    // Validation of the admin directory is complete. Every access below
-    // re-resolves `admin_dir` from the filesystem root, so this is the window
-    // in which an attacker can swap a validated ancestor between check and use
-    // (threats T1–T3). The checkpoint is a no-op in production builds and exists
-    // only so adversarial tests can drive that swap deterministically.
-    toctou_checkpoint("admin_validated");
+    // Cross-boundary exception: the linked-worktree admin metadata is outside
+    // the workspace root, so the common Git directory gets its own retained
+    // anchor (invariant 5). This is the smallest root containing everything the
+    // proof reads (`objects`, `refs`/`reftable`, `HEAD`, `worktrees/<name>`),
+    // and reaching the admin dir from it by a no-follow walk makes the admitted
+    // admin object the validated one by construction.
+    let common_root = CapRoot::open_anchor(&common_lexical)?;
 
-    let commondir_path = admin_dir.join("commondir");
-    let commondir_content = read_metadata_file(&commondir_path, &workspace)?;
-    let common_directive = parse_single_line(&commondir_content, &workspace)?;
-    if common_directive.is_empty() || common_directive.trim() != common_directive {
-        return Err(not_git_root(&workspace));
-    }
-    let commondir_path = PathBuf::from(common_directive);
-    let common_candidate = if commondir_path.is_absolute() {
-        commondir_path
-    } else {
-        admin_dir.join(commondir_path)
-    };
-    require_plain_directory(&common_candidate, &workspace)?;
-    let common_dir = canonical_path(&common_candidate, &workspace)?;
-
-    // The common directory is now validated but every subsequent `objects`,
-    // `refs`, `worktrees`, and `HEAD` access re-resolves it by path. Second
-    // deterministic swap window for the adversarial tests; no-op in production.
+    // Deterministic swap window for the colocated adversarial tests; a no-op in
+    // production. The common authority has just been established and is HELD for
+    // the remainder of this function, so any swap staged here cannot influence
+    // the values read below through the retained handle.
     toctou_checkpoint("common_validated");
 
-    let worktrees_candidate = common_dir.join("worktrees");
-    require_plain_directory(&worktrees_candidate, &workspace)?;
-    require_plain_directory(&common_dir.join("objects"), &workspace)?;
-    require_plain_reference_storage(&common_dir, &workspace)?;
-    let worktrees_dir = canonical_path(&worktrees_candidate, &workspace)?;
-    let _ = read_metadata_file(&common_dir.join("HEAD"), &workspace)?;
-    if admin_dir.parent() != Some(worktrees_dir.as_path()) {
-        return Err(not_git_root(&workspace));
+    let worktrees_root = common_root.open_child_dir("worktrees")?;
+    let admin_root = worktrees_root.open_child_dir(&admin_name)?;
+
+    // Deterministic swap window for the colocated adversarial tests; a no-op in
+    // production. The admin authority has just been established and is HELD for
+    // the remainder of this function, so a swap of any ancestor here cannot
+    // influence the admin values read below through the retained handle.
+    toctou_checkpoint("admin_validated");
+
+    common_root.require_child_dir("objects")?;
+    // Reference storage: files backend (`refs`) or reftable backend, matching
+    // today's semantics exactly.
+    match common_root.child_kind("refs") {
+        ChildKind::Absent => common_root.require_child_dir("reftable")?,
+        _ => common_root.require_child_dir("refs")?,
+    }
+    let _ = common_root.read_child_file("HEAD")?;
+
+    // `commondir`: a single clean line resolved lexically relative to the admin
+    // path (absolute stays absolute); it must name the common directory. The
+    // content is read from the retained admin handle.
+    let commondir_content = admin_root.read_child_file("commondir")?;
+    let commondir_line = parse_single_line(&commondir_content, workspace)?;
+    if commondir_line.is_empty() || commondir_line.trim() != commondir_line {
+        return Err(not_git_root(workspace));
+    }
+    let commondir_pointer = PathBuf::from(commondir_line);
+    let resolved_common = if commondir_pointer.is_absolute() {
+        normalize_lexical(&commondir_pointer)
+    } else {
+        normalize_lexical(&admin_lexical.join(&commondir_pointer))
+    };
+    if resolved_common != normalize_lexical(&common_lexical) {
+        return Err(not_git_root(workspace));
     }
 
-    let backlink_path = admin_dir.join("gitdir");
-    let backlink_content = read_metadata_file(&backlink_path, &workspace)?;
-    let backlink = parse_single_line(&backlink_content, &workspace)?;
+    // `gitdir` backlink: same hygiene, resolved with the same semantics as
+    // today's `resolve_metadata_pointer`, and required to name the workspace's
+    // `.git` entry. Both absolute and relative directives are accepted. Read
+    // from the retained admin handle.
+    let backlink_content = admin_root.read_child_file("gitdir")?;
+    let backlink = parse_single_line(&backlink_content, workspace)?;
     if backlink.is_empty() || backlink.trim() != backlink {
-        return Err(not_git_root(&workspace));
+        return Err(not_git_root(workspace));
     }
-    let backlink_candidate = resolve_metadata_pointer(backlink, &admin_dir, &workspace)?;
+    let backlink_candidate = resolve_metadata_pointer(backlink, &admin_lexical, workspace)?;
     if normalize_metadata_pointer(backlink, &backlink_candidate) != git_entry {
-        return Err(not_git_root(&workspace));
-    }
-    let canonical_backlink = canonical_path(&backlink_candidate, &workspace)?;
-    let canonical_gitfile = canonical_path(&git_entry, &workspace)?;
-    if canonical_backlink != canonical_gitfile {
-        return Err(not_git_root(&workspace));
+        return Err(not_git_root(workspace));
     }
 
-    let head_path = admin_dir.join("HEAD");
-    let _ = read_metadata_file(&head_path, &workspace)?;
-    Ok(GitMetadata {
-        // Match the platform's canonical spelling for linked worktrees; the
-        // native admin backlink is defined in terms of that same identity.
-        workspace: canonical_workspace,
-        head_path,
-    })
+    // The admin `HEAD` is read from the SAME retained admin handle every other
+    // admin value came from, so the returned identity is the legitimate one.
+    let head_content = admin_root.read_child_file("HEAD")?;
+
+    // Every capability handle above (`common_root`, `worktrees_root`,
+    // `admin_root`, and the caller's workspace-root `root`) is still alive at
+    // this point; they are dropped only now, as this function returns, after
+    // every proof-bearing value has been read.
+    Ok(head_content)
 }
 
 fn is_parent_component(component: std::path::Component<'_>) -> bool {
@@ -243,43 +471,6 @@ fn not_git_root(workspace: &Path) -> WorkspaceError {
     }
 }
 
-fn canonical_path(path: &Path, workspace: &Path) -> Result<PathBuf, WorkspaceError> {
-    path.canonicalize()
-        .map(normalize_canonical)
-        .map_err(|_| not_git_root(workspace))
-}
-
-fn require_plain_directory(path: &Path, workspace: &Path) -> Result<(), WorkspaceError> {
-    let metadata = std::fs::symlink_metadata(path).map_err(|_| not_git_root(workspace))?;
-    if metadata.is_dir() && !metadata.file_type().is_symlink() {
-        Ok(())
-    } else {
-        Err(not_git_root(workspace))
-    }
-}
-
-fn require_plain_reference_storage(
-    common_dir: &Path,
-    workspace: &Path,
-) -> Result<(), WorkspaceError> {
-    let refs = common_dir.join("refs");
-    match std::fs::symlink_metadata(&refs) {
-        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            require_plain_directory(&common_dir.join("reftable"), workspace)
-        }
-        Ok(_) | Err(_) => Err(not_git_root(workspace)),
-    }
-}
-
-fn read_metadata_file(path: &Path, workspace: &Path) -> Result<String, WorkspaceError> {
-    let metadata = std::fs::symlink_metadata(path).map_err(|_| not_git_root(workspace))?;
-    if !metadata.is_file() || metadata.file_type().is_symlink() {
-        return Err(not_git_root(workspace));
-    }
-    std::fs::read_to_string(path).map_err(|_| not_git_root(workspace))
-}
-
 fn parse_single_line<'a>(content: &'a str, workspace: &Path) -> Result<&'a str, WorkspaceError> {
     let mut lines = content.lines();
     let line = lines.next().ok_or_else(|| not_git_root(workspace))?;
@@ -299,8 +490,14 @@ fn parse_single_line<'a>(content: &'a str, workspace: &Path) -> Result<&'a str, 
 pub fn load_or_create_workspace_id(path: &Path) -> Result<Uuid, EngramError> {
     let canonical = normalize_canonical(resolve_git_metadata(path)?.workspace);
 
+    // Retained workspace root handle. `.engram/` is created and reopened
+    // relative to it, so the identity leaf is reached through a validated
+    // no-follow walk rather than an ambient path resolution (U5).
+    let root = CapRoot::open_anchor(&canonical).map_err(EngramError::Workspace)?;
     let engram_dir = canonical.join(".engram");
-    std::fs::create_dir_all(&engram_dir).map_err(|_| {
+    // Create-only; not a trust decision, so it may stay path-relative to the
+    // handle. `create_dir_all` is idempotent under concurrent cold starts.
+    root.dir.create_dir_all(".engram").map_err(|_| {
         EngramError::System(SystemError::FlushFailed {
             path: engram_dir.display().to_string(),
         })
@@ -310,16 +507,23 @@ pub fn load_or_create_workspace_id(path: &Path) -> Result<Uuid, EngramError> {
             path: engram_dir.display().to_string(),
         })
     })?);
+    // Containment guard preserved: the identity state must live inside the root.
     if !canonical_engram.starts_with(&canonical) {
         return Err(EngramError::Workspace(WorkspaceError::PathEscape {
             attempted: canonical_engram,
             root: canonical,
         }));
     }
-
     let id_path = canonical_engram.join(".workspace-id");
-    if workspace_id_entry_exists(&id_path)? {
-        return read_workspace_id(&id_path);
+
+    // Retained `.engram` handle, opened no-follow through the root handle; every
+    // `.workspace-id` access below is derived from it.
+    let engram_root = root
+        .open_child_dir(".engram")
+        .map_err(|_| workspace_id_io_error(&engram_dir))?;
+
+    if let Some(existing) = read_workspace_id_via(&engram_root, &id_path)? {
+        return Ok(existing);
     }
 
     let workspace_id = Uuid::new_v4();
@@ -338,12 +542,18 @@ pub fn load_or_create_workspace_id(path: &Path) -> Result<Uuid, EngramError> {
             path: id_path.display().to_string(),
         })
     })?;
+    // The create step above may stay path-based, but the returned identity is
+    // always the value re-read through the retained handle, so it is
+    // handle-derived whether we won or lost the create race.
     match temp_file.persist_noclobber(&id_path) {
-        Ok(_) => Ok(workspace_id),
-        Err(_) if workspace_id_entry_exists(&id_path)? => read_workspace_id(&id_path),
-        Err(_) => Err(EngramError::System(SystemError::FlushFailed {
-            path: id_path.display().to_string(),
-        })),
+        Ok(_) => read_workspace_id_via(&engram_root, &id_path)?
+            .ok_or_else(|| workspace_id_io_error(&id_path)),
+        Err(_) => match read_workspace_id_via(&engram_root, &id_path)? {
+            Some(existing) => Ok(existing),
+            None => Err(EngramError::System(SystemError::FlushFailed {
+                path: id_path.display().to_string(),
+            })),
+        },
     }
 }
 
@@ -371,8 +581,10 @@ pub fn daemon_key_for_workspace(path: &Path) -> Result<String, EngramError> {
         normalize_canonical(path.canonicalize().map_err(|_| WorkspaceError::NotFound {
             path: path.display().to_string(),
         })?);
-    let id_path = workspace_id_path(&canonical);
-    if workspace_id_entry_exists(&id_path)? {
+    // Route the `.workspace-id` existence probe through a retained `.engram`
+    // handle (U5). An absent `.engram/` means no persisted identity yet; a
+    // linked/reparse leaf is rejected exactly as the load path rejects it.
+    if workspace_id_present(&canonical)? {
         return workspace_key(&canonical);
     }
 
@@ -395,56 +607,27 @@ fn workspace_id_path(path: &Path) -> PathBuf {
     path.join(".engram").join(".workspace-id")
 }
 
-fn workspace_id_entry_exists(id_path: &Path) -> Result<bool, EngramError> {
-    match std::fs::symlink_metadata(id_path) {
-        Ok(metadata) => {
-            if is_workspace_id_link_or_reparse(&metadata) {
-                return Err(unsafe_workspace_id_error(
-                    id_path,
-                    "linked or reparse leaves are not allowed",
-                ));
-            }
-            if !metadata.is_file() {
-                return Err(unsafe_workspace_id_error(
-                    id_path,
-                    "the identity leaf must be a regular file",
-                ));
-            }
-            Ok(true)
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(_) => Err(workspace_id_io_error(id_path)),
-    }
+/// Probe `.workspace-id` presence through a retained `.engram` handle. Returns
+/// `false` when `.engram/` or the leaf is absent, `true` when a valid identity
+/// leaf exists, and an error when the leaf is present but unsafe (linked /
+/// reparse / non-regular / unparseable).
+fn workspace_id_present(canonical: &Path) -> Result<bool, EngramError> {
+    let engram_dir = canonical.join(".engram");
+    let Ok(engram_root) = CapRoot::open_anchor(&engram_dir) else {
+        return Ok(false);
+    };
+    let id_path = workspace_id_path(canonical);
+    Ok(read_workspace_id_via(&engram_root, &id_path)?.is_some())
 }
 
-fn is_workspace_id_link_or_reparse(metadata: &std::fs::Metadata) -> bool {
-    let is_link = metadata.file_type().is_symlink();
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt as _;
-
-        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
-        is_link || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-    }
-    #[cfg(not(windows))]
-    {
-        is_link
-    }
-}
-
-fn read_workspace_id(id_path: &Path) -> Result<Uuid, EngramError> {
-    if !workspace_id_entry_exists(id_path)? {
-        return Err(workspace_id_io_error(id_path));
-    }
-
-    let parent = id_path.parent().ok_or_else(|| {
-        unsafe_workspace_id_error(id_path, "the identity leaf has no parent directory")
-    })?;
-    let file_name = id_path
-        .file_name()
-        .ok_or_else(|| unsafe_workspace_id_error(id_path, "the identity leaf has no file name"))?;
-    let directory = Dir::open_ambient_dir(parent, ambient_authority())
-        .map_err(|_| workspace_id_io_error(id_path))?;
+/// Read `.workspace-id` through the retained `.engram` handle, no-follow. The
+/// authoritative safety check is taken from the OPEN FILE HANDLE and the
+/// content is read from that same handle — never a reopen by path. Returns
+/// `Ok(None)` only when the leaf is genuinely absent.
+fn read_workspace_id_via(
+    engram_root: &CapRoot,
+    id_path: &Path,
+) -> Result<Option<Uuid>, EngramError> {
     let mut options = OpenOptions::new();
     options.read(true).follow(FollowSymlinks::No);
     #[cfg(unix)]
@@ -461,23 +644,43 @@ fn read_workspace_id(id_path: &Path) -> Result<Uuid, EngramError> {
         })?;
         options.custom_flags(custom_flags);
     }
-    let mut file = directory
-        .open_with(Path::new(file_name), &options)
-        .map_err(|_| workspace_id_io_error(id_path))?;
-    let metadata = file
-        .metadata()
-        .map_err(|_| workspace_id_io_error(id_path))?;
-    #[cfg(windows)]
+    let mut file = match engram_root
+        .dir
+        .open_with(Path::new(".workspace-id"), &options)
     {
-        use cap_std::fs::MetadataExt as _;
-
-        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
-        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        // A no-follow open that fails on an existing leaf (e.g. a Unix symlink
+        // rejected with `ELOOP`) must not be treated as absent.
+        Err(_) => {
             return Err(unsafe_workspace_id_error(
                 id_path,
                 "linked or reparse leaves are not allowed",
             ));
         }
+    };
+    let metadata = file
+        .metadata()
+        .map_err(|_| workspace_id_io_error(id_path))?;
+    let is_reparse = {
+        #[cfg(windows)]
+        {
+            use cap_std::fs::MetadataExt as _;
+            is_link_or_reparse(
+                metadata.file_type().is_symlink(),
+                metadata.file_attributes(),
+            )
+        }
+        #[cfg(not(windows))]
+        {
+            is_link_or_reparse(metadata.file_type().is_symlink(), 0)
+        }
+    };
+    if is_reparse {
+        return Err(unsafe_workspace_id_error(
+            id_path,
+            "linked or reparse leaves are not allowed",
+        ));
     }
     if !metadata.is_file() {
         return Err(unsafe_workspace_id_error(
@@ -489,7 +692,7 @@ fn read_workspace_id(id_path: &Path) -> Result<Uuid, EngramError> {
     let mut raw = String::new();
     file.read_to_string(&mut raw)
         .map_err(|_| workspace_id_io_error(id_path))?;
-    Uuid::parse_str(raw.trim()).map_err(|e| {
+    Uuid::parse_str(raw.trim()).map(Some).map_err(|e| {
         EngramError::System(SystemError::InvalidParams {
             reason: format!("invalid workspace-id '{}': {e}", id_path.display()),
         })
@@ -534,8 +737,9 @@ pub fn workspace_hash(path: &Path, branch: &str) -> String {
 /// Returns a truncated commit SHA when HEAD is detached.
 pub fn resolve_git_branch(workspace: &Path) -> Result<String, WorkspaceError> {
     let metadata = resolve_git_metadata(workspace)?;
-    let head_path = metadata.head_path;
-    let head_content = read_metadata_file(&head_path, &metadata.workspace)?;
+    let head_content = metadata
+        .head_content
+        .ok_or_else(|| not_git_root(&metadata.workspace))?;
 
     let head = head_content.trim();
     if let Some(branch) = head.strip_prefix("ref: refs/heads/") {
@@ -846,11 +1050,15 @@ mod tests {
 /// resolver is asserted to reject the swapped namespace.
 #[cfg(test)]
 mod toctou_tests {
+    use std::cell::{Cell, RefCell};
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::process::Command;
+    use std::rc::Rc;
 
     use tempfile::TempDir;
+
+    use crate::errors::WorkspaceError;
 
     /// Restores the thread-local swap hook to `None` when the test scope ends,
     /// so an installed hook never leaks into another test on the same thread.
@@ -935,22 +1143,187 @@ mod toctou_tests {
         }
     }
 
-    // ── T1: deterministic ancestor swap after admin-directory validation ─────
+    /// The physical outcome of the attempted directory swap staged by the hook.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    enum SwapOutcome {
+        /// The checkpoint never fired: resolution bailed before the window.
+        NotFired,
+        /// Both renames completed — the attacker tree is now on the path (Unix).
+        Succeeded,
+        /// The OS refused a rename (open-handle protection on Windows). This is
+        /// the prevention path: the swap was stopped outright.
+        Blocked,
+    }
 
-    /// After the admin directory is validated and before `commondir` is read,
-    /// the validated `worktrees` ancestor is renamed aside and an attacker
-    /// directory carrying an internally consistent same-named admin dir is moved
-    /// into its place. Because the attacker directory is *moved* (not linked),
-    /// the `is_symlink()`/reparse gates cannot see it — only handle identity can.
-    #[test]
-    fn ancestor_swap_after_admin_validation_is_rejected() {
+    /// Shared state written by the swap hook and read after resolution. An
+    /// `Rc<Cell<…>>`/`Rc<RefCell<…>>` pair keeps the whole scenario on a single
+    /// thread with no timing dependency whatsoever.
+    struct SwapState {
+        outcome: Cell<SwapOutcome>,
+        reason: RefCell<String>,
+    }
+
+    /// What the resolver admitted, reduced to a provenance discriminator: either
+    /// a fail-closed rejection or the branch/`HEAD` text it served.
+    enum Admitted {
+        Rejected,
+        Branch(String),
+    }
+
+    /// Everything the hook needs to stage a single deterministic swap.
+    struct SwapPlan {
+        checkpoint: &'static str,
+        real: PathBuf,
+        aside: PathBuf,
+        attacker: PathBuf,
+    }
+
+    /// Build a linked-worktree fixture on `branch`, let `build` stage the
+    /// attacker tree and describe the swap, install the swap hook, then drive
+    /// `entry` (the resolver under test) exactly once. The hook TOLERATES a
+    /// refused rename — it records `Blocked` instead of panicking — because on
+    /// Windows a blocked rename is the prevention path working as intended.
+    fn run_scenario<B, E>(branch: &str, build: B, entry: E) -> (SwapOutcome, String, Admitted)
+    where
+        B: FnOnce(&Path, &Path, &Path) -> SwapPlan,
+        E: FnOnce(&Path) -> Admitted,
+    {
         let fixture = TempDir::new().expect("fixture tempdir");
         let primary = fixture.path().join("primary");
         let worktree = fixture.path().join("worktree");
         initialize_primary(&primary);
-        add_linked_worktree(&primary, &worktree, "feature/admin-swap");
+        add_linked_worktree(&primary, &worktree, branch);
 
-        let admin_dir = admin_dir_of(&worktree);
+        let SwapPlan {
+            checkpoint,
+            real,
+            aside,
+            attacker,
+        } = build(fixture.path(), &primary, &worktree);
+
+        let state = Rc::new(SwapState {
+            outcome: Cell::new(SwapOutcome::NotFired),
+            reason: RefCell::new(String::new()),
+        });
+        let hook_state = Rc::clone(&state);
+        let guard = install_hook(move |name| {
+            if name != checkpoint || hook_state.outcome.get() != SwapOutcome::NotFired {
+                return;
+            }
+            // Attempt the swap. A refused rename is recorded, never `.expect()`ed:
+            // on Windows the open capability handle makes the OS refuse it, which
+            // is exactly the prevention we want to observe.
+            match fs::rename(&real, &aside) {
+                Ok(()) => match fs::rename(&attacker, &real) {
+                    Ok(()) => hook_state.outcome.set(SwapOutcome::Succeeded),
+                    Err(error) => {
+                        *hook_state.reason.borrow_mut() =
+                            format!("attacker move-in refused by the OS: {error}");
+                        hook_state.outcome.set(SwapOutcome::Blocked);
+                    }
+                },
+                Err(error) => {
+                    *hook_state.reason.borrow_mut() =
+                        format!("rename of the real directory refused by the OS: {error}");
+                    hook_state.outcome.set(SwapOutcome::Blocked);
+                }
+            }
+        });
+
+        let admitted = entry(&worktree);
+        drop(guard);
+        let outcome = state.outcome.get();
+        let reason = state.reason.borrow().clone();
+        (outcome, reason, admitted)
+    }
+
+    /// The load-bearing property, asserted as an explicit fail-closed
+    /// disjunction. The discriminator is **which object the admitted data came
+    /// from**, never merely `Ok` vs `Err`. Both branches are printed so nothing
+    /// can pass silently.
+    fn assert_provenance_fail_closed(
+        scenario: &str,
+        outcome: SwapOutcome,
+        reason: &str,
+        admitted: &Admitted,
+    ) {
+        match outcome {
+            // The OS refused the rename (Windows open-handle protection) or the
+            // window closed before a swap could be staged. Either way the
+            // retained handle prevented the swap: resolution MUST admit the
+            // legitimate object.
+            SwapOutcome::Blocked | SwapOutcome::NotFired => {
+                println!("PREVENTED: {scenario}: {reason}");
+                match admitted {
+                    Admitted::Branch(branch) => {
+                        assert!(
+                            branch.contains("legit-branch"),
+                            "{scenario}: the prevention path must admit the legitimate branch; \
+                             got {branch:?}"
+                        );
+                        assert!(
+                            !branch.contains("attacker-branch"),
+                            "{scenario}: the prevention path must NEVER admit attacker-branch; \
+                             got {branch:?}"
+                        );
+                    }
+                    Admitted::Rejected => panic!(
+                        "{scenario}: the prevention path must ADMIT the legitimate object, not \
+                         reject it"
+                    ),
+                }
+            }
+            // The rename physically completed (Unix). The retained capability
+            // handle must still bind the legitimate object, so the result is a
+            // fail-closed rejection OR the legitimate branch — but NEVER the
+            // attacker's branch.
+            SwapOutcome::Succeeded => {
+                println!(
+                    "SWAPPED: {scenario}: the on-disk rename completed; the retained handle must \
+                     still bind the legitimate object"
+                );
+                match admitted {
+                    Admitted::Rejected => {}
+                    Admitted::Branch(branch) => {
+                        assert!(
+                            branch.contains("legit-branch"),
+                            "{scenario}: after a completed swap the admitted branch must be the \
+                             legitimate one; got {branch:?}"
+                        );
+                        assert!(
+                            !branch.contains("attacker-branch"),
+                            "{scenario}: attacker-controlled content must NEVER influence the \
+                             result; got {branch:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Map a private-struct resolution to a provenance discriminator.
+    fn admitted_from_metadata(result: Result<super::GitMetadata, WorkspaceError>) -> Admitted {
+        match result {
+            Ok(metadata) => Admitted::Branch(metadata.head_content.unwrap_or_default()),
+            Err(_) => Admitted::Rejected,
+        }
+    }
+
+    /// Map a public-API branch resolution to a provenance discriminator.
+    fn admitted_from_branch(result: Result<String, WorkspaceError>) -> Admitted {
+        match result {
+            Ok(branch) => Admitted::Branch(branch),
+            Err(_) => Admitted::Rejected,
+        }
+    }
+
+    /// Stage the `worktrees`-ancestor swap: build an attacker `worktrees` tree
+    /// whose same-named admin dir is internally consistent (real `commondir`,
+    /// real `gitdir`) but whose `HEAD` names `attacker-branch`. A naive
+    /// path-based resolver accepts it; a retained-handle resolver never reads
+    /// from it. The swap fires at `admin_validated`.
+    fn build_admin_swap(fixture: &Path, _primary: &Path, worktree: &Path) -> SwapPlan {
+        let admin_dir = admin_dir_of(worktree);
         let worktrees_dir = admin_dir
             .parent()
             .expect("admin dir has a worktrees parent")
@@ -962,68 +1335,120 @@ mod toctou_tests {
 
         let commondir = fs::read_to_string(admin_dir.join("commondir")).expect("read commondir");
         let backlink = fs::read_to_string(admin_dir.join("gitdir")).expect("read admin backlink");
-        let attacker_worktrees = fixture.path().join("attacker_worktrees");
+        let attacker_worktrees = fixture.join("attacker_worktrees");
         let attacker_admin = attacker_worktrees.join(&admin_name);
         fs::create_dir_all(&attacker_admin).expect("create attacker admin dir");
         fs::write(attacker_admin.join("commondir"), &commondir).expect("write attacker commondir");
         fs::write(attacker_admin.join("gitdir"), &backlink).expect("write attacker backlink");
-        fs::write(attacker_admin.join("HEAD"), "ref: refs/heads/hijacked\n")
-            .expect("write attacker HEAD");
+        fs::write(
+            attacker_admin.join("HEAD"),
+            "ref: refs/heads/attacker-branch\n",
+        )
+        .expect("write attacker HEAD");
 
-        let aside = worktrees_dir.with_file_name("worktrees__aside");
-        let _guard = install_hook(move |name| {
-            if name != "admin_validated" {
-                return;
-            }
-            if worktrees_dir.exists() {
-                fs::rename(&worktrees_dir, &aside).expect("move validated worktrees aside");
-                fs::rename(&attacker_worktrees, &worktrees_dir)
-                    .expect("swap attacker worktrees into place");
-            }
-        });
+        SwapPlan {
+            checkpoint: "admin_validated",
+            aside: worktrees_dir.with_file_name("worktrees__aside"),
+            real: worktrees_dir,
+            attacker: attacker_worktrees,
+        }
+    }
 
-        let result = super::resolve_git_metadata(&worktree);
-        assert!(
-            result.is_err(),
-            "an ancestor swapped after validation must not be admitted; got {result:?}"
+    /// Stage the whole-common-dir swap: a full, internally consistent copy of
+    /// the common `.git` whose admin `HEAD` is rewritten to `attacker-branch`.
+    /// The copy is a distinct object with otherwise-identical content, so only a
+    /// retained handle — not path re-resolution — keeps the result legitimate.
+    /// The swap fires at `common_validated`.
+    fn build_common_swap(fixture: &Path, primary: &Path, worktree: &Path) -> SwapPlan {
+        let admin_name = admin_dir_of(worktree)
+            .file_name()
+            .expect("admin dir has a name")
+            .to_os_string();
+        let common_dir = primary.join(".git");
+        let attacker_common = fixture.join("attacker_git");
+        copy_dir_all(&common_dir, &attacker_common);
+        // Rewrite the copied admin HEAD so the attacker tree names a clearly
+        // different branch; the returned identity then discriminates provenance.
+        let attacker_admin_head = attacker_common
+            .join("worktrees")
+            .join(&admin_name)
+            .join("HEAD");
+        fs::write(&attacker_admin_head, "ref: refs/heads/attacker-branch\n")
+            .expect("rewrite attacker admin HEAD");
+
+        SwapPlan {
+            checkpoint: "common_validated",
+            aside: common_dir.with_file_name(".git__aside"),
+            real: common_dir,
+            attacker: attacker_common,
+        }
+    }
+
+    // ── T1: worktrees-ancestor swap while the admin handle is held ───────────
+
+    /// After the admin authority is established the `worktrees` ancestor is
+    /// renamed aside and an internally consistent attacker tree is moved into
+    /// its place. Because the admin handle is HELD across the checkpoint, the
+    /// swap either cannot happen (Windows) or has no effect (Unix): the result
+    /// must never carry `attacker-branch`. Asserted through both the private
+    /// `resolve_git_metadata` struct and the public `resolve_git_branch` API.
+    #[test]
+    fn ancestor_swap_after_admin_validation_cannot_admit_attacker_content() {
+        let (outcome, reason, admitted) =
+            run_scenario("legit-branch", build_admin_swap, |worktree| {
+                admitted_from_metadata(super::resolve_git_metadata(worktree))
+            });
+        assert_provenance_fail_closed(
+            "admin-swap via private resolve_git_metadata",
+            outcome,
+            &reason,
+            &admitted,
+        );
+
+        // Public-API observation: `resolve_git_branch` is the real entry point
+        // exported as `engram::db::workspace::resolve_git_branch`.
+        let (outcome, reason, admitted) =
+            run_scenario("legit-branch", build_admin_swap, |worktree| {
+                admitted_from_branch(super::resolve_git_branch(worktree))
+            });
+        assert_provenance_fail_closed(
+            "admin-swap via public resolve_git_branch",
+            outcome,
+            &reason,
+            &admitted,
         );
     }
 
-    // ── T1: deterministic ancestor swap after common-directory validation ────
+    // ── T1: whole-common-dir swap while the common handle is held ────────────
 
-    /// After the common directory is validated and before `objects`/`refs`/
-    /// `worktrees`/`HEAD` are read, the whole common git directory is renamed
-    /// aside and a full, internally consistent attacker copy is moved into its
-    /// place. The copy is a distinct object with identical content, so only
-    /// handle identity — not path-based re-resolution — can detect the swap.
+    /// After the common authority is established the whole common `.git` is
+    /// renamed aside and a full attacker copy (admin `HEAD` = `attacker-branch`)
+    /// is moved into its place. Because the common handle is HELD across the
+    /// checkpoint, every child value is still read from the legitimate object:
+    /// the result must never carry `attacker-branch`. Asserted through both the
+    /// private struct and the public `resolve_git_branch` API.
     #[test]
-    fn ancestor_swap_after_common_validation_is_rejected() {
-        let fixture = TempDir::new().expect("fixture tempdir");
-        let primary = fixture.path().join("primary");
-        let worktree = fixture.path().join("worktree");
-        initialize_primary(&primary);
-        add_linked_worktree(&primary, &worktree, "feature/common-swap");
+    fn ancestor_swap_after_common_validation_cannot_admit_attacker_content() {
+        let (outcome, reason, admitted) =
+            run_scenario("legit-branch", build_common_swap, |worktree| {
+                admitted_from_metadata(super::resolve_git_metadata(worktree))
+            });
+        assert_provenance_fail_closed(
+            "common-swap via private resolve_git_metadata",
+            outcome,
+            &reason,
+            &admitted,
+        );
 
-        let common_dir = primary.join(".git");
-        let attacker_common = fixture.path().join("attacker_git");
-        copy_dir_all(&common_dir, &attacker_common);
-
-        let aside = common_dir.with_file_name(".git__aside");
-        let _guard = install_hook(move |name| {
-            if name != "common_validated" {
-                return;
-            }
-            if common_dir.exists() && attacker_common.exists() {
-                fs::rename(&common_dir, &aside).expect("move validated common dir aside");
-                fs::rename(&attacker_common, &common_dir)
-                    .expect("swap attacker common dir into place");
-            }
-        });
-
-        let result = super::resolve_git_metadata(&worktree);
-        assert!(
-            result.is_err(),
-            "a common git directory swapped after validation must not be admitted; got {result:?}"
+        let (outcome, reason, admitted) =
+            run_scenario("legit-branch", build_common_swap, |worktree| {
+                admitted_from_branch(super::resolve_git_branch(worktree))
+            });
+        assert_provenance_fail_closed(
+            "common-swap via public resolve_git_branch",
+            outcome,
+            &reason,
+            &admitted,
         );
     }
 }
