@@ -37,11 +37,22 @@ pre-existing files, on a PR (#346) whose diff never touched any of them.
 The local dev toolchain was still 1.97.0 (rustup had not auto-updated), so
 the failure was invisible locally and looked like a CI-only regression.
 
-A crate-level `#[allow(clippy::unused_async_trait_impl)]` or
-`#[allow(unknown_lints)]` was considered and rejected: the lint is unknown
-to the still-supported 1.97.0 toolchain under `-D warnings`, so either
-`allow` would itself fail to compile on the older, still-valid local/MSRV
-toolchain — trading one deterministic failure for another.
+A crate-level `#[allow(clippy::unused_async_trait_impl)]` was considered
+and rejected: on its own, a bare unrecognized lint name fails to compile
+under `-D warnings` on the still-supported 1.97.0 toolchain (confirmed
+locally: `-W clippy::unused_async_trait_impl` under `-D warnings` errors as
+an unknown lint). Correction from an earlier draft of this note: pairing it
+with `#[allow(unknown_lints, clippy::unused_async_trait_impl)]` *would*
+compile cleanly on 1.97.0 (the `unknown_lints` guard exists precisely for
+this forward-compatibility case) — that combination was rejected for a
+different, non-compilation reason: it is a **lint-policy** decision, not a
+mechanical CI unblock. Silently pre-allowing a not-yet-triaged lint across
+the whole crate would suppress genuine future `clippy::unused_async_trait_impl`
+violations without the redesign-or-explicit-policy review this class of
+finding warrants, and would do so under a generic PR whose stated scope was
+narrow CI toolchain drift, not a lint-policy ruling. That decision belongs
+with the Rust/Clippy 1.98+ upgrade follow-up (stash `B1024A34`), reviewed on
+its own merits.
 
 ## Root Cause
 
@@ -81,9 +92,13 @@ silently ignored.
 
 ## Guardrails
 
-- Never add a crate-level `allow` for an unknown/newer-toolchain-only lint
-  just to unblock CI — it weakens lint policy and can break older,
-  still-supported toolchains.
+- A bare, unguarded `allow` for an unknown/newer-toolchain-only lint fails
+  to compile on an older still-supported toolchain under `-D warnings`;
+  guarding it with `allow(unknown_lints, ...)` avoids that failure but is
+  still a lint-policy decision (silently pre-allowing a not-yet-triaged
+  lint crate-wide), not a mechanical fix — do not make that call inside an
+  unrelated CI-drift PR. Get an explicit, reviewed decision (redesign vs.
+  scoped allow with justification) instead.
 - Verify the pin candidate SHA is an ancestor of the action's `master`
   branch before relying on the `toolchain:` input; a SHA from a
   version/`stable`/`nightly` branch will silently ignore that input.

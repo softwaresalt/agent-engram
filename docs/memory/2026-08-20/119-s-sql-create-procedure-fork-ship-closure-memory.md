@@ -92,9 +92,11 @@ not block 119-S.
   merged, the shipment-ship mutation (and this memory/learning doc) were
   committed on a new branch `chore/119-s-closure` created from
   `origin/main` post-merge (not appended to the already-merged feature
-  branch), then opened/merged as a small closure PR - consistent with
-  "update operational closure... through an appropriate follow-up closure
-  PR."
+  branch), then opened as PR #347 - consistent with "update operational
+  closure... through an appropriate follow-up closure PR." This record
+  reflects state as of that commit; PR #347's own merge status (and its
+  merge commit SHA, if merged) is tracked separately and is not asserted
+  here unless independently confirmed via the Merge Confirmation Gate.
 * 72-hour post-merge observation window (per
   `docs/closure/2026-08-20-sql-create-procedure-compatibility-fork-closure.md`):
   owner = release maintainer (softwaresalt, EG-1 lifecycle owner); signals
