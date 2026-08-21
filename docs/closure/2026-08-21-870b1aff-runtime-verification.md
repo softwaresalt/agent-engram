@@ -11,6 +11,27 @@ verdict: READY
 
 ## 120-S / 124-F Runtime Verification (U7)
 
+### Review remediation (post-review-gate addendum)
+
+Standard review, MCP Protocol Reviewer, and Concurrency Reviewer were
+dispatched per the Ship pipeline's review gate (protocol/framing and
+process/stdio concurrency changes both apply here). Findings and
+disposition:
+
+| Finding | Severity | Disposition |
+|---|---|---|
+| Degraded `tools/call` used `Err(ErrorData)`; rmcp's own docs note protocol errors are rendered opaquely by clients, hiding the message from the agent | P1 | Fixed: now `Ok(CallToolResult::structured_error)` with `isError: true` |
+| Degraded error `data` didn't follow the `-32603` + `data.engram_code` convention used elsewhere in the codebase | P1/P2 | Fixed: `structured_content` now carries `engram_code`/`failure_class`/`message` |
+| Unbounded post-session `startup_task.await` could delay process exit after a client disconnects before any `tools/call` | P2 | Fixed: bounded with a 2s grace timeout |
+| `record_startup_failure`'s synchronous file I/O ran directly on an async task | P3 | Fixed: moved to `tokio::task::spawn_blocking` |
+| No proactive degraded-session notification signal for `tools/list` callers | P3 | Accepted as follow-up (stash `448079D3`) |
+| No explicit cancellation token for the background precondition task | P3 | Accepted as follow-up (stash `D3E1CB5F`); explicitly out of scope per plan (would touch `src/shim/lifecycle.rs`) |
+
+Review-fix cycle: 1 of 3. Fix commit: `f0976d00a5783e84e9ce0ed26a3eed84efb59c7d`.
+All 19 shim contract tests, `cargo fmt --all -- --check`, `cargo clippy
+--all-targets -- -D warnings -D clippy::pedantic`, and `cargo test --lib`
+(serial, 632/632) re-verified green after remediation.
+
 ### Validator contract
 
 - Surface: Windows real `target/debug/engram.exe shim` subprocess, driven
