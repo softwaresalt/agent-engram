@@ -475,7 +475,15 @@ async fn mcp_shim_handshake_is_bounded_and_stdout_clean_in_real_worktree() {
 }
 
 #[test]
-fn shim_reports_spawned_daemon_early_exit_before_readiness_budget() {
+fn shim_reports_transport_failure_fast_when_client_disconnects_before_initialize() {
+    // 124-F (870B1AFF) serve-first contract: the shim binds the MCP stdio
+    // transport unconditionally and no longer fails fast on daemon-readiness
+    // preconditions before initialize (see `shim_stdio_initialize_test.rs`
+    // for the degraded-session, daemon-readiness-failure contract with a
+    // real MCP handshake). With `Stdio::null()` on stdin, no client ever
+    // connects to send `initialize`, so the *transport* itself reports a
+    // closed connection — a distinct, still fast, still attributable
+    // failure (`ShimFailureClass::TransportFailure`, exit code 13).
     let workspace = TempDir::new().expect("workspace tempdir");
     fs::create_dir(workspace.path().join(".git")).expect("create git metadata");
     fs::write(
@@ -493,15 +501,20 @@ fn shim_reports_spawned_daemon_early_exit_before_readiness_budget() {
         .env("ENGRAM_READY_TIMEOUT_MS", "30000")
         .stdin(Stdio::null())
         .output()
-        .expect("run shim with early-exiting daemon executable");
+        .expect("run shim with a disconnected MCP client");
 
     assert!(
         !output.status.success(),
-        "shim must fail when its exact spawned daemon exits"
+        "shim must fail when no client ever sends initialize"
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(13),
+        "shim must exit with the documented transport-failure code (13)"
     );
     assert!(
         started.elapsed() < Duration::from_secs(15),
-        "spawned daemon exit must fail fast instead of consuming the 30 s readiness budget"
+        "a disconnected client must fail fast instead of consuming the 30 s readiness budget"
     );
     assert!(
         output.stdout.is_empty(),
@@ -509,13 +522,18 @@ fn shim_reports_spawned_daemon_early_exit_before_readiness_budget() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("exited") || stderr.contains("status"),
-        "startup error must report the child exit status; stderr: {stderr}"
+        stderr.contains("transport_failure"),
+        "startup error must name the transport_failure class; stderr: {stderr}"
     );
 }
 
 #[test]
 fn shim_rejects_invalid_workspace_without_consuming_readiness_budget() {
+    // Same serve-first rationale as above: with no client connected, the
+    // transport itself fails fast rather than the (now-deferred and
+    // never-reached, since no client sends initialize) workspace-admission
+    // precondition. See `shim_stdio_initialize_test.rs` for the
+    // admission-failure-with-a-real-handshake contract.
     let workspace = TempDir::new().expect("invalid workspace tempdir");
     let started = Instant::now();
     let output = Command::new(env!("CARGO_BIN_EXE_engram"))
