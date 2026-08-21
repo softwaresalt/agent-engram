@@ -68,6 +68,36 @@ struct GitMetadata {
     head_path: PathBuf,
 }
 
+// Test-only interception seam for the metadata-resolution TOCTOU windows.
+//
+// In production (`cfg(not(test))`) `toctou_checkpoint` is a no-op with zero
+// runtime surface. Under `cfg(test)` it invokes a thread-local hook, letting
+// the colocated adversarial tests perform a deterministic filesystem swap at a
+// named point during `resolve_git_metadata` — reproducing the check/use race
+// without any timing dependency.
+#[cfg(test)]
+type ToctouHook = Box<dyn FnMut(&str)>;
+
+#[cfg(test)]
+thread_local! {
+    static TOCTOU_SWAP_HOOK: std::cell::RefCell<Option<ToctouHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Invoke the installed swap hook, if any, for the named checkpoint.
+#[cfg(test)]
+fn toctou_checkpoint(name: &str) {
+    TOCTOU_SWAP_HOOK.with(|hook| {
+        if let Some(callback) = hook.borrow_mut().as_mut() {
+            callback(name);
+        }
+    });
+}
+
+/// No-op in production builds; the checkpoint carries no runtime cost or surface.
+#[cfg(not(test))]
+fn toctou_checkpoint(_name: &str) {}
+
 /// Resolve the workspace's Git metadata without following an unvalidated
 /// gitfile. Linked-worktree metadata is outside the workspace by design, so
 /// every native backlink is checked before the admin directory is trusted.
@@ -116,6 +146,13 @@ fn resolve_git_metadata(path: &Path) -> Result<GitMetadata, WorkspaceError> {
         return Err(not_git_root(&workspace));
     }
 
+    // Validation of the admin directory is complete. Every access below
+    // re-resolves `admin_dir` from the filesystem root, so this is the window
+    // in which an attacker can swap a validated ancestor between check and use
+    // (threats T1–T3). The checkpoint is a no-op in production builds and exists
+    // only so adversarial tests can drive that swap deterministically.
+    toctou_checkpoint("admin_validated");
+
     let commondir_path = admin_dir.join("commondir");
     let commondir_content = read_metadata_file(&commondir_path, &workspace)?;
     let common_directive = parse_single_line(&commondir_content, &workspace)?;
@@ -130,6 +167,11 @@ fn resolve_git_metadata(path: &Path) -> Result<GitMetadata, WorkspaceError> {
     };
     require_plain_directory(&common_candidate, &workspace)?;
     let common_dir = canonical_path(&common_candidate, &workspace)?;
+
+    // The common directory is now validated but every subsequent `objects`,
+    // `refs`, `worktrees`, and `HEAD` access re-resolves it by path. Second
+    // deterministic swap window for the adversarial tests; no-op in production.
+    toctou_checkpoint("common_validated");
 
     let worktrees_candidate = common_dir.join("worktrees");
     require_plain_directory(&worktrees_candidate, &workspace)?;
@@ -792,5 +834,196 @@ mod tests {
         ));
 
         assert!(load_or_create_workspace_id(workspace.path()).is_ok());
+    }
+}
+
+/// Deterministic ancestor-swap interception tests for `resolve_git_metadata`.
+///
+/// These colocated tests use the `#[cfg(test)]` `toctou_checkpoint` seam to
+/// reproduce the check/use race (threats T1–T3) without any timing dependency:
+/// a hook renames a validated ancestor directory aside and moves an
+/// attacker-controlled directory into its place at a named checkpoint, then the
+/// resolver is asserted to reject the swapped namespace.
+#[cfg(test)]
+mod toctou_tests {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    use tempfile::TempDir;
+
+    /// Restores the thread-local swap hook to `None` when the test scope ends,
+    /// so an installed hook never leaks into another test on the same thread.
+    struct HookGuard;
+
+    impl Drop for HookGuard {
+        fn drop(&mut self) {
+            super::TOCTOU_SWAP_HOOK.with(|slot| *slot.borrow_mut() = None);
+        }
+    }
+
+    fn install_hook<F>(hook: F) -> HookGuard
+    where
+        F: FnMut(&str) + 'static,
+    {
+        super::TOCTOU_SWAP_HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+        HookGuard
+    }
+
+    fn run_git(repo: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .expect("run git fixture command");
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn initialize_primary(primary: &Path) {
+        fs::create_dir_all(primary).expect("create primary checkout");
+        run_git(primary, &["init", "--initial-branch=main"]);
+        run_git(primary, &["config", "user.name", "Engram Test"]);
+        run_git(
+            primary,
+            &["config", "user.email", "engram-test@example.invalid"],
+        );
+        fs::write(primary.join("README.md"), "# fixture\n").expect("write tracked fixture");
+        run_git(primary, &["add", "README.md"]);
+        run_git(primary, &["commit", "-m", "fixture"]);
+    }
+
+    fn add_linked_worktree(primary: &Path, worktree: &Path, branch: &str) {
+        let output = Command::new("git")
+            .args(["worktree", "add", "-b", branch])
+            .arg(worktree)
+            .current_dir(primary)
+            .output()
+            .expect("create linked worktree");
+        assert!(
+            output.status.success(),
+            "git worktree add failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn admin_dir_of(worktree: &Path) -> PathBuf {
+        let gitfile = fs::read_to_string(worktree.join(".git")).expect("read linked gitfile");
+        let pointer = gitfile
+            .trim()
+            .strip_prefix("gitdir: ")
+            .expect("native linked gitfile directive")
+            .to_owned();
+        PathBuf::from(pointer)
+    }
+
+    fn copy_dir_all(src: &Path, dst: &Path) {
+        fs::create_dir_all(dst).expect("create copy destination");
+        for entry in fs::read_dir(src).expect("read source directory") {
+            let entry = entry.expect("read source entry");
+            let file_type = entry.file_type().expect("source entry file type");
+            let target = dst.join(entry.file_name());
+            if file_type.is_dir() {
+                copy_dir_all(&entry.path(), &target);
+            } else {
+                fs::copy(entry.path(), &target).expect("copy source file");
+            }
+        }
+    }
+
+    // ── T1: deterministic ancestor swap after admin-directory validation ─────
+
+    /// After the admin directory is validated and before `commondir` is read,
+    /// the validated `worktrees` ancestor is renamed aside and an attacker
+    /// directory carrying an internally consistent same-named admin dir is moved
+    /// into its place. Because the attacker directory is *moved* (not linked),
+    /// the `is_symlink()`/reparse gates cannot see it — only handle identity can.
+    #[test]
+    fn ancestor_swap_after_admin_validation_is_rejected() {
+        let fixture = TempDir::new().expect("fixture tempdir");
+        let primary = fixture.path().join("primary");
+        let worktree = fixture.path().join("worktree");
+        initialize_primary(&primary);
+        add_linked_worktree(&primary, &worktree, "feature/admin-swap");
+
+        let admin_dir = admin_dir_of(&worktree);
+        let worktrees_dir = admin_dir
+            .parent()
+            .expect("admin dir has a worktrees parent")
+            .to_path_buf();
+        let admin_name = admin_dir
+            .file_name()
+            .expect("admin dir has a name")
+            .to_os_string();
+
+        let commondir = fs::read_to_string(admin_dir.join("commondir")).expect("read commondir");
+        let backlink = fs::read_to_string(admin_dir.join("gitdir")).expect("read admin backlink");
+        let attacker_worktrees = fixture.path().join("attacker_worktrees");
+        let attacker_admin = attacker_worktrees.join(&admin_name);
+        fs::create_dir_all(&attacker_admin).expect("create attacker admin dir");
+        fs::write(attacker_admin.join("commondir"), &commondir).expect("write attacker commondir");
+        fs::write(attacker_admin.join("gitdir"), &backlink).expect("write attacker backlink");
+        fs::write(attacker_admin.join("HEAD"), "ref: refs/heads/hijacked\n")
+            .expect("write attacker HEAD");
+
+        let aside = worktrees_dir.with_file_name("worktrees__aside");
+        let _guard = install_hook(move |name| {
+            if name != "admin_validated" {
+                return;
+            }
+            if worktrees_dir.exists() {
+                fs::rename(&worktrees_dir, &aside).expect("move validated worktrees aside");
+                fs::rename(&attacker_worktrees, &worktrees_dir)
+                    .expect("swap attacker worktrees into place");
+            }
+        });
+
+        let result = super::resolve_git_metadata(&worktree);
+        assert!(
+            result.is_err(),
+            "an ancestor swapped after validation must not be admitted; got {result:?}"
+        );
+    }
+
+    // ── T1: deterministic ancestor swap after common-directory validation ────
+
+    /// After the common directory is validated and before `objects`/`refs`/
+    /// `worktrees`/`HEAD` are read, the whole common git directory is renamed
+    /// aside and a full, internally consistent attacker copy is moved into its
+    /// place. The copy is a distinct object with identical content, so only
+    /// handle identity — not path-based re-resolution — can detect the swap.
+    #[test]
+    fn ancestor_swap_after_common_validation_is_rejected() {
+        let fixture = TempDir::new().expect("fixture tempdir");
+        let primary = fixture.path().join("primary");
+        let worktree = fixture.path().join("worktree");
+        initialize_primary(&primary);
+        add_linked_worktree(&primary, &worktree, "feature/common-swap");
+
+        let common_dir = primary.join(".git");
+        let attacker_common = fixture.path().join("attacker_git");
+        copy_dir_all(&common_dir, &attacker_common);
+
+        let aside = common_dir.with_file_name(".git__aside");
+        let _guard = install_hook(move |name| {
+            if name != "common_validated" {
+                return;
+            }
+            if common_dir.exists() && attacker_common.exists() {
+                fs::rename(&common_dir, &aside).expect("move validated common dir aside");
+                fs::rename(&attacker_common, &common_dir)
+                    .expect("swap attacker common dir into place");
+            }
+        });
+
+        let result = super::resolve_git_metadata(&worktree);
+        assert!(
+            result.is_err(),
+            "a common git directory swapped after validation must not be admitted; got {result:?}"
+        );
     }
 }
