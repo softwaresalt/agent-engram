@@ -149,6 +149,14 @@ name = "contract_task_removal"
 path = "tests/contract/task_removal_test.rs"
 
 [[test]]
+name = "contract_shim_stdio_initialize"
+path = "tests/contract/shim_stdio_initialize_test.rs"
+
+[[test]]
+name = "contract_shim_stdout_purity"
+path = "tests/contract/shim_stdout_purity_test.rs"
+
+[[test]]
 name = "contract_doctor_health"
 path = "tests/contract/doctor_health_test.rs"
 

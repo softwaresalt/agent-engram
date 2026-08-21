@@ -54,6 +54,14 @@ use crate::config::LogFormat;
 static TRACING_INIT: OnceLock<()> = OnceLock::new();
 
 /// Initialize tracing subscriber in JSON or pretty mode; idempotent across calls.
+///
+/// The writer is pinned to stderr (rather than the `fmt` layer's stdout
+/// default) for every format. This is a deliberate, reviewed contract
+/// (124-F U5, investigation E5, plan-review F3): the shim's MCP stdio
+/// transport reserves stdout exclusively for JSON-RPC framing bytes, so any
+/// tracing output — on the shim path or the daemon path — must never land on
+/// stdout. Daemon log capture that previously relied on stdout must be
+/// updated to read stderr instead; see `docs/troubleshooting.md`.
 pub fn init_tracing(format: LogFormat) {
     TRACING_INIT.get_or_init(|| {
         let env_filter = EnvFilter::try_from_default_env()
@@ -64,11 +72,18 @@ pub fn init_tracing(format: LogFormat) {
         match format {
             LogFormat::Json => {
                 registry
-                    .with(fmt::layer().json().with_current_span(true))
+                    .with(
+                        fmt::layer()
+                            .json()
+                            .with_current_span(true)
+                            .with_writer(std::io::stderr),
+                    )
                     .init();
             }
             LogFormat::Pretty => {
-                registry.with(fmt::layer().pretty()).init();
+                registry
+                    .with(fmt::layer().pretty().with_writer(std::io::stderr))
+                    .init();
             }
         }
     });

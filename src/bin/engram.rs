@@ -373,7 +373,19 @@ async fn main() -> Result<()> {
     match cli.command.unwrap_or(Command::Shim) {
         // ── Internal commands ─────────────────────────────────────────────────
         Command::Shim => {
-            engram::shim::run(flags.workspace.as_deref()).await?;
+            // 124-F (870B1AFF): the shim always answers MCP `initialize`
+            // before evaluating daemon-dependent preconditions. A classified
+            // `ShimStartup` error means the session ran in a degraded state
+            // (or, rarely, the transport itself failed); exit with the
+            // documented distinct code so operators and wrapper scripts can
+            // detect it without parsing stderr. See docs/troubleshooting.md.
+            if let Err(err) = engram::shim::run(flags.workspace.as_deref()).await {
+                if let Some(exit_code) = err.shim_exit_code() {
+                    eprintln!("Error: {err}");
+                    std::process::exit(exit_code);
+                }
+                return Err(err.into());
+            }
         }
 
         Command::Daemon => {
