@@ -191,46 +191,57 @@ async fn record_startup_failure(workspace_hint: Option<&str>, class: ShimFailure
     .await;
 }
 
-/// Resolve `<root>/.engram/diagnostics` with no-follow semantics: refuses to
-/// write through a pre-existing symlink or reparse point at either `.engram`
-/// or `.engram/diagnostics`, and verifies the final canonicalized directory
-/// still resolves inside the canonicalized workspace root (workspace
-/// containment; Constitution Principle III/IV).
-fn no_follow_diagnostics_dir(workspace_hint: &str) -> Option<std::path::PathBuf> {
+/// Open (or create) a single path component under `parent` with atomic
+/// no-follow semantics: if a real directory already exists, open it
+/// directly; otherwise attempt to create it fresh and open the result.
+///
+/// This is race-free against a concurrent symlink swap: `open_dir_nofollow`
+/// (cap-std, backed by `O_NOFOLLOW` on Unix and reparse-point-aware opens on
+/// Windows) either succeeds against a real directory or fails — there is no
+/// separate check-then-act window between inspecting and opening the entry,
+/// unlike a `symlink_metadata` check followed by a plain `open`/`create_dir`.
+fn open_or_create_subdir_nofollow(
+    parent: &cap_std::fs::Dir,
+    name: &str,
+) -> Option<cap_std::fs::Dir> {
+    use cap_fs_ext::DirExt as _;
+
+    if let Ok(dir) = parent.open_dir_nofollow(Path::new(name)) {
+        return Some(dir);
+    }
+    // Either the entry doesn't exist yet, or it exists but isn't a
+    // followable real directory (e.g. a symlink). `create_dir` only
+    // succeeds in the former case (`AlreadyExists` otherwise), so the
+    // no-follow open retry below is the sole arbiter of success either way.
+    let _ = parent.create_dir(name);
+    parent.open_dir_nofollow(Path::new(name)).ok()
+}
+
+/// Resolve `<root>/.engram/diagnostics` with atomic no-follow semantics:
+/// refuses to descend through a pre-existing symlink or reparse point at
+/// either `.engram` or `.engram/diagnostics` (workspace containment;
+/// Constitution Principle III/IV). Returns an open directory handle rather
+/// than a `PathBuf` so the subsequent file write (`write_startup_failure_record`)
+/// is also no-follow and relative to this handle, closing the
+/// check-then-act race a path-string-based approach would leave open.
+fn no_follow_diagnostics_dir(workspace_hint: &str) -> Option<cap_std::fs::Dir> {
     let workspace_root = Path::new(workspace_hint).canonicalize().ok()?;
     if !workspace_root.is_dir() {
         return None;
     }
-    let engram_dir = workspace_root.join(".engram");
-    if let Ok(meta) = std::fs::symlink_metadata(&engram_dir) {
-        if meta.file_type().is_symlink() {
-            return None;
-        }
-    }
-    let diagnostics_dir = engram_dir.join("diagnostics");
-    if let Ok(meta) = std::fs::symlink_metadata(&diagnostics_dir) {
-        if meta.file_type().is_symlink() {
-            return None;
-        }
-    }
-    std::fs::create_dir_all(&diagnostics_dir).ok()?;
-    let canonical_diagnostics_dir = diagnostics_dir.canonicalize().ok()?;
-    if !canonical_diagnostics_dir.starts_with(&workspace_root) {
-        return None;
-    }
-    Some(canonical_diagnostics_dir)
+    let root_dir =
+        cap_std::fs::Dir::open_ambient_dir(&workspace_root, cap_std::ambient_authority()).ok()?;
+    let engram_dir = open_or_create_subdir_nofollow(&root_dir, ".engram")?;
+    open_or_create_subdir_nofollow(&engram_dir, "diagnostics")
 }
 
 fn write_startup_failure_record(workspace_hint: &str, class: ShimFailureClass) {
+    use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt as _};
+    use cap_std::fs::OpenOptions;
+
     let Some(diagnostics_dir) = no_follow_diagnostics_dir(workspace_hint) else {
         return;
     };
-    let record_path = diagnostics_dir.join("shim-startup-failures.jsonl");
-    if let Ok(meta) = std::fs::symlink_metadata(&record_path) {
-        if meta.file_type().is_symlink() {
-            return;
-        }
-    }
     let record = json!({
         "timestamp": chrono::Utc::now().to_rfc3339(),
         "binary_version": version::ENGRAM_BUILD_HASH,
@@ -241,10 +252,10 @@ fn write_startup_failure_record(workspace_hint: &str, class: ShimFailureClass) {
         return;
     };
     line.push('\n');
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&record_path)
+    let mut options = OpenOptions::new();
+    options.create(true).append(true).follow(FollowSymlinks::No);
+    if let Ok(mut file) =
+        diagnostics_dir.open_with(Path::new("shim-startup-failures.jsonl"), &options)
     {
         let _ = file.write_all(line.as_bytes());
     }
@@ -371,16 +382,29 @@ mod tests {
     fn no_follow_diagnostics_dir_creates_normally_for_a_clean_workspace() {
         let workspace = tempfile::TempDir::new().expect("workspace tempdir");
         let workspace_hint = workspace.path().to_string_lossy().into_owned();
-        let diagnostics_dir =
+        let dir =
             no_follow_diagnostics_dir(&workspace_hint).expect("must resolve for a clean workspace");
+
+        // Confirm the returned handle genuinely is
+        // `<workspace>/.engram/diagnostics` by writing a marker file through
+        // it and observing that file at the expected plain path.
+        let mut options = cap_std::fs::OpenOptions::new();
+        options.create(true).write(true);
+        let mut file = dir
+            .open_with(Path::new("marker.txt"), &options)
+            .expect("create marker file via the returned handle");
+        file.write_all(b"ok").expect("write marker file");
+
+        let expected_marker = workspace
+            .path()
+            .canonicalize()
+            .expect("canonicalize workspace")
+            .join(".engram")
+            .join("diagnostics")
+            .join("marker.txt");
         assert!(
-            diagnostics_dir.starts_with(
-                workspace
-                    .path()
-                    .canonicalize()
-                    .expect("canonicalize workspace")
-            )
+            expected_marker.is_file(),
+            "the returned handle must correspond to <workspace>/.engram/diagnostics"
         );
-        assert!(diagnostics_dir.is_dir());
     }
 }
