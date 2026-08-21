@@ -72,7 +72,12 @@ documented delivery over scope creep).
 
 ## Preserved, not compacted
 
-Deferred follow-ups remain queued/blocked and are tracked in the backlog,
-not memory: 091.015-T (blocked, backfill trigger design needs operator
-input), 091.017-T, 091.019-T, 091.021-T, 090.005-T, 087.005-T/087.006-T
-(PowerBI durability), and the 025-S/041-F CozoDB major-upgrade cluster.
+Deferred follow-ups remain blocked and are tracked in the backlog, not
+memory: 091.015-T (blocked, backfill trigger design needs operator
+input), 091.019-T, 091.021-T, 090.005-T, and the 041-F CozoDB
+major-upgrade cluster. Status as of this compaction (2026-08-21, not the
+source-checkpoint date): 091.017-T was independently rejected/archived
+(`wont-fix`, refuted finding — see the 2026-07-31 drain-closeout
+compaction); 087.005-T/087.006-T shipped and archived as part of shipment
+100-S (PowerBI durability); 025-S was archived as abandoned. These three
+are historical, not open follow-ups.

@@ -65,6 +65,8 @@ queued for Ship to execute.
 
 ## Preserved, not compacted
 
-099-F (Python-canonical hardening follow-ups) and 100-F/092-S (same-file
-shadowing fix) were queued, not yet shipped, at the time of this
-compaction and are tracked in the backlog rather than memory.
+At the source-checkpoint time (2026-07-27), 099-F (Python-canonical
+hardening follow-ups) and 100-F/092-S (same-file shadowing fix) were
+queued, not yet shipped. Both have since shipped and archived — 100-F/
+092-S on 2026-07-28, 099-F via shipment 098-S — and are tracked as
+completed backlog history, not active follow-ups.
