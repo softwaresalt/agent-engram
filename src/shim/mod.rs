@@ -254,11 +254,36 @@ fn write_startup_failure_record(workspace_hint: &str, class: ShimFailureClass) {
     line.push('\n');
     let mut options = OpenOptions::new();
     options.create(true).append(true).follow(FollowSymlinks::No);
-    if let Ok(mut file) =
-        diagnostics_dir.open_with(Path::new("shim-startup-failures.jsonl"), &options)
+    // `FollowSymlinks::No` prevents symlink traversal but does not require
+    // the existing leaf to be a regular file. On Unix, opening a
+    // pre-created FIFO for writing blocks indefinitely with no reader
+    // present, which would hang this blocking-pool task forever and, in
+    // turn, the `tools/call` awaiting the startup outcome (`await_startup_outcome`
+    // is deliberately unbounded — see its doc comment). Pass `O_NONBLOCK` so
+    // opening a FIFO fails immediately instead of blocking, then verify the
+    // opened file is a regular file before writing (Copilot review finding
+    // on PR #349).
+    #[cfg(unix)]
     {
-        let _ = file.write_all(line.as_bytes());
+        use cap_std::fs::OpenOptionsExt as _;
+        use rustix::fs::OFlags;
+
+        if let Ok(custom_flags) = i32::try_from(OFlags::NONBLOCK.bits()) {
+            options.custom_flags(custom_flags);
+        }
     }
+    let Ok(mut file) =
+        diagnostics_dir.open_with(Path::new("shim-startup-failures.jsonl"), &options)
+    else {
+        return;
+    };
+    let Ok(metadata) = file.metadata() else {
+        return;
+    };
+    if !metadata.file_type().is_file() {
+        return;
+    }
+    let _ = file.write_all(line.as_bytes());
 }
 
 /// Determine the shim's tracing log format from `ENGRAM_LOG_FORMAT`.
