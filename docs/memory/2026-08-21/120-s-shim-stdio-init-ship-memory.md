@@ -8,17 +8,16 @@ agent: ship
 status: shipped
 ---
 
-# 120-S Ship Session Memory
-
 ## Outcome
 
 Shipped. PR [#349](https://github.com/softwaresalt/agent-engram/pull/349)
 merged to `main` at `151691c91f518dda67a4ac3b9b603158cd038c25`
 (2026-08-21T16:16:55Z), confirmed an ancestor of `origin/main`. Shipment
 120-S closed via `backlogit shipment ship` (properly, on the second
-attempt — see "Failed approaches" below); 120-S, 124-F, and its 7 tasks all
-archived with `status: shipped` / `status: done` and the merge commit
-recorded.
+attempt — see "Failed approaches" below); 120-S, 124-F, and its 7 tasks are
+all archived (`status: archived`), with `archived_status: shipped` for
+120-S and `archived_status: done` for 124-F and every task, and the merge
+commit recorded on each archive record's `commit` field.
 
 ## Task IDs completed
 
