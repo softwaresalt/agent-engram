@@ -344,9 +344,19 @@ impl ShimFailureClass {
     }
 }
 
-/// A classified shim startup failure carrying a sanitized, attributable
-/// message. The message MUST NOT contain credentials, tokens, environment
-/// variable values, or paths outside the workspace root.
+/// A classified shim startup failure carrying an attributable, live-facing
+/// message (surfaced in the degraded `tools/call` response and the shim's
+/// stderr line).
+///
+/// This `message` MUST NOT contain credentials, tokens, or environment
+/// variable values. It MAY legitimately contain the workspace's own path
+/// (e.g. [`ShimFailureClass::AdmissionFailure`]'s underlying error names the
+/// caller-supplied workspace path) — that is expected, live, operator-facing
+/// detail, not a leak. The stronger guarantee — no variable data at all, not
+/// even the workspace's own path — applies only to the *persisted* durable
+/// startup-failure record, which never stores this `message`; it stores
+/// [`ShimFailureClass::record_message`]'s fixed, class-specific description
+/// instead (see `shim::spawn_record_startup_failure`).
 ///
 /// Despite its name, this type also carries [`ShimFailureClass::TransportFailure`]
 /// (the MCP stdio transport itself failed to bind, or the session ended with

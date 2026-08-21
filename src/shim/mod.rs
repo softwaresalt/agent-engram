@@ -107,21 +107,46 @@ fn resolve_workspace_arg(workspace_override: Option<&str>) -> Result<String, Eng
 /// to a distinct [`ShimFailureClass`] so the cause is attributable without
 /// inspecting the underlying [`EngramError`] variant. Called only from the
 /// background startup task — never before the MCP stdio transport binds.
-async fn compute_startup_outcome(workspace_override: Option<String>) -> StartupOutcome {
+///
+/// Publishes the resolved outcome on `outcome_tx` immediately at each
+/// return point, *before* spawning the best-effort durable-record write
+/// ([`spawn_record_startup_failure`]). The record write must never sit on
+/// the outcome-publication critical path: `ShimHandler::call_tool` awaits
+/// this channel unbounded (see `transport::ShimHandler::await_startup_outcome`),
+/// so any slowness in the (already best-effort, fire-and-forget) diagnostic
+/// write must not delay every `tools/call` waiting on the real
+/// classification.
+/// Returns the resolved outcome and, if a durable-record write was spawned,
+/// its detached [`tokio::task::JoinHandle`] so the caller may optionally
+/// give it a short best-effort grace period before process exit — purely
+/// for record durability, never to gate outcome publication or `tools/call`
+/// responsiveness (both already happened by the time this returns).
+async fn compute_startup_outcome(
+    workspace_override: Option<String>,
+    outcome_tx: &watch::Sender<Option<StartupOutcome>>,
+) -> (StartupOutcome, Option<tokio::task::JoinHandle<()>>) {
+    let publish = |outcome: StartupOutcome| {
+        let _ = outcome_tx.send(Some(outcome.clone()));
+        outcome
+    };
+
     let workspace_arg = match resolve_workspace_arg(workspace_override.as_deref()) {
         Ok(arg) => arg,
         Err(EngramError::ShimStartup(ShimStartupError { class, message })) => {
-            let outcome = StartupOutcome::Degraded { class, message };
-            record_startup_failure(None, class).await;
-            return outcome;
+            let outcome = publish(StartupOutcome::Degraded { class, message });
+            let handle = spawn_record_startup_failure(None, class);
+            return (outcome, handle);
         }
         Err(err) => {
             // Unreachable in practice (resolve_workspace_arg only ever
             // returns ShimStartup), but classify defensively rather than
             // panicking or losing the error.
-            let outcome = StartupOutcome::degraded(ShimFailureClass::AdmissionFailure, &err);
-            record_startup_failure(None, ShimFailureClass::AdmissionFailure).await;
-            return outcome;
+            let outcome = publish(StartupOutcome::degraded(
+                ShimFailureClass::AdmissionFailure,
+                &err,
+            ));
+            let handle = spawn_record_startup_failure(None, ShimFailureClass::AdmissionFailure);
+            return (outcome, handle);
         }
     };
 
@@ -129,42 +154,54 @@ async fn compute_startup_outcome(workspace_override: Option<String>) -> StartupO
         Ok(path) => path,
         Err(err) => {
             let err = EngramError::from(err);
-            let outcome = StartupOutcome::degraded(ShimFailureClass::AdmissionFailure, &err);
+            let outcome = publish(StartupOutcome::degraded(
+                ShimFailureClass::AdmissionFailure,
+                &err,
+            ));
             // canonicalize_workspace failed, so workspace_arg is not a
             // validated root; pass it only as a best-effort location hint
             // (record_startup_failure applies its own no-follow guards
             // before writing anything under it).
-            record_startup_failure(Some(&workspace_arg), ShimFailureClass::AdmissionFailure).await;
-            return outcome;
+            let handle = spawn_record_startup_failure(
+                Some(workspace_arg),
+                ShimFailureClass::AdmissionFailure,
+            );
+            return (outcome, handle);
         }
     };
 
     if let Err(err) = lifecycle::ensure_daemon_running(&workspace_path).await {
-        let outcome = StartupOutcome::degraded(ShimFailureClass::ReadinessTimeout, &err);
-        record_startup_failure(
-            Some(&workspace_path.display().to_string()),
+        let outcome = publish(StartupOutcome::degraded(
             ShimFailureClass::ReadinessTimeout,
-        )
-        .await;
-        return outcome;
+            &err,
+        ));
+        let handle = spawn_record_startup_failure(
+            Some(workspace_path.display().to_string()),
+            ShimFailureClass::ReadinessTimeout,
+        );
+        return (outcome, handle);
     }
 
     match crate::daemon::ipc_server::ipc_endpoint(&workspace_path) {
-        Ok(endpoint) => StartupOutcome::Ready { endpoint },
+        Ok(endpoint) => (publish(StartupOutcome::Ready { endpoint }), None),
         Err(err) => {
-            let outcome =
-                StartupOutcome::degraded(ShimFailureClass::EndpointDerivationFailure, &err);
-            record_startup_failure(
-                Some(&workspace_path.display().to_string()),
+            let outcome = publish(StartupOutcome::degraded(
                 ShimFailureClass::EndpointDerivationFailure,
-            )
-            .await;
-            outcome
+                &err,
+            ));
+            let handle = spawn_record_startup_failure(
+                Some(workspace_path.display().to_string()),
+                ShimFailureClass::EndpointDerivationFailure,
+            );
+            (outcome, handle)
         }
     }
 }
 
-/// Best-effort durable startup-failure record under `<workspace>/.engram/diagnostics/`.
+/// Fire-and-forget the best-effort durable startup-failure record write
+/// (`write_startup_failure_record`) on a detached task, without awaiting
+/// it. Deliberately NOT on `compute_startup_outcome`'s critical path — the
+/// outcome is already published on `outcome_tx` before this is called.
 ///
 /// Contains ONLY a timestamp, the binary build identifier, and the
 /// classified failure class. The record deliberately does NOT persist the
@@ -180,15 +217,17 @@ async fn compute_startup_outcome(workspace_override: Option<String>) -> StartupO
 /// exit code and stderr line are). Runs on a blocking-pool thread
 /// (`tokio::task::spawn_blocking`) so its synchronous file I/O never stalls
 /// an async runtime worker thread.
-async fn record_startup_failure(workspace_hint: Option<&str>, class: ShimFailureClass) {
-    let Some(workspace_hint) = workspace_hint else {
-        return;
-    };
-    let workspace_hint = workspace_hint.to_owned();
-    let _ = tokio::task::spawn_blocking(move || {
-        write_startup_failure_record(&workspace_hint, class);
-    })
-    .await;
+fn spawn_record_startup_failure(
+    workspace_hint: Option<String>,
+    class: ShimFailureClass,
+) -> Option<tokio::task::JoinHandle<()>> {
+    let workspace_hint = workspace_hint?;
+    Some(tokio::spawn(async move {
+        let _ = tokio::task::spawn_blocking(move || {
+            write_startup_failure_record(&workspace_hint, class);
+        })
+        .await;
+    }))
 }
 
 /// Open (or create) a single path component under `parent` with atomic
@@ -317,11 +356,8 @@ pub async fn run(workspace_override: Option<&str>) -> Result<(), EngramError> {
 
     let workspace_override = workspace_override.map(str::to_owned);
     let (outcome_tx, outcome_rx) = watch::channel(None);
-    let startup_task = tokio::spawn(async move {
-        let outcome = compute_startup_outcome(workspace_override).await;
-        let _ = outcome_tx.send(Some(outcome.clone()));
-        outcome
-    });
+    let startup_task =
+        tokio::spawn(async move { compute_startup_outcome(workspace_override, &outcome_tx).await });
 
     let session_result = transport::run_shim(outcome_rx, IPC_REQUEST_TIMEOUT).await;
 
@@ -334,19 +370,36 @@ pub async fn run(workspace_override: Option<&str>) -> Result<(), EngramError> {
     // grace period; if the task is still pending, exit cleanly rather than
     // linger (the background task is dropped/cancelled when the runtime
     // shuts down at process exit).
-    let outcome = match tokio::time::timeout(Duration::from_secs(2), startup_task).await {
-        Ok(join_result) => join_result.unwrap_or_else(|join_err| StartupOutcome::Degraded {
-            class: ShimFailureClass::TransportFailure,
-            message: format!("startup precondition task did not complete: {join_err}"),
-        }),
-        Err(_elapsed) => {
-            // No definitive classification available in time; treat as a
-            // benign, unclassified session end rather than guessing a cause.
-            StartupOutcome::Ready {
-                endpoint: String::new(),
+    let (outcome, record_task) =
+        match tokio::time::timeout(Duration::from_secs(2), startup_task).await {
+            Ok(Ok((outcome, record_task))) => (outcome, record_task),
+            Ok(Err(join_err)) => (
+                StartupOutcome::Degraded {
+                    class: ShimFailureClass::TransportFailure,
+                    message: format!("startup precondition task did not complete: {join_err}"),
+                },
+                None,
+            ),
+            Err(_elapsed) => {
+                // No definitive classification available in time; treat as a
+                // benign, unclassified session end rather than guessing a cause.
+                (
+                    StartupOutcome::Ready {
+                        endpoint: String::new(),
+                    },
+                    None,
+                )
             }
-        }
-    };
+        };
+
+    // Give the (already-published, non-critical-path) durable-record write
+    // a short best-effort grace period to finish before the runtime shuts
+    // down and cancels it. This never delays outcome publication or any
+    // `tools/call` — the outcome was already sent on `outcome_tx` before
+    // this task was even spawned (see `compute_startup_outcome`).
+    if let Some(record_task) = record_task {
+        let _ = tokio::time::timeout(Duration::from_millis(500), record_task).await;
+    }
 
     // A transport-level failure (e.g. the stdio transport failed to bind, or
     // the MCP session ended with a protocol error) takes precedence over the
