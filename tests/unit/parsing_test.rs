@@ -1303,13 +1303,20 @@ fn test_sql_create_view() {
     assert_eq!(classes[0].name, "active_users");
 }
 
-/// CREATE PROCEDURE syntax is not supported by tree-sitter-sequel 0.3 (parses as ERROR node).
-/// This test verifies graceful degradation: no panic, zero symbols extracted.
+/// CREATE PROCEDURE is supported via the approved immutable
+/// `tree-sitter-sequel` grammar fork (123-F, EG-1 satisfied, fork rev
+/// `50837582b5ba15c7acff3be7bf585a1082d90528`). It must produce exactly one
+/// `ExtractedSymbol::Function` named `archive_old_orders` plus a matching
+/// `Defines` edge, mirroring `CREATE FUNCTION` behavior (`test_sql_create_function`
+/// remains unchanged and must keep passing).
 #[test]
 fn test_sql_create_procedure() {
+    // No statement-terminating `;` before `END`: the fork grammar's
+    // `procedure_body` accepts a single unterminated statement (verified via
+    // grammar ABI probe against fork rev 50837582b5ba15c7acff3be7bf585a1082d90528).
     let source =
-        "CREATE PROCEDURE archive_old_orders() BEGIN DELETE FROM orders WHERE age > 365; END;";
-    let result = parse_sql_source(source).expect("SQL parse must not panic on unsupported syntax");
+        "CREATE PROCEDURE archive_old_orders() BEGIN DELETE FROM orders WHERE age > 365 END;";
+    let result = parse_sql_source(source).expect("SQL parse must not panic");
     let funcs: Vec<_> = result
         .symbols
         .iter()
@@ -1318,11 +1325,40 @@ fn test_sql_create_procedure() {
             _ => None,
         })
         .collect();
-    // Grammar limitation: CREATE PROCEDURE is not parsed by tree-sitter-sequel 0.3.
     assert_eq!(
         funcs.len(),
-        0,
-        "unsupported CREATE PROCEDURE syntax must produce no Function symbols (graceful degradation)"
+        1,
+        "CREATE PROCEDURE must produce exactly one Function symbol"
+    );
+    assert_eq!(funcs[0].name, "archive_old_orders");
+    let defines: Vec<_> = result
+        .edges
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                ExtractedEdge::Defines { symbol_name } if symbol_name == "archive_old_orders"
+            )
+        })
+        .collect();
+    assert_eq!(
+        defines.len(),
+        1,
+        "CREATE PROCEDURE must produce exactly one Defines edge for the procedure name"
+    );
+}
+
+/// Malformed/unsupported SQL must degrade gracefully: `parse_sql_source` must
+/// never panic, even when tree-sitter emits `ERROR` nodes for input the
+/// grammar cannot fully recognize.
+#[test]
+fn test_sql_malformed_statement_graceful() {
+    let source = "CREATE PROCEDURE ( BEGIN SELEKT * FRUM;;; )) GARBAGE ~~~";
+    let result = parse_sql_source(source).expect("malformed SQL must not panic");
+    // No strict assertion on symbol count: the only contract is "no panic".
+    assert!(
+        result.symbols.len() <= 1,
+        "unexpected symbol over-extraction from malformed input"
     );
 }
 
@@ -1387,31 +1423,36 @@ fn test_sql_tree_debug() {
     dump(tree.root_node(), 0);
 }
 
-/// Debug helper: dump CREATE PROCEDURE node kinds.
+/// Grammar ABI contract (123-F, EG-1 satisfied): the fork-provided grammar
+/// must parse `CREATE PROCEDURE` as a named `create_procedure` node with no
+/// `ERROR` node anywhere in the tree for this fixture.
 #[test]
-fn test_sql_procedure_debug() {
-    fn dump(node: tree_sitter::Node<'_>, depth: usize) {
-        println!(
-            "{}{} [{}-{}]",
-            "  ".repeat(depth),
-            node.kind(),
-            node.start_position().row + 1,
-            node.end_position().row + 1
-        );
+fn test_sql_create_procedure_grammar_abi() {
+    fn walk_collect_kinds(node: tree_sitter::Node<'_>, kinds: &mut Vec<String>) {
+        kinds.push(node.kind().to_owned());
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            dump(child, depth + 1);
+            walk_collect_kinds(child, kinds);
         }
     }
     use tree_sitter::Parser;
     let source =
-        "CREATE PROCEDURE archive_old_orders() BEGIN DELETE FROM orders WHERE age > 365; END;";
+        "CREATE PROCEDURE archive_old_orders() BEGIN DELETE FROM orders WHERE age > 365 END;";
     let mut parser = Parser::new();
     parser
         .set_language(&tree_sitter_sequel::LANGUAGE.into())
         .expect("load SQL grammar");
     let tree = parser.parse(source, None).expect("parse SQL");
-    dump(tree.root_node(), 0);
+    let mut kinds = Vec::new();
+    walk_collect_kinds(tree.root_node(), &mut kinds);
+    assert!(
+        kinds.iter().any(|k| k == "create_procedure"),
+        "grammar tree must contain a named create_procedure node; got kinds: {kinds:?}"
+    );
+    assert!(
+        !kinds.iter().any(|k| k == "ERROR"),
+        "grammar tree must contain no ERROR node for this fixture; got kinds: {kinds:?}"
+    );
 }
 
 // ── Schema-qualified name tests (033.002-T) ────────────────────────────────

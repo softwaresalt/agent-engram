@@ -72,7 +72,10 @@ tree-sitter-c-sharp = "0.23"
 tree-sitter-c = "0.23"
 tree-sitter-cpp = "0.23"
 tree-sitter-swift = "=0.7.1"
-tree-sitter-sequel = "0.3"
+# Approved immutable compatibility fork (123-F, EG-1 satisfied 2026-08-20).
+# Provenance, hashes, and rollback: docs/decisions/2026-08-20-tree-sitter-sequel-compatibility-fork-provenance.md
+# Full 40-character SHA is mandatory; never a branch/tag/floating ref.
+tree-sitter-sequel = { git = "https://github.com/softwaresalt/tree-sitter-sql", rev = "50837582b5ba15c7acff3be7bf585a1082d90528" }
 ignore = "0.4"
 globset = "0.4"
 serde_yaml = "0.9"

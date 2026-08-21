@@ -1,3 +1,8 @@
 [toolchain]
-channel = "stable"
+# Pinned to the exact reviewed CI/release toolchain (see
+# .github/workflows/ci.yml and .github/workflows/release.yml Install
+# toolchain comments; PR #346 / backlog stash B1024A34) so local, PR, and
+# release Clippy runs share one deterministic version. Upgrading past
+# 1.97.0 is a deliberate follow-up, not incidental drift.
+channel = "1.97.0"
 components = ["rustfmt", "clippy"]

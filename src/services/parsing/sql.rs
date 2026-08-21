@@ -2,16 +2,22 @@
 //!
 //! Extracts schema-definition symbols and reference edges from SQL source files.
 //!
-//! # Node kinds used (tree-sitter-sequel 0.3)
+//! # Node kinds used
 //!
 //! Top-level structure: `program` > `statement` > actual statement node.
 //!
 //! - `create_table` / `create_view` → [`super::ExtractedSymbol::Class`]
-//! - `create_function` → [`super::ExtractedSymbol::Function`]
-//! - `CREATE PROCEDURE` is currently unsupported by tree-sitter-sequel 0.3 and
-//!   parses as `ERROR` rather than `create_procedure`; the matcher for
-//!   `create_procedure` is retained for forward compatibility with future
-//!   grammar support
+//! - `create_function` / `create_procedure` → [`super::ExtractedSymbol::Function`].
+//!   `CREATE PROCEDURE` support is provided by the approved immutable
+//!   `tree-sitter-sequel` compatibility fork (123-F; see
+//!   `docs/decisions/2026-08-20-tree-sitter-sequel-compatibility-fork-provenance.md`).
+//!   Bare T-SQL-style procedure bodies (`BEGIN <stmt> END`, no dialect
+//!   keyword) accept a single statement without a trailing `;` before
+//!   `END`; a `;` immediately before `END` in that form currently parses as
+//!   a nested `ERROR` node. This is an observed characteristic of that one
+//!   fixture shape, not a categorical limit on the grammar as a whole — the
+//!   fork also supports `BEGIN ATOMIC ... END` and dollar-quoted bodies
+//!   whose semicolon-terminated multi-statement forms are unaffected.
 //! - `from` (SELECT from-clause, sibling inside `statement`),
 //!   including JOIN clauses (`join`, `cross_join`, `lateral_join`,
 //!   `lateral_cross_join`)
@@ -293,7 +299,7 @@ pub(super) mod sql_lineage {
         let mut cursor = root.walk();
         for statement in root.children(&mut cursor) {
             if statement.kind() != "statement" {
-                continue; // ERROR / CREATE PROCEDURE are not `statement` nodes.
+                continue; // Non-statement top-level nodes (e.g. unrecovered ERROR) carry no lineage.
             }
             // C3 (fail-closed): a nested parse ERROR folded into the statement
             // (e.g. a dangling `GROUP BY`) leaves the top-level kind as
@@ -319,7 +325,8 @@ pub(super) mod sql_lineage {
                             candidates.push(candidate);
                         }
                     }
-                    // create_view / create_function / plain create_table: no edge.
+                    // create_view / create_function / create_procedure / plain
+                    // create_table: none of these are table lineage sources.
                     _ => {}
                 }
             }
@@ -708,10 +715,16 @@ pub(super) mod sql_lineage {
                 .expect("two part");
             assert_eq!(two_part.len(), 0, "2-part names fail closed");
 
-            // CREATE PROCEDURE parses to ERROR (not a `statement`) → no edge.
+            // CREATE PROCEDURE is a `statement` (fork rev
+            // 50837582b5ba15c7acff3be7bf585a1082d90528, 123-F) but is not table
+            // lineage → no edge, same as CREATE VIEW/FUNCTION below.
             let procedure =
                 extract_sql_lineage("CREATE PROCEDURE foo() BEGIN END", &ctx).expect("procedure");
-            assert_eq!(procedure.len(), 0, "ERROR statements fail closed");
+            assert_eq!(
+                procedure.len(),
+                0,
+                "non-lineage statements resolve zero edges"
+            );
 
             // CREATE VIEW is not table lineage → no edge even when resolvable.
             let view =
