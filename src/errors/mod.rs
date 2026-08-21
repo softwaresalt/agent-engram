@@ -317,13 +317,45 @@ impl ShimFailureClass {
             ShimFailureClass::TransportFailure => SHIM_TRANSPORT_FAILURE,
         }
     }
+
+    /// Fixed, class-specific, variable-free description for the durable
+    /// startup-failure record (124-F U5). The live `message` carried in
+    /// [`ShimStartupError`] may embed step-specific detail (e.g. the
+    /// caller-supplied workspace path for [`ShimFailureClass::AdmissionFailure`])
+    /// that is appropriate to surface live (`tools/call` response, stderr)
+    /// but not to persist into an on-disk record that could later be
+    /// aggregated across many workspaces.
+    #[must_use]
+    pub const fn record_message(self) -> &'static str {
+        match self {
+            ShimFailureClass::AdmissionFailure => {
+                "workspace path does not exist or is not a Git repository root"
+            }
+            ShimFailureClass::ReadinessTimeout => {
+                "daemon did not reach a ready state within the configured budget"
+            }
+            ShimFailureClass::EndpointDerivationFailure => {
+                "failed to derive the daemon IPC endpoint for this workspace"
+            }
+            ShimFailureClass::TransportFailure => {
+                "MCP stdio transport failed to bind or the session ended abnormally"
+            }
+        }
+    }
 }
 
 /// A classified shim startup failure carrying a sanitized, attributable
 /// message. The message MUST NOT contain credentials, tokens, environment
 /// variable values, or paths outside the workspace root.
+///
+/// Despite its name, this type also carries [`ShimFailureClass::TransportFailure`]
+/// (the MCP stdio transport itself failed to bind, or the session ended with
+/// a protocol error) — a failure discovered at transport level, not a
+/// deferred startup precondition. The `Display` wording below is
+/// deliberately class-neutral ("shim failure") rather than
+/// "startup precondition failed" so it does not overclaim for that case.
 #[derive(Debug, Error, Clone)]
-#[error("shim startup precondition failed ({}): {message}", class.as_str())]
+#[error("shim failure ({}): {message}", class.as_str())]
 pub struct ShimStartupError {
     pub class: ShimFailureClass,
     pub message: String,

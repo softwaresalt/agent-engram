@@ -64,34 +64,32 @@ impl ShimHandler {
         self.next_id.fetch_add(1, Ordering::Relaxed)
     }
 
-    /// Wait for the deferred startup outcome to resolve, bounded by
-    /// `self.timeout`. A timeout is itself treated as an endpoint-derivation
-    /// style degraded outcome so `call_tool` never hangs indefinitely.
+    /// Wait for the deferred startup outcome to resolve.
+    ///
+    /// Deliberately NOT bounded by `self.timeout` (the IPC request timeout):
+    /// the background precondition task is already bounded by
+    /// `ensure_daemon_running`'s own configurable readiness budget
+    /// (`ENGRAM_READY_TIMEOUT_MS`), which may legitimately exceed
+    /// `self.timeout`. Imposing a second, shorter, hard-coded bound here
+    /// would report a false `readiness_timeout` for a `tools/call` made
+    /// while the real precondition work is still validly in progress
+    /// (Copilot review finding on PR #349). The channel is guaranteed to
+    /// resolve: every path through `compute_startup_outcome` sends exactly
+    /// one value, and if the sender is dropped without sending (e.g. task
+    /// panic), `changed()` returns `Err` immediately.
     async fn await_startup_outcome(&self) -> StartupOutcome {
         let mut rx = self.startup.clone();
-        let wait = async {
-            loop {
-                if let Some(outcome) = rx.borrow().clone() {
-                    return outcome;
-                }
-                if rx.changed().await.is_err() {
-                    return StartupOutcome::Degraded {
-                        class: ShimFailureClass::TransportFailure,
-                        message: "startup outcome sender dropped before publishing a result"
-                            .to_owned(),
-                    };
-                }
+        loop {
+            if let Some(outcome) = rx.borrow().clone() {
+                return outcome;
             }
-        };
-        tokio::time::timeout(self.timeout, wait)
-            .await
-            .unwrap_or(StartupOutcome::Degraded {
-                class: ShimFailureClass::ReadinessTimeout,
-                message: format!(
-                    "startup preconditions did not resolve within {:?}",
-                    self.timeout
-                ),
-            })
+            if rx.changed().await.is_err() {
+                return StartupOutcome::Degraded {
+                    class: ShimFailureClass::TransportFailure,
+                    message: "startup outcome sender dropped before publishing a result".to_owned(),
+                };
+            }
+        }
     }
 }
 

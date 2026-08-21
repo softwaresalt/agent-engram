@@ -38,6 +38,14 @@ use tokio::sync::watch;
 
 use crate::errors::{EngramError, ShimFailureClass, ShimStartupError};
 
+/// IPC request timeout used once a daemon endpoint is `Ready`. Deliberately
+/// NOT used to bound awaiting the deferred startup outcome (see
+/// `transport::ShimHandler::await_startup_outcome`) — otherwise an
+/// `ENGRAM_READY_TIMEOUT_MS` configured above this constant would cause a
+/// `tools/call` to report a false `readiness_timeout` while
+/// `ensure_daemon_running` was still within its own valid, longer budget.
+const IPC_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// Outcome of the deferred startup preconditions (workspace admission, daemon
 /// readiness, IPC endpoint derivation), computed concurrently with serving
 /// the MCP `initialize` handshake.
@@ -66,10 +74,12 @@ impl StartupOutcome {
 /// argument, then the `ENGRAM_WORKSPACE` environment variable, then the
 /// current working directory.
 ///
-/// This is the one remaining synchronous step that runs before the MCP
-/// stdio transport binds. It fails only if the current working directory is
-/// unavailable (e.g. deleted mid-session) when no override or environment
-/// value is present — a genuinely unrecoverable admission failure.
+/// This is itself the first deferred precondition (classified
+/// [`ShimFailureClass::AdmissionFailure`] on failure) — it runs inside the
+/// background startup task, *after* the MCP stdio transport has already
+/// bound, never before. A missing/deleted current working directory with no
+/// override must not recreate the pre-initialize closed-pipe failure this
+/// contract exists to prevent.
 fn resolve_workspace_arg(workspace_override: Option<&str>) -> Result<String, EngramError> {
     workspace_override
         .map(std::borrow::ToOwned::to_owned)
@@ -91,22 +101,40 @@ fn resolve_workspace_arg(workspace_override: Option<&str>) -> Result<String, Eng
         })
 }
 
-/// Evaluate the three deferred preconditions in order, classifying whichever
-/// step fails first. Each step's outcome maps to a distinct
-/// [`ShimFailureClass`] so the cause is attributable without inspecting the
-/// underlying [`EngramError`] variant.
-async fn compute_startup_outcome(workspace_arg: &str) -> StartupOutcome {
-    let workspace_path = match crate::db::workspace::canonicalize_workspace(workspace_arg) {
+/// Evaluate the deferred preconditions in order, classifying whichever step
+/// fails first: workspace-argument resolution, admission (canonicalization),
+/// daemon readiness, then IPC endpoint derivation. Each step's outcome maps
+/// to a distinct [`ShimFailureClass`] so the cause is attributable without
+/// inspecting the underlying [`EngramError`] variant. Called only from the
+/// background startup task — never before the MCP stdio transport binds.
+async fn compute_startup_outcome(workspace_override: Option<String>) -> StartupOutcome {
+    let workspace_arg = match resolve_workspace_arg(workspace_override.as_deref()) {
+        Ok(arg) => arg,
+        Err(EngramError::ShimStartup(ShimStartupError { class, message })) => {
+            let outcome = StartupOutcome::Degraded { class, message };
+            record_startup_failure(None, class).await;
+            return outcome;
+        }
+        Err(err) => {
+            // Unreachable in practice (resolve_workspace_arg only ever
+            // returns ShimStartup), but classify defensively rather than
+            // panicking or losing the error.
+            let outcome = StartupOutcome::degraded(ShimFailureClass::AdmissionFailure, &err);
+            record_startup_failure(None, ShimFailureClass::AdmissionFailure).await;
+            return outcome;
+        }
+    };
+
+    let workspace_path = match crate::db::workspace::canonicalize_workspace(&workspace_arg) {
         Ok(path) => path,
         Err(err) => {
             let err = EngramError::from(err);
             let outcome = StartupOutcome::degraded(ShimFailureClass::AdmissionFailure, &err);
-            record_startup_failure(
-                workspace_arg,
-                ShimFailureClass::AdmissionFailure,
-                &err.to_string(),
-            )
-            .await;
+            // canonicalize_workspace failed, so workspace_arg is not a
+            // validated root; pass it only as a best-effort location hint
+            // (record_startup_failure applies its own no-follow guards
+            // before writing anything under it).
+            record_startup_failure(Some(&workspace_arg), ShimFailureClass::AdmissionFailure).await;
             return outcome;
         }
     };
@@ -114,9 +142,8 @@ async fn compute_startup_outcome(workspace_arg: &str) -> StartupOutcome {
     if let Err(err) = lifecycle::ensure_daemon_running(&workspace_path).await {
         let outcome = StartupOutcome::degraded(ShimFailureClass::ReadinessTimeout, &err);
         record_startup_failure(
-            &workspace_path.display().to_string(),
+            Some(&workspace_path.display().to_string()),
             ShimFailureClass::ReadinessTimeout,
-            &err.to_string(),
         )
         .await;
         return outcome;
@@ -128,9 +155,8 @@ async fn compute_startup_outcome(workspace_arg: &str) -> StartupOutcome {
             let outcome =
                 StartupOutcome::degraded(ShimFailureClass::EndpointDerivationFailure, &err);
             record_startup_failure(
-                &workspace_path.display().to_string(),
+                Some(&workspace_path.display().to_string()),
                 ShimFailureClass::EndpointDerivationFailure,
-                &err.to_string(),
             )
             .await;
             outcome
@@ -140,37 +166,76 @@ async fn compute_startup_outcome(workspace_arg: &str) -> StartupOutcome {
 
 /// Best-effort durable startup-failure record under `<workspace>/.engram/diagnostics/`.
 ///
-/// Contains ONLY a timestamp, the binary build identifier, the classified
-/// failure class, and the sanitized error message. Never records
-/// credentials, tokens, environment variable values, or paths outside the
-/// workspace. Failures to persist the record are swallowed — the record is
+/// Contains ONLY a timestamp, the binary build identifier, and the
+/// classified failure class. The record deliberately does NOT persist the
+/// live error message — some classes' underlying [`EngramError`] embeds the
+/// caller-supplied workspace path or other step-specific detail, which is
+/// appropriate to surface live (in the `tools/call` response and the stderr
+/// line) but not to aggregate into an on-disk record that may later be
+/// collected across many workspaces. [`ShimFailureClass::record_message`]
+/// supplies a fixed, class-specific, variable-free description instead.
+/// Never records credentials, tokens, or environment variable values.
+/// Failures to persist the record are swallowed — the record is
 /// supplementary diagnostics, not the primary failure signal (the process
 /// exit code and stderr line are). Runs on a blocking-pool thread
 /// (`tokio::task::spawn_blocking`) so its synchronous file I/O never stalls
 /// an async runtime worker thread.
-async fn record_startup_failure(workspace_hint: &str, class: ShimFailureClass, message: &str) {
+async fn record_startup_failure(workspace_hint: Option<&str>, class: ShimFailureClass) {
+    let Some(workspace_hint) = workspace_hint else {
+        return;
+    };
     let workspace_hint = workspace_hint.to_owned();
-    let message = message.to_owned();
     let _ = tokio::task::spawn_blocking(move || {
-        write_startup_failure_record(&workspace_hint, class, &message);
+        write_startup_failure_record(&workspace_hint, class);
     })
     .await;
 }
 
-fn write_startup_failure_record(workspace_hint: &str, class: ShimFailureClass, message: &str) {
-    let workspace_root = Path::new(workspace_hint);
+/// Resolve `<root>/.engram/diagnostics` with no-follow semantics: refuses to
+/// write through a pre-existing symlink or reparse point at either `.engram`
+/// or `.engram/diagnostics`, and verifies the final canonicalized directory
+/// still resolves inside the canonicalized workspace root (workspace
+/// containment; Constitution Principle III/IV).
+fn no_follow_diagnostics_dir(workspace_hint: &str) -> Option<std::path::PathBuf> {
+    let workspace_root = Path::new(workspace_hint).canonicalize().ok()?;
     if !workspace_root.is_dir() {
-        return;
+        return None;
     }
-    let diagnostics_dir = workspace_root.join(".engram").join("diagnostics");
-    if std::fs::create_dir_all(&diagnostics_dir).is_err() {
+    let engram_dir = workspace_root.join(".engram");
+    if let Ok(meta) = std::fs::symlink_metadata(&engram_dir) {
+        if meta.file_type().is_symlink() {
+            return None;
+        }
+    }
+    let diagnostics_dir = engram_dir.join("diagnostics");
+    if let Ok(meta) = std::fs::symlink_metadata(&diagnostics_dir) {
+        if meta.file_type().is_symlink() {
+            return None;
+        }
+    }
+    std::fs::create_dir_all(&diagnostics_dir).ok()?;
+    let canonical_diagnostics_dir = diagnostics_dir.canonicalize().ok()?;
+    if !canonical_diagnostics_dir.starts_with(&workspace_root) {
+        return None;
+    }
+    Some(canonical_diagnostics_dir)
+}
+
+fn write_startup_failure_record(workspace_hint: &str, class: ShimFailureClass) {
+    let Some(diagnostics_dir) = no_follow_diagnostics_dir(workspace_hint) else {
         return;
+    };
+    let record_path = diagnostics_dir.join("shim-startup-failures.jsonl");
+    if let Ok(meta) = std::fs::symlink_metadata(&record_path) {
+        if meta.file_type().is_symlink() {
+            return;
+        }
     }
     let record = json!({
         "timestamp": chrono::Utc::now().to_rfc3339(),
         "binary_version": version::ENGRAM_BUILD_HASH,
         "failure_class": class.as_str(),
-        "message": message,
+        "message": class.record_message(),
     });
     let Ok(mut line) = serde_json::to_string(&record) else {
         return;
@@ -179,7 +244,7 @@ fn write_startup_failure_record(workspace_hint: &str, class: ShimFailureClass, m
     if let Ok(mut file) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(diagnostics_dir.join("shim-startup-failures.jsonl"))
+        .open(&record_path)
     {
         let _ = file.write_all(line.as_bytes());
     }
@@ -196,9 +261,10 @@ fn shim_log_format() -> crate::config::LogFormat {
 /// Run the shim: bind the MCP stdio transport immediately, then resolve the
 /// workspace/daemon preconditions concurrently.
 ///
-/// The stdio transport is bound before any daemon-dependent precondition is
-/// evaluated, so the MCP `initialize` handshake and `tools/list` always
-/// succeed. `tools/call` fails with a structured, attributable error if a
+/// The stdio transport is bound before ANY precondition — including
+/// workspace-argument resolution — is evaluated, so the MCP `initialize`
+/// handshake and `tools/list` always succeed regardless of workspace state.
+/// `tools/call` fails with a structured, attributable error if a
 /// precondition failed. On session end, if the session was ever degraded,
 /// the classified failure is returned so the caller can exit with the
 /// documented [`ShimFailureClass::exit_code`].
@@ -209,20 +275,19 @@ fn shim_log_format() -> crate::config::LogFormat {
 /// degraded), or if the MCP stdio transport itself failed to bind or ended
 /// abnormally.
 pub async fn run(workspace_override: Option<&str>) -> Result<(), EngramError> {
-    let workspace_arg = resolve_workspace_arg(workspace_override)?;
-
     // Tracing is pinned to stderr (src/lib.rs) so debug logging never
     // contaminates the MCP stdout framing channel (124-F U5, investigation E5).
     crate::init_tracing(shim_log_format());
 
+    let workspace_override = workspace_override.map(str::to_owned);
     let (outcome_tx, outcome_rx) = watch::channel(None);
     let startup_task = tokio::spawn(async move {
-        let outcome = compute_startup_outcome(&workspace_arg).await;
+        let outcome = compute_startup_outcome(workspace_override).await;
         let _ = outcome_tx.send(Some(outcome.clone()));
         outcome
     });
 
-    let session_result = transport::run_shim(outcome_rx, Duration::from_secs(60)).await;
+    let session_result = transport::run_shim(outcome_rx, IPC_REQUEST_TIMEOUT).await;
 
     // The MCP session has already ended (client disconnected or transport
     // closed). The background precondition task's own result is only needed
@@ -260,4 +325,62 @@ pub async fn run(workspace_override: Option<&str>) -> Result<(), EngramError> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A pre-existing `.engram` symlink/reparse point pointing outside the
+    /// workspace MUST NOT be followed when resolving the diagnostics
+    /// directory (workspace containment; Copilot review finding on PR #349).
+    #[test]
+    fn no_follow_diagnostics_dir_refuses_engram_symlink() {
+        let workspace = tempfile::TempDir::new().expect("workspace tempdir");
+        let outside = tempfile::TempDir::new().expect("outside tempdir");
+
+        #[cfg(windows)]
+        let symlink_result =
+            std::os::windows::fs::symlink_dir(outside.path(), workspace.path().join(".engram"));
+        #[cfg(unix)]
+        let symlink_result =
+            std::os::unix::fs::symlink(outside.path(), workspace.path().join(".engram"));
+
+        if symlink_result.is_err() {
+            // Symlink creation can require elevated privileges in some
+            // sandboxes; skip rather than fail the build in that case.
+            return;
+        }
+
+        let workspace_hint = workspace.path().to_string_lossy().into_owned();
+        let diagnostics_dir = no_follow_diagnostics_dir(&workspace_hint);
+        assert!(
+            diagnostics_dir.is_none(),
+            "must refuse to resolve a diagnostics directory through a pre-existing \
+             .engram symlink: {diagnostics_dir:?}"
+        );
+        assert!(
+            !outside.path().join("diagnostics").exists(),
+            "must never create anything under the symlink target outside the workspace"
+        );
+    }
+
+    /// A healthy workspace with no pre-existing `.engram` entry resolves and
+    /// creates the diagnostics directory normally.
+    #[test]
+    fn no_follow_diagnostics_dir_creates_normally_for_a_clean_workspace() {
+        let workspace = tempfile::TempDir::new().expect("workspace tempdir");
+        let workspace_hint = workspace.path().to_string_lossy().into_owned();
+        let diagnostics_dir =
+            no_follow_diagnostics_dir(&workspace_hint).expect("must resolve for a clean workspace");
+        assert!(
+            diagnostics_dir.starts_with(
+                workspace
+                    .path()
+                    .canonicalize()
+                    .expect("canonicalize workspace")
+            )
+        );
+        assert!(diagnostics_dir.is_dir());
+    }
 }
