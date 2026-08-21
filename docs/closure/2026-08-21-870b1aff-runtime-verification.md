@@ -11,6 +11,25 @@ verdict: READY
 
 ## 120-S / 124-F Runtime Verification (U7)
 
+### Verification-method waiver (explicit operator authorization)
+
+The reviewed U7 plan and the source acceptance criterion for 124.007-T call
+for verification "on Windows, run a real Copilot CLI stdio session." No
+Copilot CLI binary is installed in this sandboxed environment, so this
+closure substitutes the real compiled `engram.exe shim` binary driven over
+real OS stdio pipes (both the automated contract-test suite and one
+first-hand manual session) as the verification method.
+
+This substitution is not a self-granted exception: the operator's dispatch
+for this shipment explicitly pre-authorized it, verbatim: "Runtime verify
+merged-main/release-equivalent behavior, including **a real Copilot-style
+stdio initialize path or closest deterministic Windows contract**." The
+real-binary subprocess harness used here is that authorized closest
+deterministic Windows contract. The `READY` verdict and `124.007-T` done
+status rest on this explicit waiver, not an implicit or silently-lowered
+bar — flagged here prominently in response to Copilot review feedback on
+PR #349 asking for exactly this clarity.
+
 ### Review remediation (post-review-gate addendum)
 
 Standard review, MCP Protocol Reviewer, and Concurrency Reviewer were
