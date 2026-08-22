@@ -346,6 +346,63 @@ impl CapRoot {
             .follow(FollowSymlinks::No);
         self.dir.open_with(Path::new(name), &options)
     }
+
+    /// Handle-derived object identity: `(device, inode)`.
+    ///
+    /// Unix only. `cap-std` exposes the Windows equivalent (volume serial plus
+    /// file index) solely through an unstable internal trait, and obtaining it
+    /// from a `std` handle would require `unsafe` to borrow the directory
+    /// handle, which the crate forbids. See [`Self::prove_names_same_object`]
+    /// for why Windows is nonetheless not exposed by this gap.
+    #[cfg(unix)]
+    fn object_identity(&self) -> Option<(u64, u64)> {
+        use cap_std::fs::MetadataExt as _;
+
+        let metadata = self.dir.dir_metadata().ok()?;
+        Some((metadata.dev(), metadata.ino()))
+    }
+
+    /// Prove that `candidate` names the same object this handle is bound to.
+    ///
+    /// The workspace root is opened once, from the caller-supplied path, and
+    /// that handle is the only authority: every metadata check, every content
+    /// read, identity persistence and the daemon key all descend from it. The
+    /// canonical spelling is derived by a second pathname resolution because it
+    /// is the workspace *identity* — it feeds `workspace_hash`, the containment
+    /// guard, and operator-facing output.
+    ///
+    /// An ancestor swapped between those two steps cannot cause attacker
+    /// content to be admitted, because nothing is ever read through the
+    /// canonical name; it would only make the reported identity stale relative
+    /// to the authority. On Unix this check removes even that inconsistency by
+    /// comparing handle-derived object identity, and fails closed on a
+    /// mismatch. On Windows the identity accessor is not reachable without
+    /// `unsafe`, so the residual there is a naming inconsistency, not a false
+    /// accept.
+    #[cfg_attr(not(unix), allow(clippy::unnecessary_wraps, clippy::unused_self))]
+    fn prove_names_same_object(&self, candidate: &Path) -> Result<(), WorkspaceError> {
+        #[cfg(unix)]
+        {
+            let Some(authority) = self.object_identity() else {
+                // Identity unavailable: treat as "cannot prove", never as
+                // "proven different". Failing closed here would reject
+                // legitimate checkouts on filesystems that report no inode.
+                return Ok(());
+            };
+            let named = CapRoot::open_anchor(candidate)?;
+            let Some(named_identity) = named.object_identity() else {
+                return Ok(());
+            };
+            if authority != named_identity {
+                return Err(not_git_root(candidate));
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = candidate;
+        }
+        Ok(())
+    }
 }
 
 /// Resolve the workspace's Git metadata over retained, capability-rooted,
@@ -354,17 +411,28 @@ impl CapRoot {
 /// anchor (invariant 5); every backlink value is read from an already-validated
 /// handle and the admitted objects are proven identical to the validated ones.
 fn resolve_git_metadata(path: &Path) -> Result<GitMetadata, WorkspaceError> {
+    // Root #1: the retained workspace root, opened ONCE from the caller-supplied
+    // path. This handle — not any pathname — is the authority for everything
+    // below, and it is what identity persistence and the daemon key consume.
+    let root = CapRoot::open_anchor(path)?;
+
+    // The canonical spelling is a NAME, not an authority. It is still needed:
+    // it is the workspace identity that feeds `workspace_hash`, the containment
+    // guard, and every operator-facing path. Deriving it requires a second
+    // pathname resolution, and an ancestor swapped between the two would
+    // otherwise let the retained handle bind one object while the reported
+    // identity named another.
     let canonical_workspace = path.canonicalize().map_err(|_| WorkspaceError::NotFound {
         path: path.display().to_string(),
     })?;
     let workspace = normalize_canonical(canonical_workspace.clone());
 
-    // Root #1: the retained workspace root. This and the linked-worktree common
-    // Git directory are the only ambient resolutions inside the AUTHENTICITY
-    // PROOF itself. Identity persistence and the daemon-key probe perform their
-    // own resolutions outside this function; see the module notes on residual
-    // path-based steps.
-    let root = CapRoot::open_anchor(&workspace)?;
+    // Close that gap by proving the canonical name denotes the SAME object the
+    // retained authority is bound to. A swap in the window changes the object
+    // identity and the proof fails closed, so identity and authority can never
+    // diverge.
+    root.prove_names_same_object(&workspace)?;
+
     let git_entry = workspace.join(".git");
 
     match root.child_kind(".git") {
