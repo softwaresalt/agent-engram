@@ -48,14 +48,23 @@ norm() { local p="${1//\\//}"; p="${p#"${p%%[![:space:]]*}"}"; p="${p%"${p##*[![
 # ── Load declared [[test]] targets ──────────────────────────────────────────
 declare -a TARGET_NAMES=()
 declare -A TARGET_PATH=()
-while IFS=$'\t' read -r tname tpath; do
+declare -A TARGET_FEATURES=()
+while IFS=$'\t' read -r tname tpath tfeats; do
   [[ -z "$tname" ]] && continue
   TARGET_NAMES+=("$tname")
   TARGET_PATH["$tname"]="$tpath"
+  TARGET_FEATURES["$tname"]="$tfeats"
 done < <(sed 's/\r$//' "$CARGO_TOML_PATH" | awk '
-  /^\[\[test\]\]/ { intest=1; name=""; next }
-  intest && /^name[[:space:]]*=[[:space:]]*"/ { l=$0; sub(/^name[[:space:]]*=[[:space:]]*"/,"",l); sub(/".*/,"",l); name=l; next }
-  intest && /^path[[:space:]]*=[[:space:]]*"/ { l=$0; sub(/^path[[:space:]]*=[[:space:]]*"/,"",l); sub(/".*/,"",l); print name "\t" l; intest=0; next }
+  function emit() { if (name != "") print name "\t" path "\t" feats; name=""; path=""; feats="" }
+  /^\[\[test\]\]/ { emit(); intest=1; next }
+  /^\[\[/ { if (intest) { emit(); intest=0 } }
+  {
+    if (!intest) next
+    if ($0 ~ /^name[[:space:]]*=[[:space:]]*"/) { l=$0; sub(/^name[[:space:]]*=[[:space:]]*"/,"",l); sub(/".*/,"",l); name=l; next }
+    if ($0 ~ /^path[[:space:]]*=[[:space:]]*"/) { l=$0; sub(/^path[[:space:]]*=[[:space:]]*"/,"",l); sub(/".*/,"",l); path=l; next }
+    if ($0 ~ /^required-features[[:space:]]*=[[:space:]]*\[/) { tmp=$0; feats=""; while (match(tmp, /"[^"]+"/)) { g=substr(tmp, RSTART+1, RLENGTH-2); feats=(feats==""?g:feats","g); tmp=substr(tmp, RSTART+RLENGTH) } next }
+  }
+  END { emit() }
 ')
 
 # ── Load manifest settings ──────────────────────────────────────────────────
@@ -130,10 +139,10 @@ resolve_diff() {
 }
 
 git_changed() {
-  local out
   { git -C "$REPO_ROOT" diff --name-only 2>/dev/null || true; \
     git -C "$REPO_ROOT" diff --name-only --cached 2>/dev/null || true; \
-    git -C "$REPO_ROOT" diff --name-only origin/main...HEAD 2>/dev/null || true; } | sort -u
+    git -C "$REPO_ROOT" diff --name-only origin/main...HEAD 2>/dev/null || true; \
+    git -C "$REPO_ROOT" ls-files --others --exclude-standard 2>/dev/null || true; } | sort -u
 }
 
 # ── Compute changed set ─────────────────────────────────────────────────────
@@ -248,23 +257,25 @@ case "$MODE" in
     echo "PEAK_CONCURRENT=$peak"
     echo "BATCH_COUNT=$batch_count"
     if [[ "$DRY_RUN" -eq 1 ]]; then echo "DRY_RUN=1"; echo "STATUS=PASS"; exit 0; fi
-    # Real bounded execution: at most $cap concurrent test binaries.
-    observed_peak=0; failed=0; declare -a pids=(); declare -A pid_ok=()
-    run_one() { ( cd "$REPO_ROOT" && cargo test --test "$1" -- --test-threads="$TEST_THREADS" >/dev/null 2>&1 ); }
-    idx=0
-    while [[ $idx -lt $count || ${#pids[@]} -gt 0 ]]; do
-      while [[ ${#pids[@]} -lt $cap && $idx -lt $count ]]; do
-        run_one "${req[$idx]}" & pids+=("$!"); idx=$((idx+1))
-      done
-      [[ ${#pids[@]} -gt $observed_peak ]] && observed_peak=${#pids[@]}
-      wait -n || true
-      newpids=()
-      for pid in "${pids[@]}"; do
-        if kill -0 "$pid" 2>/dev/null; then newpids+=("$pid"); else
-          if ! wait "$pid"; then failed=$((failed+1)); fi
+    # Real bounded execution: fixed batches of at most $cap binaries. Each target
+    # runs with its declared required-features so feature-gated targets actually
+    # build and run instead of being silently skipped by cargo. Batching avoids
+    # `wait -n` (absent in Bash 3.2) and the double-reap that miscounted failures.
+    observed_peak=0; failed=0; idx=0
+    while [[ $idx -lt $count ]]; do
+      bpids=(); end=$(( idx + cap )); [[ $end -gt $count ]] && end=$count
+      for (( j=idx; j<end; j++ )); do
+        tname="${req[$j]}"; tfeat="${TARGET_FEATURES[$tname]:-}"
+        if [[ -n "$tfeat" ]]; then
+          ( cd "$REPO_ROOT" && cargo test --test "$tname" --features "$tfeat" -- --test-threads="$TEST_THREADS" >/dev/null 2>&1 ) &
+        else
+          ( cd "$REPO_ROOT" && cargo test --test "$tname" -- --test-threads="$TEST_THREADS" >/dev/null 2>&1 ) &
         fi
+        bpids+=("$!")
       done
-      pids=("${newpids[@]}")
+      [[ ${#bpids[@]} -gt $observed_peak ]] && observed_peak=${#bpids[@]}
+      for pid in "${bpids[@]}"; do if ! wait "$pid"; then failed=$((failed+1)); fi; done
+      idx=$end
     done
     echo "OBSERVED_PEAK_CONCURRENT=$observed_peak"
     echo "FAILED_TARGETS=$failed"

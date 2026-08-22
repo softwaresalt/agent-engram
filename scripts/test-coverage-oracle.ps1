@@ -60,15 +60,21 @@ if ([string]::IsNullOrEmpty($CargoTomlPath)) {
 
 function Normalize-Path([string]$p) { return ($p -replace '\\', '/').Trim() }
 
-# ── Load declared [[test]] targets (name -> path) ────────────────────────────
+# ── Load declared [[test]] targets (name -> path, name -> required-features) ──
 $cargoText = (Get-Content -Raw -Path $CargoTomlPath) -replace "`r`n", "`n"
 $targetNames = New-Object System.Collections.Generic.List[string]
 $targetPathByName = @{}
-$rx = [regex]'(?ms)^\[\[test\]\]\s*\n\s*name\s*=\s*"([^"]+)"\s*\n\s*path\s*=\s*"([^"]+)"'
+$targetFeaturesByName = @{}
+$rx = [regex]'(?ms)^\[\[test\]\]\s*\n\s*name\s*=\s*"([^"]+)"\s*\n\s*path\s*=\s*"([^"]+)"(?:\s*\n\s*required-features\s*=\s*\[([^\]]*)\])?'
 foreach ($m in $rx.Matches($cargoText)) {
     $n = $m.Groups[1].Value
     $targetNames.Add($n) | Out-Null
     $targetPathByName[$n] = (Normalize-Path $m.Groups[2].Value)
+    $feats = New-Object System.Collections.Generic.List[string]
+    if ($m.Groups[3].Success) {
+        foreach ($qm in [regex]::Matches($m.Groups[3].Value, '"([^"]+)"')) { $feats.Add($qm.Groups[1].Value) | Out-Null }
+    }
+    $targetFeaturesByName[$n] = ($feats -join ',')
 }
 
 # ── Load manifest settings and surfaces ──────────────────────────────────────
@@ -146,7 +152,7 @@ function Resolve-Diff([string[]]$changed) {
 
 function Get-GitChanged() {
     $set = New-Object System.Collections.Generic.HashSet[string]
-    foreach ($cmd in @(@('diff', '--name-only'), @('diff', '--name-only', '--cached'), @('diff', '--name-only', 'origin/main...HEAD'))) {
+    foreach ($cmd in @(@('diff', '--name-only'), @('diff', '--name-only', '--cached'), @('diff', '--name-only', 'origin/main...HEAD'), @('ls-files', '--others', '--exclude-standard'))) {
         try {
             $out = & git -C $RepoRoot @cmd 2>$null
             foreach ($l in $out) { if (-not [string]::IsNullOrWhiteSpace($l)) { [void]$set.Add((Normalize-Path $l)) } }
@@ -282,7 +288,9 @@ switch ($Mode) {
             exit 0
         }
         # Real bounded execution: run each target as its own binary, at most
-        # $cap concurrently, so the process budget stays bounded.
+        # $cap concurrently, so the process budget stays bounded. Each target is
+        # invoked with its declared required-features so feature-gated targets
+        # actually build and run instead of being silently skipped.
         $observedPeak = 0
         $failed = 0
         $pending = [System.Collections.Generic.Queue[string]]::new()
@@ -291,12 +299,18 @@ switch ($Mode) {
         while ($pending.Count -gt 0 -or $running.Count -gt 0) {
             while ($running.Count -lt $cap -and $pending.Count -gt 0) {
                 $name = $pending.Dequeue()
+                $feats = [string]$targetFeaturesByName[$name]
                 $job = Start-Job -ScriptBlock {
-                    param($root, $tname, $threads)
+                    param($root, $tname, $threads, $features)
                     Set-Location $root
-                    & cargo test --test $tname -- --test-threads=$threads 2>&1 | Out-Null
+                    if ([string]::IsNullOrEmpty($features)) {
+                        & cargo test --test $tname -- --test-threads=$threads 2>&1 | Out-Null
+                    }
+                    else {
+                        & cargo test --test $tname --features $features -- --test-threads=$threads 2>&1 | Out-Null
+                    }
                     return $LASTEXITCODE
-                } -ArgumentList $RepoRoot, $name, $testThreads
+                } -ArgumentList $RepoRoot, $name, $testThreads, $feats
                 $running += $job
             }
             if ($running.Count -gt $observedPeak) { $observedPeak = $running.Count }

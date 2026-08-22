@@ -90,15 +90,22 @@ exhaustive `cargo ci` (all targets, all features) remains the backstop.
 
 ```bash
 cargo dev-test          # change-scoped, bounded run for the current diff
-cargo full-test         # every target, unbounded
-cargo ci                # every target, all features (CI equivalent)
+cargo full-test         # every target, unbounded, DEFAULT features only
+cargo ci                # every target, all features (CI equivalent, exhaustive)
 ```
+
+`cargo full-test` runs every target but only under default features, so it skips
+targets gated on non-default features (`git-graph`, `legacy-sse`,
+`otlp-export`). `cargo ci` (all features) is the exhaustive backstop. The
+change-scoped runner passes each selected target's own `required-features`, so
+feature-gated targets execute rather than being silently skipped by cargo.
 
 `cargo dev-test` delegates to the `cargo-devtest` external subcommand in
 `scripts/`. On Linux/macOS, add `scripts/` to `PATH` once so cargo can find it.
 On Windows, cargo does not resolve script-based external subcommands, so use the
-wrapper `pwsh scripts/dev-test.ps1`. Either way you can also invoke the oracle
-runner directly:
+wrapper `pwsh scripts/dev-test.ps1`. The shell oracle requires Bash 4+
+(associative arrays); on macOS install a modern bash (its bundled 3.2 is
+unsupported). Either way you can also invoke the oracle runner directly:
 
 ```bash
 bash  scripts/test-coverage-oracle.sh  --mode run     # Linux/macOS

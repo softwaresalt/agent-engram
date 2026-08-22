@@ -94,9 +94,15 @@ fn hcl_target_definitions_are_byte_identical() {
         .unwrap_or_else(|err| panic!("failed to read Cargo.toml: {err}"));
     let normalized = cargo.replace("\r\n", "\n");
     for block in HCL_TEST_BLOCKS {
+        // Require the path line to terminate the block (blank line, next table,
+        // or EOF). A bare substring match would still pass if a semantic field
+        // such as `required-features` or `harness` were appended after `path`.
+        let terminated = normalized.contains(&format!("{block}\n\n"))
+            || normalized.contains(&format!("{block}\n["))
+            || normalized.ends_with(block);
         assert!(
-            normalized.contains(block),
-            "Shipment 117-S HCL [[test]] definition changed or missing:\n{block}"
+            terminated,
+            "Shipment 117-S HCL [[test]] definition changed, gained an extra field, or is missing:\n{block}"
         );
     }
 }

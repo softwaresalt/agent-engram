@@ -13,7 +13,13 @@ rustflags = ["-Dwarnings"]
 # that directly:
 #   bash  scripts/test-coverage-oracle.sh  --mode run   (Linux/macOS)
 #   pwsh  scripts/test-coverage-oracle.ps1 --mode run   (Windows)
-# `full-test` and `ci` are unchanged and remain the exhaustive backstop.
+# The shell oracle requires Bash 4+ (associative arrays); on macOS install a
+# modern bash (its bundled 3.2 is unsupported).
+# `full-test` runs every target but only under DEFAULT features, so it skips
+# targets gated on non-default features (git-graph, legacy-sse, otlp-export).
+# `ci` (--all-features) is the exhaustive, feature-complete backstop. The
+# change-scoped runner passes each target's own required-features so
+# feature-gated targets are not silently skipped.
 dev-test = "devtest"
 full-test = "test"
 debug-build = "build --profile debugging"
