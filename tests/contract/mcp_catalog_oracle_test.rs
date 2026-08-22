@@ -33,9 +33,7 @@ const FIXTURE_PATH: &str = concat!(
 
 /// A single tool entry reduced to the facets the oracle asserts.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // `name`/`input_schema` are consumed by the U4 schema oracle.
 struct ToolEntry {
-    name: String,
     description: String,
     input_schema: Value,
 }
@@ -79,9 +77,8 @@ fn entries_from_array(tools: &[Value]) -> BTreeMap<String, ToolEntry> {
             .cloned()
             .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
         map.insert(
-            name.clone(),
+            name,
             ToolEntry {
-                name,
                 description,
                 input_schema,
             },
@@ -153,4 +150,246 @@ async fn agent_visible_tool_descriptions_match_fixture() {
             "description drift for tool `{name}`"
         );
     }
+}
+
+// ── U4/U6: declared-shape schema comparison and classified drift diffs ──────
+
+/// A per-tool difference classified by the facet an agent would notice.
+#[derive(Debug, PartialEq, Eq)]
+enum ToolDiff {
+    /// Served but not declared.
+    Added(String),
+    /// Declared but not served.
+    Removed(String),
+    /// Same name, different description.
+    DescriptionChanged { name: String },
+    /// Same name, different declared input-schema shape; `facet` names the
+    /// specific differing property or schema facet.
+    SchemaChanged { name: String, facet: String },
+}
+
+/// The reusable, pure comparison. Given the declared (expected) and observed
+/// (actual) catalogs keyed by name, return every difference classified as
+/// added / removed / description-changed / schema-changed. Because it is pure
+/// and takes both sides as arguments, drift scenarios can exercise it without
+/// mutating the real fixture or the real catalog.
+fn classify_diffs(
+    expected: &BTreeMap<String, ToolEntry>,
+    actual: &BTreeMap<String, ToolEntry>,
+) -> Vec<ToolDiff> {
+    let mut diffs = Vec::new();
+    let names: BTreeSet<&String> = expected.keys().chain(actual.keys()).collect();
+    for name in names {
+        match (expected.get(name), actual.get(name)) {
+            (None, Some(_)) => diffs.push(ToolDiff::Added(name.clone())),
+            (Some(_), None) => diffs.push(ToolDiff::Removed(name.clone())),
+            (Some(expected_entry), Some(actual_entry)) => {
+                if expected_entry.description != actual_entry.description {
+                    diffs.push(ToolDiff::DescriptionChanged { name: name.clone() });
+                }
+                if let Some(facet) =
+                    compare_schema_shape(&expected_entry.input_schema, &actual_entry.input_schema)
+                {
+                    diffs.push(ToolDiff::SchemaChanged {
+                        name: name.clone(),
+                        facet,
+                    });
+                }
+            }
+            (None, None) => unreachable!("name came from the union of both maps"),
+        }
+    }
+    diffs
+}
+
+/// Compare two input schemas by DECLARED SHAPE (never raw bytes or key order),
+/// returning the first differing facet if any. Compared facets: top-level
+/// `type`, the exact property-name set, each shared property's declared `type`,
+/// the `required` list (absent treated as empty), and `additionalProperties`
+/// handling. NOT compared: `default`, `enum`, `items`, `description`, and the
+/// `anyOf` disjunction (e.g. `impact_analysis`) — those are declared-detail
+/// facets outside the shape contract.
+fn compare_schema_shape(expected: &Value, actual: &Value) -> Option<String> {
+    let expected_type = expected.get("type").and_then(Value::as_str);
+    let actual_type = actual.get("type").and_then(Value::as_str);
+    if expected_type != actual_type {
+        return Some("type".to_owned());
+    }
+
+    let expected_props = schema_properties(expected);
+    let actual_props = schema_properties(actual);
+    let expected_names: BTreeSet<&String> = expected_props.keys().collect();
+    let actual_names: BTreeSet<&String> = actual_props.keys().collect();
+    if let Some(name) = expected_names.symmetric_difference(&actual_names).next() {
+        return Some(format!("property `{name}`"));
+    }
+
+    for (property, expected_schema) in &expected_props {
+        let want_type = expected_schema.get("type").and_then(Value::as_str);
+        let got_type = actual_props
+            .get(property)
+            .and_then(|schema| schema.get("type"))
+            .and_then(Value::as_str);
+        if want_type != got_type {
+            return Some(format!("property `{property}` type"));
+        }
+    }
+
+    if required_set(expected) != required_set(actual) {
+        return Some("required".to_owned());
+    }
+
+    if expected.get("additionalProperties") != actual.get("additionalProperties") {
+        return Some("additionalProperties".to_owned());
+    }
+
+    None
+}
+
+/// The `properties` object of a schema as a name-keyed map (absent -> empty).
+fn schema_properties(schema: &Value) -> BTreeMap<String, Value> {
+    schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .map(|object| {
+            object
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The `required` list of a schema as a set (absent -> empty).
+fn required_set(schema: &Value) -> BTreeSet<String> {
+    schema
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|array| {
+            array
+                .iter()
+                .filter_map(|value| value.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// U4 scenario: every observed tool's declared input-schema shape matches the
+/// fixture — object type, exact property-name set, per-property type, required
+/// list, and `additionalProperties` handling.
+#[tokio::test]
+async fn agent_visible_tool_schemas_match_fixture_shape() {
+    let expected = load_expected();
+    let response = capture::capture_tools_list_response().await;
+    let observed = observed_from_response(&response);
+
+    for (name, expected_entry) in &expected {
+        assert_eq!(
+            expected_entry
+                .input_schema
+                .get("type")
+                .and_then(Value::as_str),
+            Some("object"),
+            "fixture schema for `{name}` must declare an object type"
+        );
+        let observed_entry = observed
+            .get(name)
+            .unwrap_or_else(|| panic!("tool `{name}` declared in fixture but not served"));
+        if let Some(facet) =
+            compare_schema_shape(&expected_entry.input_schema, &observed_entry.input_schema)
+        {
+            panic!("schema-shape drift for tool `{name}` at facet: {facet}");
+        }
+    }
+}
+
+/// U4 scenario: the whole agent-visible catalog has zero classified drift
+/// against the declared fixture.
+#[tokio::test]
+async fn agent_visible_catalog_has_zero_drift() {
+    let expected = load_expected();
+    let response = capture::capture_tools_list_response().await;
+    let observed = observed_from_response(&response);
+
+    let diffs = classify_diffs(&expected, &observed);
+    assert!(
+        diffs.is_empty(),
+        "agent-visible catalog must exhibit zero drift; classified diffs: {diffs:?}"
+    );
+}
+
+/// U6 scenario: an induced mismatch — constructed entirely in-test so the real
+/// fixture is untouched — produces the correctly classified per-tool diff,
+/// naming the specific differing property for a schema change.
+#[test]
+fn classify_diffs_reports_each_drift_class_with_the_specific_property() {
+    fn entry(description: &str, schema: Value) -> ToolEntry {
+        ToolEntry {
+            description: description.to_owned(),
+            input_schema: schema,
+        }
+    }
+    let object_schema =
+        |properties: Value| serde_json::json!({ "type": "object", "properties": properties });
+
+    let mut expected: BTreeMap<String, ToolEntry> = BTreeMap::new();
+    expected.insert(
+        "renamed_old".to_owned(),
+        entry("stable summary", object_schema(serde_json::json!({}))),
+    );
+    expected.insert(
+        "desc_tool".to_owned(),
+        entry("original summary", object_schema(serde_json::json!({}))),
+    );
+    expected.insert(
+        "schema_tool".to_owned(),
+        entry(
+            "stable summary",
+            object_schema(serde_json::json!({ "limit": { "type": "integer" } })),
+        ),
+    );
+
+    let mut actual: BTreeMap<String, ToolEntry> = BTreeMap::new();
+    // renamed_old -> renamed_new (a rename is a removed + an added).
+    actual.insert(
+        "renamed_new".to_owned(),
+        entry("stable summary", object_schema(serde_json::json!({}))),
+    );
+    // desc_tool: description changed only.
+    actual.insert(
+        "desc_tool".to_owned(),
+        entry("reworded summary", object_schema(serde_json::json!({}))),
+    );
+    // schema_tool: `limit` property type changed integer -> string.
+    actual.insert(
+        "schema_tool".to_owned(),
+        entry(
+            "stable summary",
+            object_schema(serde_json::json!({ "limit": { "type": "string" } })),
+        ),
+    );
+
+    let diffs = classify_diffs(&expected, &actual);
+
+    assert!(
+        diffs.contains(&ToolDiff::Removed("renamed_old".to_owned())),
+        "a rename must yield a Removed for the old name: {diffs:?}"
+    );
+    assert!(
+        diffs.contains(&ToolDiff::Added("renamed_new".to_owned())),
+        "a rename must yield an Added for the new name: {diffs:?}"
+    );
+    assert!(
+        diffs.contains(&ToolDiff::DescriptionChanged {
+            name: "desc_tool".to_owned()
+        }),
+        "a reworded description must be classified DescriptionChanged: {diffs:?}"
+    );
+    assert!(
+        diffs.contains(&ToolDiff::SchemaChanged {
+            name: "schema_tool".to_owned(),
+            facet: "property `limit` type".to_owned(),
+        }),
+        "a property type change must be classified SchemaChanged naming the property: {diffs:?}"
+    );
 }
