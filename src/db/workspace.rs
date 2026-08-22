@@ -1028,6 +1028,71 @@ mod tests {
         );
     }
 
+    // ── U8: admission latency measurement ────────────────────────────────────
+    //
+    // Ignored by default: this is a measurement, not an assertion, and its
+    // numbers are environment-specific. Run explicitly for the closure record:
+    //   cargo test --lib db::workspace::tests::measure_admission_latency \
+    //     -- --ignored --nocapture
+    #[test]
+    #[ignore = "measurement for the closure record, not a pass/fail gate"]
+    fn measure_admission_latency() {
+        use std::time::Instant;
+
+        let fixture = tempfile::tempdir().expect("latency fixture tempdir");
+        let primary = fixture.path().join("primary");
+        std::fs::create_dir_all(&primary).expect("create primary");
+        run_git_fixture(&primary, &["init", "--initial-branch=main"]);
+        run_git_fixture(&primary, &["config", "user.name", "Engram Test"]);
+        run_git_fixture(&primary, &["config", "user.email", "t@example.invalid"]);
+        std::fs::write(primary.join("README.md"), "# fixture\n").expect("write fixture file");
+        run_git_fixture(&primary, &["add", "README.md"]);
+        run_git_fixture(&primary, &["commit", "-m", "fixture"]);
+
+        let worktree = fixture.path().join("worktree");
+        let worktree_arg = worktree.to_string_lossy().to_string();
+        run_git_fixture(
+            &primary,
+            &["worktree", "add", "-b", "latency", &worktree_arg],
+        );
+
+        for (label, target) in [
+            ("primary checkout", &primary),
+            ("linked worktree", &worktree),
+        ] {
+            let mut samples = Vec::new();
+            for _ in 0..64 {
+                let started = Instant::now();
+                let admitted = super::canonicalize_workspace(&target.to_string_lossy());
+                let elapsed = started.elapsed();
+                assert!(admitted.is_ok(), "{label} must be admitted: {admitted:?}");
+                samples.push(elapsed.as_secs_f64() * 1000.0);
+            }
+            samples.sort_by(f64::total_cmp);
+            println!(
+                "ADMISSION_LATENCY {label}: median={:.3}ms p95={:.3}ms min={:.3}ms max={:.3}ms",
+                samples[samples.len() / 2],
+                samples[(samples.len() * 95) / 100],
+                samples[0],
+                samples[samples.len() - 1]
+            );
+        }
+    }
+
+    fn run_git_fixture(repo: &std::path::Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .expect("run git fixture command");
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     // ── 086.003-T: fail-closed data-dir containment guard ────────────────────
     #[test]
     fn data_dir_within_workspace_accepts_workspace_owned_dirs() {
