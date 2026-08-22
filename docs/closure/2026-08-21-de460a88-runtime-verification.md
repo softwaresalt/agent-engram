@@ -27,16 +27,23 @@ the current 21-tool catalog it reports zero drift.
 
 ```text
 cargo test --test contract_mcp_catalog_oracle
-running 7 tests
+running 9 tests
 test oracle_sources_are_independent_of_production_catalog ... ok
 test classify_diffs_reports_each_drift_class_with_the_specific_property ... ok
+test compare_schema_shape_flags_malformed_required ... ok
+test compare_schema_shape_flags_malformed_properties ... ok
 test agent_visible_tool_names_match_fixture_exactly ... ok
 test captured_tools_list_is_well_formed_json_with_tools_array ... ok
 test agent_visible_tool_descriptions_match_fixture ... ok
 test agent_visible_catalog_has_zero_drift ... ok
 test agent_visible_tool_schemas_match_fixture_shape ... ok
-test result: ok. 7 passed; 0 failed
+test result: ok. 9 passed; 0 failed
 ```
+
+The two `compare_schema_shape_flags_malformed_*` cases were added during review:
+the shape comparison now surfaces a malformed observed `required` (non-array or
+non-string member) or a malformed `properties` (present non-object) as a schema
+difference rather than normalizing it away.
 
 An induced mismatch against the real fixture — a tool rename, a description
 edit, and a schema property-type edit applied together, then reverted with
@@ -79,6 +86,12 @@ is enforced by the fixture-regeneration scan and its header rather than by token
 absence. The forbidden-token scan therefore targets the two Rust oracle sources,
 matching the plan's "the oracle test and its helpers".
 
+The invariant is enforced in CI, not only locally: the `build` job runs
+`scripts/check-oracle-independence.sh` as a dedicated "oracle independence guard"
+step (both the forbidden-import and fixture-regeneration scans), and the in-test
+`oracle_sources_are_independent_of_production_catalog` assertion enforces the
+forbidden-import scan inside `cargo test`.
+
 ### U3 — fixture fidelity
 
 The fixture declares all 21 default-build tools (`TOOL_COUNT = 21`), matching the
@@ -92,8 +105,8 @@ descriptions, or declared schema shape.
 |---|---|---|
 | fmt | `cargo fmt --all -- --check` | PASS |
 | clippy | `cargo clippy --no-default-features --features cozo-backend,embeddings --all-targets -- -D warnings -D clippy::pedantic` | PASS (0 warnings) |
-| oracle test | `cargo test --test contract_mcp_catalog_oracle` | PASS (7/7) |
-| independence guard | `scripts/check-oracle-independence.{ps1,sh}` | PASS |
+| oracle test | `cargo test --test contract_mcp_catalog_oracle` | PASS (9/9) |
+| independence guard | `scripts/check-oracle-independence.{ps1,sh}` (also a CI step) | PASS |
 
 The clippy and test feature set mirrors CI (`.github/workflows/ci.yml`:
 `--no-default-features --features cozo-backend,embeddings`). The `--all-features`
