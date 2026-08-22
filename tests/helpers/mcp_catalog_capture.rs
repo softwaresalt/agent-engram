@@ -64,7 +64,7 @@ pub async fn capture_tools_list_response_in(workspace: &Path) -> Value {
         .env("ENGRAM_READY_TIMEOUT_MS", "30000")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::null())
         .kill_on_drop(true)
         .spawn()
         .expect("spawn engram shim");

@@ -59,8 +59,10 @@ fn observed_from_response(response: &Value) -> BTreeMap<String, ToolEntry> {
     entries_from_array(tools)
 }
 
-/// Reduce a JSON array of tool objects to a name-keyed map, tolerating both
-/// the fixture spelling and the MCP camelCase `inputSchema` spelling.
+/// Reduce a JSON array of tool objects to a name-keyed map. The input schema is
+/// read from the MCP camelCase `inputSchema` key, which both the human-authored
+/// fixture and the serialized rmcp `Tool` use; an absent schema becomes an empty
+/// object so a malformed entry surfaces as a schema-shape mismatch, not a panic.
 fn entries_from_array(tools: &[Value]) -> BTreeMap<String, ToolEntry> {
     let mut map = BTreeMap::new();
     for tool in tools {
