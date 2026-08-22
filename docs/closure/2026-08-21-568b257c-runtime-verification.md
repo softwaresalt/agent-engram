@@ -155,7 +155,7 @@ the linked-worktree mutual backlink proof has no bypass.
 | Silent `SKIPPED:` pass in the security-critical directory-substitution fixture | P2 | Converted to a hard failure — directory links need no elevation on either supported platform, so a failure there is a broken fixture, not an environment skip |
 | Two false invariant comments in the trust boundary | P3 | Corrected |
 | `daemon_key_for_workspace` probed through a handle, dropped it, then re-entered the path-based `workspace_key` wrapper | P1 | Resolves once and carries the same proof through both the identity probe and the identity read; the legacy fallback derives its branch from the already-validated `HEAD` content |
-| `.workspace-id` was created and published by ambient pathname after the handle was retained | P1 | Created and published through the retained `.engram` handle with exclusive create; losing cold starts wait for the winning writer instead of observing a partial leaf |
+| `.workspace-id` was created and published by ambient pathname after the handle was retained | P1 | Created and published through the retained `.engram` handle: content is written and `fsync`ed to a staging file, then hard-linked onto the final name, which refuses to replace an existing destination. Falls back to a handle-relative rename only where the filesystem cannot link, after re-checking that no value is already published |
 | `NotFired` counted as a prevention outcome, so removing the checkpoint would leave the security test green | P2 | Its own arm, and it panics: a fixture that never reaches its checkpoint attempted no swap and proves nothing |
 | Unix matrix omitted `refs`, which is behaviourally distinct because an absent `refs` activates the `reftable` fallback | P2 | Added `unix_refs_symlink_is_rejected`, bringing Unix to parity with Windows |
 | Workspace root anchor was reopened from the canonical pathname, so authority and identity could diverge | P1 | The authority handle is now opened once from the caller-supplied path and never reopened; on Unix the canonical name is additionally proven to denote the same object via handle-derived `(dev, ino)` |
@@ -248,3 +248,4 @@ continuing to widen scope inside a security fix is itself a risk.
 | `1C2A3CB3` | Windows equivalent of the root canonical-name identity proof |
 | `49000348` | Verify cloud-placeholder reparse tags inside `.git` are still admitted |
 | `1CB366DB` | Compose canonical path, identity, and branch from one proof at bind sites |
+| `7B15B447` | Keep one `.engram` capability alive across the whole daemon-key decision |

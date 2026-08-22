@@ -376,15 +376,28 @@ impl CapRoot {
             .hard_link(Path::new(&staging), &self.dir, Path::new(name));
         let published = match published {
             Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => {
-                // Not every filesystem supports hard links. Degrade to a
-                // handle-relative rename rather than failing the bind outright:
-                // the content is already fully written and synced, so the
-                // destination still appears atomically and completely. The only
-                // property lost is no-clobber, which matters solely when two
-                // first binds race on such a filesystem — a far smaller cost
-                // than refusing to admit the workspace at all.
-                self.dir
-                    .rename(Path::new(&staging), &self.dir, Path::new(name))
+                // Not every filesystem supports hard links, and failing the bind
+                // outright when linking is unavailable makes the product
+                // unusable there (it regressed the launcher pre-warm budget in
+                // CI). Degrade to a handle-relative rename instead: the content
+                // is already written and synced, so the destination still
+                // appears atomically and completely.
+                //
+                // `rename` replaces its destination, so re-check first and
+                // preserve the no-clobber contract whenever a value is already
+                // published. Only a genuine concurrent first bind on a
+                // link-less filesystem can still race, and both racers write a
+                // complete, valid identity.
+                match self.child_kind(name) {
+                    ChildKind::Absent => {
+                        self.dir
+                            .rename(Path::new(&staging), &self.dir, Path::new(name))
+                    }
+                    _ => Err(std::io::Error::new(
+                        std::io::ErrorKind::AlreadyExists,
+                        "workspace identity already published",
+                    )),
+                }
             }
             other => other,
         };
