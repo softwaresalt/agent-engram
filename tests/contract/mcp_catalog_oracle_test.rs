@@ -218,6 +218,16 @@ fn compare_schema_shape(expected: &Value, actual: &Value) -> Option<String> {
         return Some("type".to_owned());
     }
 
+    // A present `properties` that is not an object is malformed. Surface the
+    // asymmetry rather than letting `schema_properties` normalize it to an empty
+    // map (which would let an observed `"properties": []` compare equal to a
+    // declared empty object and miss the corruption).
+    let expected_props_malformed = expected.get("properties").is_some_and(|v| !v.is_object());
+    let actual_props_malformed = actual.get("properties").is_some_and(|v| !v.is_object());
+    if expected_props_malformed != actual_props_malformed {
+        return Some("properties".to_owned());
+    }
+
     let expected_props = schema_properties(expected);
     let actual_props = schema_properties(actual);
     let expected_names: BTreeSet<&String> = expected_props.keys().collect();
@@ -438,6 +448,21 @@ fn compare_schema_shape_flags_malformed_required() {
         compare_schema_shape(&declared, &null_member).as_deref(),
         Some("required"),
         "a `required` array with a non-string member must be reported as a difference"
+    );
+}
+
+/// Regression: a present but malformed `properties` value (not an object, e.g.
+/// `"properties": []`) must surface as a `properties` difference rather than
+/// normalizing to an empty property set and comparing equal to a declared
+/// empty-object schema.
+#[test]
+fn compare_schema_shape_flags_malformed_properties() {
+    let declared = serde_json::json!({ "type": "object", "properties": {} });
+    let non_object = serde_json::json!({ "type": "object", "properties": [] });
+    assert_eq!(
+        compare_schema_shape(&declared, &non_object).as_deref(),
+        Some("properties"),
+        "a non-object `properties` must be reported as a properties-facet difference"
     );
 }
 
