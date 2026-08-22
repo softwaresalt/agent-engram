@@ -49,7 +49,7 @@ $scanFiles = @(
 )
 foreach ($file in $scanFiles) {
     if (-not (Test-Path -LiteralPath $file)) { continue }
-    $lines = Get-Content -LiteralPath $file
+    $lines = @(Get-Content -LiteralPath $file)
     for ($i = 0; $i -lt $lines.Count; $i++) {
         foreach ($token in $forbiddenTokens) {
             if ($lines[$i].Contains($token)) {
@@ -76,7 +76,7 @@ foreach ($regenRoot in $regenRoots) {
     }
     foreach ($candidate in $candidates) {
         if ($candidate.FullName -eq $selfPath) { continue }
-        $lines = Get-Content -LiteralPath $candidate.FullName
+        $lines = @(Get-Content -LiteralPath $candidate.FullName)
         for ($i = 0; $i -lt $lines.Count; $i++) {
             $line = $lines[$i]
             if (-not $line.Contains($fixtureName)) { continue }
