@@ -26,12 +26,20 @@ diff: 208.
 
 | Gate | Selected | Required | Omitted | Status |
 |---|---|---|---|---|
-| Before — legacy `dev-test` (six HCL targets) | 6 | 208 | **208** | FAIL |
-| After — change-scoped `dev-test` (selected = required) | 208 | 208 | **0** | PASS |
+| Before — legacy `dev-test` (`--lib` + six HCL targets) | 6 | 208 | **208** | FAIL |
+| After — `cargo dev-test` = `test --all-targets` (default-feature targets) | 208 | 208 | **0** | PASS |
 
 The legacy gate silently omitted every one of the 208 non-HCL contract,
-integration, and unit targets for this diff. The change-scoped gate omits none.
-Reproduce standalone without running the suite:
+integration, and unit targets for this diff. The canonical gate is now
+`cargo dev-test = "test --all-targets"`, which runs all 208 non-HCL
+default-feature targets plus `--lib`; the two non-default-feature targets
+(`integration_connection` / `legacy-sse`, `integration_git_graph` / `git-graph`)
+are covered by the exhaustive `cargo ci`. The oracle is the measurable audit:
+its `report` mode compares a required set against a selected set. Passing an
+explicit `--selected` (below, first command) reproduces the 208-omitted baseline
+for the legacy selection; the default `report` sets `selected = required`
+(tautologically zero) and is a convenience, not the audit — pass `--selected`
+to audit a specific gate's coverage.
 
 ```bash
 scripts/test-coverage-oracle.sh --mode report --changed src/db/workspace.rs \
@@ -41,7 +49,10 @@ scripts/test-coverage-oracle.sh --mode report --changed src/db/workspace.rs
 
 ### Bounded execution (process-explosion constraint)
 
-Configured cap: `max_concurrent_test_binaries = 8`, `test_threads = 4`
+The bounds apply to the OPTIONAL change-scoped runner
+(`scripts/test-coverage-oracle.{sh,ps1} --mode run`), not to `cargo dev-test`
+(whose sequential test-binary execution is inherently bounded). Configured cap:
+`max_concurrent_test_binaries = 8`, `test_threads = 4`
 (`.cargo/test-coverage-manifest.toml [settings]`, overridable via
 `ENGRAM_DEVTEST_MAX_BINARIES` / `ENGRAM_DEVTEST_TEST_THREADS` in
 `.cargo/config.toml [env]`).
