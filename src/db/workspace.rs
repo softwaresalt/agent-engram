@@ -62,13 +62,19 @@ pub fn canonicalize_workspace(path: &str) -> Result<PathBuf, WorkspaceError> {
     resolve_git_metadata(Path::new(path)).map(|metadata| metadata.workspace)
 }
 
-#[derive(Debug)]
 struct GitMetadata {
     workspace: PathBuf,
     // `None` for a primary checkout whose `.git/HEAD` is absent or unreadable —
     // resolving the workspace identity never required HEAD, only branch
     // resolution does. A linked worktree always carries a validated HEAD.
     head_content: Option<String>,
+    // The retained, validated workspace-root capability handle (U5). Identity
+    // persistence reaches `.engram/.workspace-id` THROUGH this handle instead
+    // of reopening the path from scratch, so an ancestor swap staged between
+    // the Git authenticity proof and the identity read cannot redirect the read
+    // to an attacker-controlled directory (threat T5). `GitMetadata` is private,
+    // so carrying a `CapRoot` here introduces no public API surface.
+    root: CapRoot,
 }
 
 // Test-only interception seam for the metadata-resolution TOCTOU windows.
@@ -165,8 +171,17 @@ struct CapRoot {
 }
 
 impl CapRoot {
-    /// The single ambient (full-path) resolution. Used for exactly two roots:
-    /// the workspace root, and — for a linked worktree — the common Git dir.
+    /// Ambient (full-path) resolution that FOLLOWS a link/reparse point at the
+    /// path's final component. Used ONLY for the workspace root.
+    ///
+    /// This asymmetry with [`Self::open_anchor_nofollow_leaf`] is deliberate: a
+    /// workspace root that is ITSELF a junction or symlink (e.g.
+    /// `mklink /J C:\work C:\Users\me\repos\work`) is a legitimate, supported
+    /// layout and is admitted today. Rejecting it would be an availability
+    /// regression (rollback trigger 1). The reparse gate is scoped to the
+    /// validated Git chain BELOW a root, never to the root component itself.
+    /// The common Git directory, by contrast, must not be a link at its leaf and
+    /// therefore uses [`Self::open_anchor_nofollow_leaf`].
     fn open_anchor(path: &Path) -> Result<Self, WorkspaceError> {
         let dir =
             Dir::open_ambient_dir(path, ambient_authority()).map_err(|_| not_git_root(path))?;
@@ -176,8 +191,40 @@ impl CapRoot {
         })
     }
 
+    /// Open an anchor whose FINAL component must not be a link or reparse point.
+    /// The parent is resolved ambiently; the leaf is opened no-follow from it
+    /// and validated through handle-derived metadata via the uniform reparse
+    /// gate. Used ONLY for the common Git directory anchor, restoring the leaf
+    /// rejection the pre-change `require_plain_directory(&common_candidate, ..)`
+    /// provided: an attacker who replaces the common Git directory with a
+    /// junction/symlink to a forged tree is rejected instead of having
+    /// `objects`, `refs`, `worktrees/<name>`, the backlinks and `HEAD` accepted
+    /// from the substituted target.
+    fn open_anchor_nofollow_leaf(path: &Path) -> Result<Self, WorkspaceError> {
+        let parent = path.parent().ok_or_else(|| not_git_root(path))?;
+        let leaf = path.file_name().ok_or_else(|| not_git_root(path))?;
+        let parent_dir =
+            Dir::open_ambient_dir(parent, ambient_authority()).map_err(|_| not_git_root(path))?;
+        // Reuse the uniform `open_child_dir` no-follow/reparse validation on the
+        // leaf so the common Git directory passes through the same gate every
+        // other validated directory does. `display` is set to the full anchor
+        // path for error fidelity.
+        let parent_root = Self {
+            dir: parent_dir,
+            display: path.to_path_buf(),
+        };
+        let mut anchor = parent_root.open_child_dir(leaf)?;
+        anchor.display = path.to_path_buf();
+        Ok(anchor)
+    }
+
     /// Classify a single child component from handle-derived no-follow metadata.
-    fn child_kind(&self, name: &str) -> ChildKind {
+    fn child_kind(&self, name: impl AsRef<Path>) -> ChildKind {
+        let name = name.as_ref();
+        debug_assert!(
+            is_single_component(name),
+            "child_kind must be called with exactly one path component"
+        );
         match self.dir.symlink_metadata(name) {
             Ok(metadata) => {
                 if cap_metadata_is_link_or_reparse(&metadata) {
@@ -197,10 +244,16 @@ impl CapRoot {
 
     /// Open a single child directory with `open_dir_nofollow`, then validate it
     /// through HANDLE-DERIVED metadata: it must be a directory and must pass the
-    /// uniform reparse gate. `name` is always exactly one component.
-    fn open_child_dir(&self, name: &str) -> Result<Self, WorkspaceError> {
+    /// uniform reparse gate. `name` must be exactly one path component; the
+    /// runtime guard rejects anything else so the helper cannot be misused to
+    /// smuggle a multi-component or `.`/`..`/root/prefix path.
+    fn open_child_dir(&self, name: impl AsRef<Path>) -> Result<Self, WorkspaceError> {
         use cap_fs_ext::DirExt as _;
 
+        let name = name.as_ref();
+        if !is_single_component(name) {
+            return Err(not_git_root(&self.display));
+        }
         let child = self
             .dir
             .open_dir_nofollow(name)
@@ -300,6 +353,7 @@ fn resolve_git_metadata(path: &Path) -> Result<GitMetadata, WorkspaceError> {
             Ok(GitMetadata {
                 workspace,
                 head_content,
+                root,
             })
         }
         ChildKind::File => {
@@ -309,6 +363,7 @@ fn resolve_git_metadata(path: &Path) -> Result<GitMetadata, WorkspaceError> {
                 // native admin backlink is defined in terms of that identity.
                 workspace: canonical_workspace,
                 head_content: Some(head_content),
+                root,
             })
         }
         ChildKind::Absent | ChildKind::Other => Err(not_git_root(&workspace)),
@@ -368,7 +423,7 @@ fn resolve_linked_worktree(
     // proof reads (`objects`, `refs`/`reftable`, `HEAD`, `worktrees/<name>`),
     // and reaching the admin dir from it by a no-follow walk makes the admitted
     // admin object the validated one by construction.
-    let common_root = CapRoot::open_anchor(&common_lexical)?;
+    let common_root = CapRoot::open_anchor_nofollow_leaf(&common_lexical)?;
 
     // Deterministic swap window for the colocated adversarial tests; a no-op in
     // production. The common authority has just been established and is HELD for
@@ -437,6 +492,18 @@ fn resolve_linked_worktree(
     Ok(head_content)
 }
 
+/// True when `path` names exactly one ordinary component — no separator, no
+/// `.`/`..`, no root and no prefix.
+///
+/// The capability-root child helpers accept only single components so they
+/// cannot be handed a multi-component path, which would re-introduce the very
+/// full-path resolution semantics this module exists to eliminate.
+fn is_single_component(path: &Path) -> bool {
+    let mut components = path.components();
+    matches!(components.next(), Some(std::path::Component::Normal(_)))
+        && components.next().is_none()
+}
+
 fn is_parent_component(component: std::path::Component<'_>) -> bool {
     matches!(component, std::path::Component::ParentDir)
 }
@@ -488,12 +555,15 @@ fn parse_single_line<'a>(content: &'a str, workspace: &Path) -> Result<&'a str, 
 /// the workspace root, or the persisted `.workspace-id` file cannot be read or
 /// written safely.
 pub fn load_or_create_workspace_id(path: &Path) -> Result<Uuid, EngramError> {
-    let canonical = normalize_canonical(resolve_git_metadata(path)?.workspace);
+    let metadata = resolve_git_metadata(path)?;
+    let canonical = normalize_canonical(metadata.workspace);
 
-    // Retained workspace root handle. `.engram/` is created and reopened
-    // relative to it, so the identity leaf is reached through a validated
-    // no-follow walk rather than an ambient path resolution (U5).
-    let root = CapRoot::open_anchor(&canonical).map_err(EngramError::Workspace)?;
+    // The workspace root handle RETAINED from the Git authenticity proof — not a
+    // second ambient resolution. Reopening `canonical` here would reintroduce a
+    // check/use window between the proof and the identity read (threat T5): an
+    // ancestor swapped in that gap would redirect `.engram/.workspace-id` to an
+    // attacker-controlled directory even though the proof had just succeeded.
+    let root = metadata.root;
     let engram_dir = canonical.join(".engram");
     // Create-only; not a trust decision, so it may stay path-relative to the
     // handle. `create_dir_all` is idempotent under concurrent cold starts.
