@@ -80,3 +80,71 @@ engram uninstall --keep-data
 Use `update` when you want fresh generated artifacts. Use `reinstall` when the
 runtime directories need a clean rebuild. Use `uninstall --keep-data` when you
 want to remove wiring without discarding the workspace data.
+
+## Run the change-scoped test gate
+
+`cargo dev-test` is the canonical local merge gate. It is change-scoped: rather
+than a fixed allowlist of targets, it runs the test targets a coverage oracle
+derives from your current diff, under an explicit concurrency bound. The
+exhaustive `cargo ci` (all targets, all features) remains the backstop.
+
+```bash
+cargo dev-test          # change-scoped, bounded run for the current diff
+cargo full-test         # every target, unbounded
+cargo ci                # every target, all features (CI equivalent)
+```
+
+`cargo dev-test` delegates to the `cargo-devtest` external subcommand in
+`scripts/`. Add `scripts/` to `PATH` once so cargo can find it, or invoke the
+oracle runner directly:
+
+```bash
+bash  scripts/test-coverage-oracle.sh  --mode run     # Linux/macOS
+pwsh  scripts/test-coverage-oracle.ps1 --mode run     # Windows
+```
+
+### Read the coverage report
+
+Run the oracle in `report` mode to see, for a diff, the required target set, the
+selected set, and any omitted targets. The gate passes only when `omitted == 0`
+and no source surface is unmapped:
+
+```bash
+bash scripts/test-coverage-oracle.sh --mode report --changed src/db/workspace.rs
+```
+
+| Field | Meaning |
+|---|---|
+| `REQUIRED_COUNT` | Targets the manifest requires for the changed surfaces |
+| `SELECTED_COUNT` | Targets the run will actually execute |
+| `OMITTED_COUNT` | Required targets not selected; must be `0` to pass |
+| `UNMAPPED_COUNT` | Changed `src/` files with no manifest mapping; must be `0` |
+| `STATUS` | `PASS` or `FAIL` |
+
+### Add a mapping when you add a test target
+
+The surface-to-target mapping lives in `.cargo/test-coverage-manifest.toml`. Each
+`[[surface]]` maps a source path prefix to the test-target name globs that must
+run when a file under that prefix changes. Map surfaces **broadly rather than
+narrowly**: a shared module can affect targets not obviously named for it, and
+diff-derived selection cannot see transitive effects, so list every target that
+could plausibly exercise the surface. `cargo ci` remains the transitive backstop.
+
+When you add a `[[test]]` target to `Cargo.toml`, make sure its name is covered
+by a source surface (the tier globs `contract_*`, `integration_*`, `unit_*`,
+`cold_*`, `helpers_*` cover the non-HCL tiers). The completeness check fails when
+a target or a top-level `src/` module is unmapped, so the manifest cannot drift
+silently:
+
+```bash
+bash scripts/test-coverage-oracle.sh --mode completeness
+```
+
+### Tune the concurrency bound
+
+The process budget is an explicit parameter, not a consequence of the target
+count. Defaults live in the manifest `[settings]` block
+(`max_concurrent_test_binaries`, `test_threads`) and can be overridden per-run
+via the `ENGRAM_DEVTEST_MAX_BINARIES` and `ENGRAM_DEVTEST_TEST_THREADS`
+environment variables declared in `.cargo/config.toml`.
+
