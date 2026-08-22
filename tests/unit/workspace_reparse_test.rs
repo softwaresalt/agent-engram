@@ -146,7 +146,7 @@ fn windows_refs_junction_is_rejected() {
     assert_common_subdir_link_rejected("refs");
 }
 
-// ── Unix: symlink substitution of worktrees / objects ────────────────────────
+// ── Unix: symlink substitution of worktrees / objects / refs ─────────────────
 
 #[cfg(unix)]
 #[test]
@@ -158,6 +158,16 @@ fn unix_worktrees_symlink_is_rejected() {
 #[test]
 fn unix_objects_symlink_is_rejected() {
     assert_common_subdir_link_rejected("objects");
+}
+
+/// `refs` is behaviourally distinct from the other two: an ABSENT `refs`
+/// activates the `reftable` fallback, so a substituted `refs` must be rejected
+/// outright rather than silently routed down the fallback path. The Windows
+/// matrix already covers this; U2's acceptance criteria require parity on Unix.
+#[cfg(unix)]
+#[test]
+fn unix_refs_symlink_is_rejected() {
+    assert_common_subdir_link_rejected("refs");
 }
 
 // ── Cross-platform: reparse point above the workspace root (S3) ──────────────

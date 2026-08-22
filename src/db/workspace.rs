@@ -559,7 +559,17 @@ fn parse_single_line<'a>(content: &'a str, workspace: &Path) -> Result<&'a str, 
 /// the workspace root, or the persisted `.workspace-id` file cannot be read or
 /// written safely.
 pub fn load_or_create_workspace_id(path: &Path) -> Result<Uuid, EngramError> {
-    let metadata = resolve_git_metadata(path)?;
+    workspace_id_from_metadata(resolve_git_metadata(path)?)
+}
+
+/// Load or create the persisted workspace identifier from an ALREADY-PROVEN
+/// workspace, consuming the root handle retained by that proof.
+///
+/// Callers that have just resolved the Git metadata must use this instead of
+/// [`load_or_create_workspace_id`]; re-entering through the path-based wrapper
+/// would resolve the workspace a second time and reopen the check/use window
+/// the proof just closed.
+fn workspace_id_from_metadata(metadata: GitMetadata) -> Result<Uuid, EngramError> {
     let canonical = normalize_canonical(metadata.workspace);
 
     // The workspace root handle RETAINED from the Git authenticity proof — not a
@@ -651,21 +661,32 @@ pub fn workspace_key(path: &Path) -> Result<String, EngramError> {
 ///
 /// Returns any error from workspace canonicalization or workspace-id loading.
 pub fn daemon_key_for_workspace(path: &Path) -> Result<String, EngramError> {
-    let canonical =
-        normalize_canonical(path.canonicalize().map_err(|_| WorkspaceError::NotFound {
-            path: path.display().to_string(),
-        })?);
-    // Route the `.workspace-id` existence probe through the workspace root
-    // handle and a no-follow `.engram` open (U5). An absent `.engram/` means no
-    // persisted identity yet; a linked/reparse `.engram` fails closed rather
-    // than downgrading to the legacy path-hash fallback.
-    if workspace_id_present(&canonical)? {
-        return workspace_key(&canonical);
+    // Resolve the workspace ONCE and keep the proof's retained root handle for
+    // both the identity probe and the identity read. The previous shape probed
+    // through a handle, dropped it, and then re-entered `workspace_key`, which
+    // resolved the pathname again — so a root substitution between those two
+    // calls could make the probe inspect one workspace while the UUID backing
+    // the daemon IPC endpoint came from another, preserving the very TOCTOU
+    // this release unit closes.
+    let metadata = resolve_git_metadata(path)?;
+    let canonical = normalize_canonical(metadata.workspace.clone());
+
+    // The `.workspace-id` existence probe descends from the proof's root by a
+    // no-follow `.engram` open (U5). An absent `.engram/` means no persisted
+    // identity yet; a linked/reparse `.engram` fails closed rather than
+    // downgrading to the legacy path-hash fallback.
+    if workspace_id_present_via(&metadata.root, &canonical)? {
+        return workspace_id_from_metadata(metadata).map(|id| id.to_string());
     }
 
     if let Some(pid_file) = PidFile::read(&canonical) {
         if pid_file.verify_alive()? {
-            let branch = resolve_git_branch(&canonical).unwrap_or_else(|_| "default".to_string());
+            // Branch comes from the HEAD content this proof already validated,
+            // not from a fresh `resolve_git_branch` walk.
+            let branch = metadata
+                .head_content
+                .as_deref()
+                .map_or_else(|| "default".to_string(), branch_from_head);
             tracing::info!(
                 event_type = "workspace_id_fallback",
                 workspace = %canonical.display(),
@@ -675,26 +696,23 @@ pub fn daemon_key_for_workspace(path: &Path) -> Result<String, EngramError> {
         }
     }
 
-    workspace_key(&canonical)
+    workspace_id_from_metadata(metadata).map(|id| id.to_string())
 }
 
 fn workspace_id_path(path: &Path) -> PathBuf {
     path.join(".engram").join(".workspace-id")
 }
 
-/// Probe `.workspace-id` presence through a retained `.engram` handle. Returns
-/// `false` when `.engram/` or the leaf is absent, `true` when a valid identity
-/// leaf exists, and an error when the leaf is present but unsafe (linked /
-/// reparse / non-regular / unparseable).
-fn workspace_id_present(canonical: &Path) -> Result<bool, EngramError> {
+/// Probe `.workspace-id` presence through the caller's ALREADY-VALIDATED root
+/// handle. Returns `false` when `.engram/` or the leaf is absent, `true` when a
+/// valid identity leaf exists, and an error when `.engram/` or the leaf is
+/// present but unsafe (linked / reparse / non-regular / unparseable).
+///
+/// Taking the root by reference rather than reopening it keeps the probe and
+/// the subsequent identity read anchored to the same proven object, and applies
+/// the SAME no-follow reparse gate the load path applies.
+fn workspace_id_present_via(root: &CapRoot, canonical: &Path) -> Result<bool, EngramError> {
     let engram_dir = canonical.join(".engram");
-    // Anchor on the workspace root, then reach `.engram` by a no-follow child
-    // open, so this probe applies the SAME reparse gate the load path applies.
-    // Opening `.engram` ambiently would follow a junction or symlink at the leaf
-    // and let a substituted `.engram` answer the probe (adversarial review F2).
-    let Ok(root) = CapRoot::open_anchor(canonical) else {
-        return Ok(false);
-    };
     let Ok(engram_root) = root.open_child_dir(".engram") else {
         // Distinguish "no identity yet" from "the identity directory is
         // unsafe". An absent `.engram` is the ordinary cold-start case; a
@@ -833,12 +851,20 @@ pub fn resolve_git_branch(workspace: &Path) -> Result<String, WorkspaceError> {
         .head_content
         .ok_or_else(|| not_git_root(&metadata.workspace))?;
 
+    Ok(branch_from_head(&head_content))
+}
+
+/// Derive the branch name from already-validated `HEAD` content.
+///
+/// Takes the content, never a path, so a caller that already holds a proof can
+/// name the branch without triggering a second resolution.
+fn branch_from_head(head_content: &str) -> String {
     let head = head_content.trim();
     if let Some(branch) = head.strip_prefix("ref: refs/heads/") {
-        Ok(sanitize_branch_for_path(branch))
+        sanitize_branch_for_path(branch)
     } else {
         // Detached HEAD: use first 12 chars of the commit SHA
-        Ok(head.chars().take(12).collect())
+        head.chars().take(12).collect()
     }
 }
 
@@ -1467,11 +1493,20 @@ mod toctou_tests {
         admitted: &Admitted,
     ) {
         match outcome {
-            // The OS refused the rename (Windows open-handle protection) or the
-            // window closed before a swap could be staged. Either way the
+            // The fixture never reached its named checkpoint. That is NOT a
+            // prevention result — it means the scenario never attempted the
+            // swap it exists to attempt, so a deleted or renamed checkpoint
+            // would leave this security test silently green. Treat it as a
+            // broken fixture.
+            SwapOutcome::NotFired => panic!(
+                "{scenario}: the interception checkpoint never fired, so no ancestor swap was \
+                 attempted. This is a broken fixture, not a prevention result — the scenario \
+                 proves nothing unless it reaches its checkpoint."
+            ),
+            // The OS refused the rename (Windows open-handle protection), so the
             // retained handle prevented the swap: resolution MUST admit the
             // legitimate object.
-            SwapOutcome::Blocked | SwapOutcome::NotFired => {
+            SwapOutcome::Blocked => {
                 println!("PREVENTED: {scenario}: {reason}");
                 match admitted {
                     Admitted::Branch(branch) => {

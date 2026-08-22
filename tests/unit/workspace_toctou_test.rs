@@ -150,11 +150,15 @@ fn ancestor_substitution_in_admin_chain_is_rejected() {
     fs::rename(&worktrees_dir, &aside).expect("move real worktrees aside");
     if let Err(error) = make_dir_link(&worktrees_dir, &forged) {
         fs::rename(&aside, &worktrees_dir).expect("restore real worktrees after link failure");
-        println!(
-            "SKIPPED: ancestor_substitution_in_admin_chain_is_rejected — cannot create a \
-             directory link in this environment: {error}"
+        // Deliberately NOT a skip. Directory links need no elevation on either
+        // supported platform, so a failure here means the fixture is broken, not
+        // that the environment lacks a capability. A silently-passing security
+        // test is treated as a failing one.
+        panic!(
+            "ancestor_substitution_in_admin_chain_is_rejected: could not create the directory \
+             link the scenario depends on: {error}. Directory links require no elevation on any \
+             supported platform, so this is a fixture failure, not an environment skip."
         );
-        return;
     }
 
     let workspace = worktree.to_str().expect("worktree path is valid UTF-8");
@@ -162,6 +166,12 @@ fn ancestor_substitution_in_admin_chain_is_rejected() {
     assert!(
         result.is_err(),
         "a linked ancestor in the admin chain must not be admitted; got {result:?}"
+    );
+    // Discriminate on provenance too: the forged tree names `hijacked`, so the
+    // rejection must not merely be an unrelated fixture failure.
+    assert!(
+        !format!("{result:?}").contains("hijacked"),
+        "attacker-controlled content must never reach the admitted result; got {result:?}"
     );
 }
 
