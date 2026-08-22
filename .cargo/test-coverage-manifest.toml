@@ -1,0 +1,139 @@
+# Canonical dev-test coverage manifest (Feature 126-F, stash C2413934).
+#
+# Maps source surfaces to the test targets that MUST run when a file under that
+# surface changes. The coverage oracle (scripts/test-coverage-oracle.ps1 and
+# scripts/test-coverage-oracle.sh) reads this file to compute the required
+# target set for a diff, then reports required / selected / omitted with the
+# pass condition `omitted == 0`.
+#
+# `targets` accepts test-target NAME globs:
+#   * an exact target name        e.g. "hcl_parsing_test"
+#   * a trailing-`*` prefix glob   e.g. "contract_*"
+#   * "*"                          all declared [[test]] targets
+#
+# Map surfaces broadly rather than narrowly (plan-review A1): a surface should
+# list every target that could plausibly exercise it. Production source changes
+# therefore run the comprehensive non-HCL tiers, bounded by [settings]; the
+# exhaustive `cargo ci` remains the backstop.
+#
+# Resolution rules (see scripts/test-coverage-oracle.*):
+#   * Surface matching is additive and prefix-based: a changed file inherits the
+#     targets of every surface whose `path` is a prefix of it.
+#   * A changed file under tests/ that is a declared [[test]] path additionally
+#     requires its own target (self-coverage).
+#   * A changed file under src/ that matches no surface is an UNMAPPED surface
+#     and fails the oracle loudly. Silence is never treated as coverage.
+#   * A changed file outside src/ that matches no surface contributes no
+#     required targets (docs, .github, and similar are not source surfaces).
+#
+# Completeness (U6): `--mode completeness` fails when any declared [[test]]
+# target is not matched by a src/ or crates/ surface, or when any top-level
+# module under src/ is not a declared surface, so the manifest cannot silently
+# drift as targets are added.
+
+[settings]
+# Bounded execution (U4): the process budget is an explicit, tunable parameter,
+# not an emergent consequence of the target count. `max_concurrent_test_binaries`
+# caps how many test binaries the change-scoped runner executes concurrently;
+# `test_threads` is passed to each binary as `--test-threads`.
+max_concurrent_test_binaries = 8
+test_threads = 4
+
+# ── Build and configuration surfaces ─────────────────────────────────────────
+# A build or gate configuration change can affect every target, so it requires
+# the full declared suite (bounded by [settings]).
+
+[[surface]]
+path = "Cargo.toml"
+targets = ["*"]
+
+[[surface]]
+path = ".cargo/config.toml"
+targets = ["*"]
+
+[[surface]]
+path = ".cargo/test-coverage-manifest.toml"
+targets = ["*"]
+
+# A change to the oracle tooling runs the oracle's own harnesses.
+[[surface]]
+path = "scripts/test-coverage-oracle"
+targets = ["unit_dev_test_coverage_oracle", "unit_dev_test_hcl_scope_guard"]
+
+# ── Shipment 117-S HCL leaf surface ──────────────────────────────────────────
+# The HCL parser source keeps its six dedicated 117-S targets. Additive matching
+# means an HCL change also inherits the comprehensive src/services/ set.
+
+[[surface]]
+path = "src/services/parsing/hcl.rs"
+targets = [
+    "hcl_parser_contract_test",
+    "hcl_grammar_abi_test",
+    "hcl_parsing_test",
+    "hcl_routing_test",
+    "hcl_security_test",
+    "hcl_indexing_test",
+]
+
+# ── Production source surfaces ───────────────────────────────────────────────
+# Comprehensive non-HCL coverage. The glob set
+# ["contract_*", "integration_*", "unit_*", "cold_*", "helpers_*"] spans every
+# non-HCL declared target; the completeness check proves this exhaustively.
+
+[[surface]]
+path = "src/bin/"
+targets = ["contract_*", "integration_*", "unit_*", "cold_*", "helpers_*"]
+
+[[surface]]
+path = "src/cli/"
+targets = ["contract_*", "integration_*", "unit_*", "cold_*", "helpers_*"]
+
+[[surface]]
+path = "src/config/"
+targets = ["contract_*", "integration_*", "unit_*", "cold_*", "helpers_*"]
+
+[[surface]]
+path = "src/daemon/"
+targets = ["contract_*", "integration_*", "unit_*", "cold_*", "helpers_*"]
+
+[[surface]]
+path = "src/db/"
+targets = ["contract_*", "integration_*", "unit_*", "cold_*", "helpers_*"]
+
+[[surface]]
+path = "src/errors/"
+targets = ["contract_*", "integration_*", "unit_*", "cold_*", "helpers_*"]
+
+[[surface]]
+path = "src/installer/"
+targets = ["contract_*", "integration_*", "unit_*", "cold_*", "helpers_*"]
+
+[[surface]]
+path = "src/models/"
+targets = ["contract_*", "integration_*", "unit_*", "cold_*", "helpers_*"]
+
+[[surface]]
+path = "src/server/"
+targets = ["contract_*", "integration_*", "unit_*", "cold_*", "helpers_*"]
+
+[[surface]]
+path = "src/services/"
+targets = ["contract_*", "integration_*", "unit_*", "cold_*", "helpers_*"]
+
+[[surface]]
+path = "src/shim/"
+targets = ["contract_*", "integration_*", "unit_*", "cold_*", "helpers_*"]
+
+[[surface]]
+path = "src/tools/"
+targets = ["contract_*", "integration_*", "unit_*", "cold_*", "helpers_*"]
+
+[[surface]]
+path = "src/lib.rs"
+targets = ["contract_*", "integration_*", "unit_*", "cold_*", "helpers_*"]
+
+# ── Workspace member crates ──────────────────────────────────────────────────
+
+[[surface]]
+path = "crates/powerbi-tmdl-parser/"
+targets = ["contract_*", "integration_*", "unit_*", "cold_*", "helpers_*"]

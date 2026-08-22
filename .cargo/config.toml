@@ -2,7 +2,22 @@
 rustflags = ["-Dwarnings"]
 
 [alias]
-dev-test = "test --lib --test hcl_parser_contract_test --test hcl_grammar_abi_test --test hcl_parsing_test --test hcl_routing_test --test hcl_security_test --test hcl_indexing_test"
+# `dev-test` is the canonical local merge gate and the pervasively-referenced
+# test command (constitution, workspace-profile, build-feature / fix-ci /
+# harness-architect skills). It MUST work zero-setup and cross-platform, so it
+# is a native cargo command that runs every target under default features,
+# including the colocated `--lib` unit tests. `full-test` and `ci` extend the
+# feature set; `ci` (--all-features) is the exhaustive backstop.
+#
+# The measurable coverage oracle (scripts/test-coverage-oracle.{sh,ps1}, Feature
+# 126-F, stash C2413934) is the checked-in proof that the mandated integration
+# and contract targets are covered (`--mode report`, pass condition
+# `omitted == 0`) and that the surface-to-target manifest cannot drift
+# (`--mode completeness`). It also offers an OPTIONAL change-scoped, bounded
+# `--mode run` for faster local iteration:
+#   bash scripts/test-coverage-oracle.sh  --mode run   (Linux/macOS, Bash 4+)
+#   pwsh scripts/test-coverage-oracle.ps1 --mode run   (Windows)
+dev-test = "test --all-targets"
 full-test = "test"
 debug-build = "build --profile debugging"
 debug-test = "test --profile debugging --lib"
@@ -13,3 +28,10 @@ ci = "test --all-targets --all-features"
 
 [env]
 RUST_BACKTRACE = "1"
+# Bounded execution tunables (U4) for the OPTIONAL change-scoped runner
+# (scripts/test-coverage-oracle.{sh,ps1} --mode run). `MAX_BINARIES` caps how
+# many test binaries the runner executes concurrently; `TEST_THREADS` is passed
+# to each binary as `--test-threads`, so the process budget is an explicit,
+# tunable parameter rather than an emergent consequence of the target count.
+ENGRAM_DEVTEST_MAX_BINARIES = "8"
+ENGRAM_DEVTEST_TEST_THREADS = "4"
