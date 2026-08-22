@@ -268,10 +268,12 @@ Conditions carrying forward:
 
 ### Deferred follow-ups
 
-The review loop was stopped after six review-fix cycles against a documented
+The review loop was stopped after eight review-fix cycles against a documented
 limit of three. The remaining findings are P2-class coverage, durability, and
 composition items — none is a HIGH-confidence P0/P1 security defect — and
-continuing to widen scope inside a security fix is itself a risk.
+continuing to widen scope inside a security fix is itself a risk. The last two
+cycles are themselves evidence for that: rewriting the identity publish
+introduced a real CI regression that took two further commits to settle.
 
 | Stash | Item |
 |---|---|

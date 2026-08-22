@@ -62,9 +62,21 @@ What worked: write and `fsync` a uniquely-named staging file through the handle,
 staging name — degrading to a **checked** rename only where the filesystem
 cannot link.
 
-`cap-std` 4.0.2 has no `renameat2`/`RENAME_NOREPLACE` wrapper and no `sync_all`
-on `Dir`, so parent-directory durability is not reachable from a capability
-handle at all. Know these gaps before committing to a design.
+Be precise about what that fallback does and does not guarantee. The check and
+the rename are two operations, so two cold starts on a link-less filesystem can
+both observe the destination absent and the second rename can replace the first
+identity. The fallback narrows the window to a genuine concurrent *first* bind
+on a filesystem without hard links; it is not a no-clobber guarantee. The
+guarantee comes from `hard_link`, which is why it is the preferred path.
+
+`cap-std` 4.0.2 has no `renameat2`/`RENAME_NOREPLACE` wrapper, so there is no
+atomic no-replace rename to fall back to. It also has no `sync_all` on `Dir`,
+but that does **not** make parent-directory durability unreachable:
+`Dir::into_std_file()` consumes the capability and hands back the same handle as
+a `std::fs::File`, whose `sync_all()` performs a directory fsync where the
+platform supports it, and `Dir::reopen_dir()` can restore the capability
+afterwards. Check for that shape before concluding a capability API cannot do
+something.
 
 ## Test the policy, not only the fixture
 
