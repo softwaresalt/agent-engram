@@ -216,10 +216,35 @@ finding above.
 
 ## Closure Status
 
-**Verified with conditions.** All plan-required verification is complete and
-every quality gate passes. Two conditions carry forward:
+**Verified with conditions.** Every quality gate passes and the runtime
+verification above is complete. Plan-required verification is complete *except*
+for one deferred acceptance item, recorded here rather than glossed over.
 
-1. The latency ratio exceedance on the primary-checkout path is accepted with
+Conditions carrying forward:
+
+1. **Deferred plan acceptance item.** Plan unit U5 requires the handle-identity
+   adversarial scenario to extend through identity persistence. The shipped
+   deterministic scenarios stop at `resolve_git_metadata` and
+   `resolve_git_branch`; there is no *swap* regression test driving
+   `load_or_create_workspace_id`. The identity path is covered indirectly by the
+   concurrent cold-start and symlink-leaf tests, but that is not the same
+   assurance. Tracked as stash `06FC0F11`.
+2. The latency ratio exceedance on the primary-checkout path is accepted with
    documented rationale and needs an operator ruling on the trigger's form.
-2. The cloud-placeholder admission question is unverified and is the primary
-   watch item for the 48-hour window.
+3. The cloud-placeholder admission question is unverified and is the primary
+   watch item for the 48-hour window. Tracked as stash `49000348`.
+
+### Deferred follow-ups
+
+The review loop was stopped after six review-fix cycles against a documented
+limit of three. The remaining findings are P2-class coverage, durability, and
+composition items — none is a HIGH-confidence P0/P1 security defect — and
+continuing to widen scope inside a security fix is itself a risk.
+
+| Stash | Item |
+|---|---|
+| `06FC0F11` | U5 handle-identity scenario through identity persistence |
+| `5DF94427` | fsync the `.engram` directory after publishing the identity leaf |
+| `1C2A3CB3` | Windows equivalent of the root canonical-name identity proof |
+| `49000348` | Verify cloud-placeholder reparse tags inside `.git` are still admitted |
+| `1CB366DB` | Compose canonical path, identity, and branch from one proof at bind sites |
