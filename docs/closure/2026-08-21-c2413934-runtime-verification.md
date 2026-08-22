@@ -118,9 +118,10 @@ rolled back.
 
 ## Operational Notes
 
-`cargo dev-test` delegates to the `cargo-devtest` external subcommand, which
-requires `scripts/` on `PATH`. Contributors without that setup invoke the
-runner directly (`bash scripts/test-coverage-oracle.sh --mode run` /
-`pwsh scripts/test-coverage-oracle.ps1 --mode run`); `cargo ci` and
-`cargo full-test` remain PATH-free backstops. This one-time setup is documented
-in `docs/workflows.md`.
+`cargo dev-test` delegates to the `cargo-devtest` external subcommand. On
+Linux/macOS this resolves once `scripts/` is on `PATH`. On Windows, cargo does
+not resolve script-based external subcommands, so Windows contributors run the
+wrapper `pwsh scripts/dev-test.ps1` (or `pwsh scripts/test-coverage-oracle.ps1
+--mode run`); the "real run" evidence above was produced with the direct oracle
+invocation on Windows. `cargo ci` and `cargo full-test` remain PATH-free,
+cross-platform backstops. This setup is documented in `docs/workflows.md`.

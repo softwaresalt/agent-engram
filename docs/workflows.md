@@ -95,12 +95,15 @@ cargo ci                # every target, all features (CI equivalent)
 ```
 
 `cargo dev-test` delegates to the `cargo-devtest` external subcommand in
-`scripts/`. Add `scripts/` to `PATH` once so cargo can find it, or invoke the
-oracle runner directly:
+`scripts/`. On Linux/macOS, add `scripts/` to `PATH` once so cargo can find it.
+On Windows, cargo does not resolve script-based external subcommands, so use the
+wrapper `pwsh scripts/dev-test.ps1`. Either way you can also invoke the oracle
+runner directly:
 
 ```bash
 bash  scripts/test-coverage-oracle.sh  --mode run     # Linux/macOS
-pwsh  scripts/test-coverage-oracle.ps1 --mode run     # Windows
+pwsh  scripts/dev-test.ps1                             # Windows (wrapper)
+pwsh  scripts/test-coverage-oracle.ps1 --mode run     # Windows (direct)
 ```
 
 ### Read the coverage report

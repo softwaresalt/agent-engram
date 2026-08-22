@@ -2,15 +2,17 @@
 rustflags = ["-Dwarnings"]
 
 [alias]
-# `dev-test` is the canonical local merge gate. It is change-scoped: it runs the
-# oracle-derived required target set for the current diff under the bounded
-# concurrency policy (Feature 126-F, stash C2413934), rather than a fixed
-# allowlist. The alias delegates to the `cargo-devtest` external subcommand
-# (scripts/cargo-devtest / scripts/cargo-devtest.cmd), which invokes
-# scripts/test-coverage-oracle.{sh,ps1} --mode run. Add `scripts/` to PATH once,
-# or run the oracle directly:
-#   pwsh  scripts/test-coverage-oracle.ps1 --mode run   (Windows)
+# `dev-test` is the canonical local merge gate. It is change-scoped: rather than
+# a fixed allowlist, it runs the test targets a coverage oracle derives from the
+# current diff, under an explicit concurrency bound (Feature 126-F, stash
+# C2413934). On Linux/macOS the alias resolves to the `cargo-devtest` external
+# subcommand (scripts/cargo-devtest); add `scripts/` to PATH once so cargo can
+# find it. On Windows, cargo does not resolve script-based external subcommands,
+# so use the wrapper `pwsh scripts/dev-test.ps1` instead. Either way the runner
+# invokes scripts/test-coverage-oracle.{sh,ps1} --mode run; you can also call
+# that directly:
 #   bash  scripts/test-coverage-oracle.sh  --mode run   (Linux/macOS)
+#   pwsh  scripts/test-coverage-oracle.ps1 --mode run   (Windows)
 # `full-test` and `ci` are unchanged and remain the exhaustive backstop.
 dev-test = "devtest"
 full-test = "test"

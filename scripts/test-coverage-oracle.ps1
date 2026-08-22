@@ -158,8 +158,27 @@ function Get-GitChanged() {
 
 # ── Compute the changed set ──────────────────────────────────────────────────
 if ([string]::IsNullOrEmpty($ChangedRaw)) {
-    if ($Mode -eq 'completeness') { $changedFiles = @() }
-    else { $changedFiles = Get-GitChanged }
+    if ($Mode -eq 'completeness') {
+        $changedFiles = @()
+    }
+    else {
+        # Fail closed: an unresolvable base ref means the diff is indeterminate,
+        # not empty. Treating it as empty would report PASS while omitting every
+        # required target. Require an explicit --changed instead.
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        & git -C $RepoRoot rev-parse --verify --quiet origin/main 2>$null | Out-Null
+        $baseRc = $LASTEXITCODE
+        $ErrorActionPreference = $prevEap
+        if ($baseRc -ne 0) {
+            Write-Output "MODE=$Mode"
+            Write-Output 'STATUS=FAIL'
+            Write-Output 'REASON=cannot-resolve-base-ref-origin/main'
+            [Console]::Error.WriteLine('coverage oracle: cannot resolve base ref origin/main to compute the diff; pass --changed explicitly')
+            exit 3
+        }
+        $changedFiles = Get-GitChanged
+    }
 }
 else {
     $changedFiles = $ChangedRaw.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }

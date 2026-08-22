@@ -139,7 +139,19 @@ git_changed() {
 # ── Compute changed set ─────────────────────────────────────────────────────
 declare -a CHANGED=()
 if [[ -z "$CHANGED_RAW" ]]; then
-  if [[ "$MODE" != "completeness" ]]; then while IFS= read -r l; do [[ -n "$l" ]] && CHANGED+=("$l"); done < <(git_changed); fi
+  if [[ "$MODE" != "completeness" ]]; then
+    # Fail closed: an unresolvable base ref means the diff is indeterminate, not
+    # empty. Treating it as empty would report PASS while omitting every required
+    # target. Require an explicit --changed instead.
+    if ! git -C "$REPO_ROOT" rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
+      echo "MODE=$MODE"
+      echo "STATUS=FAIL"
+      echo "REASON=cannot-resolve-base-ref-origin/main"
+      echo "coverage oracle: cannot resolve base ref origin/main to compute the diff; pass --changed explicitly" >&2
+      exit 3
+    fi
+    while IFS= read -r l; do [[ -n "$l" ]] && CHANGED+=("$l"); done < <(git_changed)
+  fi
 else
   IFS=',' read -ra parts <<< "$CHANGED_RAW"
   for p in "${parts[@]}"; do p="$(norm "$p")"; [[ -n "$p" ]] && CHANGED+=("$p"); done
