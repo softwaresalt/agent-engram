@@ -153,6 +153,10 @@ name = "contract_shim_stdio_initialize"
 path = "tests/contract/shim_stdio_initialize_test.rs"
 
 [[test]]
+name = "contract_mcp_catalog_oracle"
+path = "tests/contract/mcp_catalog_oracle_test.rs"
+
+[[test]]
 name = "contract_shim_stdout_purity"
 path = "tests/contract/shim_stdout_purity_test.rs"
 

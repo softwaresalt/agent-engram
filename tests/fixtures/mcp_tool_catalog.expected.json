@@ -1,0 +1,231 @@
+{
+  "_policy": "HUMAN-AUTHORED expectation oracle for Feature 127-F. This fixture is the INDEPENDENT source of truth for the agent-visible MCP `tools/list` catalog. It MUST NEVER be machine-generated from the production catalog enumeration function, nor by any build script, test, or CI step. Every value here (name, resolved description, and input object schema) is transcribed and reviewed BY HAND from the catalog SOURCE contract in src/shim/tools_catalog.rs, with the two description macros resolved manually. Updating this file is a deliberate, reviewable source edit; see docs/mcp-tool-reference.md.",
+  "_description_macros": {
+    "cli_desc": "{summary} CLI: `{cli}`. See https://github.com/softwaresalt/agent-engram/blob/main/docs/cli-mcp-parity.md",
+    "mcp_only_desc": "{summary} MCP-only daemon surface. See https://github.com/softwaresalt/agent-engram/blob/main/docs/cli-mcp-parity.md"
+  },
+  "tools": [
+    {
+      "name": "set_workspace",
+      "description": "Bind the daemon to a workspace directory. Must be called before any other tool. CLI: `engram bind [path]`. See https://github.com/softwaresalt/agent-engram/blob/main/docs/cli-mcp-parity.md",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": { "type": "string" }
+        },
+        "required": ["path"]
+      }
+    },
+    {
+      "name": "get_daemon_status",
+      "description": "Return runtime metrics for the running daemon (version, uptime, memory, connections). CLI: `engram daemon-status`. See https://github.com/softwaresalt/agent-engram/blob/main/docs/cli-mcp-parity.md",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "get_workspace_status",
+      "description": "Return the current workspace status including code graph statistics, stale files, and connection info. CLI: `engram workspace-status`. See https://github.com/softwaresalt/agent-engram/blob/main/docs/cli-mcp-parity.md",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "flush_state",
+      "description": "Persist in-memory workspace state to disk (.engram/ files). Safe to call at any time. CLI: `engram flush`. See https://github.com/softwaresalt/agent-engram/blob/main/docs/cli-mcp-parity.md",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "force": { "type": "boolean" }
+        }
+      }
+    },
+    {
+      "name": "query_memory",
+      "description": "Search workspace context records (decisions, notes) using a natural language query. CLI: `engram query-memory`. See https://github.com/softwaresalt/agent-engram/blob/main/docs/cli-mcp-parity.md",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string" },
+          "limit": { "type": "integer" },
+          "content_type": { "type": "string" }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "name": "get_workspace_statistics",
+      "description": "Return aggregate statistics for the workspace: task counts by status, label distribution, and more. CLI: `engram stats`. See https://github.com/softwaresalt/agent-engram/blob/main/docs/cli-mcp-parity.md",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "index_workspace",
+      "description": "Parse and index the workspace source files into the code graph. Run once after `set_workspace`. CLI: `engram index`. See https://github.com/softwaresalt/agent-engram/blob/main/docs/cli-mcp-parity.md",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "force": { "type": "boolean" }
+        }
+      }
+    },
+    {
+      "name": "sync_workspace",
+      "description": "Incrementally synchronize changed source files into the code graph since the last index. CLI: `engram sync`. See https://github.com/softwaresalt/agent-engram/blob/main/docs/cli-mcp-parity.md",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "backfill_python_canonical": { "type": "boolean" },
+          "revalidate_code_graph": { "type": "boolean" }
+        }
+      }
+    },
+    {
+      "name": "map_code",
+      "description": "Return the call graph and usages for a named symbol up to a configurable depth. CLI: `engram map-code`. See https://github.com/softwaresalt/agent-engram/blob/main/docs/cli-mcp-parity.md",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "symbol_name": { "type": "string" },
+          "depth": { "type": "integer" },
+          "max_nodes": { "type": "integer" }
+        },
+        "required": ["symbol_name"]
+      }
+    },
+    {
+      "name": "list_symbols",
+      "description": "List symbols (functions, structs, enums, etc.) indexed in the code graph, with optional filters. CLI: `engram symbols`. See https://github.com/softwaresalt/agent-engram/blob/main/docs/cli-mcp-parity.md",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "file_path": { "type": "string" },
+          "node_type": { "type": "string" },
+          "name_prefix": { "type": "string" },
+          "limit": { "type": "integer" },
+          "offset": { "type": "integer" }
+        }
+      }
+    },
+    {
+      "name": "unified_search",
+      "description": "Search across tasks, context records, and code symbols using a single natural language query. CLI: `engram search`. See https://github.com/softwaresalt/agent-engram/blob/main/docs/cli-mcp-parity.md",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string" },
+          "region": { "type": "string" },
+          "limit": { "type": "integer" },
+          "content_type": { "type": "string" },
+          "scope_to_symbol": { "type": "string" }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "name": "impact_analysis",
+      "description": "Analyze impact over the code call graph by symbol_name or the Power BI dependency graph by powerbi_node_id. CLI: `engram impact`. See https://github.com/softwaresalt/agent-engram/blob/main/docs/cli-mcp-parity.md",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "symbol_name": { "type": "string" },
+          "powerbi_node_id": { "type": "string" },
+          "depth": { "type": "integer" },
+          "max_nodes": { "type": "integer" },
+          "concept": { "type": "string" }
+        }
+      }
+    },
+    {
+      "name": "lint_dax",
+      "description": "Lint the DAX in the bound workspace's indexed Power BI model(s), returning { conformant, findings[] }. Applies Tier-1 syntactic rules and Tier-2 schema-aware rules (broken column/measure refs, unqualified-column and qualified-measure style findings, and measure-to-measure cycles) by reparsing measure and calculated-column expressions against the model-scope-aggregated schema. CLI: `engram lint-dax`. See https://github.com/softwaresalt/agent-engram/blob/main/docs/cli-mcp-parity.md",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "model_path": { "type": "string" }
+        }
+      }
+    },
+    {
+      "name": "get_health_report",
+      "description": "Return runtime health metrics for the daemon including memory usage, tool call counts, event processing statistics, and query latency percentiles (p50/p95/p99). CLI: `engram health`. See https://github.com/softwaresalt/agent-engram/blob/main/docs/cli-mcp-parity.md",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "get_branch_metrics",
+      "description": "Return the persisted metrics summary for a branch, or compare two branches. CLI: `engram branch-metrics`. See https://github.com/softwaresalt/agent-engram/blob/main/docs/cli-mcp-parity.md",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "branch_name": { "type": "string" },
+          "compare_to": { "type": "string" }
+        }
+      }
+    },
+    {
+      "name": "get_token_savings_report",
+      "description": "Return a concise text summary of the current branch's tracked token delivery. CLI: `engram report token-savings`. See https://github.com/softwaresalt/agent-engram/blob/main/docs/cli-mcp-parity.md",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "get_evaluation_report",
+      "description": "Compute an agent efficiency evaluation report from recorded usage events. Returns per-agent scoring, anomaly flags (token ratio spikes, error bursts, tool hammering), and actionable recommendations. CLI: `engram report eval`. See https://github.com/softwaresalt/agent-engram/blob/main/docs/cli-mcp-parity.md",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "run_retrieval_eval",
+      "description": "Run the portable retrieval + graph-recall evaluation over the indexed workspace. Derives ground truth automatically (semantic self-retrieval from indexed function docstrings, falling back to the function name; graph resolution recall from the parser call-site inventory) and returns a structured RetrievalEvalReport with semantic (precision@k, recall@k, MRR, nDCG) and graph (resolution_recall, false_edge_rate) metrics. Evaluates functions only — not arbitrary symbols or qualified-name uniqueness. Disabled by default; returns an empty report unless enabled via the [retrieval_eval] config section. Distinct from get_evaluation_report (agent efficiency). CLI: `engram eval`. See https://github.com/softwaresalt/agent-engram/blob/main/docs/cli-mcp-parity.md",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "get_retrieval_eval_report",
+      "description": "Return the latest persisted retrieval + graph-recall evaluation report (RetrievalEvalReport) for the current branch, or a well-formed empty report when no run exists. Distinct from get_evaluation_report (agent efficiency). MCP-only daemon surface. See https://github.com/softwaresalt/agent-engram/blob/main/docs/cli-mcp-parity.md",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "query_graph",
+      "description": "Execute a structured graph query against the workspace code and backlog graph. Three operations are supported: `neighborhood` (BFS from a root node), `find_path` (shortest path between two nodes), and `transitive_closure` (all nodes reachable from a root). Edge types: code (`calls`, `imports`, `defines`, `inherits_from`, `concerns`, `references`), backlog (`parent_of`, `depends_on`, `backlog_references`), powerbi (`pbi_contains`, `pbi_uses_field`, `pbi_depends_on_model`, `pbi_belongs_to_report`, `pbi_relates_to_table`), and lineage (`lineage_derives_from`, oriented target→source: an outgoing traversal from a target reaches its upstream sources, an incoming traversal from a source reaches its downstream consumers). Results are capped at 500 nodes. CLI: `engram query-graph`. See https://github.com/softwaresalt/agent-engram/blob/main/docs/cli-mcp-parity.md",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "operation": { "type": "string" },
+          "root": { "type": "string" },
+          "from": { "type": "string" },
+          "to": { "type": "string" },
+          "direction": { "type": "string" },
+          "max_depth": { "type": "integer" },
+          "max_nodes": { "type": "integer" },
+          "edge_types": { "type": "array" }
+        },
+        "required": ["operation"]
+      }
+    },
+    {
+      "name": "get_mutable_script_retry_metrics",
+      "description": "Return mutable-script SQLITE_BUSY retry telemetry: monotonic retry count and timestamp of the most recent retry. Does not require a workspace to be bound. CLI: `engram report retry-metrics`. See https://github.com/softwaresalt/agent-engram/blob/main/docs/cli-mcp-parity.md",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  ]
+}

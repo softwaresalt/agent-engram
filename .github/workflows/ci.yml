@@ -90,6 +90,15 @@ jobs:
         # is wired into index_workspace_inner.
         run: cargo test --no-default-features --features cozo-backend,embeddings --all-targets
 
+      - name: oracle independence guard
+        # Mechanically enforce the MCP catalog oracle's independence invariant
+        # in CI (Feature 127-F): the oracle sources must not reach the
+        # production catalog derivation path, and no build/test/CI step may
+        # regenerate the human-authored fixture. The in-test assertion covers
+        # the forbidden-import scan; this step also enforces the
+        # fixture-regeneration scan.
+        run: bash scripts/check-oracle-independence.sh
+
       - name: audit
         continue-on-error: true
         run: |
