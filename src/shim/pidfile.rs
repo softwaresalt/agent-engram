@@ -72,7 +72,7 @@ impl PidFile {
     /// same proof as the rest of the workspace resolution rather than to a
     /// fresh ambient pathname lookup.
     #[must_use]
-    pub fn parse(raw: &str) -> Option<Self> {
+    pub(crate) fn parse(raw: &str) -> Option<Self> {
         let trimmed = raw.trim();
 
         if trimmed.is_empty() {

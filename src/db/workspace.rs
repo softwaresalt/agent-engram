@@ -347,6 +347,38 @@ impl CapRoot {
         self.dir.open_with(Path::new(name), &options)
     }
 
+    /// Durably publish `contents` as a new child file, refusing to replace an
+    /// existing one, entirely relative to this retained handle.
+    ///
+    /// The content is written and `fsync`ed to a uniquely-named staging file
+    /// first, then hard-linked onto `name` and the staging name unlinked.
+    /// `hard_link` fails with `AlreadyExists` rather than replacing, so the
+    /// publish is atomic and no-clobber, and the destination only ever appears
+    /// with complete, durable content. Creating the destination directly would
+    /// expose an empty leaf between create and write; renaming onto it would
+    /// replace a competitor's already-published value.
+    ///
+    /// Returns `AlreadyExists` when another writer published first.
+    fn publish_new_child_file(&self, name: &str, contents: &str) -> std::io::Result<()> {
+        let staging = format!("{name}.{}.tmp", Uuid::new_v4());
+        let mut file = self.create_new_child_file(&staging)?;
+        let staged = file
+            .write_all(contents.as_bytes())
+            .and_then(|()| file.sync_all());
+        drop(file);
+        if let Err(error) = staged {
+            let _ = self.dir.remove_file(Path::new(&staging));
+            return Err(error);
+        }
+
+        let published = self
+            .dir
+            .hard_link(Path::new(&staging), &self.dir, Path::new(name));
+        // The staging name has served its purpose whether or not we won.
+        let _ = self.dir.remove_file(Path::new(&staging));
+        published
+    }
+
     /// Handle-derived object identity: `(device, inode)`.
     ///
     /// Unix only. `cap-std` exposes the Windows equivalent (volume serial plus
@@ -702,72 +734,38 @@ fn workspace_id_from_metadata(metadata: GitMetadata) -> Result<Uuid, EngramError
 
     let workspace_id = Uuid::new_v4();
     // Create AND publish `.workspace-id` through the retained `.engram` handle.
-    // The old shape staged a temp file and called `persist_noclobber` by ambient
-    // pathname AFTER the handle was retained, so `.engram` could be renamed
-    // aside and substituted between the proof and the publish, landing the
-    // identity in an attacker-controlled directory — a write outside the proof
-    // that re-reading through the handle can detect but cannot undo.
+    // The original shape staged a temp file and called `persist_noclobber` by
+    // ambient pathname AFTER the handle was retained, so `.engram` could be
+    // renamed aside and substituted between the proof and the publish, landing
+    // the identity in an attacker-controlled directory — a write outside the
+    // proof that re-reading through the handle can detect but cannot undo.
     //
-    // `create_new` on the final name is `O_CREAT | O_EXCL`: exactly one cold
-    // start wins, and it never clobbers an identity another start already
-    // published. A handle-relative temp-then-rename cannot be used instead,
-    // because `rename` replaces the destination and concurrent first binds would
-    // then diverge onto different identities.
-    match engram_root.create_new_child_file(".workspace-id") {
-        Ok(mut file) => {
-            writeln!(file, "{workspace_id}").map_err(|_| {
-                EngramError::System(SystemError::FlushFailed {
-                    path: id_path.display().to_string(),
-                })
-            })?;
-            file.sync_all().map_err(|_| {
-                EngramError::System(SystemError::FlushFailed {
-                    path: id_path.display().to_string(),
-                })
-            })?;
-            drop(file);
+    // Publishing is staged: a uniquely-named temp file is created, written and
+    // synced, then hard-linked onto the final name and unlinked. `hard_link`
+    // refuses to replace an existing destination on both supported platforms,
+    // so it is an atomic no-clobber publish of fully-durable content. Neither
+    // `create_new` on the final name (which exposes an empty leaf before the
+    // write lands, leaving an unrecoverable invalid identity if the writer
+    // dies) nor `rename` (which replaces the destination, so concurrent first
+    // binds diverge onto different identities) is safe here.
+    match engram_root.publish_new_child_file(".workspace-id", &format!("{workspace_id}\n")) {
+        Ok(()) => {
             // Re-read through the retained handle so the returned value is
             // handle-derived even on the winning path.
             read_workspace_id_via(&engram_root, &id_path)?
                 .ok_or_else(|| workspace_id_io_error(&id_path))
         }
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            // Lost the create race. The winner creates the leaf before it writes
-            // to it, so a read here can briefly observe an empty file; wait for
-            // the winner to finish rather than reporting a corrupt identity.
-            read_workspace_id_awaiting_writer(&engram_root, &id_path)
+            // Lost the publish race. The winner links a fully-written, synced
+            // file into place, so the leaf is never observable half-written and
+            // this read needs no retry.
+            read_workspace_id_via(&engram_root, &id_path)?
+                .ok_or_else(|| workspace_id_io_error(&id_path))
         }
         Err(_) => Err(EngramError::System(SystemError::FlushFailed {
             path: id_path.display().to_string(),
         })),
     }
-}
-
-/// Read `.workspace-id` through the retained handle, tolerating the brief window
-/// in which the winning cold start has created the leaf but not yet written it.
-///
-/// Bounded so a genuinely corrupt or unsafe leaf still surfaces as an error
-/// rather than hanging: the writer only has to emit one UUID line, so the budget
-/// is far larger than the real window.
-fn read_workspace_id_awaiting_writer(
-    engram_root: &CapRoot,
-    id_path: &Path,
-) -> Result<Uuid, EngramError> {
-    const ATTEMPTS: u32 = 100;
-    const BACKOFF: std::time::Duration = std::time::Duration::from_millis(10);
-
-    let mut last_error = None;
-    for attempt in 0..ATTEMPTS {
-        match read_workspace_id_via(engram_root, id_path) {
-            Ok(Some(existing)) => return Ok(existing),
-            Ok(None) => {}
-            Err(error) => last_error = Some(error),
-        }
-        if attempt + 1 < ATTEMPTS {
-            std::thread::sleep(BACKOFF);
-        }
-    }
-    Err(last_error.unwrap_or_else(|| workspace_id_io_error(id_path)))
 }
 
 /// Return the persisted workspace identity as a string key.
