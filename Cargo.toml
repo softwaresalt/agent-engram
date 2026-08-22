@@ -1063,6 +1063,15 @@ path = "tests/unit/workspace_toctou_test.rs"
 name = "unit_workspace_reparse"
 path = "tests/unit/workspace_reparse_test.rs"
 
+# 126-F: canonical dev-test coverage oracle harnesses (C2413934)
+[[test]]
+name = "unit_dev_test_coverage_oracle"
+path = "tests/unit/dev_test_coverage_oracle_test.rs"
+
+[[test]]
+name = "unit_dev_test_hcl_scope_guard"
+path = "tests/unit/dev_test_hcl_scope_guard_test.rs"
+
 [[example]]
 name = "cozo_api_spike"
 path = "examples/cozo_api_spike.rs"
