@@ -1055,6 +1055,14 @@ path = "tests/integration/hcl_indexing_test.rs"
 name = "hcl_grammar_abi_test"
 path = "tests/unit/hcl_grammar_abi_test.rs"
 
+[[test]]
+name = "unit_workspace_toctou"
+path = "tests/unit/workspace_toctou_test.rs"
+
+[[test]]
+name = "unit_workspace_reparse"
+path = "tests/unit/workspace_reparse_test.rs"
+
 [[example]]
 name = "cozo_api_spike"
 path = "examples/cozo_api_spike.rs"
