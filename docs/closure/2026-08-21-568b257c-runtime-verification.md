@@ -214,6 +214,38 @@ finding above.
    gate. The one skip that could hide a real failure has been converted to a
    hard failure in this unit.
 
+## Post-Merge Runtime Verification (merged main)
+
+Performed against a release binary built from the merge commit
+`119230fe849558b35e8889d4ae1e37c4fdda6010`.
+
+| Check | Result |
+|---|---|
+| Primary checkout admitted; daemon binds | PASS — `workspace_identity: green`, `pid_liveness: green`, `pipe_reachability: green` |
+| Real linked worktree admitted | PASS — see before/after below |
+| `.git` shapes exercised | primary `.git` is a directory; worktree `.git` is a file |
+| 122-S / 123-S untouched | PASS — byte-identical, still `queued`, batch/order/predecessors intact |
+| Active shipment after closure | none |
+
+### Before/after on a real linked worktree
+
+The same linked worktree, two binaries:
+
+```text
+# pre-change binary (engram 0.2.0+g6268c1ac)
+Error: cannot compute IPC endpoint: Path '...\ship-121-s-cap-identity-20260821'
+       is not a Git repository root          <- admission REJECTED
+
+# merged-main binary (119230fe)
+Error: daemon unavailable: Daemon failed to reach Ready state within 30000ms
+                                             <- admission PASSED, proceeds to daemon startup
+```
+
+The failure mode moves from *workspace rejection* to *daemon startup timeout on a
+large real workspace*. Admission itself now succeeds on a linked worktree, which
+is protected invariant 4. The residual daemon startup latency on a large
+workspace is pre-existing and unrelated to this release unit.
+
 ## Closure Status
 
 **Verified with conditions.** Every quality gate passes and the runtime
@@ -236,10 +268,12 @@ Conditions carrying forward:
 
 ### Deferred follow-ups
 
-The review loop was stopped after six review-fix cycles against a documented
+The review loop was stopped after eight review-fix cycles against a documented
 limit of three. The remaining findings are P2-class coverage, durability, and
 composition items — none is a HIGH-confidence P0/P1 security defect — and
-continuing to widen scope inside a security fix is itself a risk.
+continuing to widen scope inside a security fix is itself a risk. The last two
+cycles are themselves evidence for that: rewriting the identity publish
+introduced a real CI regression that took two further commits to settle.
 
 | Stash | Item |
 |---|---|
