@@ -85,9 +85,26 @@ status: build-complete-pending-pr
 
 ### Next steps
 
-1. Mark 126.007-T, 126.008-T done; track commits.
-2. Push branch; open implementation PR.
-3. Request/poll Copilot review at current HEAD; enforce 4-point merge gate.
-4. Merge (merge commit only); confirm; runtime verify; operational closure.
-5. shipment-reconcile (pre/post); ship 122-S; archive descendants; compound-refresh
-   if guidance changed. Do NOT start 123-S.
+Closure complete — see below.
+
+## Closure (2026-08-22)
+
+* **Merged**: PR #355 merged by merge commit `5d5bc0bd020c0af340d28d01ef60272e2410a3ed`
+  at 2026-08-22T08:38:17Z; confirmed ancestor of origin/main (now
+  `5d5bc0bd`). Merge strategy: merge commit (P-009 compliant; squash/rebase
+  disabled).
+* **Implementation commits**: `d5824837` (RED), `4f3c2649` (GREEN),
+  `2d00a94f` (docs), review fixes `484aa5f2`/`7aadbb42`/`bbcadf78`/`1f0caebd`/
+  `1926b67e`/`15deaefb`, memory `38eb9044`, backlog `ee0b004e`.
+* **CI**: build + start-launcher-windows green on final HEAD.
+* **Copilot review**: 5 review cycles. Cycles 1-3 fixed inline (feature-aware
+  runs, untracked files, portable batching, strict guard, fail-closed diff,
+  `--lib`, the native-alias pivot). Cycles 4-5 (past the 3-cycle limit) deferred
+  to follow-up feature **128-F** (oracle audit-precision hardening: report
+  default selected-set, extra build surfaces, order-independent TOML parsing,
+  rollback-trigger wording). All threads resolved; 0 unresolved at merge.
+* **Shipment**: 122-S status=shipped, commit=`5d5bc0bd`. All 9 manifest items
+  (126-F + 126.001-008-T) done/archived.
+* **123-S**: unchanged — status=queued, order=4.
+* **Compound learning**: `docs/compound/2026-08-22-cargo-dev-test-alias-must-stay-native.md`.
+
