@@ -374,6 +374,20 @@ impl CapRoot {
         let published = self
             .dir
             .hard_link(Path::new(&staging), &self.dir, Path::new(name));
+        let published = match published {
+            Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => {
+                // Not every filesystem supports hard links. Degrade to a
+                // handle-relative rename rather than failing the bind outright:
+                // the content is already fully written and synced, so the
+                // destination still appears atomically and completely. The only
+                // property lost is no-clobber, which matters solely when two
+                // first binds race on such a filesystem — a far smaller cost
+                // than refusing to admit the workspace at all.
+                self.dir
+                    .rename(Path::new(&staging), &self.dir, Path::new(name))
+            }
+            other => other,
+        };
         // The staging name has served its purpose whether or not we won.
         let _ = self.dir.remove_file(Path::new(&staging));
         published
