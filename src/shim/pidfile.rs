@@ -10,6 +10,11 @@ use crate::errors::{EngramError, SystemError};
 
 const PID_FILE_NAME: &str = "engram.pid";
 const RUN_DIR_NAME: &str = "run";
+
+/// The `.engram`-relative directory holding the PID file.
+pub(crate) const PID_RUN_DIR: &str = RUN_DIR_NAME;
+/// The PID file name inside [`PID_RUN_DIR`].
+pub(crate) const PID_FILE: &str = PID_FILE_NAME;
 const UNKNOWN_START_TIME_UNIX: u64 = 1;
 
 /// PID file metadata stored in `.engram/run/engram.pid`.
@@ -56,6 +61,18 @@ impl PidFile {
     #[must_use]
     pub fn read(workspace: &Path) -> Option<Self> {
         let raw = std::fs::read_to_string(Self::path(workspace)).ok()?;
+        Self::parse(&raw)
+    }
+
+    /// Parse PID metadata from already-read content, accepting both JSON and
+    /// legacy numeric PID files.
+    ///
+    /// Callers that already hold a validated capability handle for the workspace
+    /// use this instead of [`Self::read`], so the PID decision is bound to the
+    /// same proof as the rest of the workspace resolution rather than to a
+    /// fresh ambient pathname lookup.
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
         let trimmed = raw.trim();
 
         if trimmed.is_empty() {

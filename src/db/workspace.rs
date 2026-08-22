@@ -808,7 +808,7 @@ pub fn daemon_key_for_workspace(path: &Path) -> Result<String, EngramError> {
         return workspace_id_from_metadata(metadata).map(|id| id.to_string());
     }
 
-    if let Some(pid_file) = PidFile::read(&canonical) {
+    if let Some(pid_file) = read_pid_file_via(&metadata.root) {
         if pid_file.verify_alive()? {
             // Branch comes from the HEAD content this proof already validated,
             // not from a fresh `resolve_git_branch` walk.
@@ -830,6 +830,26 @@ pub fn daemon_key_for_workspace(path: &Path) -> Result<String, EngramError> {
 
 fn workspace_id_path(path: &Path) -> PathBuf {
     path.join(".engram").join(".workspace-id")
+}
+
+/// Read the legacy daemon PID metadata through the workspace's ALREADY-VALIDATED
+/// root handle.
+///
+/// The legacy path-hash fallback is the one branch of `daemon_key_for_workspace`
+/// that can return a key without re-proving the workspace, so reading its input
+/// by ambient pathname would let an attacker who substitutes the root after the
+/// proof plant a PID file naming any live process and force the legacy key to be
+/// selected. Descending `.engram/run/engram.pid` through retained no-follow
+/// handles binds the whole daemon-key decision to a single proof.
+fn read_pid_file_via(root: &CapRoot) -> Option<PidFile> {
+    let engram_root = root.open_child_dir(".engram").ok()?;
+    let run_root = engram_root
+        .open_child_dir(crate::shim::pidfile::PID_RUN_DIR)
+        .ok()?;
+    let raw = run_root
+        .read_child_file(crate::shim::pidfile::PID_FILE)
+        .ok()?;
+    PidFile::parse(&raw)
 }
 
 /// Probe `.workspace-id` presence through the caller's ALREADY-VALIDATED root
