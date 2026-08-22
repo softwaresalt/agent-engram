@@ -149,14 +149,22 @@ git_changed() {
 declare -a CHANGED=()
 if [[ -z "$CHANGED_RAW" ]]; then
   if [[ "$MODE" != "completeness" ]]; then
-    # Fail closed: an unresolvable base ref means the diff is indeterminate, not
-    # empty. Treating it as empty would report PASS while omitting every required
-    # target. Require an explicit --changed instead.
+    # Fail closed: an unresolvable base ref or a missing merge base means the
+    # diff is indeterminate, not empty. Treating it as empty would report PASS
+    # while omitting every required target (e.g. a shallow checkout where
+    # origin/main...HEAD has no merge base). Require an explicit --changed then.
     if ! git -C "$REPO_ROOT" rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
       echo "MODE=$MODE"
       echo "STATUS=FAIL"
       echo "REASON=cannot-resolve-base-ref-origin/main"
       echo "coverage oracle: cannot resolve base ref origin/main to compute the diff; pass --changed explicitly" >&2
+      exit 3
+    fi
+    if ! git -C "$REPO_ROOT" merge-base origin/main HEAD >/dev/null 2>&1; then
+      echo "MODE=$MODE"
+      echo "STATUS=FAIL"
+      echo "REASON=no-merge-base-with-origin/main"
+      echo "coverage oracle: no merge base between origin/main and HEAD (shallow checkout?); pass --changed explicitly" >&2
       exit 3
     fi
     while IFS= read -r l; do [[ -n "$l" ]] && CHANGED+=("$l"); done < <(git_changed)

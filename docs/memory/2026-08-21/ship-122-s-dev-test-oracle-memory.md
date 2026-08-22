@@ -36,15 +36,24 @@ status: build-complete-pending-pr
   registered two `[[test]]` targets in Cargo.toml. RED observed.
 * U3/U4/U5/U6 GREEN (commit `4f3c2649`): `.cargo/test-coverage-manifest.toml`,
   `scripts/test-coverage-oracle.{ps1,sh}` (report/select/completeness/run modes),
-  `cargo-devtest` shim, `.cargo/config.toml` alias `dev-test = "devtest"` + env
-  tunables, `.gitattributes` (`*.sh eol=lf`).
+  `.cargo/config.toml` bounded-concurrency env tunables, `.gitattributes`
+  (`*.sh eol=lf`).
 * U7/U8 docs (commit `2d00a94f`): workflows.md section; closure record
   `docs/closure/2026-08-21-c2413934-runtime-verification.md`.
-* Review fixes (commits `484aa5f2`, `7aadbb42`): dropped misleading
-  `cargo-devtest.cmd` (cargo ignores `.cmd` subcommands), added
-  `scripts/dev-test.ps1` Windows wrapper; oracle fails closed (exit 3) when
-  `origin/main` base ref is unresolvable; `.ps1` no longer throws on native git
-  stderr; docs aligned with per-platform reality.
+* Review fixes (multiple cycles): fail-closed on indeterminate diff (unresolved
+  base ref or missing merge base); feature-aware run mode (passes each target's
+  `required-features`); include untracked files; portable batched run (no
+  `wait -n`); strict HCL byte-identity guard; `--lib` coverage.
+* **dev-test design (final):** `cargo dev-test = "test --all-targets"` — a
+  native, zero-setup, cross-platform cargo alias that runs every target under
+  default features including `--lib`. An earlier attempt made `dev-test` an
+  external subcommand (`cargo-devtest` / `dev-test.ps1`) delegating to the oracle
+  runner; Copilot review correctly flagged that this broke the pervasive
+  `cargo dev-test` contract (constitution, workspace-profile, skills) and could
+  not resolve on Windows. Those shims were removed. The coverage oracle is now
+  the measurable audit (`--mode report`, `omitted == 0`), drift check
+  (`--mode completeness`), and an OPTIONAL change-scoped bounded fast runner
+  (`--mode run`), not the alias mechanism.
 
 ### Design decisions
 
@@ -53,9 +62,6 @@ status: build-complete-pending-pr
   non-HCL targets; the 6 HCL targets map to the `src/services/parsing/hcl.rs`
   leaf. Production `src/` surfaces map comprehensively (plan-review A1 broad
   mapping); narrow surfaces (tests self-cover, docs/scripts ignore) differentiate.
-* Cargo aliases cannot shell out → `dev-test` uses an external subcommand.
-  cargo resolves `cargo-devtest` (no ext) on Linux/macOS but NOT `.cmd` on
-  Windows → Windows uses `pwsh scripts/dev-test.ps1`. Documented honestly.
 
 ### Evidence (U8)
 

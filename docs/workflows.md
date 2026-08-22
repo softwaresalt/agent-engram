@@ -114,6 +114,10 @@ the targets required by your current diff, passes each target's own
 `required-features` so feature-gated targets execute, and also runs `--lib`. It
 requires Bash 4+ (associative arrays); on macOS install a modern bash (the
 bundled 3.2 is unsupported).
+
+### Read the coverage report
+
+Run the oracle in `report` mode to see, for a diff, the required target set, the
 selected set, and any omitted targets. The gate passes only when `omitted == 0`
 and no source surface is unmapped:
 

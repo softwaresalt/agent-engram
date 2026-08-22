@@ -128,3 +128,18 @@ fn scenario_c_run_plan_respects_concurrency_bound() {
         "observed peak {peak} must stay within cap {cap}.\n{out}"
     );
 }
+
+#[test]
+fn completeness_mode_reports_no_unmapped_targets_or_modules() {
+    // Exercises the completeness mode (and its shell/PowerShell parity) so drift
+    // between the manifest, Cargo.toml targets, and src/ modules cannot merge
+    // undetected.
+    let (out, code) = run_oracle(&["--mode", "completeness"]);
+    assert_eq!(
+        code, 0,
+        "completeness must pass for the checked-in manifest.\n{out}"
+    );
+    assert_eq!(field(&out, "UNMAPPED_TARGETS_COUNT"), Some("0"), "\n{out}");
+    assert_eq!(field(&out, "UNMAPPED_MODULES_COUNT"), Some("0"), "\n{out}");
+    assert_eq!(field(&out, "STATUS"), Some("PASS"), "\n{out}");
+}

@@ -168,19 +168,28 @@ if ([string]::IsNullOrEmpty($ChangedRaw)) {
         $changedFiles = @()
     }
     else {
-        # Fail closed: an unresolvable base ref means the diff is indeterminate,
-        # not empty. Treating it as empty would report PASS while omitting every
-        # required target. Require an explicit --changed instead.
+        # Fail closed: an unresolvable base ref or a missing merge base means the
+        # diff is indeterminate, not empty. Treating it as empty would report
+        # PASS while omitting every required target (e.g. a shallow checkout
+        # where origin/main...HEAD has no merge base). Require --changed then.
         $prevEap = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
         & git -C $RepoRoot rev-parse --verify --quiet origin/main 2>$null | Out-Null
         $baseRc = $LASTEXITCODE
+        if ($baseRc -eq 0) {
+            & git -C $RepoRoot merge-base origin/main HEAD 2>$null | Out-Null
+            $baseRc = $LASTEXITCODE
+            $baseReason = 'no-merge-base-with-origin/main'
+        }
+        else {
+            $baseReason = 'cannot-resolve-base-ref-origin/main'
+        }
         $ErrorActionPreference = $prevEap
         if ($baseRc -ne 0) {
             Write-Output "MODE=$Mode"
             Write-Output 'STATUS=FAIL'
-            Write-Output 'REASON=cannot-resolve-base-ref-origin/main'
-            [Console]::Error.WriteLine('coverage oracle: cannot resolve base ref origin/main to compute the diff; pass --changed explicitly')
+            Write-Output "REASON=$baseReason"
+            [Console]::Error.WriteLine('coverage oracle: cannot determine the diff against origin/main (unresolved base or no merge base); pass --changed explicitly')
             exit 3
         }
         $changedFiles = Get-GitChanged
