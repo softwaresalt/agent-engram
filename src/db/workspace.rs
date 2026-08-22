@@ -386,12 +386,19 @@ impl CapRoot {
     /// from a `std` handle would require `unsafe` to borrow the directory
     /// handle, which the crate forbids. See [`Self::prove_names_same_object`]
     /// for why Windows is nonetheless not exposed by this gap.
+    ///
+    /// Fails closed: `dev` and `ino` always exist on Unix, so the only way to
+    /// not obtain them is an I/O failure reading handle metadata, and an
+    /// exceptional failure must never be able to skip a trust-boundary proof.
     #[cfg(unix)]
-    fn object_identity(&self) -> Option<(u64, u64)> {
+    fn object_identity(&self) -> Result<(u64, u64), WorkspaceError> {
         use cap_std::fs::MetadataExt as _;
 
-        let metadata = self.dir.dir_metadata().ok()?;
-        Some((metadata.dev(), metadata.ino()))
+        let metadata = self
+            .dir
+            .dir_metadata()
+            .map_err(|_| not_git_root(&self.display))?;
+        Ok((metadata.dev(), metadata.ino()))
     }
 
     /// Prove that `candidate` names the same object this handle is bound to.
@@ -415,17 +422,12 @@ impl CapRoot {
     fn prove_names_same_object(&self, candidate: &Path) -> Result<(), WorkspaceError> {
         #[cfg(unix)]
         {
-            let Some(authority) = self.object_identity() else {
-                // Identity unavailable: treat as "cannot prove", never as
-                // "proven different". Failing closed here would reject
-                // legitimate checkouts on filesystems that report no inode.
-                return Ok(());
-            };
+            // Fails closed on every path: an I/O failure reading either handle's
+            // metadata is an inability to prove, and an unproven root must not
+            // be admitted.
+            let authority = self.object_identity()?;
             let named = CapRoot::open_anchor(candidate)?;
-            let Some(named_identity) = named.object_identity() else {
-                return Ok(());
-            };
-            if authority != named_identity {
+            if authority != named.object_identity()? {
                 return Err(not_git_root(candidate));
             }
         }
