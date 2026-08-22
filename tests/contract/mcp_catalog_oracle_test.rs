@@ -393,3 +393,43 @@ fn classify_diffs_reports_each_drift_class_with_the_specific_property() {
         "a property type change must be classified SchemaChanged naming the property: {diffs:?}"
     );
 }
+
+// ── U5: mechanically enforced oracle independence (in-test mirror) ──────────
+
+/// U5 scenario: the oracle's own Rust sources never reach the production
+/// catalog derivation path. This mirrors `scripts/check-oracle-independence.*`
+/// so the invariant fails the test suite, not only an out-of-band script.
+///
+/// The forbidden tokens are assembled from fragments at runtime so this
+/// assertion does not itself embed them as literals — otherwise the scan would
+/// flag its own source file. The human-authored JSON fixture is intentionally
+/// NOT scanned here: it is data, may name the source contract in its policy
+/// note, and its independence is guaranteed by the regeneration scan and its
+/// header rather than by token absence.
+#[test]
+fn oracle_sources_are_independent_of_production_catalog() {
+    let module_token = ["tools", "catalog"].join("_");
+    let constructor_token = ["all", "tools"].join("_");
+    let sources = [
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/contract/mcp_catalog_oracle_test.rs"
+        ),
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/helpers/mcp_catalog_capture.rs"
+        ),
+    ];
+    for path in sources {
+        let body = std::fs::read_to_string(path)
+            .unwrap_or_else(|error| panic!("oracle source must be readable at {path}: {error}"));
+        assert!(
+            !body.contains(&module_token),
+            "oracle source {path} must not reference the production catalog module"
+        );
+        assert!(
+            !body.contains(&constructor_token),
+            "oracle source {path} must not reference the production catalog enumeration constructor"
+        );
+    }
+}
