@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# cargo external subcommand backing the `cargo dev-test` alias.
+#
+# Delegates to the change-scoped, concurrency-bounded coverage-oracle runner.
+# cargo invokes this as `cargo-devtest <args-after-dev-test>`, so extra args are
+# forwarded to the oracle (for example `--changed` or `--dry-run`).
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec bash "$here/test-coverage-oracle.sh" --mode run "$@"

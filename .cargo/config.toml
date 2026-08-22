@@ -2,7 +2,17 @@
 rustflags = ["-Dwarnings"]
 
 [alias]
-dev-test = "test --lib --test hcl_parser_contract_test --test hcl_grammar_abi_test --test hcl_parsing_test --test hcl_routing_test --test hcl_security_test --test hcl_indexing_test"
+# `dev-test` is the canonical local merge gate. It is change-scoped: it runs the
+# oracle-derived required target set for the current diff under the bounded
+# concurrency policy (Feature 126-F, stash C2413934), rather than a fixed
+# allowlist. The alias delegates to the `cargo-devtest` external subcommand
+# (scripts/cargo-devtest / scripts/cargo-devtest.cmd), which invokes
+# scripts/test-coverage-oracle.{sh,ps1} --mode run. Add `scripts/` to PATH once,
+# or run the oracle directly:
+#   pwsh  scripts/test-coverage-oracle.ps1 --mode run   (Windows)
+#   bash  scripts/test-coverage-oracle.sh  --mode run   (Linux/macOS)
+# `full-test` and `ci` are unchanged and remain the exhaustive backstop.
+dev-test = "devtest"
 full-test = "test"
 debug-build = "build --profile debugging"
 debug-test = "test --profile debugging --lib"
@@ -13,3 +23,11 @@ ci = "test --all-targets --all-features"
 
 [env]
 RUST_BACKTRACE = "1"
+# Bounded execution tunables (U4). These override the [settings] defaults in
+# .cargo/test-coverage-manifest.toml when set. `MAX_BINARIES` caps how many test
+# binaries the change-scoped runner executes concurrently; `TEST_THREADS` is
+# passed to each binary as `--test-threads`, so the process budget is an
+# explicit, tunable parameter rather than an emergent consequence of the target
+# count.
+ENGRAM_DEVTEST_MAX_BINARIES = "8"
+ENGRAM_DEVTEST_TEST_THREADS = "4"

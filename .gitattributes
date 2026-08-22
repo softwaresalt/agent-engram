@@ -1,0 +1,4 @@
+# Shell scripts must use LF so they run on Linux CI (ubuntu-latest).
+*.sh text eol=lf
+scripts/cargo-devtest text eol=lf
+
