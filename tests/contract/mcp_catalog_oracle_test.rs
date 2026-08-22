@@ -237,7 +237,7 @@ fn compare_schema_shape(expected: &Value, actual: &Value) -> Option<String> {
         }
     }
 
-    if required_set(expected) != required_set(actual) {
+    if required_repr(expected) != required_repr(actual) {
         return Some("required".to_owned());
     }
 
@@ -262,18 +262,29 @@ fn schema_properties(schema: &Value) -> BTreeMap<String, Value> {
         .unwrap_or_default()
 }
 
-/// The `required` list of a schema as a set (absent -> empty).
-fn required_set(schema: &Value) -> BTreeSet<String> {
-    schema
-        .get("required")
-        .and_then(Value::as_array)
-        .map(|array| {
-            array
-                .iter()
-                .filter_map(|value| value.as_str().map(str::to_owned))
-                .collect()
-        })
-        .unwrap_or_default()
+/// A canonical, comparable representation of a schema's `required` list.
+///
+/// Absent is the empty set. A well-formed list yields its member names. A
+/// malformed `required` — a non-array, or an array containing a non-string —
+/// yields a sentinel that cannot equal any valid required-name set, so a
+/// malformed observed schema surfaces as a `required` mismatch instead of
+/// silently normalizing to equal a well-formed one.
+fn required_repr(schema: &Value) -> BTreeSet<String> {
+    match schema.get("required") {
+        None => BTreeSet::new(),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|value| match value {
+                Value::String(name) => name.clone(),
+                other => format!("\0non-string:{other}"),
+            })
+            .collect(),
+        Some(other) => {
+            let mut set = BTreeSet::new();
+            set.insert(format!("\0non-array:{other}"));
+            set
+        }
+    }
 }
 
 /// U4 scenario: every observed tool's declared input-schema shape matches the
@@ -397,6 +408,38 @@ fn classify_diffs_reports_each_drift_class_with_the_specific_property() {
 }
 
 // ── U5: mechanically enforced oracle independence (in-test mirror) ──────────
+
+/// Regression: a malformed observed `required` — a non-array, or an array with
+/// a non-string member — must surface as a `required` facet difference rather
+/// than normalizing to equal a well-formed declared list.
+#[test]
+fn compare_schema_shape_flags_malformed_required() {
+    let declared = serde_json::json!({
+        "type": "object",
+        "properties": { "path": { "type": "string" } },
+        "required": ["path"]
+    });
+    let non_array = serde_json::json!({
+        "type": "object",
+        "properties": { "path": { "type": "string" } },
+        "required": "path"
+    });
+    let null_member = serde_json::json!({
+        "type": "object",
+        "properties": { "path": { "type": "string" } },
+        "required": ["path", null]
+    });
+    assert_eq!(
+        compare_schema_shape(&declared, &non_array).as_deref(),
+        Some("required"),
+        "a non-array `required` must be reported as a required-facet difference"
+    );
+    assert_eq!(
+        compare_schema_shape(&declared, &null_member).as_deref(),
+        Some("required"),
+        "a `required` array with a non-string member must be reported as a difference"
+    );
+}
 
 /// U5 scenario: the oracle's own Rust sources never reach the production
 /// catalog derivation path. This mirrors `scripts/check-oracle-independence.*`
