@@ -268,6 +268,9 @@ switch ($Mode) {
         $peak = [Math]::Min($req.Count, $cap)
         if ($req.Count -eq 0) { $peak = 0 }
         $batchCount = if ($req.Count -eq 0) { 0 } else { [int][Math]::Ceiling($req.Count / [double]$cap) }
+        # The colocated library unit tests (`cargo test --lib`) run whenever any
+        # target is required, matching the canonical `cargo dev-test` gate.
+        $runLib = ($req.Count -gt 0)
         if ($r.Unmapped.Count -gt 0) {
             Write-Output 'MODE=run'
             Write-Output "REQUIRED_COUNT=$($req.Count)"
@@ -282,17 +285,22 @@ switch ($Mode) {
         Write-Output "TEST_THREADS=$testThreads"
         Write-Output "PEAK_CONCURRENT=$peak"
         Write-Output "BATCH_COUNT=$batchCount"
+        Write-Output "LIB_INCLUDED=$([int]$runLib)"
         if ($DryRun) {
             Write-Output 'DRY_RUN=1'
             Write-Output 'STATUS=PASS'
             exit 0
+        }
+        $failed = 0
+        if ($runLib) {
+            & cargo test --lib -- --test-threads=$testThreads 2>&1 | Out-Null
+            if ($LASTEXITCODE -ne 0) { $failed++ }
         }
         # Real bounded execution: run each target as its own binary, at most
         # $cap concurrently, so the process budget stays bounded. Each target is
         # invoked with its declared required-features so feature-gated targets
         # actually build and run instead of being silently skipped.
         $observedPeak = 0
-        $failed = 0
         $pending = [System.Collections.Generic.Queue[string]]::new()
         foreach ($t in $req) { $pending.Enqueue($t) }
         $running = @()

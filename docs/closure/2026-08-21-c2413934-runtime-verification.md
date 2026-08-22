@@ -118,10 +118,13 @@ rolled back.
 
 ## Operational Notes
 
-`cargo dev-test` delegates to the `cargo-devtest` external subcommand. On
-Linux/macOS this resolves once `scripts/` is on `PATH`. On Windows, cargo does
-not resolve script-based external subcommands, so Windows contributors run the
-wrapper `pwsh scripts/dev-test.ps1` (or `pwsh scripts/test-coverage-oracle.ps1
---mode run`); the "real run" evidence above was produced with the direct oracle
-invocation on Windows. `cargo ci` and `cargo full-test` remain PATH-free,
-cross-platform backstops. This setup is documented in `docs/workflows.md`.
+`cargo dev-test` is a native, zero-setup, cross-platform cargo alias
+(`test --all-targets`) that runs every target under default features, including
+the colocated `--lib` unit tests, preserving the pervasive repo contract
+(constitution, workspace-profile, build/fix-ci/harness skills). The coverage
+oracle (`scripts/test-coverage-oracle.{sh,ps1}`) is the measurable proof of
+coverage (`--mode report`, pass condition `omitted == 0`) and drift protection
+(`--mode completeness`); its `--mode run` is an optional change-scoped, bounded,
+feature-aware fast runner (also runs `--lib`). `cargo ci` (all features) is the
+exhaustive backstop. The "real run" evidence above was produced with the
+optional oracle runner on Windows.

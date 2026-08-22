@@ -256,12 +256,19 @@ case "$MODE" in
     echo "TEST_THREADS=$TEST_THREADS"
     echo "PEAK_CONCURRENT=$peak"
     echo "BATCH_COUNT=$batch_count"
+    # The colocated library unit tests (`cargo test --lib`) run whenever any
+    # target is required, matching the canonical `cargo dev-test` gate.
+    run_lib=0; [[ "$count" -gt 0 ]] && run_lib=1
+    echo "LIB_INCLUDED=$run_lib"
     if [[ "$DRY_RUN" -eq 1 ]]; then echo "DRY_RUN=1"; echo "STATUS=PASS"; exit 0; fi
     # Real bounded execution: fixed batches of at most $cap binaries. Each target
     # runs with its declared required-features so feature-gated targets actually
     # build and run instead of being silently skipped by cargo. Batching avoids
     # `wait -n` (absent in Bash 3.2) and the double-reap that miscounted failures.
     observed_peak=0; failed=0; idx=0
+    if [[ "$run_lib" -eq 1 ]]; then
+      ( cd "$REPO_ROOT" && cargo test --lib -- --test-threads="$TEST_THREADS" >/dev/null 2>&1 ) || failed=$((failed+1))
+    fi
     while [[ $idx -lt $count ]]; do
       bpids=(); end=$(( idx + cap )); [[ $end -gt $count ]] && end=$count
       for (( j=idx; j<end; j++ )); do

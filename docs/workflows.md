@@ -81,41 +81,39 @@ Use `update` when you want fresh generated artifacts. Use `reinstall` when the
 runtime directories need a clean rebuild. Use `uninstall --keep-data` when you
 want to remove wiring without discarding the workspace data.
 
-## Run the change-scoped test gate
+## Run the test gate and prove coverage
 
-`cargo dev-test` is the canonical local merge gate. It is change-scoped: rather
-than a fixed allowlist of targets, it runs the test targets a coverage oracle
-derives from your current diff, under an explicit concurrency bound. The
-exhaustive `cargo ci` (all targets, all features) remains the backstop.
+`cargo dev-test` is the canonical local merge gate: a native, zero-setup,
+cross-platform cargo command that runs every target under default features,
+including the colocated `--lib` unit tests.
 
 ```bash
-cargo dev-test          # change-scoped, bounded run for the current diff
-cargo full-test         # every target, unbounded, DEFAULT features only
+cargo dev-test          # every target + lib, default features (native alias)
+cargo full-test         # plain cargo test, default features
 cargo ci                # every target, all features (CI equivalent, exhaustive)
 ```
 
-`cargo full-test` runs every target but only under default features, so it skips
+`cargo dev-test` and `cargo full-test` run under default features, so they skip
 targets gated on non-default features (`git-graph`, `legacy-sse`,
-`otlp-export`). `cargo ci` (all features) is the exhaustive backstop. The
-change-scoped runner passes each selected target's own `required-features`, so
-feature-gated targets execute rather than being silently skipped by cargo.
+`otlp-export`). `cargo ci` (all features) is the exhaustive backstop.
 
-`cargo dev-test` delegates to the `cargo-devtest` external subcommand in
-`scripts/`. On Linux/macOS, add `scripts/` to `PATH` once so cargo can find it.
-On Windows, cargo does not resolve script-based external subcommands, so use the
-wrapper `pwsh scripts/dev-test.ps1`. The shell oracle requires Bash 4+
-(associative arrays); on macOS install a modern bash (its bundled 3.2 is
-unsupported). Either way you can also invoke the oracle runner directly:
+The coverage oracle (`scripts/test-coverage-oracle.sh` / `.ps1`) is the
+measurable proof that the mandated contract and integration targets are covered.
+It does not replace `cargo dev-test`; it audits coverage and offers an optional
+faster local run.
 
 ```bash
-bash  scripts/test-coverage-oracle.sh  --mode run     # Linux/macOS
-pwsh  scripts/dev-test.ps1                             # Windows (wrapper)
-pwsh  scripts/test-coverage-oracle.ps1 --mode run     # Windows (direct)
+bash scripts/test-coverage-oracle.sh  --mode report        # coverage audit
+bash scripts/test-coverage-oracle.sh  --mode completeness  # manifest drift check
+bash scripts/test-coverage-oracle.sh  --mode run           # optional fast run
+pwsh scripts/test-coverage-oracle.ps1 --mode report        # Windows equivalents
 ```
 
-### Read the coverage report
-
-Run the oracle in `report` mode to see, for a diff, the required target set, the
+The optional `--mode run` is change-scoped and concurrency-bounded: it runs only
+the targets required by your current diff, passes each target's own
+`required-features` so feature-gated targets execute, and also runs `--lib`. It
+requires Bash 4+ (associative arrays); on macOS install a modern bash (the
+bundled 3.2 is unsupported).
 selected set, and any omitted targets. The gate passes only when `omitted == 0`
 and no source surface is unmapped:
 
