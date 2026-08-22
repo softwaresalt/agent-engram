@@ -1,5 +1,5 @@
 ---
-title: "An independence guard that scans a human-authored fixture for forbidden tokens false-positives on the fixture's own policy prose"
+title: "An independence guard that scans a human-authored fixture for forbidden tokens produces a false positive on the fixture's own policy prose"
 description: "Feature 127-F's oracle independence guard (scripts/check-oracle-independence.{ps1,sh}) scanned three artifacts — the oracle test, its capture helper, and the JSON fixture — for the tokens 'tools_catalog' and 'all_tools'. The fixture's _policy note legitimately names the source contract src/shim/tools_catalog.rs to explain why it must be hand-authored, so the guard failed on the fixture's own documentation. The fix scopes the forbidden-token (derivation) scan to the two Rust sources that could actually `use` the module, and enforces the fixture's independence via the fixture-regeneration scan plus its header instead."
 problem_type: "self_referential_static_check_false_positive"
 category: "test-tooling-correctness"
@@ -9,8 +9,6 @@ resolution_type: "scope_token_scan_to_code_enforce_data_via_regeneration_and_hea
 date: "2026-08-22"
 shipment: "123-S"
 ---
-
-# An independence guard that scans a data fixture for forbidden tokens false-positives on its own policy prose
 
 ## Problem
 
