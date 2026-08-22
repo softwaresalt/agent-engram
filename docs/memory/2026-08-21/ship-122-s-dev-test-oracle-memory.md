@@ -6,7 +6,7 @@ shipment: 122-S
 feature: 126-F
 batch: dark-factory-20260820-870b1aff-568b257c-c2413934-de460a88
 order: 3
-status: build-complete-pending-pr
+status: shipped
 ---
 
 ## Session: Ship 122-S — canonical dev-test coverage oracle (C2413934)

@@ -18,7 +18,7 @@ a `cargo-devtest` external subcommand backed by shell/PowerShell scripts.
 
 ## What broke
 
-Copilot review flagged two load-bearing regressions:
+Copilot review flagged three load-bearing regressions:
 
 1. **cargo aliases cannot shell out.** A cargo alias's first token must be a
    cargo subcommand (built-in or an external `cargo-<name>` executable on PATH).
