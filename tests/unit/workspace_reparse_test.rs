@@ -106,11 +106,16 @@ fn assert_common_subdir_link_rejected(subdir: &str) {
     fs::rename(&target, &aside).expect("move real subdir aside");
     if let Err(error) = make_dir_link(&target, &aside) {
         fs::rename(&aside, &target).expect("restore real subdir after link failure");
-        println!(
-            "SKIPPED: assert_common_subdir_link_rejected({subdir}) — cannot create a directory \
-             link in this environment: {error}"
+        // Deliberately NOT a skip. Directory links need no elevation on either
+        // supported platform (`mklink /J` on Windows, `symlink` on Unix), so a
+        // failure here means the fixture — not the environment — is broken. The
+        // plan mandate treats a silently-passing security test as a failing one,
+        // and this scenario is the security-critical substitution case.
+        panic!(
+            "assert_common_subdir_link_rejected({subdir}): could not create the directory link \
+             the scenario depends on: {error}. Directory links require no elevation on any \
+             supported platform, so this is a fixture failure, not an environment skip."
         );
-        return;
     }
 
     let workspace = worktree.to_str().expect("worktree path is valid UTF-8");

@@ -172,7 +172,8 @@ struct CapRoot {
 
 impl CapRoot {
     /// Ambient (full-path) resolution that FOLLOWS a link/reparse point at the
-    /// path's final component. Used ONLY for the workspace root.
+    /// path's final component. Used for the workspace root and, in the identity
+    /// probe, for the workspace root before a no-follow `.engram` descent.
     ///
     /// This asymmetry with [`Self::open_anchor_nofollow_leaf`] is deliberate: a
     /// workspace root that is ITSELF a junction or symlink (e.g.
@@ -336,8 +337,11 @@ fn resolve_git_metadata(path: &Path) -> Result<GitMetadata, WorkspaceError> {
     })?;
     let workspace = normalize_canonical(canonical_workspace.clone());
 
-    // Root #1: the retained workspace root. This is one of only two ambient
-    // resolutions in the whole proof.
+    // Root #1: the retained workspace root. This and the linked-worktree common
+    // Git directory are the only ambient resolutions inside the AUTHENTICITY
+    // PROOF itself. Identity persistence and the daemon-key probe perform their
+    // own resolutions outside this function; see the module notes on residual
+    // path-based steps.
     let root = CapRoot::open_anchor(&workspace)?;
     let git_entry = workspace.join(".git");
 
@@ -651,9 +655,10 @@ pub fn daemon_key_for_workspace(path: &Path) -> Result<String, EngramError> {
         normalize_canonical(path.canonicalize().map_err(|_| WorkspaceError::NotFound {
             path: path.display().to_string(),
         })?);
-    // Route the `.workspace-id` existence probe through a retained `.engram`
-    // handle (U5). An absent `.engram/` means no persisted identity yet; a
-    // linked/reparse leaf is rejected exactly as the load path rejects it.
+    // Route the `.workspace-id` existence probe through the workspace root
+    // handle and a no-follow `.engram` open (U5). An absent `.engram/` means no
+    // persisted identity yet; a linked/reparse `.engram` fails closed rather
+    // than downgrading to the legacy path-hash fallback.
     if workspace_id_present(&canonical)? {
         return workspace_key(&canonical);
     }
@@ -683,8 +688,25 @@ fn workspace_id_path(path: &Path) -> PathBuf {
 /// reparse / non-regular / unparseable).
 fn workspace_id_present(canonical: &Path) -> Result<bool, EngramError> {
     let engram_dir = canonical.join(".engram");
-    let Ok(engram_root) = CapRoot::open_anchor(&engram_dir) else {
+    // Anchor on the workspace root, then reach `.engram` by a no-follow child
+    // open, so this probe applies the SAME reparse gate the load path applies.
+    // Opening `.engram` ambiently would follow a junction or symlink at the leaf
+    // and let a substituted `.engram` answer the probe (adversarial review F2).
+    let Ok(root) = CapRoot::open_anchor(canonical) else {
         return Ok(false);
+    };
+    let Ok(engram_root) = root.open_child_dir(".engram") else {
+        // Distinguish "no identity yet" from "the identity directory is
+        // unsafe". An absent `.engram` is the ordinary cold-start case; a
+        // present-but-rejected `.engram` must NOT silently downgrade to the
+        // legacy path-hash fallback, so it fails closed.
+        return match root.child_kind(".engram") {
+            ChildKind::Absent => Ok(false),
+            _ => Err(unsafe_workspace_id_error(
+                &engram_dir,
+                "the identity directory is a link, reparse point, or not a directory",
+            )),
+        };
     };
     let id_path = workspace_id_path(canonical);
     Ok(read_workspace_id_via(&engram_root, &id_path)?.is_some())
@@ -943,8 +965,70 @@ mod tests {
         workspace
     }
 
-    // ── 086.003-T: fail-closed data-dir containment guard ────────────────────
+    // ── U6: uniform reparse-tag rejection breadth ────────────────────────────
+    //
+    // The load-bearing U6 claim is that the gate rejects the WHOLE reparse
+    // class, not the `is_symlink()` subset. Rust's Windows `is_symlink()`
+    // already covers the `SYMLINK` and `MOUNT_POINT` tags, so a junction
+    // fixture cannot distinguish the broadened policy from the old one — it
+    // passes against the pre-fix code too. Creating a reparse point with an
+    // arbitrary third-party tag requires `DeviceIoControl`/`FSCTL_SET_REPARSE_POINT`,
+    // which this crate cannot reach under `#![forbid(unsafe_code)]`.
+    //
+    // These tests therefore assert the policy at its single decision point,
+    // where the "tag outside SYMLINK/MOUNT_POINT" case IS representable: a
+    // directory entry that is not a symlink but does carry
+    // `FILE_ATTRIBUTE_REPARSE_POINT`. That is exactly the input the pre-fix
+    // `is_symlink()`-only gate admitted and the new gate must reject.
 
+    #[test]
+    fn plain_entry_is_not_treated_as_a_link_or_reparse_point() {
+        assert!(
+            !super::is_link_or_reparse(false, 0),
+            "a plain, non-symlink entry must be admitted"
+        );
+    }
+
+    #[test]
+    fn symlink_entry_is_rejected_on_every_platform() {
+        assert!(
+            super::is_link_or_reparse(true, 0),
+            "a symlink must be rejected on every platform"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn non_symlink_reparse_tag_is_rejected() {
+        // The regression this test exists for: `is_symlink` is FALSE (the tag is
+        // neither SYMLINK nor MOUNT_POINT) but the reparse attribute is set. The
+        // pre-fix `is_symlink()`-only gate admitted this; the U6 gate must not.
+        assert!(
+            super::is_link_or_reparse(false, super::FILE_ATTRIBUTE_REPARSE_POINT),
+            "a reparse point whose tag is outside SYMLINK/MOUNT_POINT must be rejected"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn reparse_attribute_is_detected_alongside_unrelated_attributes() {
+        const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x0000_0010;
+        const FILE_ATTRIBUTE_READONLY: u32 = 0x0000_0001;
+
+        let attributes = FILE_ATTRIBUTE_DIRECTORY
+            | FILE_ATTRIBUTE_READONLY
+            | super::FILE_ATTRIBUTE_REPARSE_POINT;
+        assert!(
+            super::is_link_or_reparse(false, attributes),
+            "the reparse bit must be detected when other attributes are also set"
+        );
+        assert!(
+            !super::is_link_or_reparse(false, FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_READONLY),
+            "unrelated attributes alone must not trigger rejection"
+        );
+    }
+
+    // ── 086.003-T: fail-closed data-dir containment guard ────────────────────
     #[test]
     fn data_dir_within_workspace_accepts_workspace_owned_dirs() {
         let ws = create_workspace();
