@@ -510,6 +510,75 @@ vice versa.
   with no forced full reparse required. Once re-extracted the notebook is
   re-stamped and durably skips again (not a perpetual reindex).
 
+## Capability-rooted workspace admission
+
+Workspace admission is the trust boundary that gates every filesystem access
+engram performs. `src/db/workspace.rs` proves that a directory is a genuine Git
+checkout or a genuine native linked worktree, and derives the workspace identity
+and the daemon IPC discovery key from that proof.
+
+### Why capability roots
+
+Path-based validation cannot be made safe by re-checking. Every independent
+`canonicalize`, `symlink_metadata`, or `read_to_string` re-walks the full path
+from the filesystem root, so a check and the use that follows it can address two
+different objects. Narrowing that window shrinks the race but never closes it.
+
+Admission therefore holds **retained capability roots**: `cap_std::fs::Dir`
+handles opened once, kept alive for the whole proof, and walked one component at
+a time with no-follow opens. Metadata comes from the open handle (`fstat` on the
+descriptor), and file content is read from that same handle. Check and use
+address the same object by construction rather than by timing.
+
+### Protected invariants
+
+1. The object admitted as the workspace root is provably the same object that
+   was validated, established via a retained handle rather than path equality.
+2. No metadata value used in the worktree-authenticity proof is read from a path
+   that was resolved a second time after its check.
+3. On Windows, any validated directory or file in the chain carrying
+   `FILE_ATTRIBUTE_REPARSE_POINT` is rejected regardless of reparse tag. On
+   Unix, any symlink in the validated chain is rejected.
+4. A legitimate primary checkout and a legitimate native `git worktree` are both
+   still admitted on every supported platform.
+5. The linked-worktree admin root is the only region outside the workspace root
+   that is opened, and it is opened as an explicit, separately retained root.
+
+### The linked-worktree admin exception
+
+A linked worktree's `.git` is a file pointing at
+`<common>/worktrees/<name>`, which lives outside the workspace root by design.
+Admission opens exactly one additional retained anchor for the common Git
+directory and reaches the admin directory from it by a no-follow walk.
+
+This does not violate Constitution Principle III (workspace isolation). The
+exception is explicit, bounded to the smallest root containing the values the
+proof reads (`objects`, `refs` or `reftable`, `HEAD`, and `worktrees/<name>`),
+and the backlink from the admin directory must resolve to the workspace's own
+`.git` file before anything is admitted. Making it a named second root keeps the
+cross-boundary access reviewable instead of hiding it inside a path join.
+
+### Scope of the reparse policy
+
+The reparse and symlink rejection applies to the **validated chain**, not to
+unrelated ancestors. A workspace whose path merely contains a reparse point
+above the root — a junction-mounted drive, a cloud-sync provider, or a container
+bind — is still admitted, and a workspace root that is itself a junction remains
+supported. Widening the policy to ancestors would turn a security fix into an
+availability outage.
+
+### Invariants a future change must not break
+
+* Do not reintroduce a path-based reopen between a check and its use, including
+  a "re-validate after opening" pattern; a pre-check followed by a pathname
+  reopen is cosmetic and does not close the window.
+* Do not hand a multi-component path to the capability-root child helpers; they
+  accept exactly one ordinary component so that resolution stays anchored.
+* Do not derive the workspace identity or the daemon key from a freshly reopened
+  path. Both consume the root handle retained from the authenticity proof.
+* Do not narrow the Windows gate back to `is_symlink()`. That test covers only
+  `SYMLINK` and `MOUNT_POINT` reparse tags and leaves every other tag admitted.
+
 ## Module boundaries
 
 | Area | Responsibility |
