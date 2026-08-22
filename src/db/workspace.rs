@@ -324,6 +324,28 @@ impl CapRoot {
             .open_with(Path::new(name), &options)
             .map_err(|_| not_git_root(&self.display))
     }
+
+    /// Create a child file relative to this retained handle, failing if it
+    /// already exists.
+    ///
+    /// `create_new` maps to `O_CREAT | O_EXCL` (and the Windows equivalent), so
+    /// this is an atomic exclusive publish. It replaces the previous
+    /// temp-file-plus-`persist_noclobber` pair, which named the destination by
+    /// ambient pathname and therefore wrote outside the proof: `.engram` could
+    /// be renamed aside and substituted between the authenticity proof and the
+    /// publish, landing the identity file in an attacker-controlled directory.
+    ///
+    /// Returns the raw `io::Error` so the caller can distinguish
+    /// `AlreadyExists` (lost the create race, re-read through the handle) from a
+    /// genuine failure.
+    fn create_new_child_file(&self, name: &str) -> std::io::Result<cap_std::fs::File> {
+        let mut options = OpenOptions::new();
+        options
+            .write(true)
+            .create_new(true)
+            .follow(FollowSymlinks::No);
+        self.dir.open_with(Path::new(name), &options)
+    }
 }
 
 /// Resolve the workspace's Git metadata over retained, capability-rooted,
@@ -611,34 +633,73 @@ fn workspace_id_from_metadata(metadata: GitMetadata) -> Result<Uuid, EngramError
     }
 
     let workspace_id = Uuid::new_v4();
-    let mut temp_file = tempfile::NamedTempFile::new_in(&canonical_engram).map_err(|_| {
-        EngramError::System(SystemError::FlushFailed {
+    // Create AND publish `.workspace-id` through the retained `.engram` handle.
+    // The old shape staged a temp file and called `persist_noclobber` by ambient
+    // pathname AFTER the handle was retained, so `.engram` could be renamed
+    // aside and substituted between the proof and the publish, landing the
+    // identity in an attacker-controlled directory — a write outside the proof
+    // that re-reading through the handle can detect but cannot undo.
+    //
+    // `create_new` on the final name is `O_CREAT | O_EXCL`: exactly one cold
+    // start wins, and it never clobbers an identity another start already
+    // published. A handle-relative temp-then-rename cannot be used instead,
+    // because `rename` replaces the destination and concurrent first binds would
+    // then diverge onto different identities.
+    match engram_root.create_new_child_file(".workspace-id") {
+        Ok(mut file) => {
+            writeln!(file, "{workspace_id}").map_err(|_| {
+                EngramError::System(SystemError::FlushFailed {
+                    path: id_path.display().to_string(),
+                })
+            })?;
+            file.sync_all().map_err(|_| {
+                EngramError::System(SystemError::FlushFailed {
+                    path: id_path.display().to_string(),
+                })
+            })?;
+            drop(file);
+            // Re-read through the retained handle so the returned value is
+            // handle-derived even on the winning path.
+            read_workspace_id_via(&engram_root, &id_path)?
+                .ok_or_else(|| workspace_id_io_error(&id_path))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            // Lost the create race. The winner creates the leaf before it writes
+            // to it, so a read here can briefly observe an empty file; wait for
+            // the winner to finish rather than reporting a corrupt identity.
+            read_workspace_id_awaiting_writer(&engram_root, &id_path)
+        }
+        Err(_) => Err(EngramError::System(SystemError::FlushFailed {
             path: id_path.display().to_string(),
-        })
-    })?;
-    writeln!(temp_file, "{workspace_id}").map_err(|_| {
-        EngramError::System(SystemError::FlushFailed {
-            path: id_path.display().to_string(),
-        })
-    })?;
-    temp_file.as_file().sync_all().map_err(|_| {
-        EngramError::System(SystemError::FlushFailed {
-            path: id_path.display().to_string(),
-        })
-    })?;
-    // The create step above may stay path-based, but the returned identity is
-    // always the value re-read through the retained handle, so it is
-    // handle-derived whether we won or lost the create race.
-    match temp_file.persist_noclobber(&id_path) {
-        Ok(_) => read_workspace_id_via(&engram_root, &id_path)?
-            .ok_or_else(|| workspace_id_io_error(&id_path)),
-        Err(_) => match read_workspace_id_via(&engram_root, &id_path)? {
-            Some(existing) => Ok(existing),
-            None => Err(EngramError::System(SystemError::FlushFailed {
-                path: id_path.display().to_string(),
-            })),
-        },
+        })),
     }
+}
+
+/// Read `.workspace-id` through the retained handle, tolerating the brief window
+/// in which the winning cold start has created the leaf but not yet written it.
+///
+/// Bounded so a genuinely corrupt or unsafe leaf still surfaces as an error
+/// rather than hanging: the writer only has to emit one UUID line, so the budget
+/// is far larger than the real window.
+fn read_workspace_id_awaiting_writer(
+    engram_root: &CapRoot,
+    id_path: &Path,
+) -> Result<Uuid, EngramError> {
+    const ATTEMPTS: u32 = 100;
+    const BACKOFF: std::time::Duration = std::time::Duration::from_millis(10);
+
+    let mut last_error = None;
+    for attempt in 0..ATTEMPTS {
+        match read_workspace_id_via(engram_root, id_path) {
+            Ok(Some(existing)) => return Ok(existing),
+            Ok(None) => {}
+            Err(error) => last_error = Some(error),
+        }
+        if attempt + 1 < ATTEMPTS {
+            std::thread::sleep(BACKOFF);
+        }
+    }
+    Err(last_error.unwrap_or_else(|| workspace_id_io_error(id_path)))
 }
 
 /// Return the persisted workspace identity as a string key.
