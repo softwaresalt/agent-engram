@@ -61,6 +61,15 @@ const METHOD_NOT_FOUND: i32 = -32601;
 /// until the peer drains the pipe, so larger frames still pass through intact.
 const PIPE_CAPACITY: usize = 64 * 1024;
 
+/// Queue depth for synthesized responses awaiting the output pump.
+///
+/// Deliberately small and **bounded**: if a client floods probes while not
+/// draining stdout, the output pump stalls on the write and this queue fills,
+/// which makes the input filter await on send and stops it reading stdin.
+/// Backpressure then propagates to the client instead of the filter buffering
+/// responses without limit.
+const RESPONSE_QUEUE_DEPTH: usize = 8;
+
 /// What the compatibility window decides to do with one decoded frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PreInitDecision {
@@ -211,7 +220,7 @@ where
 {
     let (rmcp_reader, filter_sink) = tokio::io::duplex(PIPE_CAPACITY);
     let (rmcp_writer, rmcp_responses) = tokio::io::duplex(PIPE_CAPACITY);
-    let (frame_tx, frame_rx) = mpsc::unbounded_channel::<String>();
+    let (frame_tx, frame_rx) = mpsc::channel::<String>(RESPONSE_QUEUE_DEPTH);
 
     tokio::spawn(async move {
         run_output_pump(output, rmcp_responses, frame_rx).await;
@@ -231,11 +240,8 @@ where
 /// This task is the **only** writer to `output`. Each branch writes exactly
 /// one complete newline-terminated frame per iteration, so frames are never
 /// spliced together regardless of arrival timing.
-async fn run_output_pump<W, S>(
-    mut output: W,
-    rmcp_responses: S,
-    mut frames: mpsc::UnboundedReceiver<String>,
-) where
+async fn run_output_pump<W, S>(mut output: W, rmcp_responses: S, mut frames: mpsc::Receiver<String>)
+where
     W: AsyncWrite + Unpin,
     S: AsyncRead + Unpin,
 {
@@ -287,14 +293,15 @@ async fn run_output_pump<W, S>(
 /// Pump frames from `input` to `sink`, routing allowlisted pre-`initialize`
 /// probe answers to the output pump via `responses`.
 ///
+/// Sends on `responses` are awaited against a bounded queue, so a client that
+/// floods probes without draining stdout backpressures stdin processing
+/// rather than growing an unbounded backlog of synthesized responses.
+///
 /// Returns when `input` reaches EOF or either side errors; `sink` is always
 /// shut down so rmcp observes a clean EOF and the session ends normally
 /// (preserving the exit-code taxonomy).
-async fn run_pre_initialize_filter<R, S>(
-    input: R,
-    responses: mpsc::UnboundedSender<String>,
-    mut sink: S,
-) where
+async fn run_pre_initialize_filter<R, S>(input: R, responses: mpsc::Sender<String>, mut sink: S)
+where
     R: AsyncRead + Unpin,
     S: AsyncWrite + Unpin,
 {
@@ -315,7 +322,7 @@ async fn run_pre_initialize_filter<R, S>(
             let text = String::from_utf8_lossy(&line);
             match classify_pre_initialize_frame(text.trim()) {
                 PreInitDecision::Respond(frame) => {
-                    if responses.send(frame).is_err() {
+                    if responses.send(frame).await.is_err() {
                         break;
                     }
                     continue;
