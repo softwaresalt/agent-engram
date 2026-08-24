@@ -95,14 +95,21 @@ pub fn classify_pre_initialize_frame(line: &str) -> PreInitDecision {
 
 /// Build the `-32601` response frame for `id`.
 ///
-/// `id` is echoed **verbatim and type-preserving** by cloning the parsed
-/// [`Value`]. This matters: Copilot uses request id `0`, and coercing it to
-/// `null`, absent, or the string `"0"` would leave the client unable to
-/// correlate the response (plan review finding F4).
+/// `id` is echoed **verbatim and type-preserving** for the only shapes
+/// JSON-RPC 2.0 permits in a response — String and Number. This matters:
+/// Copilot uses request id `0`, and coercing it to `null`, absent, or the
+/// string `"0"` would leave the client unable to correlate the response
+/// (plan review finding F4). A structurally invalid id (object or array)
+/// cannot be validly determined, so the spec requires `null` there.
 fn method_not_found_frame(id: &Value) -> String {
+    let echoed = if id.is_string() || id.is_number() {
+        id.clone()
+    } else {
+        Value::Null
+    };
     serde_json::json!({
         "jsonrpc": "2.0",
-        "id": id.clone(),
+        "id": echoed,
         "error": {
             "code": METHOD_NOT_FOUND,
             "message": "Method not found",
@@ -138,13 +145,15 @@ pub fn compat_enabled() -> bool {
 ///
 /// # Write-ordering invariant
 ///
-/// The filter and rmcp hold independent handles to stdout, yet their writes
-/// can never interleave. While armed, the filter only writes for frames it
-/// does **not** forward, so rmcp has received nothing to respond to. The
-/// first frame the filter forwards either disarms the window (`initialize`,
-/// after which the filter never writes again) or is a non-`initialize` frame
-/// that ends rmcp's handshake. In both cases the filter's last write happens
-/// strictly before rmcp's first.
+/// The filter and rmcp hold independent handles to stdout and CAN write
+/// concurrently while the window is armed: rmcp answers a pre-`initialize`
+/// `ping` and replies `-32700` to any frame it cannot decode, and in both
+/// cases it keeps waiting for `initialize` rather than ending the session.
+/// Interleaving is prevented by per-frame write atomicity instead: rmcp's
+/// codec encodes JSON plus its newline into a single buffer and emits it in
+/// one write, and [`write_frame`] does the same. Each writer therefore takes
+/// the stdout lock exactly once per frame, so frames can be ordered
+/// arbitrarily but never spliced together on one line.
 pub fn interpose_pre_initialize_filter<R, W>(input: R, output: W) -> DuplexStream
 where
     R: AsyncRead + Send + Unpin + 'static,
@@ -212,12 +221,20 @@ where
 }
 
 /// Write one newline-delimited JSON-RPC frame and flush it.
+///
+/// The frame and its terminating newline are written in a **single**
+/// `write_all` so the whole line reaches stdout under one lock acquisition.
+/// Splitting them into two writes would let a concurrent rmcp frame land in
+/// the gap and splice two JSON objects onto one line, breaking the stdout
+/// JSON-RPC purity invariant.
 async fn write_frame<W>(output: &mut W, frame: &str) -> std::io::Result<()>
 where
     W: AsyncWrite + Unpin,
 {
-    output.write_all(frame.as_bytes()).await?;
-    output.write_all(b"\n").await?;
+    let mut line = String::with_capacity(frame.len() + 1);
+    line.push_str(frame);
+    line.push('\n');
+    output.write_all(line.as_bytes()).await?;
     output.flush().await
 }
 
@@ -266,6 +283,39 @@ mod tests {
         );
         let body = respond_body(&decision);
         assert_eq!(body["id"], Value::from("probe-1"));
+    }
+
+    /// JSON-RPC 2.0 allows only String, Number, or Null as a response id. A
+    /// structurally invalid request id cannot be validly determined, so it
+    /// must be reported as `null` rather than echoed back verbatim.
+    #[test]
+    fn structurally_invalid_id_is_reported_as_null() {
+        for frame in [
+            r#"{"jsonrpc":"2.0","id":{"nested":1},"method":"server/discover"}"#,
+            r#"{"jsonrpc":"2.0","id":[1,2],"method":"server/discover"}"#,
+        ] {
+            let body = respond_body(&classify_pre_initialize_frame(frame));
+            assert_eq!(
+                body["id"],
+                Value::Null,
+                "an object/array id must be normalized to null: {frame}"
+            );
+        }
+    }
+
+    /// A synthesized frame must occupy exactly one stdout line: an embedded
+    /// newline would split it across two JSON-RPC frames.
+    #[test]
+    fn synthesized_frame_is_a_single_line() {
+        let decision =
+            classify_pre_initialize_frame(r#"{"jsonrpc":"2.0","id":0,"method":"server/discover"}"#);
+        match decision {
+            PreInitDecision::Respond(frame) => assert!(
+                !frame.contains('\n'),
+                "the synthesized frame must not embed a newline: {frame}"
+            ),
+            other => panic!("expected a Respond decision, got {other:?}"),
+        }
     }
 
     /// JSON-RPC forbids responding to a notification.

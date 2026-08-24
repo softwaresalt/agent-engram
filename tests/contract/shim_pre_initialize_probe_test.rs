@@ -388,6 +388,79 @@ async fn kill_switch_restores_strict_pre_initialize_ordering() {
     );
 }
 
+/// U4(b): rmcp and the compatibility filter can write to stdout in the same
+/// armed window, so every frame must stay on its own line.
+///
+/// An unparseable frame makes rmcp emit a `-32700` parse-error response and
+/// **keep waiting** for `initialize`, leaving the filter armed. A probe sent
+/// immediately after therefore has two independent writers on stdout. This
+/// asserts every emitted line is an intact, separately parseable JSON-RPC
+/// frame — the failure mode being guarded against is two JSON objects spliced
+/// onto one line.
+#[tokio::test]
+async fn concurrent_rmcp_and_filter_writes_stay_on_separate_lines() {
+    let workspace = workspace_with_valid_git_root();
+    let mut child = spawn_shim(workspace.path(), None);
+    let mut stdin = child.stdin.take().expect("capture shim stdin");
+    let mut stdout = BufReader::new(child.stdout.take().expect("capture shim stdout"));
+
+    // Interleave frames rmcp answers itself with probes the filter answers.
+    for _ in 0..8_u32 {
+        stdin
+            .write_all(b"{not valid json at all}\n")
+            .await
+            .expect("write an unparseable frame rmcp must answer");
+        stdin
+            .write_all(COPILOT_PROBE)
+            .await
+            .expect("write the Copilot server/discover probe");
+    }
+    stdin
+        .write_all(INITIALIZE_FRAME)
+        .await
+        .expect("write MCP initialize frame");
+
+    let mut saw_method_not_found = false;
+    loop {
+        let line = read_frame(&mut stdout, "interleaved stdout frame")
+            .await
+            .expect("shim exited before completing initialize");
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // The load-bearing assertion: each LINE must parse as exactly one
+        // JSON-RPC frame. Two spliced objects fail here.
+        let frame: Value = serde_json::from_str(trimmed).unwrap_or_else(|error| {
+            panic!("each stdout line must be exactly one JSON-RPC frame, got {trimmed:?}: {error}")
+        });
+        assert_eq!(frame["jsonrpc"], "2.0");
+        if frame["error"]["code"] == -32601 {
+            saw_method_not_found = true;
+            assert!(
+                frame["id"].is_number(),
+                "the probe response must keep id 0 numeric even under \
+                 concurrent writes: {frame}"
+            );
+        }
+        if frame["id"].as_i64() == Some(1) {
+            assert!(
+                frame.get("error").is_none(),
+                "initialize must still succeed after interleaved traffic: {frame}"
+            );
+            break;
+        }
+    }
+    assert!(
+        saw_method_not_found,
+        "the probes must still have been answered with -32601"
+    );
+
+    stdin.shutdown().await.ok();
+    drop(stdin);
+    let _ = tokio::time::timeout(Duration::from_secs(10), child.wait()).await;
+}
+
 /// U4(a): an `initialize`-first session — the overwhelmingly common case —
 /// is completely unaffected by the compatibility window.
 #[tokio::test]
