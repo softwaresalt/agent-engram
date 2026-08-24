@@ -76,3 +76,7 @@ Planning commit is pending at memory-write time and will be associated with `131
 ## Files Modified
 
 Only `.backlogit/` artifacts/logs/stash state and planning/memory Markdown under `docs/` were modified. No application source, tests, Cargo files, config, protected shipment manifest, or PR state changed.
+
+## Publication Result
+
+Planning commit: `4cab736e05ebd832e048a0338949ef62c0089b2d`. It is associated with shipment `125-S`, feature `131-F`, and tasks `131.001-T` through `131.003-T`. A follow-up commit records these associations before branch push.
