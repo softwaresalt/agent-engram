@@ -1,10 +1,11 @@
 ---
-title: "Regenerate ignored task gate evidence before post-merge shipment archival"
+title: "Restore ignored task gate evidence for post-merge archival: port when available, regenerate only as fallback"
 doc_type: learning
 source: "102-S post-merge closure"
 description: >-
-  A clean post-merge worktree lacks ignored task gate logs; regenerate evidence
-  through normal active-to-done transitions before shipping the shipment.
+  A clean post-merge worktree lacks ignored task gate logs. Port the original
+  evidence from the implementation worktree when it still exists; regenerate
+  through active-to-done transitions only as a fallback when it is gone.
 category: workflow-issues
 date: 2026-08-02
 confidence: high
