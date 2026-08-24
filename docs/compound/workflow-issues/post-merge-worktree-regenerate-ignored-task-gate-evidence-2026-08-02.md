@@ -33,12 +33,34 @@ the implementation worktree is gone.
 
 ### Preferred: port the original gate evidence (124-S, 2026-08-23)
 
-If the implementation worktree still exists, copy its gate logs into the
-post-merge worktree:
+If the implementation worktree still exists, port its gate logs into the
+post-merge worktree. Backlogit event streams are append-only, tool-managed
+history (see the Data Ownership Rule in
+`.github/instructions/backlogit.instructions.md`), so the port MUST fail closed
+instead of replacing an existing destination stream:
 
 ```text
-Copy-Item <impl-worktree>\.backlogit\logs\* -Destination <post-merge-worktree>\.backlogit\logs\ -Recurse -Force
+$src  = '<impl-worktree>\.backlogit\logs'
+$dest = '<post-merge-worktree>\.backlogit\logs'
+
+# Fail closed: never overwrite existing event history.
+if (Test-Path $dest) {
+    if (@(Get-ChildItem -Path $dest -Recurse -File).Count -gt 0) {
+        throw "Destination already holds event history; port aborted. Use a supported backlogit merge/import path."
+    }
+} else {
+    New-Item -ItemType Directory -Path $dest | Out-Null
+}
+
+# No -Force: the empty-destination precondition above is the only guard that
+# makes this copy safe, and the command must stay non-overwriting.
+Copy-Item -Path "$src\*" -Destination $dest -Recurse
 ```
+
+Requiring an empty destination keeps the operation idempotent-safe: a rerun
+after closure-time events exist aborts instead of erasing them. If the
+destination is already populated and logs are still missing, do not copy over
+it — reconcile through a supported backlogit merge/import path.
 
 This preserves the **authentic** `pre_task_completion_gate_passed` events
 recorded at execution time, including the real `head_sha` each gate actually
@@ -66,6 +88,10 @@ shows when the work actually passed its gate. Port first, regenerate second.
 ## Guardrails
 
 - Never use `--force-gates` to manufacture closure evidence.
+- Never port gate logs with `Copy-Item -Force` or any other overwriting copy
+  into a non-empty `.backlogit/logs/`. Event streams are append-only,
+  tool-managed history; an overwrite (or a rerun of the port) can erase
+  closure-time events that were recorded after the original run.
 - Revalidate only after the merge SHA is confirmed in `origin/main`.
 - Preserve the task body, dependencies, and references; only lifecycle status
   and timestamps should change.
