@@ -259,7 +259,34 @@ Rollback options, cheapest first:
 Because the window is armed only before `initialize`, any rollback affects only
 the handshake window — never a live session's tool traffic.
 
+### Monitoring plan and post-deploy observation window
+
+The compatibility window is **on by default** and sits in the MCP handshake
+path, so a regression here removes MCP availability entirely rather than
+degrading a feature. Watch these signals after rollout.
+
+| Signal | Where observed | Baseline | Alert / rollback threshold |
+|---|---|---|---|
+| Shim exit code `13` (`transport_failure`) on client disconnect | Exit code of `engram shim`; `failure_class` in `<workspace>/.engram/diagnostics/shim-startup-failures.jsonl` | `0` occurrences for probe-then-`initialize` sessions | **Any** exit `13` attributable to a pre-`initialize` probe |
+| MCP client initialization failures | Client log (`.copilot/logs/process-*.log`): `failed to initialize MCP`, `os error 232`, `expect initialized request` | `0` occurrences | **Any** occurrence naming the `engram` server |
+| Non-JSON-RPC bytes on shim stdout | `tests/contract/shim_stdout_purity_test.rs` in CI; manual stdio runbook step 2 | `0` | **Any** unparseable stdout line |
+| `tools/list` catalog served after a probe | `/mcp show engram` or the client's server list | Full catalog | Catalog empty or server listed as failed |
+
+* **Owner**: the operator performing the Copilot upgrade or Engram install.
+* **Observation window**: the first **48 hours** of normal Copilot CLI usage
+  after installing a build containing this change, plus the first session
+  following any Copilot CLI version change (the probe behavior is a
+  client-side prerelease trait and can shift between releases).
+* **Rollback trigger**: any occurrence in the "Alert / rollback threshold"
+  column above. Roll back with `ENGRAM_MCP_PREINIT_COMPAT=0` first (runtime,
+  no redeploy) and confirm the signal clears; if it does not, the cause is not
+  the compatibility window.
+* **Window close**: record the outcome as healthy, degraded, or rolled back.
+  A healthy close is the precondition for treating the window as steady-state
+  rather than under observation.
+
 ### Retiring this compatibility layer
+
 
 This layer exists for a **prerelease** client defect. At the time it shipped
 there was no public `github/copilot-cli` issue tracking the behavior, so it

@@ -92,12 +92,26 @@ fn is_supported_request_id(id: &Value) -> bool {
     }
 }
 
+/// Whether `params`, if present, is a structured JSON-RPC parameter value.
+///
+/// JSON-RPC 2.0 requires `params` to be an object or an array. A frame
+/// carrying a scalar such as `"params": 1` is malformed, so it belongs to
+/// rmcp's `Invalid Request` handling rather than to this compatibility
+/// window.
+fn has_valid_params(object: &serde_json::Map<String, Value>) -> bool {
+    match object.get("params") {
+        None => true,
+        Some(params) => params.is_object() || params.is_array(),
+    }
+}
+
 /// Decide whether the compatibility window should intercept `line`.
 ///
 /// Interception requires **all** of: valid JSON, a JSON object, an exact
-/// `"jsonrpc": "2.0"` envelope, method [`COMPAT_METHOD`], and a supported
-/// request id. Anything else forwards to rmcp unchanged (plan review finding
-/// F2), so this can only ever absorb the precise frame Copilot sends.
+/// `"jsonrpc": "2.0"` envelope, structured or absent `params`, method
+/// [`COMPAT_METHOD`], and a supported request id. Anything else forwards to
+/// rmcp unchanged (plan review finding F2), so this can only ever absorb the
+/// precise frame Copilot sends.
 #[must_use]
 pub fn classify_pre_initialize_frame(line: &str) -> PreInitDecision {
     let forward = PreInitDecision::Forward { disarm: false };
@@ -111,7 +125,9 @@ pub fn classify_pre_initialize_frame(line: &str) -> PreInitDecision {
         Some("initialize") => PreInitDecision::Forward { disarm: true },
         Some(COMPAT_METHOD) => {
             // A malformed envelope is rmcp's to reject, not ours to answer.
-            if object.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+            if object.get("jsonrpc").and_then(Value::as_str) != Some("2.0")
+                || !has_valid_params(object)
+            {
                 return forward;
             }
             match object.get("id") {
@@ -401,18 +417,39 @@ mod tests {
         }
     }
 
-    /// A non-2.0 envelope is malformed and belongs to rmcp.
+    /// A non-2.0 envelope or unstructured `params` is malformed and belongs
+    /// to rmcp's `Invalid Request` handling.
     #[test]
     fn malformed_envelope_forwards_to_rmcp() {
         for frame in [
             r#"{"id":0,"method":"server/discover"}"#,
             r#"{"jsonrpc":"1.0","id":0,"method":"server/discover"}"#,
             r#"{"jsonrpc":2.0,"id":0,"method":"server/discover"}"#,
+            r#"{"jsonrpc":"2.0","id":0,"method":"server/discover","params":1}"#,
+            r#"{"jsonrpc":"2.0","id":0,"method":"server/discover","params":"x"}"#,
+            r#"{"jsonrpc":"2.0","id":0,"method":"server/discover","params":null}"#,
+            r#"{"jsonrpc":"2.0","id":0,"method":"server/discover","params":true}"#,
         ] {
             assert_eq!(
                 classify_pre_initialize_frame(frame),
                 FORWARD,
                 "malformed envelope must forward to rmcp: {frame}"
+            );
+        }
+    }
+
+    /// Structured `params` — object, array, or absent — is accepted.
+    #[test]
+    fn structured_params_are_accepted() {
+        for frame in [
+            r#"{"jsonrpc":"2.0","id":0,"method":"server/discover"}"#,
+            r#"{"jsonrpc":"2.0","id":0,"method":"server/discover","params":{}}"#,
+            r#"{"jsonrpc":"2.0","id":0,"method":"server/discover","params":[]}"#,
+        ] {
+            let body = respond_body(&classify_pre_initialize_frame(frame));
+            assert_eq!(
+                body["error"]["code"], METHOD_NOT_FOUND,
+                "structured params must still be answered: {frame}"
             );
         }
     }
