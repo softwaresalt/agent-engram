@@ -19,19 +19,30 @@
 //!
 //! # Blast radius
 //!
-//! The interception allowlist is **exactly one method**. Every other frame,
-//! including unknown id-bearing methods, is forwarded to rmcp unchanged so
-//! rmcp's existing ordering and error semantics are preserved verbatim. The
-//! filter disarms permanently on the first `initialize`, so there is no
-//! steady-state cost and no post-handshake behavior change.
+//! The interception allowlist is **exactly one method**, and even then only
+//! for a well-formed JSON-RPC 2.0 request carrying an id rmcp itself would
+//! accept. Every other frame — including malformed envelopes and unsupported
+//! id shapes — is forwarded so rmcp's own `Invalid Request` and ordering
+//! semantics apply unchanged. The filter disarms permanently on the first
+//! `initialize`, so there is no steady-state cost and no post-handshake
+//! behavior change.
+//!
+//! # Single-writer invariant
+//!
+//! Both this module's synthesized responses and rmcp's own responses reach
+//! stdout through **one** task holding **one** stdout handle
+//! ([`run_output_pump`]), which writes a whole frame per call. Tokio makes no
+//! atomicity guarantee for concurrent writes through separate `Stdout`
+//! handles, so the compatibility window never takes a second handle.
 //!
 //! Set `ENGRAM_MCP_PREINIT_COMPAT=0` to disable the window entirely and
-//! restore strict rmcp ordering with no redeploy.
+//! restore strict rmcp ordering.
 
 use serde_json::Value;
 use tokio::io::{
     AsyncBufReadExt as _, AsyncRead, AsyncWrite, AsyncWriteExt as _, BufReader, DuplexStream,
 };
+use tokio::sync::mpsc;
 
 /// Environment variable gating the pre-`initialize` compatibility window.
 ///
@@ -44,11 +55,10 @@ pub const COMPAT_METHOD: &str = "server/discover";
 /// JSON-RPC 2.0 `Method not found` error code.
 const METHOD_NOT_FOUND: i32 = -32601;
 
-/// In-memory pipe capacity between the filter and rmcp's reader.
+/// In-memory pipe capacity between the filter and rmcp.
 ///
-/// This is a backpressure buffer, not a frame-size limit: `write_all` simply
-/// yields until rmcp drains the pipe, so frames larger than this still pass
-/// through intact.
+/// This is a backpressure buffer, not a frame-size limit: writes simply yield
+/// until the peer drains the pipe, so larger frames still pass through intact.
 const PIPE_CAPACITY: usize = 64 * 1024;
 
 /// What the compatibility window decides to do with one decoded frame.
@@ -60,56 +70,76 @@ pub enum PreInitDecision {
         /// Whether this frame permanently disarms the compatibility window.
         disarm: bool,
     },
-    /// Answer directly on stdout with this JSON-RPC frame and stay armed.
+    /// Answer directly with this JSON-RPC frame and stay armed.
     Respond(String),
-    /// Drop silently and stay armed. Used for allowlisted frames that carry
-    /// no id: JSON-RPC forbids responding to a notification.
+    /// Drop silently and stay armed. Used for an allowlisted frame with no
+    /// `id` at all: JSON-RPC forbids responding to a notification.
     Drop,
+}
+
+/// Whether `id` is a request id rmcp itself accepts: a JSON string or an
+/// integer.
+///
+/// Booleans, objects, arrays, fractional numbers, and integers outside the
+/// signed/unsigned 64-bit range are **not** valid MCP request ids. Answering
+/// them here would replace rmcp's `Invalid Request` handling with a
+/// misleading `-32601`, so they are forwarded instead.
+fn is_supported_request_id(id: &Value) -> bool {
+    match id {
+        Value::String(_) => true,
+        Value::Number(number) => number.is_i64() || number.is_u64(),
+        _ => false,
+    }
 }
 
 /// Decide whether the compatibility window should intercept `line`.
 ///
-/// Only [`COMPAT_METHOD`] is intercepted (plan review finding F2). Anything
-/// that is not valid JSON, not a JSON object, or carries any other method is
-/// forwarded so rmcp's own semantics apply unchanged.
+/// Interception requires **all** of: valid JSON, a JSON object, an exact
+/// `"jsonrpc": "2.0"` envelope, method [`COMPAT_METHOD`], and a supported
+/// request id. Anything else forwards to rmcp unchanged (plan review finding
+/// F2), so this can only ever absorb the precise frame Copilot sends.
 #[must_use]
 pub fn classify_pre_initialize_frame(line: &str) -> PreInitDecision {
+    let forward = PreInitDecision::Forward { disarm: false };
     let Ok(frame) = serde_json::from_str::<Value>(line) else {
-        return PreInitDecision::Forward { disarm: false };
+        return forward;
     };
     let Some(object) = frame.as_object() else {
-        return PreInitDecision::Forward { disarm: false };
+        return forward;
     };
     match object.get("method").and_then(Value::as_str) {
         Some("initialize") => PreInitDecision::Forward { disarm: true },
-        Some(COMPAT_METHOD) => match object.get("id") {
-            // A JSON-RPC request carries an id and MUST receive a response.
-            // An absent or null id makes the frame a notification, which MUST
-            // NOT be answered.
-            Some(id) if !id.is_null() => PreInitDecision::Respond(method_not_found_frame(id)),
-            _ => PreInitDecision::Drop,
-        },
-        _ => PreInitDecision::Forward { disarm: false },
+        Some(COMPAT_METHOD) => {
+            // A malformed envelope is rmcp's to reject, not ours to answer.
+            if object.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+                return forward;
+            }
+            match object.get("id") {
+                // No `id` member at all: a notification. Never answer it.
+                None => PreInitDecision::Drop,
+                Some(id) if is_supported_request_id(id) => {
+                    PreInitDecision::Respond(method_not_found_frame(id))
+                }
+                // Explicit null, boolean, object, array, or a number rmcp
+                // would reject: let rmcp classify it.
+                Some(_) => forward,
+            }
+        }
+        _ => forward,
     }
 }
 
 /// Build the `-32601` response frame for `id`.
 ///
-/// `id` is echoed **verbatim and type-preserving** for the only shapes
-/// JSON-RPC 2.0 permits in a response — String and Number. This matters:
-/// Copilot uses request id `0`, and coercing it to `null`, absent, or the
-/// string `"0"` would leave the client unable to correlate the response
-/// (plan review finding F4). A structurally invalid id (object or array)
-/// cannot be validly determined, so the spec requires `null` there.
+/// `id` is echoed **verbatim and type-preserving**. This matters: Copilot uses
+/// request id `0`, and coercing it to `null`, absent, or the string `"0"`
+/// would leave the client unable to correlate the response (plan review
+/// finding F4). Callers guarantee `id` passed [`is_supported_request_id`], so
+/// the echoed value is always a valid JSON-RPC response id.
 fn method_not_found_frame(id: &Value) -> String {
-    let echoed = if id.is_string() || id.is_number() {
-        id.clone()
-    } else {
-        Value::Null
-    };
     serde_json::json!({
         "jsonrpc": "2.0",
-        "id": echoed,
+        "id": id.clone(),
         "error": {
             "code": METHOD_NOT_FOUND,
             "message": "Method not found",
@@ -134,48 +164,122 @@ pub fn compat_enabled() -> bool {
     compat_enabled_for(std::env::var(PREINIT_COMPAT_ENV).ok().as_deref())
 }
 
-/// Interpose the compatibility window between `input` and rmcp's reader.
+/// The reader and writer rmcp binds when the compatibility window is active.
 ///
-/// Returns a reader that rmcp consumes exactly as it would consume stdin.
-/// A background task reads newline-delimited frames from `input`, applies
-/// [`classify_pre_initialize_frame`] while armed, writes any synthesized
-/// response to `output`, and forwards accepted frames **byte-for-byte** to
-/// the returned reader. Framing is never re-encoded, so rmcp still owns
-/// decoding and rmcp's own writer still owns every response it generates.
+/// Both are in-memory pipes. Real stdin and stdout are owned exclusively by
+/// the two background tasks that [`interpose_pre_initialize_filter`] spawns.
+pub struct PreInitTransport {
+    /// Stream rmcp reads client frames from, after filtering.
+    pub reader: DuplexStream,
+    /// Stream rmcp writes its responses to, drained by the output pump.
+    pub writer: DuplexStream,
+}
+
+/// Interpose the compatibility window between rmcp and the real stdio streams.
 ///
-/// # Write-ordering invariant
+/// Spawns two tasks:
 ///
-/// The filter and rmcp hold independent handles to stdout and CAN write
-/// concurrently while the window is armed: rmcp answers a pre-`initialize`
-/// `ping` and replies `-32700` to any frame it cannot decode, and in both
-/// cases it keeps waiting for `initialize` rather than ending the session.
-/// Interleaving is prevented by per-frame write atomicity instead: rmcp's
-/// codec encodes JSON plus its newline into a single buffer and emits it in
-/// one write, and [`write_frame`] does the same. Each writer therefore takes
-/// the stdout lock exactly once per frame, so frames can be ordered
-/// arbitrarily but never spliced together on one line.
-pub fn interpose_pre_initialize_filter<R, W>(input: R, output: W) -> DuplexStream
+/// * an **input filter** that reads frames from `input`, applies
+///   [`classify_pre_initialize_frame`] while armed, and forwards accepted
+///   frames byte-for-byte to [`PreInitTransport::reader`];
+/// * an **output pump** that owns `output` and is the sole writer to it,
+///   interleaving rmcp's responses and the filter's synthesized frames at
+///   whole-frame granularity.
+///
+/// Framing is never re-encoded; rmcp still owns decoding and response
+/// generation.
+pub fn interpose_pre_initialize_filter<R, W>(input: R, output: W) -> PreInitTransport
 where
     R: AsyncRead + Send + Unpin + 'static,
     W: AsyncWrite + Send + Unpin + 'static,
 {
-    let (rmcp_side, filter_side) = tokio::io::duplex(PIPE_CAPACITY);
+    let (rmcp_reader, filter_sink) = tokio::io::duplex(PIPE_CAPACITY);
+    let (rmcp_writer, rmcp_responses) = tokio::io::duplex(PIPE_CAPACITY);
+    let (frame_tx, frame_rx) = mpsc::unbounded_channel::<String>();
+
     tokio::spawn(async move {
-        run_pre_initialize_filter(input, output, filter_side).await;
+        run_output_pump(output, rmcp_responses, frame_rx).await;
     });
-    rmcp_side
+    tokio::spawn(async move {
+        run_pre_initialize_filter(input, frame_tx, filter_sink).await;
+    });
+
+    PreInitTransport {
+        reader: rmcp_reader,
+        writer: rmcp_writer,
+    }
 }
 
-/// Pump frames from `input` to `sink`, answering allowlisted pre-`initialize`
-/// probes on `output`.
+/// Drain rmcp's responses and the filter's synthesized frames onto `output`.
+///
+/// This task is the **only** writer to `output`. Each branch writes exactly
+/// one complete newline-terminated frame per iteration, so frames are never
+/// spliced together regardless of arrival timing.
+async fn run_output_pump<W, S>(
+    mut output: W,
+    rmcp_responses: S,
+    mut frames: mpsc::UnboundedReceiver<String>,
+) where
+    W: AsyncWrite + Unpin,
+    S: AsyncRead + Unpin,
+{
+    let mut rmcp = BufReader::new(rmcp_responses);
+    // Persisted across iterations on purpose: `read_until` is cancel-safe
+    // only if bytes it already appended are retained, and `select!` may
+    // cancel it. Cleared solely after a completed frame is written.
+    let mut line = Vec::new();
+    let mut frames_open = true;
+
+    loop {
+        tokio::select! {
+            result = rmcp.read_until(b'\n', &mut line) => {
+                match result {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {
+                        if output.write_all(&line).await.is_err() {
+                            break;
+                        }
+                        if output.flush().await.is_err() {
+                            break;
+                        }
+                        line.clear();
+                    }
+                }
+            }
+            frame = frames.recv(), if frames_open => {
+                match frame {
+                    Some(frame) => {
+                        let mut buffer = frame.into_bytes();
+                        buffer.push(b'\n');
+                        if output.write_all(&buffer).await.is_err() {
+                            break;
+                        }
+                        if output.flush().await.is_err() {
+                            break;
+                        }
+                    }
+                    // The filter finished; keep draining rmcp until EOF.
+                    None => frames_open = false,
+                }
+            }
+        }
+    }
+
+    let _ = output.flush().await;
+}
+
+/// Pump frames from `input` to `sink`, routing allowlisted pre-`initialize`
+/// probe answers to the output pump via `responses`.
 ///
 /// Returns when `input` reaches EOF or either side errors; `sink` is always
 /// shut down so rmcp observes a clean EOF and the session ends normally
 /// (preserving the exit-code taxonomy).
-async fn run_pre_initialize_filter<R, W, S>(input: R, mut output: W, mut sink: S)
-where
+async fn run_pre_initialize_filter<R, S>(
+    input: R,
+    responses: mpsc::UnboundedSender<String>,
+    mut sink: S,
+) where
     R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
     S: AsyncWrite + Unpin,
 {
     let mut reader = BufReader::new(input);
@@ -195,7 +299,7 @@ where
             let text = String::from_utf8_lossy(&line);
             match classify_pre_initialize_frame(text.trim()) {
                 PreInitDecision::Respond(frame) => {
-                    if write_frame(&mut output, &frame).await.is_err() {
+                    if responses.send(frame).is_err() {
                         break;
                     }
                     continue;
@@ -220,27 +324,11 @@ where
     let _ = sink.shutdown().await;
 }
 
-/// Write one newline-delimited JSON-RPC frame and flush it.
-///
-/// The frame and its terminating newline are written in a **single**
-/// `write_all` so the whole line reaches stdout under one lock acquisition.
-/// Splitting them into two writes would let a concurrent rmcp frame land in
-/// the gap and splice two JSON objects onto one line, breaking the stdout
-/// JSON-RPC purity invariant.
-async fn write_frame<W>(output: &mut W, frame: &str) -> std::io::Result<()>
-where
-    W: AsyncWrite + Unpin,
-{
-    let mut line = String::with_capacity(frame.len() + 1);
-    line.push_str(frame);
-    line.push('\n');
-    output.write_all(line.as_bytes()).await?;
-    output.flush().await
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const FORWARD: PreInitDecision = PreInitDecision::Forward { disarm: false };
 
     fn respond_body(decision: &PreInitDecision) -> Value {
         match decision {
@@ -275,7 +363,7 @@ mod tests {
         assert_eq!(body["id"].as_i64(), Some(0));
     }
 
-    /// Non-numeric ids are echoed with their original type preserved.
+    /// String ids are echoed with their original type preserved.
     #[test]
     fn string_id_is_echoed_type_preserving() {
         let decision = classify_pre_initialize_frame(
@@ -285,52 +373,48 @@ mod tests {
         assert_eq!(body["id"], Value::from("probe-1"));
     }
 
-    /// JSON-RPC 2.0 allows only String, Number, or Null as a response id. A
-    /// structurally invalid request id cannot be validly determined, so it
-    /// must be reported as `null` rather than echoed back verbatim.
-    #[test]
-    fn structurally_invalid_id_is_reported_as_null() {
-        for frame in [
-            r#"{"jsonrpc":"2.0","id":{"nested":1},"method":"server/discover"}"#,
-            r#"{"jsonrpc":"2.0","id":[1,2],"method":"server/discover"}"#,
-        ] {
-            let body = respond_body(&classify_pre_initialize_frame(frame));
-            assert_eq!(
-                body["id"],
-                Value::Null,
-                "an object/array id must be normalized to null: {frame}"
-            );
-        }
-    }
-
-    /// A synthesized frame must occupy exactly one stdout line: an embedded
-    /// newline would split it across two JSON-RPC frames.
-    #[test]
-    fn synthesized_frame_is_a_single_line() {
-        let decision =
-            classify_pre_initialize_frame(r#"{"jsonrpc":"2.0","id":0,"method":"server/discover"}"#);
-        match decision {
-            PreInitDecision::Respond(frame) => assert!(
-                !frame.contains('\n'),
-                "the synthesized frame must not embed a newline: {frame}"
-            ),
-            other => panic!("expected a Respond decision, got {other:?}"),
-        }
-    }
-
-    /// JSON-RPC forbids responding to a notification.
+    /// A frame with no `id` member is a notification and must draw no reply.
     #[test]
     fn id_less_probe_is_dropped_silently() {
         assert_eq!(
             classify_pre_initialize_frame(r#"{"jsonrpc":"2.0","method":"server/discover"}"#),
             PreInitDecision::Drop
         );
-        assert_eq!(
-            classify_pre_initialize_frame(
-                r#"{"jsonrpc":"2.0","id":null,"method":"server/discover"}"#
-            ),
-            PreInitDecision::Drop
-        );
+    }
+
+    /// Ids rmcp itself would reject must reach rmcp so its `Invalid Request`
+    /// handling applies, rather than being answered with a misleading -32601.
+    #[test]
+    fn unsupported_id_shapes_forward_to_rmcp() {
+        for frame in [
+            r#"{"jsonrpc":"2.0","id":null,"method":"server/discover"}"#,
+            r#"{"jsonrpc":"2.0","id":true,"method":"server/discover"}"#,
+            r#"{"jsonrpc":"2.0","id":{},"method":"server/discover"}"#,
+            r#"{"jsonrpc":"2.0","id":[1],"method":"server/discover"}"#,
+            r#"{"jsonrpc":"2.0","id":1.5,"method":"server/discover"}"#,
+        ] {
+            assert_eq!(
+                classify_pre_initialize_frame(frame),
+                FORWARD,
+                "unsupported id shape must forward to rmcp: {frame}"
+            );
+        }
+    }
+
+    /// A non-2.0 envelope is malformed and belongs to rmcp.
+    #[test]
+    fn malformed_envelope_forwards_to_rmcp() {
+        for frame in [
+            r#"{"id":0,"method":"server/discover"}"#,
+            r#"{"jsonrpc":"1.0","id":0,"method":"server/discover"}"#,
+            r#"{"jsonrpc":2.0,"id":0,"method":"server/discover"}"#,
+        ] {
+            assert_eq!(
+                classify_pre_initialize_frame(frame),
+                FORWARD,
+                "malformed envelope must forward to rmcp: {frame}"
+            );
+        }
     }
 
     /// `initialize` forwards AND disarms the window permanently.
@@ -358,9 +442,23 @@ mod tests {
         ] {
             assert_eq!(
                 classify_pre_initialize_frame(frame),
-                PreInitDecision::Forward { disarm: false },
+                FORWARD,
                 "frame must forward to rmcp unchanged: {frame}"
             );
+        }
+    }
+
+    /// A synthesized frame must occupy exactly one stdout line.
+    #[test]
+    fn synthesized_frame_is_a_single_line() {
+        match classify_pre_initialize_frame(
+            r#"{"jsonrpc":"2.0","id":0,"method":"server/discover"}"#,
+        ) {
+            PreInitDecision::Respond(frame) => assert!(
+                !frame.contains('\n'),
+                "the synthesized frame must not embed a newline: {frame}"
+            ),
+            other => panic!("expected a Respond decision, got {other:?}"),
         }
     }
 
