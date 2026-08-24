@@ -226,6 +226,35 @@ fn degraded_call_tool_result(class: ShimFailureClass, message: &str) -> CallTool
 
 // ── Server entry point ────────────────────────────────────────────────────────
 
+/// Type-erased stdio pair rmcp binds as its transport.
+type StdioTransportPair = (
+    Box<dyn tokio::io::AsyncRead + Send + Unpin>,
+    Box<dyn tokio::io::AsyncWrite + Send + Unpin>,
+);
+
+/// Build the stdio transport rmcp consumes, interposing the pre-`initialize`
+/// compatibility window when it is enabled.
+///
+/// When enabled (the default), a narrow filter answers Copilot's pre-handshake
+/// `server/discover` probe with JSON-RPC `-32601` and keeps the session alive
+/// for the real `initialize`; every other frame reaches rmcp unchanged. Both
+/// halves become in-memory pipes so a single background task owns the real
+/// stdout and is its only writer. When `ENGRAM_MCP_PREINIT_COMPAT=0`, this
+/// returns bare stdin/stdout so the transport matches
+/// `rmcp::transport::io::stdio()` and strict rmcp handshake ordering is
+/// restored. See [`crate::shim::preinit_compat`].
+fn stdio_transport() -> StdioTransportPair {
+    if crate::shim::preinit_compat::compat_enabled() {
+        let interposed = crate::shim::preinit_compat::interpose_pre_initialize_filter(
+            tokio::io::stdin(),
+            tokio::io::stdout(),
+        );
+        (Box::new(interposed.reader), Box::new(interposed.writer))
+    } else {
+        (Box::new(tokio::io::stdin()), Box::new(tokio::io::stdout()))
+    }
+}
+
 /// Start the shim MCP server over stdio.
 ///
 /// Binds the transport and answers `initialize`/`tools/list` immediately.
@@ -245,7 +274,7 @@ pub async fn run_shim(
     timeout: Duration,
 ) -> Result<(), EngramError> {
     let handler = ShimHandler::new(startup, timeout);
-    let transport = rmcp::transport::io::stdio();
+    let transport = stdio_transport();
 
     let running = rmcp::serve_server(handler, transport).await.map_err(|e| {
         EngramError::ShimStartup(ShimStartupError {

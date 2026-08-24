@@ -161,6 +161,14 @@ name = "contract_shim_stdout_purity"
 path = "tests/contract/shim_stdout_purity_test.rs"
 
 [[test]]
+name = "contract_shim_pre_initialize_probe"
+path = "tests/contract/shim_pre_initialize_probe_test.rs"
+
+[[test]]
+name = "integration_shim_copilot_compat"
+path = "tests/integration/shim_copilot_compat_test.rs"
+
+[[test]]
 name = "contract_doctor_health"
 path = "tests/contract/doctor_health_test.rs"
 
