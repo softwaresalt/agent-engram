@@ -1,6 +1,8 @@
 ---
 title: "Workspace identity plans — adversarial review dispatch blocker"
 type: review-blocker
+doc_type: decision
+source: "operator-requested adversarial review gate"
 date: 2026-08-24
 status: blocked
 plans:

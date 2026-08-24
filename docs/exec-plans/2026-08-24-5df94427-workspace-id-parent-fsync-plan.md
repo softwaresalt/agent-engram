@@ -1,6 +1,7 @@
 ---
 title: "Fsync the workspace identity parent directory through capability APIs"
 type: implementation-plan
+doc_type: plan
 date: 2026-08-24
 status: blocked-review
 source: docs/decisions/2026-08-24-workspace-id-parent-fsync-decision.md

@@ -1,6 +1,8 @@
 ---
 title: "Cloud-placeholder Git admission verification"
 type: spike
+doc_type: decision
+source: "stash 49000348; shipment 121-S closure observation"
 date: 2026-08-24
 time_box: "2h"
 conclusion: defer

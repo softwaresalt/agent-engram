@@ -1,6 +1,8 @@
 ---
 title: "Workspace authority follow-up sequencing"
 type: deliberation-outcome
+doc_type: decision
+source: "stashes 1CB366DB and 7B15B447; PR #353 review"
 date: 2026-08-24
 status: decided
 source_stash_ids: ["1CB366DB", "7B15B447"]

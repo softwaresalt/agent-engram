@@ -1,6 +1,7 @@
 ---
 title: "Compose lifecycle bind values from one retained workspace proof"
 type: implementation-plan
+doc_type: plan
 date: 2026-08-24
 status: blocked-review
 source: docs/decisions/2026-08-24-workspace-authority-followups-deliberation.md

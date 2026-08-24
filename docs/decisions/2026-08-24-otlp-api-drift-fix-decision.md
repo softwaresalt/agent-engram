@@ -1,6 +1,8 @@
 ---
 title: "Repair pinned OpenTelemetry 0.26 API usage"
 type: decision
+doc_type: decision
+source: "stash 44E573BC"
 date: 2026-08-24
 status: decided
 source_stash_id: "44E573BC"

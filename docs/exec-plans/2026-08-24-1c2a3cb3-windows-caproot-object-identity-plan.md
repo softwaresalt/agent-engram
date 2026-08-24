@@ -1,6 +1,7 @@
 ---
 title: "Prove Windows canonical name and CapRoot identify one object"
 type: implementation-plan
+doc_type: plan
 date: 2026-08-24
 status: blocked-review
 source: docs/decisions/2026-08-24-windows-caproot-object-identity-spike.md

@@ -1,6 +1,7 @@
 ---
 title: "Repair optional OTLP feature against pinned OpenTelemetry 0.26"
 type: implementation-plan
+doc_type: plan
 date: 2026-08-24
 status: reviewed
 source: docs/decisions/2026-08-24-otlp-api-drift-fix-decision.md

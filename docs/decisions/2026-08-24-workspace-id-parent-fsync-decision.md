@@ -1,6 +1,8 @@
 ---
 title: "Capability-safe parent-directory durability for workspace identity"
 type: decision
+doc_type: decision
+source: "stash 5DF94427; PR #353 review"
 date: 2026-08-24
 status: decided
 source_stash_id: "5DF94427"

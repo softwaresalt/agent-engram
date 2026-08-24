@@ -1,6 +1,8 @@
 ---
 title: "Safe Windows object identity from a retained CapRoot"
 type: spike
+doc_type: decision
+source: "stash 1C2A3CB3; shipment 121-S closure residual"
 date: 2026-08-24
 time_box: "2h"
 conclusion: proceed
