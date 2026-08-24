@@ -20,9 +20,10 @@ worktree `.worktrees/post-merge-124-s-closure-20260823` on branch
 
 The test that actually validates the shipped behavior is the live Windows run
 of the real client against the compatibility window. It was recorded in the
-124-S ship session memory
-(`docs/memory/2026-08-23/ship-124-s-copilot-preinit-compat-session.md`,
-committed as `189a90e0`):
+124-S ship session memory, committed as `189a90e0` at
+`docs/memory/2026-08-23/ship-124-s-copilot-preinit-compat-session.md` and
+relocated by this closure to
+`docs/archive/memory/2026-08-23/ship-124-s-copilot-preinit-compat-session.md`:
 
 | Field | Value |
 |---|---|
