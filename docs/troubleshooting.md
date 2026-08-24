@@ -201,3 +201,114 @@ record:
    early.
 4. If the `binary_version` in the record predates your expected release, see
    [Version-skew signal](#version-skew-signal) above.
+
+## Pre-initialize `server/discover` probe (Copilot CLI compatibility)
+
+GitHub Copilot CLI `1.0.81-8` (a **prerelease**; the latest stable at the time
+of writing is `1.0.80`) sends a JSON-RPC request with method `server/discover`
+and request id `0` **before** it sends MCP `initialize`. The MCP specification
+requires `initialize` to be the first request, and the rmcp handshake enforces
+that strictly: it rejected the probe with `expect initialized request` and
+terminated, which the client observed as a broken pipe and which classified as
+`transport_failure` (exit `13`).
+
+Since 130-F, the shim opens a narrow **pre-initialize compatibility window**
+that tolerates exactly this probe.
+
+### The contract
+
+While the session is waiting for `initialize`:
+
+| Inbound frame | Shim behavior |
+|---|---|
+| `initialize` | Forwarded to rmcp unchanged; the window closes permanently |
+| `server/discover` **with** an id | Answered with JSON-RPC `-32601` (`Method not found`), echoing the request id verbatim and type-preserving; not forwarded; the window stays open |
+| `server/discover` **without** an id | Dropped silently — JSON-RPC forbids responding to a notification; the window stays open |
+| Anything else | Forwarded to rmcp unchanged, preserving existing ordering and error semantics |
+
+The interception allowlist is **exactly one method**. Unknown id-bearing
+methods are deliberately *not* absorbed: they still reach rmcp's strict path
+so genuine client ordering bugs remain visible rather than being masked.
+
+`server/discover` is undocumented in the `1.0.81-8` prerelease notes and may be
+prerelease-only, so the shim does not attempt to implement it. Answering
+`-32601` is the conservative choice and matches the GitHub MCP server, which
+returns `method invalid during initialization` for the same probe in the same
+Copilot run and which Copilot demonstrably tolerates.
+
+Request id `0` is echoed as the JSON **number** `0`. Zero is a classic
+falsy-id serialization hazard: coercing it to `null`, to an absent field, or to
+the string `"0"` would leave the client unable to correlate the response.
+
+### Kill switch and rollback
+
+| Variable | Default | Effect |
+|---|---|---|
+| `ENGRAM_MCP_PREINIT_COMPAT` | enabled | Set to `0` to disable the compatibility window and restore strict rmcp handshake ordering |
+
+Rollback options, cheapest first:
+
+1. **Runtime** — set `ENGRAM_MCP_PREINIT_COMPAT=0` in the MCP client's server
+   definition. No redeploy or reinstall is required. With the switch off, a
+   pre-initialize probe again produces `transport_failure` (exit `13`).
+2. **Source** — the production change is confined to `src/shim/preinit_compat.rs`
+   and the transport binding in `src/shim/transport.rs`. A single `git revert`
+   of the implementation commit restores the prior behavior. The test files are
+   additive and safe to leave in place.
+
+Because the window is armed only before `initialize`, any rollback affects only
+the handshake window — never a live session's tool traffic.
+
+### Retiring this compatibility layer
+
+This layer exists for a **prerelease** client defect. At the time it shipped
+there was no public `github/copilot-cli` issue tracking the behavior, so it
+cannot be retired by watching an upstream ticket. Retire it deliberately when
+both of the following hold:
+
+* the Copilot CLI releases in use no longer send `server/discover` before
+  `initialize`, and
+* the contract tests in `tests/contract/shim_pre_initialize_probe_test.rs` are
+  removed in the same change as the production module.
+
+Until then, treat the window as load-bearing for Copilot CLI users on Windows.
+
+### Windows verification runbook
+
+Verify against **both** Copilot CLI channels. Do not change the installed
+Copilot version as part of this procedure.
+
+1. Build and install the shim under test, then confirm the running build:
+
+   ```powershell
+   engram --version
+   ```
+
+2. Confirm the compatibility window is active by driving the exact Copilot
+   ordering over stdio:
+
+   ```powershell
+   $probe = '{"jsonrpc":"2.0","id":0,"method":"server/discover","params":{}}'
+   $init  = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"runbook","version":"1.0"}}}'
+   $probe, $init | engram shim --workspace .
+   ```
+
+   Expect a first frame carrying `"error":{"code":-32601,...}` with `"id":0`
+   as a number, followed by a successful `initialize` result. A closed pipe
+   after the first frame means the window is disabled or the binary is stale.
+
+3. Launch Copilot CLI `1.0.81-8` (prerelease) with **only** Engram enabled and
+   confirm the MCP connection reports no initialization failure, that
+   `/mcp show engram` lists the server as connected, and that `tools/list`
+   returns the full catalog.
+
+4. Repeat step 3 against stable Copilot CLI `1.0.80` and confirm the behavior
+   is unchanged — the window is a no-op for clients that never send the probe.
+
+5. Disconnect cleanly and confirm the shim exits `0`, not `13`.
+
+6. Confirm the daemon readiness budget is **unchanged**: `ENGRAM_READY_TIMEOUT_MS`
+   must have the same default as before this change. Increasing the readiness
+   timeout was explicitly rejected as a fix — it masks the symptom without
+   addressing the handshake ordering defect.
+

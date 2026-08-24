@@ -43,6 +43,7 @@ These flags are available on the CLI parity commands.
 | `ENGRAM_OTLP_ENDPOINT` | Daemon | OTLP export target when built with `otlp-export` |
 | `ENGRAM_DATA_DIR` | Storage | Override the data directory for direct mode or daemon-managed launches; default is `{workspace}/.engram` |
 | `ENGRAM_READY_TIMEOUT_MS` | Shim | How long the shim waits for a daemon to become ready |
+| `ENGRAM_MCP_PREINIT_COMPAT` | Shim | Pre-`initialize` MCP compatibility window (default enabled). `0` restores strict rmcp handshake ordering. See [troubleshooting](troubleshooting.md#pre-initialize-serverdiscover-probe-copilot-cli-compatibility) |
 | `ENGRAM_IDLE_TIMEOUT_MS` | Daemon | Idle timeout override in milliseconds |
 | `ENGRAM_DIRECT` | CLI indexing | Makes `engram sync` or `engram index` run in direct mode |
 | `ENGRAM_CLI_TIMEOUT` | CLI | Default timeout override for parity commands |
