@@ -1,0 +1,7 @@
+{
+  "filename": "checkpoint-20260819-064922.json",
+  "disposition": "quarantined",
+  "reason": "Legacy Stage-complete checkpoint is schema-invalid and has been superseded by completed Stage state",
+  "operator": "Ship",
+  "disposition_at": "2026-08-24T19:20:34.3323295Z"
+}
