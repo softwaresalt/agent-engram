@@ -9,6 +9,7 @@ branch: stage/dark-factory-cycle2-20260824-1540
 pull_request: 363
 starting_head: 543e378be9bc7a2541889b2f011dd2c69b7ca154
 planning_commit: 57e88065322d14c82aba7ad0542672a785196cfd
+traceability_commit: 13b626f639c0153de02968ed46eb47a6cf77079e
 ---
 
 # PR 363 OTLP task-width remediation memory
@@ -60,6 +61,10 @@ Backlog artifacts under `.backlogit/queue/` for 125-S and 131-F/children; the OT
 - Scope/diff: all 17 changed paths are OTLP backlog or planning/memory artifacts; no source, test, manifest, lockfile, config, blocked security shipment, or unrelated path changed; `git diff --check` passes.
 - No build, test suite, or linter was run because Stage is planning-only.
 
+## Publication
+
+The same branch was pushed normally with no force. Both requested threads received commit/evidence replies and are resolved; the post-resolution GraphQL check reports zero unresolved threads. PR comment `issuecomment-5405090410` records remediation of suppressed review 5014783124. The substantive correction remains commit `57e88065322d14c82aba7ad0542672a785196cfd`; commit `13b626f639c0153de02968ed46eb47a6cf77079e` carries the machine-readable PR/shipment/feature/review/reference trailers.
+
 ## Next steps
 
-Commit normally with PR/shipment/feature/review/reference trailers; push the same branch; reply to both unresolved threads with commit evidence and resolve only if fully addressed; add a PR comment recording suppressed finding remediation. Ship must not claim 125-S until the remaining exact-head guards pass.
+Await a clean external review on the exact final PR #363 head and integration of that head to `origin/main`. Review alone does not authorize claim. Ship must also recheck zero unresolved/adverse state, no active competing shipment, and the exact 125-S roster/dependency chain. Until then, keep 125-S queued and unclaimed and keep blocked security shipments unchanged.
