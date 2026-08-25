@@ -92,6 +92,10 @@ No Cargo command from the planned RED sequence was executed because Stage is pla
 
 The mandatory assessment counted 150 memory files, 71 plans, and 113 closure files. Current PR 363 plans and memories support queued or blocked work and cannot be compacted. Broad historical compaction would violate the bounded remediation scope. Files compacted: 0. Decided plans created: 0. Active artifacts preserved.
 
+## Publication
+
+Substantive planning commit `7f36eed8de3f4fb7c0335497da3652636151f0b3` was pushed normally. PR 363 reflected that commit before thread closure. All five exact review threads received path and design evidence replies and are resolved; the post-resolution GraphQL check reported zero unresolved threads. The branch remained clean and the remote matched the local commit before this final continuity record.
+
 ## Next steps
 
-Commit normally with review, shipment, feature, thread, and stash trailers; push the same planning branch; reply to all five threads with commit and path evidence; resolve only after the exact pushed commit is visible; then run final backlog sync and report the new HEAD. Ship may apply the proposed PR title/body facts and later claim only after every 125-S guard passes.
+Ship may apply the proposed PR title/body facts, obtain any required exact-final-head review, and later claim only after every 125-S guard passes. The current PR title still says eight tasks and must not be treated as authoritative; the reviewed backlog roster has thirteen tasks plus parent.

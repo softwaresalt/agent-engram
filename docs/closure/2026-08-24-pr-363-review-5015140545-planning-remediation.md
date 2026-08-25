@@ -42,7 +42,7 @@ Deliberations `021-D` and `022-D` are semantic archives of accepted deliberation
 
 ## Review gate
 
-Plan hardening and standard review were rerun after the redesign. Gate: **PASS** with no unresolved P0 or P1 planning finding. Cross-model and intercom dispatch were unavailable and are disclosed in the plan. External review threads remain unresolved until a commit with validated evidence exists.
+Plan hardening and standard review were rerun after the redesign. Gate: **PASS** with no unresolved P0 or P1 planning finding. Cross-model and intercom dispatch were unavailable and are disclosed in the plan. Substantive commit `7f36eed8de3f4fb7c0335497da3652636151f0b3` was pushed; all five exact external review threads received evidence replies and are resolved, with zero unresolved PR threads at verification.
 
 ## PR metadata proposal for Ship
 
