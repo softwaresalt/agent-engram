@@ -4,7 +4,7 @@ type: review-remediation
 doc_type: closure
 source: PR 363 reviews 5015373740 and 5015447062 at b1232cc4ec95015ef337c2ffa5b4055f009960f1
 date: 2026-08-24
-status: remediation-applied-pending-publication
+status: published-threads-resolved
 ---
 
 # PR 363 exact-head five-blocker planning remediation
@@ -104,4 +104,4 @@ Daemon-key exact-head hardening: required and blocked. Standard review returns F
 
 ## Publication and thread state
 
-Pending normal commit/push. After publication, reply to and resolve the five bot threads only with exact remediation evidence, record suppressed findings, and re-query unresolved-thread state. No PR #362 operation is permitted.
+Substantive commit `7068ecb43b3b8cb28a0b36fffd1c13fe7b84ea2c` was pushed normally. Evidence replies were posted to all five exact bot comments and threads `PRRT_kwDORJEduc6b8xO2`, `PRRT_kwDORJEduc6b8_IN`, `PRRT_kwDORJEduc6b8_Id`, `PRRT_kwDORJEduc6b8_Ik`, and `PRRT_kwDORJEduc6b8_I0` were resolved. GraphQL re-query at that head returned zero unresolved threads. Reply review IDs are `5015614628`, `5015614634`, `5015614639`, `5015614643`, and `5015614674`. No PR #362 operation occurred.
