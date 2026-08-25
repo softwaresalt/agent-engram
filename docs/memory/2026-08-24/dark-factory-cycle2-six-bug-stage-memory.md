@@ -38,7 +38,7 @@ Risk rank differs from execution order: 7B15B447 must precede 1CB366DB by depend
 
 1. `7B15B447` and `1CB366DB` are separate ordered release units, not one broad shipment. Deliberations `022-D` and `021-D` are accepted.
 2. The safe Windows identity blocker was overturned: public `cap_fs_ext::MetadataExt` in pinned 4.0.2 exposes handle-derived `dev()/ino()` on Windows. ReFS 128-bit IDs remain an explicit caveat. Deliberation `024-D` is blocked only at adversarial review.
-3. Parent-directory fsync is reachable safely through `Dir::reopen_dir`, `into_std_file`, and `sync_all`; no ambient path/unsafe required. Deliberation `025-D` is blocked at adversarial review.
+3. Parent-directory fsync is reachable safely on Unix through `Dir::reopen_dir`, `into_std_file`, and `sync_all`; no ambient path/unsafe required. Current-HEAD PR review preserved Windows as an explicit residual because cap-std's read-only directory handle cannot satisfy `FlushFileBuffers` write access. Deliberation `025-D` is blocked at adversarial review.
 4. Cloud placeholders require a disposable real OneDrive/Dropbox repository with dehydrated `.git` evidence. `023-D` and the spike remain blocked; 124-S is only an ordinary Windows control.
 5. OTLP uses newer API names against the direct 0.26 stack, while `tracing-opentelemetry` 0.26 introduces an incompatible 0.25 type family. Current-HEAD PR review corrected the direction to an exact bridge alignment (`tracing-opentelemetry` 0.27) plus code-to-0.26 adaptation, not a broad telemetry upgrade.
 

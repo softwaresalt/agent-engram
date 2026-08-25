@@ -1,5 +1,5 @@
 ---
-title: "Fsync the workspace identity parent directory through capability APIs"
+title: "Fsync the Unix workspace identity parent directory through capability APIs"
 type: implementation-plan
 doc_type: plan
 date: 2026-08-24
@@ -8,34 +8,35 @@ source: docs/decisions/2026-08-24-workspace-id-parent-fsync-decision.md
 source_stash_id: "5DF94427"
 ---
 
-# Fsync the workspace identity parent directory through capability APIs
+# Fsync the Unix workspace identity parent directory through capability APIs
 
 ## Problem Frame
 
-The staged identity file is content-synced before `hard_link`/rename publication, but `.engram` itself is not synced after the final directory entry is created and staging cleanup completes. A Unix crash can lose `.workspace-id` and remint identity.
+The staged identity file is content-synced before `hard_link`/rename publication, but `.engram` itself is not synced after the final directory entry is created and staging cleanup completes. A Unix crash can lose `.workspace-id` and remint identity. The safe `reopen_dir`/`into_std_file`/`sync_all` route is Unix-only: cap-std's Windows directory handle lacks the write access required by `FlushFileBuffers`.
 
 ## Requirements Trace
 
 | Requirement | Implementation action |
 |---|---|
-| Capability-safe directory fsync | U2 uses safe `Dir::reopen_dir` plus `into_std_file().sync_all()`. |
-| Correct ordering | U1 RED requires content sync, publish, cleanup, parent sync, then success. |
-| Error honesty | U1/U2 require parent-sync failure to prevent success. |
+| Capability-safe Unix directory fsync | U2 uses safe `Dir::reopen_dir` plus `into_std_file().sync_all()` behind `cfg(unix)`. |
+| Correct Unix ordering | U1 RED requires content sync, publish, cleanup, parent sync, then success. |
+| Error honesty | U1/U2 require Unix parent-sync failure to prevent success. |
+| Windows safety | U1/U2 prove Windows does not call the write-required flush and preserves current behavior as a residual. |
 | Preserve publication semantics | Hard-link-first and checked-rename fallback remain unchanged. |
 
 ## Implementation Units
 
 ### U1 — RED: publish protocol ordering
 
-Add a colocated deterministic protocol hook and tests in `src/db/workspace.rs`. One success scenario must record `file-sync -> publish -> cleanup -> parent-sync -> return`; one injected parent-sync failure must not report success. Current code must fail because no parent-sync event exists. Test-only seam, two scenarios, target 90 minutes.
+Add a colocated deterministic platform-gated protocol hook and tests in `src/db/workspace.rs`. On Unix, one success scenario must record `file-sync -> publish -> cleanup -> parent-sync -> return`, and one injected parent-sync failure must not report success. On Windows, require the parent-sync event to be absent so first bind never routes a read-only directory handle into `FlushFileBuffers`. Current Unix code must fail because no parent-sync event exists. Test-only seam, three platform-gated scenarios, target 100 minutes.
 
 ### U2 — GREEN: safe parent-directory sync
 
-Add a private safe helper that duplicates/reopens the retained directory capability, converts the duplicate to `std::fs::File`, and calls `sync_all()`. Invoke it after final-name publication and staging cleanup before returning success. Preserve the publication error when publication failed; do not silently report durability after sync failure. No ambient path, raw handle, unsafe, dependency change, or broad publish rewrite. One file, fewer than four functions, target 90 minutes.
+Behind `cfg(unix)`, add a private safe helper that duplicates/reopens the retained directory capability, converts the duplicate to `std::fs::File`, and calls `sync_all()`. Invoke it after final-name publication and staging cleanup before returning Unix success. Preserve the publication error when publication failed; do not silently report durability after sync failure. On Windows, do not invoke this helper or claim a parent-entry durability barrier. No ambient path, raw handle, unsafe, dependency change, or broad publish rewrite. One file, fewer than four functions, target 90 minutes.
 
 ### U3 — Platform verification and closure
 
-Run targeted RED/GREEN evidence, concurrent cold-start identity coverage, primary/worktree bind, Windows/Linux CI, and a Unix filesystem check confirming directory sync succeeds. Record Windows behavior rather than assuming parity. Verification only, target 90 minutes.
+Run targeted RED/GREEN evidence, concurrent cold-start identity coverage, primary/worktree bind, Windows/Linux CI, and a Unix filesystem check confirming directory sync succeeds. Confirm Windows first bind remains green with no parent-sync attempt and record the durability residual. Verification only, target 90 minutes.
 
 ## Dependency Graph
 
@@ -51,7 +52,7 @@ Run targeted RED/GREEN evidence, concurrent cold-start identity coverage, primar
 
 | Risk | Mitigation |
 |---|---|
-| Directory `sync_all` platform behavior differs | Unix is mandatory; record and disposition Windows explicitly. |
+| Windows `FlushFileBuffers` requires write access absent from cap-std's directory handle | Compile/invoke the helper only on Unix; preserve and document the Windows residual. |
 | Sync failure masks publish race semantics | Preserve `AlreadyExists`/publish errors; only success requires durability. |
 | Added fsync affects startup latency | Measure cold start and use the 121-S absolute budget. |
 
@@ -67,7 +68,7 @@ Requires plan hardening: yes
 
 ## Runtime Verification and Closure
 
-Success signal: persisted ID survives restart and concurrent starters agree; Unix directory sync succeeds; no ambient access. Roll back U2 on legitimate bind failure or startup latency above budget. Owner: Ship; 48-hour observation for identity/key stability.
+Success signal: persisted ID survives restart and concurrent starters agree; Unix directory sync succeeds; Windows first bind does not attempt the barrier; no ambient access. Roll back U2 on legitimate bind failure or startup latency above budget. Owner: Ship; 48-hour observation for identity/key stability. Windows crash durability remains open.
 
 ## Plan Hardening
 
@@ -75,7 +76,7 @@ Success signal: persisted ID survives restart and concurrent starters agree; Uni
 |---|---|---|---|---|---|
 | Add parent-directory durability barrier | `src/db/workspace.rs` | high | revert U2; restore known durability residual | preferred | planned |
 
-Protected invariants: atomic complete-content publication, no-clobber on hard-link filesystems, checked fallback, same retained authority, no false crash test claim.
+Protected invariants: atomic complete-content publication, no-clobber on hard-link filesystems, checked fallback, same retained authority, no false crash test claim, and no write-required flush through a read-only Windows directory handle.
 
 ## Plan Review
 
@@ -86,8 +87,9 @@ Gate: **PASS (standard review only)**. Hardening required and present.
 | A1 | P1 | Consuming the only `Dir` could lose authority needed for read-back. | Resolved: reopen/duplicate first, consume only the duplicate. |
 | T1 | P1 | A simple restart test does not prove crash durability. | Resolved: protocol-order RED plus explicit operational claim limits. |
 | S1 | P1 | Sync before cleanup does not durably remove staging residue. | Resolved: cleanup precedes the parent sync. |
+| W1 | P1 | Applying `sync_all()` to cap-std's read-only Windows directory handle would fail first bind. | Resolved: U1/U2 make the barrier Unix-only and preserve the Windows residual. |
 
-No unresolved standard-review P0/P1 finding remains. Review-fix cycles: 1 of 3.
+No unresolved standard-review P0/P1 finding remains. Review-fix cycles: 2 of 3.
 
 ## Adversarial Multi-Model Review
 
