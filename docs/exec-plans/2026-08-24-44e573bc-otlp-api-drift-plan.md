@@ -3,10 +3,10 @@ title: Align the tracing bridge and retain the OpenTelemetry 0.26 provider lifec
 type: implementation-plan
 doc_type: plan
 date: 2026-08-24
-status: reviewed
+status: review
 source: docs/decisions/2026-08-24-otlp-api-drift-fix-decision.md
 source_stash_id: 44E573BC
-review_source: PR 363 reviews 5015373740, 5015447062, 5015636140, and 5015710467
+review_source: PR 363 reviews 5015373740, 5015447062, 5015636140, 5015710467, 5015926424, and 5016087555; backlog review 131.001-R
 ---
 
 # Align the tracing bridge and retain the OpenTelemetry 0.26 provider lifecycle
@@ -41,19 +41,22 @@ A queue can contain multiple batches or an in-flight export before the cleanup r
 | Requirement | Planned owner |
 |---|---|
 | Compiling initial RED | U1 uses `cozo-backend` while keeping `otlp-export` disabled in the outer meta-harness. |
-| Correct isolated feature graph | U1/U2/U3 use `cozo-backend,otlp-export` for nested graph/compile commands. |
+| Correct isolated feature graph | U1/U2/U3 use `cozo-backend,otlp-export` for nested graph and compile commands. |
 | One OpenTelemetry family | U2 changes only the bridge and lockfile. |
 | Compiling optional target | U3 repairs supported 0.26 APIs while preserving lifecycle defects. |
-| Explicit test seam | U4 introduces behavior-neutral exporter and tracing-pipeline interfaces. |
-| Compiling provider RED | U5 first proves the layer-held tracer/provider clone exports, then fails only for the missing separately accessible application lifecycle/flush handle and source-owned per-export timeout. |
-| Application lifecycle control and per-export timeout | U6 returns an explicit provider lifecycle handle alongside the layer-held clone and applies source-owned batch-export policy. |
-| Compiling daemon RED | U7 tests parser precedence only in child processes created with `Command::env`/`env_remove`, plus exact endpoint handoff, attachment, and lifetime. |
+| Explicit tracing seam | U4 introduces behavior-neutral exporter and tracing-pipeline interfaces. |
+| Compiling provider RED | U5 proves layer-held export, then fails only for missing application control and per-export policy. |
+| Application lifecycle control | U6 returns an explicit provider handle and applies the per-export-future limit. |
+| Compiling daemon RED | U7 uses child-process environment setup and tests endpoint handoff, attachment, and lifetime. |
 | Endpoint propagation | U8 owns daemon CLI and typed handoff. |
 | Attachment and lifetime | U9 retains the owner through daemon use. |
 | Compiling cleanup RED | U10 tests returned and stalled synchronous cleanup through existing interfaces. |
-| Honest application cleanup bound | U11 isolates cleanup in one detached native worker and bounds only daemon wait. |
-| Runtime proof | U12 reruns every RED command unchanged and verifies residual semantics. |
-| Closure | U13 records dependency, quality, monitoring, and rollback evidence. |
+| Behavior-neutral spawn seam | U11 adds an injectable spawner and safe `Builder::spawn` adapter without launching work. |
+| Deterministic spawn-failure RED | U12 forces an `io::Error` after compilation and names U13 as GREEN owner. |
+| Safe worker launch and error propagation | U13 launches through `Builder::spawn`, maps failure to `EngramError`, and preserves owner residuals without panic or fallback. |
+| Honest application cleanup bound | U14 bounds only daemon wait and owns stall, channel-loss, panic, and precedence GREEN. |
+| Runtime proof | U15 reruns all five RED commands unchanged and verifies static safety. |
+| Closure | U16 records dependency, quality, monitoring, and rollback evidence. |
 
 ## Exact RED Sequence and Correct Feature Sets
 
@@ -98,22 +101,32 @@ cargo test --no-default-features --features cozo-backend,otlp-export --bin engra
 
 U10 uses fake synchronous cleanup methods with entered/release barriers. It proves returned flush results lead to one shutdown attempt; force-flush and shutdown stalls make the daemon wait time out at the injected/paused five-second deadline; and the result says completion unknown with a detached worker. The test releases and reaps the fake worker only after the production-facing assertion so the test process does not leak a thread. Current code is RED because U9 retains the owner but starts no cleanup worker.
 
+### RED E: cleanup-worker spawn failure
+
+```text
+cargo test --no-default-features --features cozo-backend,otlp-export --bin engram otlp_cleanup_spawn_failure_red -- --nocapture
+```
+
+U11 first supplies a behavior-neutral injectable `CleanupWorkerSpawner`; the daemon still launches no worker. U12 then installs a fake spawner that records one request and returns `std::io::ErrorKind::Other` with marker `forced cleanup-worker spawn failure`. The production bin and test compile before assertions execute. The intended RED is that the spawner is not called and no typed failure exists.
+
+GREEN belongs only to U13. A clean daemon must receive `EngramError::Daemon(DaemonError::SpawnFailed { reason })` or the repository-equivalent typed error. The diagnostic records `operation=otlp_cleanup_worker_spawn`, `cleanup_attempted=false`, `completion=not_started`, `worker_detached=false`, and `provider_residual=retained_for_process_lifetime`. `force_flush` and `shutdown` remain at zero. If a daemon error already exists, it remains primary and the complete spawn diagnostic is emitted once. No OS thread exhaustion, allocator pressure, sleep, panic hook, `unwrap`, `expect`, `panic`, `unsafe`, retry, or synchronous cleanup fallback is allowed.
+
 ## Cleanup Ownership and Honest Guarantees
 
 Two independent constants have non-overlapping meanings:
 
-* `OTLP_EXPORT_TIMEOUT = 5s` in `src/server/observability.rs`: maximum for each exporter future/batch as implemented by SDK 0.26. It can cancel/drop that future.
-* `OTLP_CLEANUP_WAIT_TIMEOUT = 5s` in `src/bin/engram.rs`: one total monotonic deadline for the daemon to await the complete cleanup worker sequence. It cancels only the channel wait.
+* `OTLP_EXPORT_TIMEOUT = 5s` in `src/server/observability.rs` limits each exporter future or batch in SDK 0.26.
+* `OTLP_CLEANUP_WAIT_TIMEOUT = 5s` in `src/bin/engram.rs` limits one daemon wait for the complete cleanup-worker sequence after successful launch.
 
-After the daemon future ends, the lifecycle runner launches exactly one `std::thread` worker and transfers the explicit provider owner into it. The worker emits phase signals, calls `force_flush()` once, and calls `shutdown()` once only if flush returns, whether success or error. If flush never returns, shutdown cannot be reached and is not reported as attempted. The daemon awaits completion/phase signals under the total wait deadline.
+U11 introduces an injectable spawner whose production adapter calls only `std::thread::Builder::new().name(...).spawn(job)` and returns the `Result`. The runner does not invoke it until U13. `std::thread::spawn`, `unwrap`, `expect`, `panic`, `unsafe`, `spawn_blocking`, runtime-owned cleanup tasks, joins, and retries are prohibited.
 
-On timeout the receiver is dropped, the native `JoinHandle` is not joined, and the caller returns a diagnostic with `last_phase`, `wait_limit`, `completion=unknown`, and `worker_detached=true`. There is no retry. Queued spans, exporter I/O, SDK method completion, and resource release may remain unresolved. A worker panic or channel close is reported distinctly.
+Before launch, caller and job hold separate `Arc` references to an ownership cell containing the explicit provider owner. After successful spawn, the caller releases its duplicate and the worker safely takes the owner. Lock poisoning or failed ownership transfer is propagated and diagnosed, never unwrapped. If `Builder::spawn` returns `Err`, dropping the failed job cannot drop the sole owner because the caller still retains it. The runner places that cell in an explicit safe process-lifetime residual holder, returns a typed `EngramError`, and logs that cleanup was not attempted. It never invokes synchronous cleanup or treats provider Drop as success.
 
-The launcher must not use Tokio `spawn_blocking`, a runtime-owned `JoinSet`, or any drop path that waits for the worker. A thread-spawn failure must return immediately and avoid treating provider Drop as successful cleanup; a process-lifetime ownership cell/leak is acceptable on this rare fail-exit path and must be logged as an unresolved resource residual. The global subscriber remains process-static rather than becoming a caller-side cleanup oracle.
+After successful launch, the worker emits phase signals, calls `force_flush()` once, and calls `shutdown()` once only if flush returns, whether success or error. If flush never returns, shutdown is not reported as attempted. The daemon awaits only phase and completion messages under one monotonic deadline.
 
-The bounded statement is: **OTLP cleanup contributes at most five seconds of daemon wait after successful worker launch.** It is not: "flush completed in five seconds", "shutdown completed in five seconds", or "the calls were canceled". The main future can return at the deadline because no runtime blocking task or join remains. Rust process termination does not wait for a detached native thread; normal binary exit terminates it and the OS reclaims process resources. If this runner were embedded in a process that continues running, the detached worker could continue indefinitely; such reuse is prohibited without a separate reaper/process-isolation design.
+On deadline, the receiver is dropped, the native `JoinHandle` is not joined, and the result records `last_phase`, `wait_limit`, `completion=unknown`, and `worker_detached=true`. Queued spans, exporter I/O, SDK completion, and resource release may remain unresolved. Worker panic or channel close is distinct from spawn failure and timeout. A clean daemon returns cleanup failure, spawn failure, channel failure, or timeout. If a daemon error already exists, it remains primary and the complete cleanup diagnostic is emitted once.
 
-A clean daemon returns cleanup failure/timeout. If daemon and cleanup both fail, the daemon error remains primary and the complete cleanup diagnostic is emitted to stderr before return.
+The bounded statement is: **after successful worker launch, OTLP cleanup contributes at most five seconds of daemon wait.** Spawn failure returns immediately. Neither statement claims that flush or shutdown completed or was canceled. Normal binary exit may terminate a detached worker; embedding this runner in a continuing process is prohibited without a reaper or process-isolation redesign.
 
 ## Implementation Units
 
@@ -157,19 +170,31 @@ Only `src/lib.rs` and the daemon arm/helper in `src/bin/engram.rs`, at most four
 
 One bin test module, at most four functions, three scenario groups, 105 minutes. Deterministic barriers plus paused Tokio time distinguish caller timeout from worker completion.
 
-### U11 / 131.011-T — GREEN detached cleanup worker
+### U11 / 131.011-T — SCAFFOLD injectable cleanup-worker spawner
 
-Only `src/bin/engram.rs`, at most four functions, three scenario groups, 115 minutes. One native worker, one total daemon-wait deadline, no join, honest residual reporting, and existing error precedence.
+Only `src/bin/engram.rs`, at most three functions or trait methods, two scenario groups, 60 minutes. Add the behavior-neutral injection point, safe named `Builder::spawn` adapter, and Arc-backed ownership-cell shape; launch no worker.
 
-### U12 / 131.012-T — VERIFY runtime
+### U12 / 131.012-T — RED deterministic spawn failure
 
-At most two unchanged evidence surfaces, zero production functions, three scenario groups, 90 minutes. Rerun all four corrected commands and verify no `spawn_blocking`/join path.
+One bin test module, at most four functions, three scenario groups, 90 minutes. The fake spawner returns a forced `io::Error`; compilation passes before missing invocation, typed-error, zero-cleanup, ownership-residual, and combined-precedence assertions fail.
 
-### U13 / 131.013-T — VERIFY quality and operations
+### U13 / 131.013-T — GREEN safe worker launch and spawn-error propagation
 
-At most two evidence surfaces, zero functions, three gate groups, 90 minutes. Record feature graph, quality, runtime, cleanup residual, monitoring, and rollback evidence.
+Only `src/bin/engram.rs`, at most four functions or trait methods, three scenario groups, 100 minutes. Launch once through `Builder::spawn`, preserve the returned `Result`, map failure into `EngramError`, retain the owner residual, and green nonstalling cleanup plus spawn-failure behavior. Deadline behavior remains RED.
 
-All estimates are 45-115 minutes and remain below the two-hour limit. Cleanup isolation remains one width-isolated implementation task, so no fourteenth task is required.
+### U14 / 131.014-T — GREEN bounded wait and lifecycle diagnostics
+
+Only `src/bin/engram.rs`, at most four functions, three scenario groups, 105 minutes. Add the one total daemon-wait deadline and green both stall phases, channel loss or panic, cleanup failure, and combined-error precedence without changing U13 spawn handling.
+
+### U15 / 131.015-T — VERIFY runtime
+
+At most two unchanged evidence surfaces, zero production functions, three scenario groups, 90 minutes. Rerun all five corrected RED commands and verify no forbidden launch, panic, unsafe, blocking-runtime, join, or fallback path.
+
+### U16 / 131.016-T — VERIFY quality and operations
+
+At most two evidence surfaces, zero functions, three gate groups, 90 minutes. Record feature graph, quality, runtime, spawn-failure residual, cleanup residual, monitoring, and rollback evidence.
+
+All estimates are 45-105 minutes and remain below the two-hour limit. Spawn abstraction, spawn-failure RED, worker-launch GREEN, and bounded-wait GREEN are separate width-isolated concerns.
 
 ## Dependency Graph and Shipment
 
@@ -178,16 +203,19 @@ Strict chain:
 ```text
 131.001-T -> 131.002-T -> 131.003-T -> 131.004-T -> 131.005-T
 -> 131.006-T -> 131.007-T -> 131.008-T -> 131.009-T -> 131.010-T
--> 131.011-T -> 131.012-T -> 131.013-T
+-> 131.011-T -> 131.012-T -> 131.013-T -> 131.014-T -> 131.015-T
+-> 131.016-T
 ```
 
-Thirteen tasks produce exactly twelve task dependency edges. Shipment `125-S` contains parent `131-F` plus all thirteen tasks in that order: fourteen items total. It remains sole queued and unclaimed. Blocked shipments `126-S` through `129-S` remain blocked.
+Sixteen tasks produce exactly fifteen task dependency edges. Shipment `125-S` contains parent `131-F` plus all sixteen tasks in that order: seventeen items total. Review `131.001-R` is outside the shipment roster and is the mandatory gate. Feature `131-F` and shipment `125-S` are blocked and unclaimable pending accepted escalation review. Shipments `126-S` through `129-S` remain blocked and untouched.
 
 ## Runtime Verification, Monitoring, and Rollback
 
-Ship reruns the corrected RED commands unchanged. Deterministic tests must observe the already-GREEN layer-held-clone export baseline, explicit application handle plus force-flush export, lifecycle-handle retention, one-export-future cancellation at the injected limit, subprocess-isolated endpoint precedence, returned cleanup sequencing, and timeout results that explicitly say completion unknown. Controlled subprocess verification holds a fake cleanup method past the deadline and proves the child exits within the five-second application wait plus a two-second harness allowance. That proves process exit does not join the worker; it does not prove SDK cleanup completed.
+Ship reruns all five RED commands unchanged. Deterministic tests observe layer-held export, explicit application-handle flush/export, subprocess endpoint precedence, deterministic fake-spawner failure, zero cleanup calls after failed spawn, typed `EngramError`, retained provider residual, returned cleanup sequencing, and timeout results that say completion unknown.
 
-For 30 minutes or three controlled exits, Ship monitors stderr/logs for export failure, cleanup-worker spawn failure, worker channel loss/panic, cleanup failure, cleanup-wait timeout, detached-worker outcome, and daemon exit duration. Healthy state is zero failure/timeout records and controlled exits below seven seconds. Any such failure, hidden residual, missing span, or feature-gate regression disables `otlp-export` and reverts the owning GREEN commits. Closure records whether any timed-out cleanup remained unresolved until process exit.
+Static and behavioral checks prove the production launcher uses `Builder::spawn` and contains no `std::thread::spawn`, `unwrap`, `expect`, `panic`, `unsafe`, `spawn_blocking`, runtime-owned join, retry, or synchronous fallback. Controlled subprocess verification holds a fake cleanup method past the deadline and proves exit within the five-second daemon wait plus a two-second harness allowance. That proves no join dependency, not SDK completion.
+
+For 30 minutes or three controlled exits, Ship monitors export failure, cleanup-worker spawn failure, worker channel loss or panic, cleanup failure, cleanup-wait timeout, retained or detached residual outcome, and exit duration. Healthy state is zero failure or timeout records and exits below seven seconds. Any failure, unexpected provider Drop fallback, hidden residual, missing span, or feature-gate regression disables `otlp-export` and reverts the owning GREEN commits. Closure records failed-spawn retention and whether timed-out cleanup remained unresolved until process exit.
 
 ## Plan Hardening — Exact-Head Rerun
 
@@ -201,60 +229,40 @@ Reinforcing context: strict-safety and release-observability instructions; pinne
 | Align dependency family | Cargo manifest and lockfile | moderate | Restore bridge 0.26 | no | planned |
 | Expose explicit application lifecycle control and apply per-export policy | Observability provider | high | Revert U6; disable feature | preferred before rollout | planned |
 | Wire endpoint and attachment | Daemon CLI and tracing init | moderate | Revert U8/U9 | no | planned |
-| Isolate synchronous cleanup in a detached native worker | Daemon lifecycle runner | high | Revert U11; disable feature | preferred before rollout | planned |
+| Add safe fallible worker launch and isolate synchronous cleanup | Daemon lifecycle runner | high | Revert U11-U14; disable feature | preferred before rollout | planned |
 | Verify residual behavior and observe | Focused harness and logs | low | Return defect to Stage | no | planned |
 
-Protected invariants: compiling REDs precede behavior GREENs; the layer-held tracer/provider clone is never misdescribed as dropped; explicit application cleanup control is tested separately from liveness; no test mutates process-global environment; no command omits `cozo-backend`; per-export and daemon-wait constants are never conflated; no synchronous call is described as cancellable; timeout diagnostics say completion unknown; no runtime-owned blocking task or join can extend daemon return; all work remains under two hours.
+Protected invariants: compiling REDs precede behavior GREENs; the layer-held tracer/provider clone is never misdescribed as dropped; failed spawn cannot drop the sole explicit owner or invoke synchronous fallback; all spawn errors propagate through `EngramError`; no `unwrap`, `expect`, `panic`, or `unsafe` exists in the production cleanup path; no test mutates process-global environment; no command omits `cozo-backend`; per-export and daemon-wait constants are never conflated; timeout diagnostics say completion unknown; no runtime-owned blocking task or join can extend daemon return; all work remains under two hours.
 
-## Standard Plan Review — Exact-Head Rerun
+## Standard Plan Review History and Mandatory Escalation
 
-Gate: **PASS**. Intercom and cross-model dispatch were unavailable, so the Stage caller ran constitution, Rust/API, architecture, scope, test-strategy, operational-readiness, learnings, and external-boundary security lenses locally. No unresolved P0/P1 remains.
+Gate: **BLOCKED PENDING MANDATORY ADVERSARIAL ESCALATION**. The prior local PASS language is withdrawn as an executable gate. Seven P1 findings were accumulated before review `5016087555`, crossing the repository threshold of three. Review `131.001-R` therefore requires the configured Adversarial Review workflow over the complete pinned PR planning scope.
 
-| ID | Persona | Severity | Finding | Disposition |
+| ID | Lens | Severity | Finding | Current plan disposition |
 |---|---|---|---|---|
-| R3 | Rust/API | P1 | Dropping the constructor-local provider cannot be the RED because the tracer clones the provider and the layer stores the tracer. | Resolved: U5 has an already-GREEN local-export retention baseline and fails only on the missing separately accessible lifecycle/flush handle; U6 owns that handle. |
-| T4 | Test strategy | P1 | Rust 2024 forbids in-process `set_var`/`remove_var`, and global environment mutation would race parallel tests. | Resolved: U7 self-relaunches child tests with `Command::env`/`env_remove`; children only read inherited state, compilation succeeds, and U8 owns runtime GREEN. |
-| R2 | Rust/API | P1 | SDK max export timeout does not bound synchronous provider cleanup. | Resolved: U6 limits its claim to each export future; U10/U11 bound only daemon wait and report completion unknown. |
-| A2 | Architecture | P1 | An async timeout around a blocking call would abandon runtime-owned work and could delay runtime shutdown. | Resolved: one detached `std::thread`, no `spawn_blocking`, no join, explicit process-exit residual. |
-| T3 | Test strategy | P1 | The timeout oracle could pass without proving the worker remained blocked. | Resolved: entered/release barriers, paused time, pending-at-4,999-ms check, and test-only release/reap. |
-| O2 | Operations | P1 | Timed-out resources and telemetry loss were undocumented. | Resolved: structured unknown/detached diagnostic, controlled child exit check, monitoring, rollback, and closure residual. |
-| C2 | Constitution | P1 | OTLP-only no-default commands compile unrelated missing Cozo surfaces. | Resolved: outer meta-harness uses `cozo-backend`; every OTLP graph/check/test command uses `cozo-backend,otlp-export`. |
-| S2 | Scope | P2 | Cleanup isolation might require another task. | Resolved: U11 stays one file, four functions, three scenario groups, 115 minutes; roster remains thirteen tasks. |
-| L1 | Learnings | P2 | Prior startup learning rejects inner-timeout-as-outer-bound reasoning. | Resolved in hardening and the two-constant design. |
-| X2 | Security | P3 | External exporter tests could cross network/credential boundaries. | Resolved by injected in-process fakes and no-network scope. |
+| R3 | Rust/API | P1 | Dropping the constructor-local provider is not a RED because the layer retains a tracer and provider clone. | U5 proves retained export, then fails on unavailable application control; U6 owns the handle. |
+| T4 | Test strategy | P1 | Rust 2024 forbids unsafe in-process environment mutation and parallel tests would race. | U7 uses only child-process `Command::env` and `env_remove`; U8 owns GREEN. |
+| R2 | Rust/API | P1 | SDK max export timeout does not bound synchronous cleanup. | U6 limits its claim to each export future; U10/U14 bound daemon wait only. |
+| A2 | Architecture | P1 | Async timeout around blocking cleanup could leave runtime-owned work and delay shutdown. | U13 uses a detached native worker; U14 waits only on a channel with no join. |
+| T3 | Test strategy | P1 | Timeout tests could pass without proving the worker remained blocked. | U10 uses entered and release barriers, paused time, 4,999 ms pending proof, and test-only reap. |
+| O2 | Operations | P1 | Timed-out resources and telemetry loss were undocumented. | U14-U16 require explicit unknown, retained or detached residual diagnostics, monitoring, and rollback. |
+| C2 | Constitution | P1 | OTLP no-default commands omitted required Cozo surfaces. | Every outer or nested command uses the exact required `cozo-backend` feature set. |
+| SPAWN-1 | Rust safety and lifecycle | P1 | Worker creation had no deterministic test-first failure seam and could panic or silently drop into cleanup. | U11 scaffolds injection, U12 compiles then fails deterministically, U13 owns safe `Builder::spawn` and `EngramError` GREEN, and U14 owns timeout behavior. |
 
-Review confirms a fourteen-item roster, thirteen tasks, exactly twelve dependency edges, 45-115 minute estimates, one sole queued/unclaimed shipment, and no claim that SDK cleanup completed after the daemon deadline.
+Secondary remediations remain in force: compile-first behavior failures name their GREEN owner; endpoint failures distinguish child invocation from assertion failure; the provider-retention baseline is already GREEN; and child stderr remains captured. The graph now has sixteen tasks, fifteen linear edges, seventeen shipment items, and estimates of 45-105 minutes.
 
-## Plan Hardening — Review 5015710467 Rerun
+### Escalation evidence gate
 
-Hardening remains **required and satisfied**. The new triggers are SDK ownership truth and Rust 2024 process-environment safety in addition to the existing external-export and cleanup risks. Reinforcing evidence includes the pinned SDK/bridge source above and `docs/compound/best-practices/rust-2024-set-var-unsafe-2026-05-07.md`.
+At least three independent reviewers must each directly cover architecture, security and TOCTOU, concurrency and lifecycle, Rust safety, scope and width, constitution, and every table entry above. Every counted response requires authoritative execution-system metadata that binds a stable task or response ID to the explicit invocation and model override, exact reviewed commit, reviewer slot, and exact instruction manifest. Checked-in routing, requested labels, and reviewer self-assertion are not sufficient.
 
-| ProposedAction | Targets | ActionRisk | Rollback | Approval required | ActionResult |
-|---|---|---|---|---|---|
-| Test layer-held SDK retention separately from application cleanup control | U4/U5 local exporter seam | moderate | Revert U4/U5 plan changes | no | planned |
-| Expose an explicit application provider handle for flush/shutdown | U6 observability pipeline | high | Revert U6; disable feature | preferred before rollout | planned |
-| Isolate endpoint environment cases in child test processes | U7/U8 test and CLI boundary | moderate | Revert U7/U8 | no | planned |
+HIGH-confidence P0/P1 blocks. Every MEDIUM finding must be fixed or explicitly deferred with rationale. LOW remains advisory. If fewer than three eligible receipts exist, no confidence calculation or consensus claim is permitted and `131-F`, `131.001-R`, and `125-S` remain blocked.
 
-Added guardrails: no provider-drop oracle; no in-process environment mutation; captured child stderr distinguishes runtime RED from invocation failure; controlled exporters and barriers avoid network and wall-clock races; all prior cleanup residual, monitoring, and rollback requirements remain.
-
-## Standard Plan Review — Review 5015710467 Rerun
-
-Gate: **PASS**. Stage reran constitution, Rust/API, architecture, scope, test strategy, operations, learnings, and external-boundary security lenses locally; cross-model/intercom dispatch was unavailable. No unresolved P0/P1 remains.
-
-| ID | Persona | Severity | Finding | Disposition |
-|---|---|---|---|---|
-| SDK-RETENTION-1 | Rust/API | P1 | The old RED could be GREEN because the layer retains a tracer that retains a provider clone. | Replaced with an already-GREEN retention baseline plus RED assertions for unavailable application lifecycle/flush control. |
-| ENV-1 | Constitution/Rust | P1 | Rust 2024 plus `forbid(unsafe_code)` prohibits in-process environment mutation. | U7 uses only safe `Command::env`/`env_remove` before child startup; child tests only read environment. |
-| RED-1 | Test strategy | P1 | RED failures must occur after compilation and identify a behavior owner. | U5 fails on `LifecycleUnavailable`/missing timeout for U6; U7 fails on runtime parser/resolution/handoff/attachment assertions for U8/U9. |
-| WIDTH-1 | Scope | P2 | Added safety mechanics could widen tasks. | No roster or dependency change: U5 remains 100 minutes/one file; U7 remains 105 minutes/two files; all tasks remain <=115 minutes. |
-| OPS-1 | Operations | P3 | Child failure output must remain diagnosable. | Parent includes child status/stdout/stderr and distinguishes spawn failure from intended nonzero assertion. |
-
-Review confirms tasks `131.001-T` through `131.013-T`, fourteen shipment items including `131-F`, exactly twelve task edges, sole queued/unclaimed `125-S`, and blocked `126-S` through `129-S`.
+Copilot review `5016087555` directly covered 78 of 78 files at source head `e00c650eb06073a67a9f228e1fd056c3c359ecb7`. That is source-head evidence only. This remediation expands the diff; final review evidence must state its own pinned commit and actual file count rather than inheriting 78/78.
 
 ## References
 
-- PR 363 reviews `5015373740`, `5015447062`, `5015636140`, and `5015710467`; threads `PRRT_kwDORJEduc6b9aPK` and `PRRT_kwDORJEduc6b9k1r`
-- Stash `44E573BC`; feature `131-F`; shipment `125-S`
+- PR 363 reviews `5015373740`, `5015447062`, `5015636140`, `5015710467`, `5015926424`, and `5016087555`; unresolved source-head comments `3850407649`, `3850407688`, and `3850544771`
+- Stash `44E573BC`; feature `131-F`; review `131.001-R`; shipment `125-S`
 - `Cargo.toml`, `Cargo.lock`
 - `src/server/observability.rs`, `src/lib.rs`, `src/bin/engram.rs`
 - `docs/decisions/2026-08-24-otlp-api-drift-fix-decision.md`
