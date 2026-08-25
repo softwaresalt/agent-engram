@@ -12,6 +12,10 @@ pull_request: 363
 
 # Dark factory cycle 5 adversarial review and harvest correction memory
 
+
+> [!IMPORTANT]
+> **HISTORICAL / SUPERSEDED.** Any queued-shipment, executable-handoff, old-roster, old-edge, or old reviewed-file statement below is source-head history only. It cannot authorize claim or implementation. Current authority: [PR #363 fail-closed planning authority](../../decisions/2026-08-25-pr-363-fail-closed-planning-authority.md).
+
 ## Scope and boundaries
 
 Stage reconciled the three adversarial reports against one execution-identity

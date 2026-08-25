@@ -14,6 +14,10 @@ status: superseded
 
 # PR 363 review 5015710467 Stage memory
 
+
+> [!IMPORTANT]
+> **HISTORICAL / SUPERSEDED.** Any queued-shipment, executable-handoff, old-roster, old-edge, or old reviewed-file statement below is source-head history only. It cannot authorize claim or implementation. Current authority: [PR #363 fail-closed planning authority](../../decisions/2026-08-25-pr-363-fail-closed-planning-authority.md).
+
 ## Supersession notice
 
 Historical source-head memory only. All thirteen-task, twelve-edge, fourteen-item, queued-shipment, and local-PASS statements below are superseded. Current authority is the mandatory-escalation closure and backlog artifacts `131-F`, `131.001-R`, and `125-S`: seventeen tasks, sixteen edges, eighteen shipment items, and failed-closed review.

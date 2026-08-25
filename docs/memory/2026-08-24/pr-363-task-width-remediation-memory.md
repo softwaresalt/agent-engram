@@ -14,6 +14,9 @@ traceability_commit: 13b626f639c0153de02968ed46eb47a6cf77079e
 
 # PR 363 OTLP task-width remediation memory
 
+> [!IMPORTANT]
+> **HISTORICAL / SUPERSEDED.** Any queued-shipment, executable-handoff, old-roster, old-edge, or old reviewed-file statement below is source-head history only. It cannot authorize claim or implementation. Current authority: [PR #363 fail-closed planning authority](../../decisions/2026-08-25-pr-363-fail-closed-planning-authority.md).
+
 ## Outcome
 
 Planning remediation is recorded in commit `57e88065322d14c82aba7ad0542672a785196cfd`. Stage retrieved the exact current review bodies and both unresolved threads before editing. Suppressed review 5014783124 identified the over-wide `131.002-T`; thread `discussion_r3849425228` required the RED title to name lifecycle scope; thread `discussion_r3849392979` identified contradictory compact-context totals. No source, test, config, build, linter, shipment claim, shipment close, PR merge, amend, force push, or blocked security-shipment mutation occurred.

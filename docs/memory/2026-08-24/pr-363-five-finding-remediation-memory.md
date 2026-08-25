@@ -12,6 +12,9 @@ starting_head: d4847e5ae2a1c7d89a1cb5f48fe48d770575dd9b
 
 # PR 363 five-finding fail-closed remediation memory
 
+> [!IMPORTANT]
+> **HISTORICAL / SUPERSEDED.** Any queued-shipment, executable-handoff, old-roster, old-edge, or old reviewed-file statement below is source-head history only. It cannot authorize claim or implementation. Current authority: [PR #363 fail-closed planning authority](../../decisions/2026-08-25-pr-363-fail-closed-planning-authority.md).
+
 ## Outcome
 
 The available record does not contain authoritative execution-system evidence

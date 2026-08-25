@@ -9,6 +9,9 @@ review_commit: "72600a33284148c6a13ef807812fd0e7e06d883a"
 
 # Dark factory cycle 5 four-plan adversarial review
 
+> [!IMPORTANT]
+> **HISTORICAL / SUPERSEDED.** Any queued-shipment, executable-handoff, old-roster, old-edge, or old reviewed-file statement below is source-head history only. It cannot authorize claim or implementation. Current authority: [PR #363 fail-closed planning authority](../decisions/2026-08-25-pr-363-fail-closed-planning-authority.md).
+
 ## Gate decision
 
 **FAILED CLOSED. No adversarial consensus was assembled.**

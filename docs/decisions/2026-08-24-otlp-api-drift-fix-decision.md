@@ -4,13 +4,17 @@ type: decision
 doc_type: decision
 source: stash 44E573BC
 date: 2026-08-24
-status: decided
+status: blocked
 source_stash_id: 44E573BC
 promoted_to:
   - docs/exec-plans/2026-08-24-44e573bc-otlp-api-drift-plan.md
 ---
 
 # Align the tracing bridge and repair OpenTelemetry 0.26 lifecycle usage
+
+
+> [!IMPORTANT]
+> **CURRENT FAIL-CLOSED AUTHORITY.** This decision is planning/history only. All 131 artifacts and shipment 125-S are blocked; no implementation claim is permitted until a future, separately staged release obtains three eligible complete-coverage reviewers. See [PR #363 fail-closed planning authority](2026-08-25-pr-363-fail-closed-planning-authority.md).
 
 ## Problem Frame
 
@@ -47,7 +51,7 @@ A native detached worker is deliberate: Tokio `spawn_blocking` tasks may delay r
 -> 131.016-T -> 131.017-T
 ```
 
-Seventeen tasks create sixteen edges and eighteen shipment items with `131-F`. Each task is 45-105 minutes, at most two files or evidence surfaces, at most four functions, at most three groups, one domain, and one atomic milestone. Review `131.001-R` and shipment `125-S` are blocked after the receipt-bound three-reviewer cohort produced zero complete eligible responses.
+Seventeen tasks create sixteen edges and eighteen shipment items with `131-F`. Each task is 45-105 minutes, at most two files or evidence surfaces, at most four functions, at most three groups, one domain, and one atomic milestone. Review `131.001-R`, feature `131-F`, every task `131.001-T` through `131.017-T`, and shipment `125-S` are blocked after the receipt-bound three-reviewer cohort produced zero complete eligible responses. PR #363 is planning/history only and cannot authorize implementation. A future, separately staged release must obtain three eligible complete-coverage reviewers before creating executable scope.
 
 ## Runtime and Rollback Decision
 

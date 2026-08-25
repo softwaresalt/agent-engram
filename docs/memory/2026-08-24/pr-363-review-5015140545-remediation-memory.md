@@ -13,6 +13,10 @@ superseded_by: PR 363 exact-head reviews 5015373740 and 5015447062
 
 # PR 363 review 5015140545 planning remediation memory
 
+
+> [!IMPORTANT]
+> **HISTORICAL / SUPERSEDED.** Any queued-shipment, executable-handoff, old-roster, old-edge, or old reviewed-file statement below is source-head history only. It cannot authorize claim or implementation. Current authority: [PR #363 fail-closed planning authority](../../decisions/2026-08-25-pr-363-fail-closed-planning-authority.md).
+
 > **Current-authority notice:** This is historical source-head evidence only. Every eight- or thirteen-task, twelve-edge, fourteen-item, queued-shipment, or local-PASS statement below is superseded and must not guide execution. Current authority is `131-F`, `131.001-R`, `125-S`, and `docs/closure/2026-08-25-pr-363-mandatory-escalation-review.md`: seventeen tasks, sixteen edges, eighteen roster items, and failed-closed review.
 
 ## Outcome

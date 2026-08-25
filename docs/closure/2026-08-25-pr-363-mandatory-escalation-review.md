@@ -18,11 +18,15 @@ reviewers_consensus_eligible: 0
 
 # PR 363 Mandatory Adversarial Escalation Review
 
+
+> [!IMPORTANT]
+> **CURRENT FAIL-CLOSED AUTHORITY.** This closure remains escalation evidence, not claim authority. The complete 131 task chain is blocked, no consensus is claimed, and no additional adversarial review is attempted for this PR. See [PR #363 fail-closed planning authority](../decisions/2026-08-25-pr-363-fail-closed-planning-authority.md).
+
 ## Gate decision
 
 **FAILED CLOSED / NO CONSENSUS.** The configured Adversarial Review workflow was invoked against the complete 83-file planning diff at exact commit `9d6c909e10cfc6ff836f464982145590d6d32a9e`. Execution-system CLI events authoritatively bind every returned response to its session, model call, model, message, exact prompt commit, and manifest. The simultaneous C/D/E cohort nevertheless has zero eligible responses because none directly covered all 83 files. No HIGH, MEDIUM, or LOW confidence classification is calculated.
 
-Feature `131-F`, review `131.001-R`, and shipment `125-S` remain blocked and unclaimable. No merge, claim, source implementation, test execution, amend, force push, or PR 362 change occurred.
+Feature `131-F`, review `131.001-R`, tasks `131.001-T` through `131.017-T`, and shipment `125-S` remain blocked and unclaimable. This release unit is permanently planning/history only; any implementation requires a future, separately staged release with three eligible complete-coverage reviewers. No merge, claim, source implementation, test execution, amend, force push, or PR 362 change occurred.
 
 ## Exact scope and instruction binding
 

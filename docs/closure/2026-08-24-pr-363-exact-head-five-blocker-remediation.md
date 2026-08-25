@@ -9,6 +9,10 @@ status: superseded-source-head-only
 
 # PR 363 exact-head five-blocker planning remediation
 
+
+> [!IMPORTANT]
+> **HISTORICAL / SUPERSEDED.** Any queued-shipment, executable-handoff, old-roster, old-edge, or old reviewed-file statement below is source-head history only. It cannot authorize claim or implementation. Current authority: [PR #363 fail-closed planning authority](../decisions/2026-08-25-pr-363-fail-closed-planning-authority.md).
+
 ## Supersession notice
 
 Historical evidence only. The thirteen-task, twelve-edge, fourteen-item, queued-shipment, and local-PASS statements below were true only for their pinned source head and must not guide current execution. Current authority is `125-S`, `131-F`, review `131.001-R`, the OTLP plan, and `docs/closure/2026-08-25-pr-363-mandatory-escalation-review.md`: seventeen tasks, sixteen edges, eighteen shipment items, and failed-closed review.

@@ -14,6 +14,10 @@ plans:
 
 # Workspace identity plans — adversarial review gate resolution
 
+
+> [!IMPORTANT]
+> **HISTORICAL / SUPERSEDED.** Any queued-shipment, executable-handoff, old-roster, old-edge, or old reviewed-file statement below is source-head history only. It cannot authorize claim or implementation. Current authority: [PR #363 fail-closed planning authority](2026-08-25-pr-363-fail-closed-planning-authority.md).
+
 ## Decision
 
 **BLOCKED / FAILED CLOSED.** The earlier resolution is reversed because the

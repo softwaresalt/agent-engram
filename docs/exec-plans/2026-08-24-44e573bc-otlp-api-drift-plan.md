@@ -11,6 +11,10 @@ review_source: PR 363 reviews 5015373740, 5015447062, 5015636140, 5015710467, 50
 
 # Align the tracing bridge and retain the OpenTelemetry 0.26 provider lifecycle
 
+
+> [!IMPORTANT]
+> **CURRENT FAIL-CLOSED AUTHORITY.** This hardened plan is non-executable history in PR #363. All 17 tasks are blocked. Only a future, separately staged release with three eligible complete-coverage reviewers may restage implementation. See [PR #363 fail-closed planning authority](../decisions/2026-08-25-pr-363-fail-closed-planning-authority.md).
+
 ## Problem Frame
 
 The optional `otlp-export` target cannot compile. `tracing-opentelemetry` 0.26 introduces OpenTelemetry 0.25 beside the direct 0.26 family, and `src/server/observability.rs` names APIs unavailable in 0.26. The builder returns only a tracing layer and has no production caller or explicit application cleanup handle. Pinned SDK semantics show that the layer owns a tracer, the tracer owns a cloned provider, and ending the constructor-local provider binding therefore does not stop span processing. The defect is inaccessible application lifecycle/flush ownership, not provider liveness.
@@ -253,7 +257,7 @@ Consensus-eligible reviewers: **0**. No HIGH, MEDIUM, or LOW confidence classifi
 
 Unweighted but source-supported observations caused bounded improvements: finite U10 watchdog; dedicated error code instead of daemon-process SpawnFailed; pinned bridge 0.27 retention evidence; isolated subscriber and fallible production install; single endpoint authority and redaction; explicit cleanup precedence; all four quality gates; fatal-exit and production diagnostic-sink gates; and corrected roster memories. The production sink is not assumed solved: U17 fails and returns to Stage if real topology discards diagnostics.
 
-No rerun follows this remediation because unchanged reviewer tooling already failed complete direct coverage; another identical run would not create an eligible denominator. A future review must bind at least three responses and directly cover every changed file and manifest entry. Feature `131-F`, review `131.001-R`, and shipment `125-S` remain blocked.
+No rerun follows this remediation because unchanged reviewer tooling already failed complete direct coverage; another identical run would not create an eligible denominator. A future, separately staged release must bind at least three eligible responses and directly cover every changed file and manifest entry. Feature `131-F`, review `131.001-R`, tasks `131.001-T` through `131.017-T`, and shipment `125-S` remain blocked. PR #363 itself is planning/history only and can never authorize an implementation claim.
 
 Copilot review `5016087555` covered 78/78 files at source head `e00c650eb06073a67a9f228e1fd056c3c359ecb7`. This remains source-head-only evidence and is not inherited by later commits.
 

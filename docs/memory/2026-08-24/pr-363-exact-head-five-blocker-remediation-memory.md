@@ -13,6 +13,10 @@ substantive_commit: 7068ecb43b3b8cb28a0b36fffd1c13fe7b84ea2c
 
 # PR 363 exact-head five-blocker Stage memory
 
+
+> [!IMPORTANT]
+> **HISTORICAL / SUPERSEDED.** Any queued-shipment, executable-handoff, old-roster, old-edge, or old reviewed-file statement below is source-head history only. It cannot authorize claim or implementation. Current authority: [PR #363 fail-closed planning authority](../../decisions/2026-08-25-pr-363-fail-closed-planning-authority.md).
+
 ## Completed
 
 * Retrieved exact reviews `5015373740`/`5015447062`, five unresolved threads/comments, all affected paths, and three suppressed review findings.

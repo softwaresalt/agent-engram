@@ -10,6 +10,9 @@ closure_pr: 362
 
 # Dark-factory cycle 2 — six active bug Stage memory
 
+> [!IMPORTANT]
+> **HISTORICAL / SUPERSEDED.** Any queued-shipment, executable-handoff, old-roster, old-edge, or old reviewed-file statement below is source-head history only. It cannot authorize claim or implementation. Current authority: [PR #363 fail-closed planning authority](../../decisions/2026-08-25-pr-363-fail-closed-planning-authority.md).
+
 ## Scope and Boundaries
 
 Staged exactly the six operator-selected active bug stashes. No source/test/config file was modified; no build, test, or linter ran; no shipment was claimed; no PR was created or modified. Closure PR #362 remained OPEN/CLEAN and separate. Shipment manifests 119-S, 122-S, and 123-S were read-only and byte-unmodified.

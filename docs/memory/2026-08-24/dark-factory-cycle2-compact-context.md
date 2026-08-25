@@ -8,6 +8,10 @@ status: complete
 
 # Dark-factory cycle 2 compact-context assessment
 
+
+> [!IMPORTANT]
+> **HISTORICAL / SUPERSEDED.** Any queued-shipment, executable-handoff, old-roster, old-edge, or old reviewed-file statement below is source-head history only. It cannot authorize claim or implementation. Current authority: [PR #363 fail-closed planning authority](../../decisions/2026-08-25-pr-363-fail-closed-planning-authority.md).
+
 ## Assessment
 
 Authoritative PR #363 endpoint-remediation input: exact starting HEAD `9dcd33f5e49583f8138f4896b70c89c00251e25f`. Count tracked `*.md` blobs under exactly `docs/memory`, `docs/exec-plans`, and `docs/closure`, and sum the blob-size column from `git ls-tree -r -l 9dcd33f5e49583f8138f4896b70c89c00251e25f -- <scope>`. This immutable, line-ending-independent source yields memory **149 files / 443,643 bytes**, plans **71 files / 1,148,248 bytes**, and closure **112 files / 826,421 bytes**. These are the sole compact-context baseline totals for this remediation; current working-tree counts and later planning commits are intentionally excluded from the anchored input baseline.

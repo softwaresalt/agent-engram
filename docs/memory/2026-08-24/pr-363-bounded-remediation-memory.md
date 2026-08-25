@@ -12,6 +12,9 @@ starting_head: 3d2ad233dc934275223cf11bd85e2785c2d05c87
 
 # PR #363 bounded Stage remediation memory
 
+> [!IMPORTANT]
+> **HISTORICAL / SUPERSEDED.** Any queued-shipment, executable-handoff, old-roster, old-edge, or old reviewed-file statement below is source-head history only. It cannot authorize claim or implementation. Current authority: [PR #363 fail-closed planning authority](../../decisions/2026-08-25-pr-363-fail-closed-planning-authority.md).
+
 ## Scope and Boundaries
 
 Performed one operator-authorized remediation pass on Stage-owned planning and backlog artifacts only. No production source, tests, configuration, build system, linter, shipment claim, PR merge, force-push, or PR #362 mutation occurred. Shipment `125-S` remains queued and guarded.

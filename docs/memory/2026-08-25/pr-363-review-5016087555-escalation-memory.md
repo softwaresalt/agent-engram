@@ -15,6 +15,10 @@ status: published-failed-closed
 
 # PR 363 Review 5016087555 Mandatory Escalation Memory
 
+
+> [!IMPORTANT]
+> **HISTORICAL / SUPERSEDED.** Any queued-shipment, executable-handoff, old-roster, old-edge, or old reviewed-file statement below is source-head history only. It cannot authorize claim or implementation. Current authority: [PR #363 fail-closed planning authority](../../decisions/2026-08-25-pr-363-fail-closed-planning-authority.md).
+
 ## Completed planning work
 
 - Retrieved all three exact unresolved Copilot threads and their paths.
@@ -62,7 +66,7 @@ Modified paths are limited to `.backlogit/` planning metadata plus `docs/closure
 ## Validation and publication
 
 - Target sync indexed 1,131 artifacts with zero parse failures. Full doctor returned only 43 historical `archived_from_self_ref` and 38 historical `missing_shipped_event` advisories; no `131-*` or `125-S` finding.
-- Custom planning validation passed: 17 parented queued tasks, 16 exact linear edges, 18 shipment items, estimates 55-105 minutes, required sections, existing references, no duplicate plan headings, and blocked feature/review/shipment.
+- Custom planning validation passed: 17 parented blocked tasks, 16 exact linear edges, 18 shipment items, estimates 55-105 minutes, required sections, existing references, no duplicate plan headings, and blocked feature/review/shipment.
 - Complete scope validation passed 85 planning-only files, 80 Markdown files, YAML/frontmatter, unresolved-template, fence, final-newline, reference, and allowlist checks. `git diff --check` passed. No build or source test was run.
 - Substantive commit `85d17d5aa34a771808be0e35186f35d9da08e334` was pushed normally from detached HEAD to the requested branch. PR head matched afterward.
 - Durable PR comment `5412193591` records the count, graph, receipts, no-consensus decision, raw remediations, validation, and blockers.
@@ -71,6 +75,6 @@ Modified paths are limited to `.backlogit/` planning metadata plus `docs/closure
 
 ## Handoff
 
-- Keep `131-F`, `131.001-R`, and `125-S` blocked. Ship must not claim.
+- Keep `131-F`, `131.001-R`, every task `131.001-T` through `131.017-T`, and `125-S` blocked. Ship must not claim.
 - Count and spawn-plan threads are resolved. Leave the escalation thread unresolved until at least three complete receipt-bound responses exist.
-- A future consensus run must bind at least three independent complete responses to an exact immutable commit and instruction manifest.
+- PR #363 receives no further adversarial run. A future, separately staged release must bind at least three eligible independent complete-coverage responses to its exact immutable commit and instruction manifest before any implementation claim.
