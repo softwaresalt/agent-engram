@@ -31,7 +31,8 @@ metadata, containing at minimum:
 * a stable task, response, or dispatch-result identifier
 * the observed provider and model identity emitted by the execution system
 * a binding between that identifier/model identity and the returned response
-* the reviewed commit and reviewer slot when those are available
+* the exact reviewed commit and reviewer slot bound to that response
+* complete direct coverage by that reviewer of every required review instruction
 
 Checked-in routing configuration, requested model labels, named slots, and a
 reviewer self-assertion are not execution binding. They may describe intent but
@@ -92,6 +93,8 @@ remain queued with their durable integration claim guard.
 ## Requirement-resolution decision
 
 The requirement was not weakened, superseded, or reinterpreted. A future valid
-run must preserve minimal non-secret receipts containing response/task IDs and
-execution-system model fields for each independent reviewer. Until then, the
-four security/durability plans remain non-executable.
+run must preserve minimal non-secret receipts containing response/task IDs,
+execution-system model fields, and exact reviewed-commit and reviewer-slot
+evidence for each independent reviewer, and every counted reviewer must
+directly cover every required review instruction. Until then, the four
+security/durability plans remain non-executable.

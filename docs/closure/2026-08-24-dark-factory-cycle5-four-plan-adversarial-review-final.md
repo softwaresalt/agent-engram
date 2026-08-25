@@ -25,9 +25,14 @@ which model executed.
 ## Evidence standard and requirement resolution
 
 The same standard applies to the initial attempt, the rerun, and this final
-run: each counted response must have an execution-system task/response ID and
-an observed provider/model field bound to that response. Reviewer
-self-assertion alone is not sufficient.
+run: every counted reviewer must have an authoritative execution-system
+task/response ID and observed provider/model field bound to that response,
+exact reviewed-commit and reviewer-slot evidence, and complete direct coverage
+of every required review instruction. Reviewer self-assertion alone is not
+sufficient. Clearance also requires no HIGH-confidence P0/P1 findings, because
+they are gate-blocking; every MEDIUM-confidence finding must be fixed or
+deferred with a recorded rationale, while LOW-confidence findings remain
+advisory observations.
 
 The available embedded outputs and configuration were examined. No such
 receipts or model fields were preserved, and the reports state that runtime
@@ -78,5 +83,6 @@ observations remain non-consensus planning input only.
   from this cycle, subject to its durable merge/review/competition/dependency
   claim guard.
 
-A future valid rerun must preserve minimal non-secret execution receipts before
-any security/durability hierarchy can return to queued status.
+A future valid rerun must satisfy the complete authoritative-binding,
+reviewed-commit/slot, direct-coverage, and finding-disposition standard above
+before any security/durability hierarchy can return to queued status.

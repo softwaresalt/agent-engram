@@ -63,7 +63,11 @@ interpretation cannot replace that requirement.
   `docs/closure/2026-08-24-dark-factory-cycle5-four-plan-adversarial-review-final.md`
 
 A future rerun may clear this blocker only by preserving minimal non-secret
-execution receipts for every independent response and then applying one
-consistent consensus denominator to those same bound reviewers. Every
-MEDIUM-confidence finding must also be explicitly fixed or deferred with a
-recorded rationale before the adversarial gate can clear.
+execution receipts that give every counted reviewer an authoritative
+response/model binding and exact reviewed-commit and reviewer-slot evidence,
+confirming complete direct coverage of every required review instruction, and
+applying one consistent consensus denominator to those same bound reviewers.
+No HIGH-confidence P0/P1 finding may remain because it is gate-blocking. Every
+MEDIUM-confidence finding must be explicitly fixed or deferred with a recorded
+rationale before the adversarial gate can clear; LOW-confidence findings remain
+advisory observations.
