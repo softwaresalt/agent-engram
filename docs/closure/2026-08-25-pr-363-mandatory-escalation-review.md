@@ -128,9 +128,9 @@ Copilot review `5016087555` covered **78/78** files at source head `e00c650eb060
 
 ## Thread disposition
 
-* `3850407649`: stale source-head count corrected and source-head-qualified; reply and resolve after push.
-* `3850407688`: dedicated error, injectable spawner, deterministic RED, safe `Builder::spawn` GREEN, and bounded-wait ownership are explicit; reply and resolve after push.
-* `3850544771`: escalation was invoked but failed closed with no consensus; reply with receipts and leave unresolved.
+* `3850407649`: corrected and source-head-qualified; reply `3854210289`; resolved.
+* `3850407688`: dedicated error, injectable spawner, deterministic RED, safe `Builder::spawn` GREEN, and bounded-wait ownership; reply `3854210329`; resolved.
+* `3850544771`: escalation invoked but failed closed; reply `3854210302`; intentionally unresolved.
 
 ## Strict-safety action result
 
@@ -142,3 +142,7 @@ Copilot review `5016087555` covered **78/78** files at source head `e00c650eb060
 | Reply and resolve addressed threads | moderate | pending push; escalation thread remains open |
 
 PR 362 was not changed. No application source, test, manifest, lockfile, config, build, test suite, source linter, shipment claim, merge, amend, or force push occurred.
+
+## Publication evidence
+
+Substantive remediation commit `85d17d5aa34a771808be0e35186f35d9da08e334` was pushed normally as a fast-forward to `stage/dark-factory-cycle2-20260824-1540`. PR comment `5412193591` records corrected counts, the spawn graph, exact cohort receipts, no-consensus result, bounded remediations, validation, and blockers. GraphQL verification found only escalation thread `PRRT_kwDORJEduc6b-ZzP` unresolved. The count and spawn threads are resolved; no PR 362 mutation occurred.

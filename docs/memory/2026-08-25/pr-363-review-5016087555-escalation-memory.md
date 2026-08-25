@@ -5,11 +5,12 @@ doc_type: memory
 source: PR 363 review 5016087555
 source_commit: e00c650eb06073a67a9f228e1fd056c3c359ecb7
 review_commit: 9d6c909e10cfc6ff836f464982145590d6d32a9e
+substantive_commit: 85d17d5aa34a771808be0e35186f35d9da08e334
 date: 2026-08-25
 agent: stage
 branch: stage/dark-factory-cycle2-20260824-1540
 pull_request: 363
-status: failed-closed-prepublication
+status: published-failed-closed
 ---
 
 # PR 363 Review 5016087555 Mandatory Escalation Memory
@@ -58,8 +59,18 @@ Valid unweighted findings produced the finite watchdog, dedicated error contract
 
 Modified paths are limited to `.backlogit/` planning metadata plus `docs/closure/`, `docs/decisions/`, `docs/exec-plans/`, and `docs/memory/`. No application source, test, Cargo manifest, lockfile, config, workflow, PR 362, shipment claim, or merge state changed.
 
+## Validation and publication
+
+- Target sync indexed 1,131 artifacts with zero parse failures. Full doctor returned only 43 historical `archived_from_self_ref` and 38 historical `missing_shipped_event` advisories; no `131-*` or `125-S` finding.
+- Custom planning validation passed: 17 parented queued tasks, 16 exact linear edges, 18 shipment items, estimates 55-105 minutes, required sections, existing references, no duplicate plan headings, and blocked feature/review/shipment.
+- Complete scope validation passed 85 planning-only files, 80 Markdown files, YAML/frontmatter, unresolved-template, fence, final-newline, reference, and allowlist checks. `git diff --check` passed. No build or source test was run.
+- Substantive commit `85d17d5aa34a771808be0e35186f35d9da08e334` was pushed normally from detached HEAD to the requested branch. PR head matched afterward.
+- Durable PR comment `5412193591` records the count, graph, receipts, no-consensus decision, raw remediations, validation, and blockers.
+- Count thread `PRRT_kwDORJEduc6b-DlL`: reply `3854210289`, resolved. Spawn thread `PRRT_kwDORJEduc6b-Dlp`: reply `3854210329`, resolved. Escalation thread `PRRT_kwDORJEduc6b-ZzP`: reply `3854210302`, intentionally unresolved. GraphQL found exactly one unresolved thread.
+- Live PR title remains the stale thirteen-task title and is non-authoritative. PR 362 remained merged and untouched.
+
 ## Handoff
 
 - Keep `131-F`, `131.001-R`, and `125-S` blocked. Ship must not claim.
-- Resolve the count and spawn-plan bot threads only after publication. Leave the escalation thread unresolved and include failed-closed receipts in the PR comment.
+- Count and spawn-plan threads are resolved. Leave the escalation thread unresolved until at least three complete receipt-bound responses exist.
 - A future consensus run must bind at least three independent complete responses to an exact immutable commit and instruction manifest.
