@@ -2,9 +2,9 @@
 title: "Workspace identity plans — adversarial review gate resolution"
 type: review-blocker
 doc_type: decision
-source: "operator-requested adversarial review gate"
+source: "operator-requested adversarial review evidence reconciliation"
 date: 2026-08-24
-status: resolved
+status: blocked
 plans:
   - docs/exec-plans/2026-08-24-7b15b447-daemon-key-engram-caproot-plan.md
   - docs/exec-plans/2026-08-24-1cb366db-bind-proof-composition-plan.md
@@ -14,26 +14,54 @@ plans:
 
 # Workspace identity plans — adversarial review gate resolution
 
-## Resolution
+## Decision
 
-The earlier dispatch blocker is resolved. The repository `Adversarial Review` custom agent dispatched three independent configured reviewers across `openai/gpt-5.4-mini`, `anthropic/claude-sonnet-4.6`, and `anthropic/claude-opus-4.6`. Each covered security, architecture, concurrency/TOCTOU, Rust safety/API feasibility, scope, constitution, TDD, platform verification, rollback/monitoring, and dependencies.
+**BLOCKED / FAILED CLOSED.** The earlier resolution is reversed because the
+available record does not prove which models executed the rerun responses.
 
-The first instrumented attempt failed closed because runtime model self-introspection was unavailable; it produced no consensus claim. The valid rerun used checked-in reviewer frontmatter plus named dispatch slots as the workflow's canonical routing evidence. It found two MEDIUM P2 items (M-01 and M-02), both remediated in the plans. Standard plan review then passed, and the bounded adversarial rerun closed M-01 and M-02 by 3/3 agreement.
+## Evidence standard
 
-## Final Gate
+Every counted reviewer response must be bound by authoritative execution-system
+task or dispatch-result metadata, or runtime metadata, to the provider/model
+that executed it. The durable minimum is a response/task ID plus the
+execution-system model field tied to that response. Checked-in reviewer
+frontmatter, requested model labels, named dispatch slots, and reviewer
+self-assertion do not satisfy this standard.
 
-**PASS WITH LOW ADVISORIES.** No HIGH, MEDIUM, P0, or P1 finding remains for the four plans.
+## Evidence result
 
-- `7B15B447` is ready for harvest and must complete before `1CB366DB`.
-- `1CB366DB` is ready for dependent harvest.
-- `1C2A3CB3` is ready for a separate NTFS-gated release boundary; ReFS remains a residual.
-- `5DF94427` is ready for a separate Unix durability release boundary with a pre-GREEN safe API signature check.
-- `49000348` remains independently environment-blocked and was not reviewed as executable.
+All three adversarial reports, their embedded reviewer outputs, and the
+checked-in dispatch configuration were examined. No task IDs, response IDs,
+dispatch-result model fields, or runtime model fields are preserved for the
+three responses used in the claimed rerun. The reports explicitly say runtime
+self-introspection was not exposed.
 
-## Evidence
+No explicit operator requirement change was recorded. The initial report
+already required observed execution identity, so the later configuration-only
+interpretation cannot replace that requirement.
 
-- Failed-closed attempt: `docs/closure/2026-08-24-dark-factory-cycle5-four-plan-adversarial-review.md`
-- Valid consensus and queues: `docs/closure/2026-08-24-dark-factory-cycle5-four-plan-adversarial-review-rerun.md`
-- Final remediation rerun: `docs/closure/2026-08-24-dark-factory-cycle5-four-plan-adversarial-review-final.md`
+## Backlog resolution
 
-The ordered release boundary remains `7B15B447 -> 1CB366DB`; `1C2A3CB3` and `5DF94427` remain separate.
+* `132-F` through `135-F` and all child tasks are blocked/non-executable.
+* Shipments `126-S` through `129-S` are blocked; none may be claimed.
+* `127-S` remains dependent on terminal shipped proof for `126-S` through
+  closure task `132.004-T` if the gate is ever revalidated.
+* Original archived stash records remain immutable harvest provenance.
+* Active replacement stashes `172AE8CE`, `8C7733CE`, `721A42F0`, and
+  `BD5DD62A` preserve the original IDs and exact failed-gate blocker.
+* `49000348` remains separately environment-blocked.
+* `125-S` remains the only queued shipment from this cycle and keeps its
+  expanded fail-closed claim guard.
+
+## Evidence references
+
+* Initial failed-closed standard:
+  `docs/closure/2026-08-24-dark-factory-cycle5-four-plan-adversarial-review.md`
+* Invalidated configuration-only rerun:
+  `docs/closure/2026-08-24-dark-factory-cycle5-four-plan-adversarial-review-rerun.md`
+* Invalidated bounded final rerun:
+  `docs/closure/2026-08-24-dark-factory-cycle5-four-plan-adversarial-review-final.md`
+
+A future rerun may clear this blocker only by preserving minimal non-secret
+execution receipts for every independent response and then applying one
+consistent consensus denominator to those same bound reviewers.

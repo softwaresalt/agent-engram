@@ -3,7 +3,8 @@ title: "Compose lifecycle bind values from one retained workspace proof"
 type: implementation-plan
 doc_type: plan
 date: 2026-08-24
-status: reviewed-ready
+status: blocked
+adversarial_review: failed-unverified
 source: docs/decisions/2026-08-24-workspace-authority-followups-deliberation.md
 source_stash_id: "1CB366DB"
 backlog_deliberation: "021-D"

@@ -80,3 +80,18 @@ Only `.backlogit/` artifacts/logs/stash state and planning/memory Markdown under
 ## Publication Result
 
 Planning commit: `4cab736e05ebd832e048a0338949ef62c0089b2d`. It is associated with shipment `125-S`, feature `131-F`, and tasks `131.001-T` through `131.003-T`. A follow-up commit records these associations before branch push.
+
+## Superseding PR #363 correction
+
+A later configuration-only adversarial rerun did not provide authoritative
+execution-model binding. The original stash IDs `7B15B447`, `1CB366DB`,
+`1C2A3CB3`, and `5DF94427` are retained as archived harvest provenance, while
+active replacements `172AE8CE`, `8C7733CE`, `721A42F0`, and `BD5DD62A` carry
+the failed/unverified blocker. Features `132-F`–`135-F`, all child tasks, and
+shipments `126-S`–`129-S` are blocked/non-executable.
+
+Shipment `125-S` remains the only queued shipment from this cycle. Ship may not
+claim it after review alone. Claim requires PR #362 and the exact final reviewed
+PR #363 planning head on `origin/main`, clean review evidence for that exact
+head, no active competing shipment, and the exact roster/dependencies. See
+`docs/memory/2026-08-24/dark-factory-cycle5-adversarial-harvest-memory.md`.

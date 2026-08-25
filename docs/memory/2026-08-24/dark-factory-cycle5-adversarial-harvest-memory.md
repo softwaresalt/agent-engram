@@ -1,74 +1,91 @@
 ---
-title: "Dark factory cycle 5 adversarial review and harvest memory"
+title: "Dark factory cycle 5 adversarial review and harvest correction memory"
 type: session-memory
 doc_type: memory
-source: "operator-directed dark-factory cycle 5 Stage session"
+source: "operator-directed PR 363 fail-closed remediation"
 date: 2026-08-24
 agent: stage
 branch: stage/dark-factory-cycle2-20260824-1540
-starting_head: 72600a33284148c6a13ef807812fd0e7e06d883a
+starting_head: d4847e5ae2a1c7d89a1cb5f48fe48d770575dd9b
 pull_request: 363
 ---
 
-# Dark factory cycle 5 adversarial review and harvest memory
+# Dark factory cycle 5 adversarial review and harvest correction memory
 
 ## Scope and boundaries
 
-Stage closed the genuine adversarial-review gap for four security/durability plans, applied bounded plan-only remediations, harvested execution-ready backlog, and assembled queued shipments. No production source, test, configuration, build, linter, shipment claim, shipment close, PR merge, force push, or PR #362 mutation occurred. Existing shipment `125-S` was not modified.
+Stage reconciled the three adversarial reports against one execution-identity
+standard and reversed executable status for the unsupported security/durability
+harvest. No production source, test, configuration, build, linter, shipment
+claim, shipment close, PR merge, force push, PR metadata mutation, or PR #362
+mutation occurred. Shipment `125-S` kept its exact scope and roster.
 
-## Review evidence and decisions
+## Authoritative-evidence decision
 
-- The first custom-agent dispatch returned five isolated reviews but failed closed because runtime model identity was not exposed. It is preserved at `docs/closure/2026-08-24-dark-factory-cycle5-four-plan-adversarial-review.md` and made no consensus claim.
-- The valid rerun dispatched three independent configured models: `openai/gpt-5.4-mini`, `anthropic/claude-sonnet-4.6`, and `anthropic/claude-opus-4.6`. It found no HIGH/P0/P1 finding and two MEDIUM P2 items: M-01 for complete `.engram` interaction acceptance criteria and M-02 for compile proof of the pinned public Windows trait/type bridge.
-- M-01 and M-02 were applied to the plans. A six-persona standard plan-review rerun passed both changed plans with only monitoring-location P3 advisories, which were folded into verification tasks.
-- The final three-model bounded rerun closed M-01 and M-02 by 3/3 agreement. No HIGH or MEDIUM finding remains; three LOW advisories are recorded in `docs/closure/2026-08-24-dark-factory-cycle5-four-plan-adversarial-review-final.md`.
-- `7B15B447` must complete through verification/closure before `1CB366DB`. `1C2A3CB3` and `5DF94427` remain separate release boundaries. `49000348` remains environment-blocked and non-executable.
+No authoritative evidence binds the three rerun responses to the configured
+models. The preserved material contains routing configuration and reviewer
+self-assertion only; no execution-system response/task IDs or bound provider and
+model fields exist. Runtime identity is explicitly recorded as unavailable.
+Checked-in frontmatter alone is insufficient, and no requirement change was
+recorded.
 
-## Harvested hierarchy
+The initial fail-closed standard remains authoritative. The rerun and final
+pass are invalidated, their consensus calculations are withdrawn, and the four
+security/durability plans remain failed/unverified.
 
-| Stash | Feature | Review | Tasks | Shipment |
+## Exact backlog dispositions
+
+| Original stash | Active replacement | Feature and tasks | Shipment | Disposition |
 |---|---|---|---|---|
-| `7B15B447` | `132-F` | `132.001-R` | `132.001-T`–`132.004-T` | `126-S` |
-| `1CB366DB` | `133-F` | `133.001-R` | `133.001-T`–`133.004-T` | `127-S` |
-| `1C2A3CB3` | `134-F` | `134.001-R` | `134.001-T`–`134.003-T` | `128-S` |
-| `5DF94427` | `135-F` | `135.001-R` | `135.001-T`–`135.003-T` | `129-S` |
+| `7B15B447` | `172AE8CE` | `132-F`, `132.001-T`–`132.004-T` | `126-S` | all blocked/non-executable |
+| `1CB366DB` | `8C7733CE` | `133-F`, `133.001-T`–`133.004-T` | `127-S` | all blocked/non-executable; still depends on `126-S` |
+| `1C2A3CB3` | `721A42F0` | `134-F`, `134.001-T`–`134.003-T` | `128-S` | all blocked/non-executable |
+| `5DF94427` | `BD5DD62A` | `135-F`, `135.001-T`–`135.003-T` | `129-S` | all blocked/non-executable |
 
-Every implementation task is one RED, GREEN, integration, or verification concern with an explicit 75–110 minute target. Dependencies preserve RED before GREEN and verification last.
+Backlogit has no native stash restore operation. The original archived records
+remain intact with harvest provenance, while supported `stash add` operations
+created active replacement entries that name each original ID, blocked feature,
+blocked shipment, and exact model-binding blocker. This avoids duplicate IDs
+and preserves bidirectional traceability.
 
-## Shipment sequencing metadata
+`49000348` remains active and separately environment-blocked. `44E573BC`
+remains correctly archived to queued feature `131-F` and shipment `125-S`.
 
-No ordered batch was created because the configured shipment WIT exposes no structured batch/order fields. Each shipment records supported template-section metadata as `Batch: none` and `Batch order: none`; exact predecessor lists are verified in those sections. Critical sequencing is encoded with supported dependency operations:
+## Claim guards
 
-- `126-S`: predecessors none; successor `127-S`.
-- `127-S`: predecessor `126-S` through `127-S -> 126-S` blocks edge.
-- `128-S`: predecessors none; separate Windows/NTFS boundary.
-- `129-S`: predecessors none; separate Unix durability boundary.
+`125-S` is the only queued shipment from this cycle. Review alone never
+authorizes claim. Before claim, Ship must fetch `origin/main` and prove all of
+the following:
 
-Feature `133-F` depends on `132-F`, and `133.001-T` depends on closure task `132.004-T` in addition to the shipment edge.
+1. PR #362 is merged and its merge commit is an ancestor of `origin/main`.
+2. PR #363 is merged and its exact final reviewed planning head is an ancestor
+   of `origin/main`.
+3. Review evidence targets that exact final PR #363 head, all review threads are
+   resolved, and no review is pending or changes-requested.
+4. No competing shipment is active.
+5. The exact roster remains `131-F`, `131.001-T`, `131.002-T`, `131.003-T` and
+   the RED to GREEN to VERIFY dependencies are intact and satisfied.
 
-## Stash dispositions
+Shipments `126-S`–`129-S` are blocked and cannot be claimed. If a future valid
+review permits requeue, each must also satisfy the five guards above. `127-S`
+additionally requires the explicit `127-S -> 126-S` blocks edge and terminal
+shipped proof that `126-S` completed through `132.004-T`; review alone never
+satisfies that predecessor.
 
-The four reviewed bug stashes were atomically harvested with provenance and now have archived records carrying `reason: harvested` plus the corresponding feature ID. `49000348` remains active with deliberation `023-D` and its real cloud-backed environment blocker. Unrelated operator inquiry `4A249254` was added to the active main-workspace stash as a medium-priority task and is not part of PR #363.
+## Review-comment resolution
 
-## Validation completed
-
-- PR worktree index sync: 1,112 artifacts, zero parse failures before final memory/commit sync.
-- Full doctor: no new orphan, duplicate, partial-mutation, or workspace-root finding; only 43 pre-existing `archived_from_self_ref` advisories.
-- Target doctor: all 26 new feature/review/task/shipment artifacts pass.
-- SQL hierarchy and dependency checks: four parents, 14 tasks, four accepted review artifacts, exact RED/GREEN edges, and shipment predecessor edge verified.
-- Shipment rosters: parent feature first and exact task manifests verified; all four shipments remain queued/unclaimed.
-- Stash: four harvested with feature provenance; `49000348` active.
-- Authoring frontmatter: all four plans, blocker resolution, and three review reports pass.
-- Scope/reference guard: 40 changed files at check time, all under `.backlogit/` or `docs/`; no unresolved templates, unbalanced fences, missing repository references, or final-newline defects remain.
-
-## Compact-context assessment
-
-Invoked `compact-context` assessment with `target=all`. No file is eligible: the four reviewed plans and three review reports support newly queued active features, the session memory is current, and no completed release unit in this scope meets the age/completion criteria. Files compacted: 0; decided-plans produced: 0; active artifacts preserved.
+The PR scope now again matches the existing description: only `125-S` is queued
+and the four identity/durability release units are blocked. The rerun standard
+is consistent with the initial report. Shipments are not claimable from the
+planning branch, and the suppressed handoff finding is corrected by the guard
+language above.
 
 ## Next steps
 
-1. Persist this memory through backlogit, commit normally, and push PR #363 branch.
-2. Associate the commit with features/reviews and comment on PR #363.
-3. Ship must perform a fresh current-HEAD review before claiming any new shipment.
-4. Ship may claim `126-S`, `128-S`, and `129-S` independently after review; `127-S` remains blocked by `126-S`.
-5. Keep `49000348` active until a real cloud-backed repository supplies executable evidence.
+1. Validate backlog sync, doctor, statuses, rosters, dependencies, stash
+   provenance, documentation structure, and planning-only scope.
+2. Commit normally and push the same branch without force.
+3. Reply to review ID `5014260193` with the remediation commit and evidence.
+4. Resolve only bot threads whose underlying finding is fully addressed.
+5. Ship applies any desired PR title/body metadata later; Stage does not mutate
+   PR metadata.

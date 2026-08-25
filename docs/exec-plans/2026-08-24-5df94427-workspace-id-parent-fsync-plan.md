@@ -3,7 +3,8 @@ title: "Fsync the Unix workspace identity parent with explicit failure precedenc
 type: implementation-plan
 doc_type: plan
 date: 2026-08-24
-status: reviewed-ready
+status: blocked
+adversarial_review: failed-unverified
 source: docs/decisions/2026-08-24-workspace-id-parent-fsync-decision.md
 source_stash_id: "5DF94427"
 ---

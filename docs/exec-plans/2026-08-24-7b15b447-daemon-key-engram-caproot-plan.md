@@ -3,7 +3,8 @@ title: "Retain one .engram capability through daemon-key selection"
 type: implementation-plan
 doc_type: plan
 date: 2026-08-24
-status: reviewed-ready
+status: blocked
+adversarial_review: failed-unverified
 source: docs/decisions/2026-08-24-workspace-authority-followups-deliberation.md
 source_stash_id: "7B15B447"
 backlog_deliberation: "022-D"

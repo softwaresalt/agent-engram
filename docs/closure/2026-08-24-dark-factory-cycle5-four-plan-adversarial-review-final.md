@@ -1,170 +1,82 @@
 ---
-title: "Dark factory cycle 5 four-plan adversarial review final"
+title: "Dark factory cycle 5 bounded adversarial review — invalidated final"
 type: adversarial-review
 doc_type: closure
-source: "custom Adversarial Review agent bounded remediation rerun"
+source: "bounded remediation rerun without authoritative execution-model binding"
 date: 2026-08-24
-status: complete-pass-with-advisories
-reviewers: 3
+status: failed-closed-unverified
+reviewers_requested: 3
+reviewers_consensus_eligible: 0
 scope: final-bounded-remediation
 ---
 
-## Result
+# Dark factory cycle 5 bounded adversarial review — invalidated final
 
-The final bounded remediation review passes. Exactly three independently
-routed reviewers completed every required domain against the exact current
-content of the two changed plans. No reviewer read the prior rerun or another
-reviewer's findings before returning.
+## Gate decision
 
-Both prior MEDIUM findings are closed by unanimous review:
+**FAILED CLOSED / UNVERIFIED.** The prior final pass is withdrawn.
 
-* `M-01` is closed 3/3
-* `M-02` is closed 3/3
+The bounded rerun returned three responses about two remediated plans, but no
+authoritative task, dispatch-result, or runtime metadata binds any response to
+its configured execution model. Checked-in frontmatter, named slots, and
+reviewer self-attestation establish requested routing only. They do not prove
+which model executed.
 
-No HIGH or MEDIUM finding remains. Three LOW findings are preserved as
-advisories. No P0 or P1 finding blocks the gate.
+## Evidence standard and requirement resolution
 
-## Frozen review scope
+The same standard applies to the initial attempt, the rerun, and this final
+run: each counted response must have an execution-system task/response ID and
+an observed provider/model field bound to that response. Reviewer
+self-assertion alone is not sufficient.
 
-The independent review covered only:
+The available embedded outputs and configuration were examined. No such
+receipts or model fields were preserved, and the reports state that runtime
+model introspection was unavailable. No explicit operator requirement change
+exists. Therefore the initial fail-closed requirement remains authoritative.
+
+## Frozen scope retained for traceability
+
+The bounded review considered only:
 
 * `docs/exec-plans/2026-08-24-7b15b447-daemon-key-engram-caproot-plan.md`
 * `docs/exec-plans/2026-08-24-1c2a3cb3-windows-caproot-object-identity-plan.md`
 
-The prior rerun at
-`docs/closure/2026-08-24-dark-factory-cycle5-four-plan-adversarial-review-rerun.md`
-was withheld from all reviewers. It was read by the parent only after all three
-independent reviews returned, solely to reconcile `M-01`, `M-02`, and the
-unchanged four-plan boundary state.
+The earlier plan edits remain useful conservative planning:
 
-No plan, backlog item, source file, test, configuration, decision, prior closure
-file, PR, shipment, or other workspace artifact was modified.
+* the `7B15B447` plan distinguishes existing-child and cold-start authority
+  paths and forbids helper reopen escape paths
+* the `1C2A3CB3` plan requires a Windows compile-and-behavior assertion against
+  the pinned safe public trait/type route
 
-## Dispatch and independence evidence
+Those edits do not establish reviewer identity and do not close the gate.
 
-Exactly three named reviewers were dispatched simultaneously. Checked-in
-frontmatter plus the named dispatch slot is the routing evidence.
+## Configured reviewers, unbound responses
 
-| Slot | Checked-in reviewer | Provider and family | Tier | Return |
-|---|---|---|---|---|
-| Reviewer A | Concurrency Reviewer | `openai/gpt-5.4-mini` | 1 | Complete |
-| Reviewer B | Rust Engineer | `anthropic/claude-sonnet-4.6` | 2 | Complete |
-| Reviewer C | Security Sentinel | `anthropic/claude-opus-4.6` | 3 | Complete |
-
-Each reviewer attested `independent: true`, named only the two frozen plan
-files in `files_reviewed`, and returned a complete coverage matrix. The
-fail-closed condition did not trigger.
-
-## Required domain coverage
-
-| Reviewer | Security | Architecture | Concurrency/TOCTOU | Rust/API | Width | Constitution | TDD | Platform | Rollback/monitoring | Dependencies |
-|---|---|---|---|---|---|---|---|---|---|---|
-| Concurrency Reviewer | Complete | Complete | Complete | Complete | Complete | Complete | Complete | Complete | Complete | Complete |
-| Rust Engineer | Complete | Complete | Complete | Complete | Complete | Complete | Complete | Complete | Complete | Complete |
-| Security Sentinel | Complete | Complete | Complete | Complete | Complete | Complete | Complete | Complete | Complete | Complete |
-
-## Prior remediation closure
-
-### M-01: branch-specific `.engram` authority
-
-**Verdict: CLOSED (3/3).**
-
-The current `7B15B447` plan now:
-
-* Distinguishes the existing-child and cold-start branches
-* Enumerates the presence probe, UUID read, PID read, cold-start create/open,
-  and publish/read-back interactions
-* Requires one retained child open after capability-relative creation on each
-  mutually exclusive branch
-* Forbids every branch helper from reopening `.engram` or deriving a second
-  child authority
-* Requires deterministic RED coverage for both probe-to-UUID and
-  probe-to-PID substitution windows
-
-This satisfies the prior rerun's `M-01` remediation without leaving a helper
-reopen escape path.
-
-### M-02: pinned Windows public trait/type bridge
-
-**Verdict: CLOSED (3/3).**
-
-The current `1C2A3CB3` plan now:
-
-* Requires a Windows-gated compile-and-behavior assertion against the real
-  value returned by `Dir::dir_metadata()`
-* Invokes public `cap_fs_ext::MetadataExt::{dev, ino}` through the exact pinned
-  4.0.2 trait/type chain
-* Makes compilation of that public route a prerequisite to GREEN
-* Fails the release unit closed if the public bridge does not compile
-* Forbids `_WindowsByHandle`, private traits, raw handles, `unsafe`,
-  panic-based production fallback, and dependency upgrades
-
-This satisfies the prior rerun's `M-02` remediation. No private or unsafe
-fallback remains available to the implementation.
-
-## Consensus normalization
-
-Confidence is based on independent reviewer agreement:
-
-* HIGH: 3/3
-* MEDIUM: 2/3
-* LOW: 1/3
-
-HIGH P0/P1 findings block. MEDIUM findings require a fix or explicit deferral.
-LOW findings are advisory.
-
-| Confidence | Count | Gate effect |
-|---|---:|---|
-| HIGH | 0 | None |
-| MEDIUM | 0 | None |
-| LOW | 3 | Advisory |
-
-## Remediation queue
-
-### LOW confidence
-
-| ID | Plan | Severity | Domain | Finding | Disposition |
+| Slot | Configured reviewer | Requested provider/model | Response or task ID | Execution-system model field | Eligible |
 |---|---|---|---|---|---|
-| L-01 | `7B15B447` | P2 | Dependencies | Reviewer B requested an explicit statement that `1CB366DB` begins only after U4 closure, rather than after U3 implementation. | Advisory. The plan already states that `1CB366DB` depends on completion of the release unit, and the release unit includes U4. Preserve full completion as the prerequisite. |
-| L-02 | `1C2A3CB3` | P2 | Dependencies | Reviewer B requested that the plan name `5DF94427` explicitly when preserving separate release units. | Advisory. The plan states that it has no dependency on the other composition plans, and the prior rerun independently establishes both release boundaries. Keep them separate. |
-| L-03 | `1C2A3CB3` | P3 | Platform verification | Reviewer B requested a concrete authoritative Windows runner label for the NTFS gate. | Advisory. U3 already requires recording the test volume filesystem and makes NTFS the required gate. Record the actual runner and filesystem in closure without narrowing the plan to one hosted image. |
+| A | Concurrency Reviewer | `openai/gpt-5.4-mini` | none preserved | unavailable | No |
+| B | Rust Engineer | `anthropic/claude-sonnet-4.6` | none preserved | unavailable | No |
+| C | Security Sentinel | `anthropic/claude-opus-4.6` | none preserved | unavailable | No |
 
-### HIGH and MEDIUM confidence
+## Consensus correction
 
-None.
+There are zero eligible reviewers. The former 3/3 closure claims for `M-01`
+and `M-02`, the HIGH/MEDIUM/LOW counts, and the final pass are invalid. Raw
+observations remain non-consensus planning input only.
 
-### P0/P1 backlog-ready entries
+## Final backlog effect
 
-None.
+* `132-F` through `135-F` and all 14 child tasks are blocked/non-executable.
+* Shipments `126-S` through `129-S` are blocked and cannot be claimed.
+* `127-S` retains its explicit `126-S` predecessor and may not begin without
+  terminal shipped proof for `126-S` through `132.004-T`, even after a future
+  valid review.
+* Replacement active stash entries `172AE8CE`, `8C7733CE`, `721A42F0`, and
+  `BD5DD62A` preserve links to the original archived stash IDs and blocked
+  harvested artifacts.
+* Shipment `125-S` is unchanged in scope and remains the only queued shipment
+  from this cycle, subject to its durable merge/review/competition/dependency
+  claim guard.
 
-## Four-plan boundary reconciliation
-
-The prior rerun was consulted only after independent review completion. The
-final boundary state is:
-
-| Constraint | Final verdict |
-|---|---|
-| `7B15B447` precedes `1CB366DB` | Reconfirmed |
-| `1CB366DB` retains its prior pass | Reconfirmed; unchanged and still gated by `7B15B447` completion |
-| `1C2A3CB3` and `5DF94427` remain separate | Reconfirmed |
-| `5DF94427` retains its prior pass | Reconfirmed; unchanged |
-| `49000348` remains environment-blocked | Reconfirmed; non-executable |
-
-The executable ordering remains:
-
-```text
-7B15B447 -> 1CB366DB
-
-1C2A3CB3  (separate release boundary)
-5DF94427  (separate release boundary)
-49000348  (environment-blocked; non-executable)
-```
-
-## Final gate
-
-**PASS WITH LOW ADVISORIES.**
-
-The final review is valid: exactly three configured reviewers returned
-independently, all required domains were complete, `M-01` and `M-02` closed
-3/3, and no HIGH P0/P1 or MEDIUM finding remains. The two remediated plans may
-advance under the dependency and release-boundary constraints above.
+A future valid rerun must preserve minimal non-secret execution receipts before
+any security/durability hierarchy can return to queued status.

@@ -29,6 +29,28 @@ No plan, backlog item, source, test, configuration, PR, or shipment was changed.
 Plan `49000348` was not treated as executable. PR #362 and shipment `125-S` were
 not inspected or touched.
 
+## Authoritative evidence standard and requirement resolution
+
+A reviewer response is consensus-eligible only when execution-system task or
+dispatch-result metadata, or runtime metadata, binds that specific response to
+its observed provider/model identity. The minimum durable receipt is a stable
+response/task identifier plus the execution-system provider/model field bound
+to the response. Checked-in routing configuration, requested model labels,
+named slots, and reviewer self-assertion are insufficient.
+
+The initial five outputs, the later three-response rerun, the bounded final
+rerun, their embedded raw outputs, and the checked-in reviewer frontmatter were
+examined during PR #363 remediation. No response/task IDs or execution-system
+model fields are preserved for the rerun responses. All available identity
+statements are configuration intent or reviewer self-report, and runtime model
+identity is explicitly recorded as unavailable.
+
+**Requirement-resolution decision:** authoritative execution binding does not
+exist in the available record, and no explicit operator requirement change was
+recorded. This initial standard remains authoritative. The configuration-only
+rerun and final rerun are invalidated, have zero consensus-eligible reviewers,
+and cannot clear the four-plan gate.
+
 ## Reviewed plans
 
 * `7B15B447`:
