@@ -104,8 +104,11 @@ No unresolved standard-review P0/P1 finding remains. Review-fix cycles: 1 of 3.
 
 ## Adversarial Multi-Model Review — Cycle 5 Final
 
-Gate: **PASS**. The valid three-model four-plan review returned no consensus finding for this plan. The final bounded rerun reconfirmed its unchanged pass and hard prerequisite. No HIGH, MEDIUM, P0, or P1 finding remains.
-
-Execution remains blocked by dependency—not review—until the complete `7B15B447` release unit, including verification/closure, finishes. Review-fix cycles: 0 of 3.
+Gate: **FAILED CLOSED / UNVERIFIED**. No authoritative execution-system
+task/response metadata binds any configured reviewer response to its observed
+provider/model. The former three-model pass and finding counts are withdrawn.
+Execution is blocked by both this failed review gate and the `7B15B447`
+predecessor through its verification/closure task. The plan edits remain
+useful conservative input only and do not authorize execution.
 
 Evidence: `docs/closure/2026-08-24-dark-factory-cycle5-four-plan-adversarial-review-rerun.md` and `docs/closure/2026-08-24-dark-factory-cycle5-four-plan-adversarial-review-final.md`.

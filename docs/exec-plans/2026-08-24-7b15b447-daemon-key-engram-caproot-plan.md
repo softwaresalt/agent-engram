@@ -112,8 +112,10 @@ Gate: **PASS**. Six independent plan-review personas returned: Constitution Revi
 
 ## Adversarial Multi-Model Review — Cycle 5 Final
 
-Gate: **PASS WITH LOW ADVISORIES**. Three independent configured reviewers (`openai/gpt-5.4-mini`, `anthropic/claude-sonnet-4.6`, and `anthropic/claude-opus-4.6`) covered security, architecture, concurrency/TOCTOU, Rust/API safety, scope, constitution, TDD, platform verification, operations, and dependencies. M-01 closed 3/3. No HIGH, MEDIUM, P0, or P1 finding remains.
-
-LOW advisory L-01 is acknowledged: `1CB366DB` starts only after this whole release unit, including U4 verification and closure, completes. This is already the plan dependency and is not deferred as hidden sequencing. Review-fix cycles: 1 of 3.
+Gate: **FAILED CLOSED / UNVERIFIED**. No authoritative execution-system
+task/response metadata binds any configured reviewer response to its observed
+provider/model. The former three-model pass, M-01 3/3 closure, finding counts,
+and LOW-advisory disposition are withdrawn. The plan edits remain useful
+conservative input only and do not authorize execution.
 
 Evidence: `docs/closure/2026-08-24-dark-factory-cycle5-four-plan-adversarial-review-rerun.md` and `docs/closure/2026-08-24-dark-factory-cycle5-four-plan-adversarial-review-final.md`.

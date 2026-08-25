@@ -125,6 +125,11 @@ No unresolved standard-review P0/P1 findings remain. This operator-authorized re
 
 ## Adversarial Multi-Model Review — Cycle 5 Final
 
-Gate: **PASS WITH LOW ADVISORY**. The valid three-model four-plan review found no HIGH, MEDIUM, P0, or P1 issue for this plan. Its single LOW API-feasibility advisory is explicit: confirm the exact safe public `Dir::reopen_dir`/`into_std_file` signatures against pinned cap-std 4.0.2 before GREEN; fail closed rather than using unsafe, raw handles, or ambient reopen. The final bounded rerun reconfirmed this unchanged pass and separate release width. Review-fix cycles: 0 of 3.
+Gate: **FAILED CLOSED / UNVERIFIED**. No authoritative execution-system
+task/response metadata binds any configured reviewer response to its observed
+provider/model. The former three-model pass, finding counts, and LOW-advisory
+disposition are withdrawn. The safe-API feasibility observation remains
+non-consensus planning input only; feature `135-F`, its tasks, and shipment
+`129-S` remain blocked and non-executable.
 
 Evidence: `docs/closure/2026-08-24-dark-factory-cycle5-four-plan-adversarial-review-rerun.md` and `docs/closure/2026-08-24-dark-factory-cycle5-four-plan-adversarial-review-final.md`.

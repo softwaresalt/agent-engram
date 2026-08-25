@@ -64,4 +64,6 @@ interpretation cannot replace that requirement.
 
 A future rerun may clear this blocker only by preserving minimal non-secret
 execution receipts for every independent response and then applying one
-consistent consensus denominator to those same bound reviewers.
+consistent consensus denominator to those same bound reviewers. Every
+MEDIUM-confidence finding must also be explicitly fixed or deferred with a
+recorded rationale before the adversarial gate can clear.
