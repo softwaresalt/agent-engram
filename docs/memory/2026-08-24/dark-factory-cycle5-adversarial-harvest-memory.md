@@ -43,10 +43,11 @@ security/durability plans remain failed/unverified.
 | `5DF94427` | `BD5DD62A` | `135-F`, `135.001-T`–`135.003-T` | `129-S` | all blocked/non-executable |
 
 Backlogit has no native stash restore operation. The original archived records
-remain intact with harvest provenance, while supported `stash add` operations
-created active replacement entries that name each original ID, blocked feature,
-blocked shipment, and exact model-binding blocker. This avoids duplicate IDs
-and preserves bidirectional traceability.
+now use reason `archived` and disposition `blocked_unverified_planning`; they
+record attempted targets, never successful executable harvest. Active replacement
+entries name each original ID, exact blocked feature/review/shipment, and the
+model-binding blocker. The sole replacement pairs are `1C2A3CB3` -> `721A42F0`
+and `5DF94427` -> `BD5DD62A` (with the analogous earlier two pairs preserved).
 
 `49000348` remains active and separately environment-blocked. `44E573BC`
 remains correctly archived to queued feature `131-F` and shipment `125-S`.

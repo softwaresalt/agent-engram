@@ -46,7 +46,7 @@ interpretation cannot replace that requirement.
 * Shipments `126-S` through `129-S` are blocked; none may be claimed.
 * `127-S` remains dependent on terminal shipped proof for `126-S` through
   closure task `132.004-T` if the gate is ever revalidated.
-* Original archived stash records preserve attempted-promotion history, not successful executable harvest; semantic archives `021-D` and `022-D` now name the original queue path, accepted archival status, blocked planning targets, and sole active replacements.
+* Original archived stash records preserve attempted-promotion history with disposition `blocked_unverified_planning`, never successful executable harvest. Semantic archives `021-D`/`022-D` and `024-D`/`025-D` name the original queue path, accepted deliberation archive, exact blocked feature/review/shipment, and sole active replacement.
 * Active replacement stashes `172AE8CE`, `8C7733CE`, `721A42F0`, and
   `BD5DD62A` preserve the original IDs and exact failed-gate blocker.
 * `49000348` remains separately environment-blocked.

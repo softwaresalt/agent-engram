@@ -5,6 +5,7 @@ doc_type: plan
 date: 2026-08-24
 status: blocked
 adversarial_review: failed-unverified
+standard_review: failed-blocked-cold-start-primitive
 source: docs/decisions/2026-08-24-workspace-authority-followups-deliberation.md
 source_stash_id: "7B15B447"
 backlog_deliberation: "022-D"
@@ -14,108 +15,107 @@ backlog_deliberation: "022-D"
 
 ## Problem Frame
 
-`daemon_key_for_workspace` retains one workspace-root proof but opens `.engram` separately in `workspace_id_present_via`, `workspace_id_from_metadata`, and `read_pid_file_via`. A rename/substitution between those calls can mix the probed directory, UUID source, live-PID source, and publish destination.
+`daemon_key_for_workspace` can mix `.engram` directory objects because helpers reopen the child between presence, UUID, PID, and publication operations. The prior blocked plan also said cold start could create `.engram` and then open it by name. That create/open pair itself leaves a substitution window before the first retained child capability exists.
+
+This security plan remains blocked. It may not claim a safe cold-start protocol until a pinned, safe API or separately reviewed platform protocol can return or proof-preservingly retain the exact directory object created. Plain create-then-open, ambient paths, reopen-by-name, and post-hoc checking of an attacker-substitutable object are prohibited.
+
+## Protected Authority Model
+
+Carry one private `EngramAuthority` state machine through the entire decision:
+
+* `Existing(CapRoot)`: one no-follow open occurs before any presence/UUID/PID probe; that exact child capability is retained through publication/read-back and the final key decision.
+* `Vacant(VacantEngramSlot)`: the retained workspace-root capability and verified absent child slot remain owned by the same state machine. It may transition only through a safe create-and-retain primitive/protocol that returns `Created(CapRoot)` for the exact object created.
+* `Created(CapRoot)`: the exact first-created child capability remains live through UUID/PID reads, staging, publication, winner read, and the final decision.
+
+There is no transition that drops the child and reopens `.engram` by name. The vacancy/existence decision and created capability cannot be represented as unrelated booleans or paths.
 
 ## Requirements Trace
 
 | Requirement | Implementation action |
 |---|---|
-| One `.engram` authority for the decision | U3 opens or creates `.engram` once and passes the retained `CapRoot` through every branch. |
-| Cover persisted UUID path | U1 RED swaps `.engram` after the presence decision and before UUID read. |
-| Cover legacy live-PID path | U2 RED swaps `.engram` before PID selection and proves attacker PID cannot force fallback. |
-| Cover cold-start publish | U3 reuses the same retained child root for read/create/publish. |
-| Preserve public API | All new helpers remain private to `src/db/workspace.rs`. |
+| One authority through existing-child decision | U1 tests UUID and live-PID substitution after the initial child open. |
+| One authority through cold-start existence/create/open | U2 tests substitution exactly after creation and before any possible named open. |
+| Exact created object retained | U3 requires an API/protocol that returns or proves and retains the exact created object; create-then-open is forbidden. |
+| UUID/PID/publication bound to same object | U3 passes `&CapRoot`/owned authority through all helpers and decision branches. |
+| No ambient or reopen escape | U3/U4 audit every child interaction and reject path-derived helpers. |
+| Fail closed while primitive is unproven | Feature 132-F, review 132.001-R, shipment 126-S, and all tasks stay blocked. |
 
 ## Implementation Units
 
-### U1 — RED: persisted-identity child substitution
+### U1 / 132.001-T — RED: existing-child UUID and PID substitution
 
-Add one colocated deterministic hook-driven test in `src/db/workspace.rs`. The hook must rename/replace `.engram` after the presence probe but before the UUID read. Assert the checkpoint fires, the attacker UUID is never returned, and attacker state is not written. On current code the test must fail for the expected mixed-directory result. One file, one scenario, target 90 minutes.
+In one colocated test module, add two deterministic checkpoints after the one existing-child open: persisted UUID read and absent-ID/live-PID selection. Rename/replace the directory at each checkpoint. Assert attacker UUID/PID state is never consumed or written and each checkpoint must fire. Current code fails because helpers reopen by name. One file, two scenarios, target 105 minutes.
 
-### U2 — RED: legacy-PID child substitution
+### U2 / 132.002-T — RED: cold-start first-create/open substitution
 
-Add one colocated deterministic test in `src/db/workspace.rs` for the absent-ID/live-PID branch. The original `.engram/run/engram.pid` is absent; the substituted directory names a known live process. Assert the checkpoint fires and the substitution cannot force the legacy path-hash key. Current code must fail for the expected fallback selection. One file, one scenario, target 90 minutes.
+Add one deterministic cold-start checkpoint immediately after `.engram` creation and before any first named open or publication. Replace the directory at that checkpoint. The test passes only if code continues through a capability retained for the exact created object or fails closed before any UUID/PID read, staging write, publication, or key decision. Reading/writing the replacement is failure. A test that cannot fire this exact checkpoint is invalid. One file, one scenario, target 90 minutes.
 
-### U3 — GREEN: thread the retained child capability
+### U3 / 132.003-T — GREEN: authority state machine and safe create-and-retain
 
-Refactor private helpers in `src/db/workspace.rs` so `daemon_key_for_workspace` obtains one branch-scoped `.engram` `CapRoot`. For an existing child, open no-follow exactly once before the presence probe. For cold start, create only through the retained workspace root, then open the resulting child exactly once. From that point, the presence probe, UUID read, PID read, staging/publish path, and winner read all receive the same retained child; no branch helper may reopen `.engram` or derive a second child authority. The acceptance audit must enumerate all five interactions—presence probe, UUID read, PID read, cold-start create/open, and publish/read-back—and prove at most one retained child open after creation on each mutually exclusive branch. U1 and U2 turn green without changing public signatures. One file, fewer than five functions, target 110 minutes.
+Refactor private helpers so `daemon_key_for_workspace` owns one `EngramAuthority` from existence decision through return. Existing-child code opens no-follow exactly once. Cold start must use a safe pinned primitive/protocol that returns or proof-preservingly retains the exact newly created directory object in the same transition from `Vacant` to `Created`.
 
-### U4 — Verification and closure
+**Blocking prerequisite:** no such portable pinned primitive is proven in this plan. `create_dir` followed by `open_dir`, ambient canonicalization, reopen-by-name, retry-until-stable, or checking metadata only after opening a potentially substituted directory is not acceptable. If the primitive/protocol cannot be demonstrated on Windows and Unix without unsafe or ambient authority, U3 remains blocked and no implementation begins.
 
-Run targeted RED/GREEN evidence, the workspace identity unit/integration set, Windows and Linux CI, daemon-key stability across restart, and one ordinary cold start. Record the retained-child invariant, latency, rollback trigger, platform caveat, concrete observation query/dashboard location, and measured baseline in closure. Verification only, target 90 minutes.
+Once that prerequisite is met, presence, UUID read, PID read, staging creation, no-clobber publication, winner read, and final key decision all consume the same authority object/child capability. No helper may accept a workspace path and reopen `.engram`. One production file, fewer than five functions, target 115 minutes.
+
+### U4 / 132.004-T — Verification and closure
+
+Run both deterministic existing-child checkpoints and the cold-start post-create checkpoint, workspace identity unit/integration coverage, Windows and Linux CI, daemon-key restart stability, and one ordinary cold start. Review every `.engram` interaction and prove no ambient/reopen path. Record the exact safe primitive/protocol and pinned source evidence, rollback trigger, platform caveats, observation query, and baseline. Verification only, target 90 minutes.
 
 ## Dependency Graph
 
-`U1 + U2 -> U3 -> U4`. `1CB366DB` depends on completion of this release unit.
+`U1 + U2 -> U3 -> U4`. Four tasks, four prerequisite edges inside the fan-in chain. `1CB366DB`/133-F remains dependent on terminal completion of this release unit.
 
 ## Decisions and Rationale
 
-- Retain one child handle rather than revalidate: revalidation leaves a new check/use window.
-- Keep this separate from lifecycle bind composition: both edit different composition surfaces and need independent security evidence.
-- Preserve the legacy-live-PID compatibility branch; only bind its evidence to the retained child.
-- A test that does not fire its named checkpoint fails.
+- Retain authority rather than revalidate: revalidation creates another check/use window.
+- Treat cold-start vacancy as owned state, not a boolean followed by a named open.
+- Require the exact created object, not merely whichever object occupies `.engram` when later opened.
+- Preserve legacy live-PID compatibility only when its evidence comes from the retained child.
+- Fail closed while a safe portable create-and-retain transition is unproven.
 
 ## Risks and Caveats
 
 | Risk | Mitigation |
 |---|---|
-| Cold start creates `.engram` too early and changes legacy behavior | Preserve the existing absent/present decision and test both branches. |
-| Ownership refactor accidentally reopens the child | Audit presence, UUID, PID, cold-start create/open, publish, and read-back; after capability-relative creation, exactly one retained child open is permitted per mutually exclusive branch. |
-| PID fixture becomes timing-based | Use current-process liveness and deterministic checkpointing; no sleeps. |
-| Public capability leakage | Private helpers only; public signatures unchanged. |
-
-## Plan Hardening Signals
-
-- Public API/schema/contract: absent; private ownership contract changes.
-- Security-sensitive behavior: present; daemon IPC key trust boundary.
-- Migration/destructive action: absent.
-- External integration/checkpoint: absent.
-- High runtime/rollback risk: present; daemon discovery can become unavailable.
-
-Requires plan hardening: yes
+| Cold-start protocol silently substitutes the attacker object | Named post-create/pre-open checkpoint; exact created-object capability or fail closed. |
+| Helper reopens child later | Authority-typed private APIs and complete interaction audit. |
+| PID fixture becomes timing-based | Current-process liveness plus deterministic checkpoints; no sleep. |
+| Platform API differs | Require pinned Windows and Unix evidence before U3 can unblock. |
+| Public capability leakage | Private state machine/helpers; public signatures unchanged. |
 
 ## Runtime Verification and Closure
 
-Verify unchanged workspace UUID and daemon key across restart, ordinary primary checkout/worktree admission, legacy live-daemon fallback, and cold-start publication. Roll back by reverting U3; no data migration is required. Observation owner: Ship; window: 48 hours. Immediate rollback triggers: legitimate `NotGitRoot`, key change for unchanged workspace, fallback failure against a confirmed live legacy daemon, or any checkpoint test passing without firing.
+Verify unchanged UUID/key across restart, primary checkout/worktree admission, retained legacy PID fallback, and cold-start publication. Observation owner: Ship; window: 48 hours after any future valid implementation. Immediate rollback triggers: legitimate `NotGitRoot`, key change for unchanged workspace, fallback failure against a confirmed live daemon, attacker object read/write, or any checkpoint test passing without firing. No migration is required; rollback reverts U3.
 
-## Plan Hardening
+## Plan Hardening — Exact-Head Rerun
 
-Protected invariants: one retained workspace root, one retained `.engram` child per decision, no path reopen, no attacker read/write, stable public behavior.
+Hardening remains **required but blocked** because this changes the daemon IPC key trust boundary.
 
-| ProposedAction | targets | ActionRisk | rollback | approval_required | ActionResult |
+| ProposedAction | Targets | ActionRisk | Rollback | Approval required | ActionResult |
 |---|---|---|---|---|---|
-| Change daemon-key child-capability ownership | `src/db/workspace.rs` | high | revert U3 | preferred | planned |
-| Exercise deterministic directory substitution fixtures | test temp directories | moderate | remove fixture changes | no | planned |
+| Introduce private `EngramAuthority` state machine | `src/db/workspace.rs` | high | Revert U3 | preferred | blocked |
+| Use a safe exact-create-and-retain primitive/protocol | Pinned platform/capability APIs | high | No implementation until proven | required before execution | blocked |
+| Exercise deterministic substitution fixtures | Test temp directories | moderate | Remove fixture changes | no | planned |
 
-Reinforced gate: standard review plus operator-requested adversarial multi-model review before harvest. No shipment is permitted while that review is unavailable.
+Protected invariant: from the first existing-child open or vacancy decision through create/acquire, UUID/PID reads, publication, winner read, and final decision, one authority state is retained; no ambient/reopen substitution window exists. The earlier create-then-open instruction is withdrawn.
 
-## Plan Review
+## Standard Plan Review — Exact-Head Rerun
 
-Gate: **PASS (standard review only)**. Hardening required and present. Personas applied: constitution, Rust/API, architecture, test strategy, security, operational readiness, and learnings.
+Gate: **FAIL / BLOCKED**. Local constitution, Rust/API, architecture, scope, test, security, operations, and learnings lenses were rerun. Intercom/cross-model dispatch remains unavailable.
 
 | ID | Severity | Finding | Disposition |
 |---|---|---|---|
-| S1 | P1 | A single child opened only for the UUID branch would leave the PID branch mixed. | Resolved: U2/U3 require the same child for probe, UUID, PID, and publish. |
-| T1 | P1 | A timing race would not prove the defect. | Resolved: named deterministic hooks; not-fired is failure. |
-| A1 | P1 | Creating `.engram` before checking legacy state could alter compatibility. | Resolved: preserve absent/present decision and test both existing and cold-start branches. |
-| O1 | P2 | Rollback and observation were underspecified. | Resolved in hardening. |
+| COLD-1 | P0 | Create-by-name then open-by-name cannot preserve the exact first-created directory object across the intervening substitution window. | Previous instruction withdrawn; U2 now proves the gap. |
+| API-1 | P1 | No pinned safe portable create-and-retain primitive/protocol is demonstrated. | Open blocker on U3; implementation/harvest remains forbidden. |
+| TEST-1 | P1 | Existing tests did not checkpoint immediately after create and before first open. | U2 now requires the exact deterministic checkpoint. |
+| SCOPE-1 | P2 | Platform-specific proof may exceed one Rust file. | Resolve in a new spike/review before changing this blocked unit; do not hide dependency/API work in U3. |
 
-No unresolved standard-review P0/P1 finding remains. Review-fix cycles: 1 of 3.
+The standard gate cannot pass until `API-1` is resolved with pinned source evidence and the plan is reviewed again. The adversarial multi-model gate also remains failed/unverified. Status stays `blocked`; this plan is not harvest authorization.
 
+## References
 
-## Standard Plan Review Rerun — Cycle 5
-
-Gate: **PASS**. Six independent plan-review personas returned: Constitution Reviewer (one P3), Rust Reviewer (zero), Scope Boundary Auditor (zero), Learnings Researcher (zero), Architecture Strategist (zero), and Security Lens Reviewer (zero). No P0/P1/P2 finding remains.
-
-- **M-01 verified:** U3 enumerates presence probe, UUID read, PID read, cold-start create/open, and publish/read-back; it requires at most one retained child open after creation on each mutually exclusive branch and prohibits helper reopens.
-- **P3 operational advisory resolved in plan:** U4 records the concrete observation query/dashboard location and measured baseline in addition to owner, window, triggers, and latency.
-
-## Adversarial Multi-Model Review — Cycle 5 Final
-
-Gate: **FAILED CLOSED / UNVERIFIED**. No authoritative execution-system
-task/response metadata binds any configured reviewer response to its observed
-provider/model. The former three-model pass, M-01 3/3 closure, finding counts,
-and LOW-advisory disposition are withdrawn. The plan edits remain useful
-conservative input only and do not authorize execution.
-
-Evidence: `docs/closure/2026-08-24-dark-factory-cycle5-four-plan-adversarial-review-rerun.md` and `docs/closure/2026-08-24-dark-factory-cycle5-four-plan-adversarial-review-final.md`.
+- PR 363 review `5015447062`, thread `PRRT_kwDORJEduc6b8_I0`
+- Stash `7B15B447`; blocked feature `132-F`; blocked review `132.001-R`; blocked shipment `126-S`; replacement stash `172AE8CE`
+- `src/db/workspace.rs`
+- `docs/closure/2026-08-24-dark-factory-cycle5-four-plan-adversarial-review-final.md`

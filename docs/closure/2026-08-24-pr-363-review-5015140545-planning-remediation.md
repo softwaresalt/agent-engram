@@ -5,10 +5,14 @@ doc_type: closure
 source: Copilot review 5015140545 on PR 363
 source_commit: 2a80fd27342fbc614efc58c830b81bfa59301b7f
 date: 2026-08-24
-status: planned-remediation-complete
+status: superseded-by-exact-head-remediation
 ---
 
 # PR 363 review 5015140545 planning remediation
+
+## Exact-head supersession
+
+Reviews `5015373740` and `5015447062` supersede this record's cleanup-bound claims. The current design treats the SDK setting as a per-export-future limit only and uses a detached native worker plus a five-second bound on daemon wait, with completion unknown after timeout. See `docs/exec-plans/2026-08-24-44e573bc-otlp-api-drift-plan.md` and the exact-head remediation closure.
 
 ## Scope
 
@@ -20,7 +24,7 @@ This is planning and backlog closure only. No application source, test, manifest
 |---|---|---|
 | `PRRT_kwDORJEduc6b8O89` | Original sequence could not reach a compiling RED before implementation. | Replaced by compile-neutral U1, graph U2, compile-baseline U3, explicit seam U4, and compiling provider RED U5. |
 | `PRRT_kwDORJEduc6b8UJJ` | 131.001-T could only fail during production compilation. | 131.001-T now compiles with the feature disabled and fails runtime assertions over isolated `cargo tree` and `cargo check --lib` subprocesses. |
-| `PRRT_kwDORJEduc6b8UIv` | Flush and shutdown inherited an operator-controlled SDK timeout. | U6 owns a five-second application constant wired after batch defaults; U5 proves deterministic cancellation; U10 and U11 prove exactly-once cleanup and failure reporting. |
+| `PRRT_kwDORJEduc6b8UIv` | Flush and shutdown inherited an operator-controlled SDK timeout. | Superseded: U6 owns only a per-export-future constant. U10/U11 isolate synchronous cleanup in a detached native worker and bound only daemon wait; timeout reports completion unknown. |
 | `PRRT_kwDORJEduc6b8O9M` | 021-D lacked semantic archive provenance. | Added original queue path and archived status fields plus exact original stash, blocked feature/review/shipment, active replacement, and failed-harvest explanation. |
 | `PRRT_kwDORJEduc6b8O9f` | 022-D lacked semantic archive provenance. | Added the parallel provenance record for original stash 7B15B447 and active replacement 172AE8CE. |
 
@@ -32,9 +36,9 @@ Shipment `125-S` contains the parent plus all thirteen tasks and remains queued 
 
 ## Timeout and operational closure
 
-Production timeout ownership belongs to `src/server/observability.rs` through `OTLP_EXPORT_TIMEOUT = Duration::from_secs(5)` and `BatchConfigBuilder::with_max_export_timeout`. The environment cannot override the final value. Flush and shutdown each receive that phase cap, yielding a declared ten-second maximum for two sequential phases. The deterministic test uses paused Tokio time and a 25 ms injected test value to prove exporter-future cancellation without wall-clock sleep.
+`OTLP_EXPORT_TIMEOUT = 5s` is application-owned but bounds each exporter future only. `OTLP_CLEANUP_WAIT_TIMEOUT = 5s` separately bounds the daemon's wait on one detached native cleanup worker. If the synchronous SDK call does not return, the daemon reports completion unknown and does not join or claim cancellation.
 
-Ship owns the post-deploy observation window: 30 minutes or three controlled daemon exits. Healthy state is zero OTLP export, timeout, or cleanup failure records and exits below ten seconds. Any exit at ten seconds, hidden cleanup error, missing focused span, or default/all-features regression triggers disablement of `otlp-export` and revert of the owning GREEN commit or commits.
+Ship owns the post-deploy observation window: 30 minutes or three controlled daemon exits. Healthy state is zero export/worker/cleanup/timeout records and controlled child exit within the cleanup wait plus a two-second harness allowance. Any failure, timeout, hidden residual, missing span, or feature-gate regression disables `otlp-export` and reverts the owning GREEN commits.
 
 ## Provenance closure
 
@@ -52,4 +56,4 @@ Proposed title:
 chore(stage): queue thirteen-task OTLP repair and fail-close identity plans
 ```
 
-Proposed body facts: feature `131-F`; tasks `131.001-T` through `131.013-T`; fourteen-item parent-first `125-S` roster; exact linear chain; five-second per-phase and ten-second two-phase timeout; `125-S` sole queued/unclaimed; blocked shipments unchanged; archive replacements `8C7733CE` and `172AE8CE`. Stage does not mutate PR metadata.
+Current body facts: feature `131-F`; tasks `131.001-T` through `131.013-T`; fourteen-item parent-first roster; exactly twelve task dependency edges; five-second per-export-future policy; five-second daemon cleanup-wait deadline with unknown completion after timeout; `125-S` sole queued/unclaimed; blocked shipments unchanged; sole replacement pairs include `721A42F0` and `BD5DD62A`.

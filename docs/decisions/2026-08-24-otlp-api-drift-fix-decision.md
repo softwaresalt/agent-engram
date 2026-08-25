@@ -14,30 +14,27 @@ promoted_to:
 
 ## Problem Frame
 
-The optional `otlp-export` feature does not compile because `tracing-opentelemetry` 0.26 resolves against OpenTelemetry 0.25 while Engram directly pins 0.26, and `src/server/observability.rs` uses APIs unavailable in 0.26. The runtime design is also incomplete: the builder drops its provider, has no production caller, inherits the SDK or environment export timeout, and has no explicit flush or shutdown path.
+The optional `otlp-export` feature does not compile because `tracing-opentelemetry` 0.26 resolves against OpenTelemetry 0.25 while Engram directly pins 0.26, and the observability builder uses APIs unavailable in 0.26. The runtime design also drops its provider and lacks explicit cleanup ownership.
 
-The first plan attempted one feature-enabled RED before the feature target itself compiled. Review 5015140545 correctly rejected that sequence: production compilation failed before tests could compile or execute, so it could never demonstrate a compiling-but-failing harness.
-
-The daemon endpoint has no executable handoff. `Command::Daemon` is a unit variant that initializes tracing before `daemon::run`. `GlobalFlags` has no endpoint, the old `Config::otlp_endpoint` parser has no production caller, and `PluginConfig` loads too late. The shim child already inherits environment.
+Pinned SDK 0.26 source shows that `force_flush()` and `shutdown()` enqueue messages and block on untimed oneshot responses. `max_export_timeout` races each exporter batch future only. It cannot establish a whole-call or two-call bound.
 
 ## Decision
 
-Use four explicit RED boundaries and thirteen linear tasks.
+Use four compiling RED boundaries and thirteen linear tasks.
 
-1. Start with a compile-neutral integration meta-harness built without `otlp-export`. It invokes `cargo tree` and isolated `cargo check --lib` subprocesses and fails runtime assertions. It imports no current or future OTLP production symbol.
-2. Align only `tracing-opentelemetry` to 0.27 and the generated lockfile, then repair only the 0.26 source compile baseline. The latter deliberately preserves provider drop and missing runtime behavior.
-3. Introduce an explicit behavior-neutral exporter and tracing-pipeline seam before feature-enabled behavior tests. The seam is a separate task and cannot implement retention, timeout, endpoint propagation, attachment, or cleanup.
-4. Add a compiling provider RED against that seam. Its exact command is `cargo test --no-default-features --features otlp-export --lib server::observability::tests::otlp_provider_red -- --nocapture`. It fails for no retained export, no application timeout, and no deterministic cancellation report.
-5. Retain the provider and define `OTLP_EXPORT_TIMEOUT = Duration::from_secs(5)` in `src/server/observability.rs`. Build batch configuration from defaults, then call `with_max_export_timeout(OTLP_EXPORT_TIMEOUT)` so `OTEL_BSP_EXPORT_TIMEOUT` cannot override production policy. A test-only constructor may inject 25 ms for paused-time testing.
-6. Add a compiling daemon RED before endpoint and attachment work. Make `Command::Daemon` the endpoint boundary, pass one typed value to the shared tracing seam, attach beside stderr formatting, and retain the owner through daemon use.
-7. After the lifecycle runner exists, add a compiling cleanup RED. Then call force flush and shutdown exactly once each. Always attempt shutdown after flush failure. Each phase is bounded by the five-second provider setting, for a declared maximum of ten seconds across two sequential phases.
-8. Report phase, limit, and source on cleanup failure. A clean daemon returns cleanup failure. If both daemon and cleanup fail, the daemon error remains primary and cleanup is preserved diagnostically.
+1. Build the compile-neutral outer meta-harness with `--no-default-features --features cozo-backend`; nested OTLP tree/check commands use `--features cozo-backend,otlp-export`.
+2. Align only `tracing-opentelemetry` to 0.27 and the lockfile, then repair only the pinned-0.26 source compile baseline.
+3. Add a behavior-neutral exporter/tracing seam before feature-enabled tests.
+4. Run the provider RED with `cargo test --no-default-features --features cozo-backend,otlp-export --lib server::observability::tests::otlp_provider_red -- --nocapture`.
+5. Retain the provider and set `OTLP_EXPORT_TIMEOUT = 5s` after defaults. This bounds each exporter future only and may drop a never-ready export; it does not bound synchronous cleanup.
+6. Add the daemon endpoint/attachment RED and sequential endpoint and retention GREENs.
+7. Add a cleanup RED using deterministic synchronous fake methods and phase barriers.
+8. Move the explicit provider owner into one dedicated detached `std::thread`. The worker calls `force_flush` once and calls `shutdown` once only after flush returns. The daemon waits once for at most `OTLP_CLEANUP_WAIT_TIMEOUT = 5s` on a phase/completion channel.
+9. On deadline, do not join or claim cancellation/completion. Return/log `completion=unknown`, last phase, wait limit, and detached-worker/resource residual. A clean daemon returns cleanup failure; a daemon error remains primary when both fail.
 
-The timeout is application source policy, not user configuration. The deterministic fake exporter remains pending, carries a drop token, and uses paused Tokio time to prove no cancellation at 24 ms and cancellation at 25 ms without sleep. No outer async timeout may claim cancellation while leaving a blocking SDK call running.
+A native detached worker is deliberate: Tokio `spawn_blocking` tasks may delay runtime shutdown, while a dropped native `JoinHandle` is not joined and does not keep the daemon process alive after main returns. A timed-out SDK call may continue until normal process termination; an embedding that keeps the process alive is outside this design and prohibited without a reaper.
 
 ## Task and Shipment Decision
-
-Exact task chain:
 
 ```text
 131.001-T -> 131.002-T -> 131.003-T -> 131.004-T -> 131.005-T
@@ -45,27 +42,28 @@ Exact task chain:
 -> 131.011-T -> 131.012-T -> 131.013-T
 ```
 
-Each task is 45 to 105 minutes, at most two files or evidence surfaces, at most four functions, at most three scenarios, one skill domain, and one atomic milestone. Shipment `125-S` contains `131-F` plus all thirteen tasks, stays queued and unclaimed, and remains subject to exact-head review and integration guards. Blocked shipments are unchanged.
+Thirteen tasks create exactly twelve task dependency edges. Each task is 45-115 minutes, at most two files/evidence surfaces, at most four functions, at most three scenarios, one domain, and one atomic milestone. Cleanup isolation fits U11 at 115 minutes, so no extra task is needed. Shipment `125-S` remains fourteen items, sole queued, and unclaimed.
 
 ## Runtime and Rollback Decision
 
-All four RED commands are rerun unchanged in runtime verification. Ship then owns a 30-minute or three-controlled-exit observation window. Healthy state is zero OTLP timeout, export failure, or cleanup failure records and every controlled daemon exit below ten seconds. Roll back the owning GREEN commit or commits and disable `otlp-export` if an exit reaches ten seconds, cleanup failure is hidden, the expected focused span is absent, or default/all-features gates regress.
+Rerun all four corrected RED commands unchanged. Deterministic tests separately prove per-export cancellation and a bounded daemon wait whose timeout leaves synchronous completion unknown. A controlled child process held past the cleanup wait must exit within five seconds plus a two-second harness allowance, proving no join/runtime-blocking dependency rather than SDK completion.
+
+For 30 minutes or three controlled exits, observe export failures, worker spawn/loss/panic, cleanup failures, cleanup-wait timeouts, detached-worker outcomes, and total exit latency. Disable `otlp-export` and revert the owning GREEN commits on any failure/timeout, hidden residual, child exit beyond seven seconds, missing span, or feature-gate regression.
 
 ## Constraints
 
-- No test may fail to compile because a planned production symbol does not exist.
+- Never describe `force_flush()` or `shutdown()` as cancellable or operation-bounded in SDK 0.26.
+- Never infer a cleanup-call deadline from `max_export_timeout`.
+- No `spawn_blocking`, runtime-owned cleanup task, or production join.
 - No external collector, socket, credential, network oracle, sleep polling, or retry.
-- No hidden endpoint or timeout reread from CLI, environment, workspace config, or global state.
-- No task mixes Cargo graph work with Rust source work.
-- No task mixes provider construction with daemon CLI or cleanup coordination.
-- The shim and absent-endpoint path remain formatting-only.
-- PR 362 and blocked workspace-identity shipments remain untouched.
+- No test command may omit required `cozo-backend` when defaults are disabled.
+- No task mixes Cargo graph, provider construction, endpoint wiring, and cleanup coordination.
+- PR #362 and blocked workspace-identity shipments remain untouched.
 
 ## References
 
-- Review 5015140545 and OTLP threads `PRRT_kwDORJEduc6b8O89`, `PRRT_kwDORJEduc6b8UJJ`, and `PRRT_kwDORJEduc6b8UIv`
-- `Cargo.toml`
-- `src/server/observability.rs`
-- `src/lib.rs`
-- `src/bin/engram.rs`
+- PR 363 reviews `5015373740` and `5015447062`
+- `Cargo.toml`, `Cargo.lock`
+- Pinned `opentelemetry_sdk` 0.26 `trace/provider.rs` and `trace/span_processor.rs`
+- `src/server/observability.rs`, `src/lib.rs`, `src/bin/engram.rs`
 - `docs/exec-plans/2026-08-24-44e573bc-otlp-api-drift-plan.md`

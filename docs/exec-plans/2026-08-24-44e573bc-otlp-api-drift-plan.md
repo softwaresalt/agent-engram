@@ -6,101 +6,115 @@ date: 2026-08-24
 status: reviewed
 source: docs/decisions/2026-08-24-otlp-api-drift-fix-decision.md
 source_stash_id: 44E573BC
-review_source: PR 363 review 5015140545
+review_source: PR 363 reviews 5015373740 and 5015447062
 ---
 
 # Align the tracing bridge and retain the OpenTelemetry 0.26 provider lifecycle
 
 ## Problem Frame
 
-The optional `otlp-export` target currently cannot compile. `tracing-opentelemetry` 0.26 introduces OpenTelemetry 0.25 beside the direct 0.26 family, while `src/server/observability.rs` names APIs that are not available in 0.26. The current builder also returns only a layer, drops its provider, has no production caller, has no application-owned exporter timeout, and has no explicit cleanup path.
+The optional `otlp-export` target cannot compile. `tracing-opentelemetry` 0.26 introduces OpenTelemetry 0.25 beside the direct 0.26 family, and `src/server/observability.rs` names APIs unavailable in 0.26. The builder also drops its provider, has no production caller, and has no explicit application cleanup ownership.
 
-Review 5015140545 identified a sequencing defect: a feature-enabled test that imports future provider or lifecycle symbols cannot reach a compiling-but-failing state while the production target itself fails to compile. A compile error in either production or the test is not RED behavior evidence. The repaired sequence first runs a meta-harness with `otlp-export` disabled, then aligns the graph, then repairs only feature compilation, then introduces an explicit behavior-neutral seam, and only then adds feature-enabled provider and daemon RED tests against interfaces that already exist.
+Earlier revisions incorrectly treated `BatchConfigBuilder::with_max_export_timeout` as a whole-call deadline for synchronous `force_flush()` and `shutdown()`. It is not. This revision keeps the useful per-export timeout, moves synchronous cleanup to an isolated native worker, and bounds only how long the daemon awaits the worker. It never claims the SDK calls are canceled or complete after that wait expires.
 
-Read-only inspection confirms the runtime boundary. `Command::Daemon` is currently a unit variant, calls `init_tracing(LogFormat)` before `daemon::run`, and has no endpoint. `GlobalFlags` has no endpoint. `Config::otlp_endpoint` has no production parser caller. `PluginConfig::load` occurs too late. The shim child inherits environment. The daemon subcommand is therefore the sole endpoint boundary.
+Read-only inspection also confirms that `Command::Daemon` is the sole executable endpoint boundary. The shim remains formatting-only and its child inherits environment.
+
+## Pinned OpenTelemetry 0.26 Evidence
+
+Pinned `opentelemetry_sdk` 0.26 source establishes the contract:
+
+* `trace/span_processor.rs:253-272` enqueues `Flush`/`Shutdown` and synchronously `block_on`s an untimed oneshot response.
+* `trace/span_processor.rs:390-396` performs shutdown only after the worker reaches that message and flushes.
+* `trace/span_processor.rs:408-425` races each individual `exporter.export(batch)` future against `max_export_timeout`; it does not wrap the whole processor call.
+* `trace/span_processor.rs:599-603` documents the setting as the maximum duration to export a batch.
+* `trace/provider.rs:144-172` iterates processors synchronously for `force_flush` and `shutdown`.
+
+A queue can contain multiple batches or an in-flight export before the cleanup response. Therefore a five-second per-export value cannot prove a five-second cleanup phase or a ten-second two-call total.
 
 ## Requirements Trace
 
 | Requirement | Planned owner |
 |---|---|
-| Compiling initial RED | U1 uses a default-feature-disabled meta-harness and runtime subprocess assertions only. |
+| Compiling initial RED | U1 uses `cozo-backend` while keeping `otlp-export` disabled in the outer meta-harness. |
+| Correct isolated feature graph | U1/U2/U3 use `cozo-backend,otlp-export` for nested graph/compile commands. |
 | One OpenTelemetry family | U2 changes only the bridge and lockfile. |
-| Compiling optional target | U3 repairs supported 0.26 API use while preserving lifecycle defects. |
-| Explicit test seam | U4 introduces shared exporter and tracing-pipeline interfaces with no behavior GREEN. |
-| Compiling provider RED | U5 tests retained export and timeout through the existing seam. |
-| Provider ownership and timeout | U6 retains the provider and applies the application timeout in provider construction. |
-| Compiling daemon RED | U7 tests parser, exact endpoint handoff, attachment, and lifetime through existing APIs. |
-| Endpoint propagation | U8 owns the daemon CLI and typed handoff. |
-| Attachment and lifetime | U9 attaches the layer and retains the owner across daemon use. |
-| Compiling cleanup RED | U10 tests the existing lifecycle runner before cleanup implementation. |
-| Exactly-once cleanup | U11 owns flush, shutdown, failure precedence, and diagnostics. |
-| Runtime proof | U12 reruns every RED command unchanged and verifies the complete path. |
-| Closure | U13 records dependency, all-features, default, monitoring, and rollback evidence. |
+| Compiling optional target | U3 repairs supported 0.26 APIs while preserving lifecycle defects. |
+| Explicit test seam | U4 introduces behavior-neutral exporter and tracing-pipeline interfaces. |
+| Compiling provider RED | U5 tests retained export and per-export timeout through the existing seam. |
+| Provider ownership and per-export timeout | U6 retains the provider and applies source-owned batch-export policy. |
+| Compiling daemon RED | U7 tests parser, exact endpoint handoff, attachment, and lifetime. |
+| Endpoint propagation | U8 owns daemon CLI and typed handoff. |
+| Attachment and lifetime | U9 retains the owner through daemon use. |
+| Compiling cleanup RED | U10 tests returned and stalled synchronous cleanup through existing interfaces. |
+| Honest application cleanup bound | U11 isolates cleanup in one detached native worker and bounds only daemon wait. |
+| Runtime proof | U12 reruns every RED command unchanged and verifies residual semantics. |
+| Closure | U13 records dependency, quality, monitoring, and rollback evidence. |
 
-## Exact RED Sequence
+## Exact RED Sequence and Correct Feature Sets
 
 ### RED A: compile-neutral graph and feature contract
 
-U1 adds only `tests/otlp_feature_compile_contract_test.rs`. The test target is built without `otlp-export`, imports no production OTLP symbol, and then launches bounded subprocess checks.
+The outer test must compile Engram's required backend while intentionally leaving OTLP disabled:
 
 ```text
-cargo test --no-default-features --test otlp_feature_compile_contract_test -- --nocapture
+cargo test --no-default-features --features cozo-backend --test otlp_feature_compile_contract_test -- --nocapture
 ```
 
-Assertions and expected failures at the starting implementation state:
-
-1. `otlp_dependency_graph_uses_only_026` captures `cargo tree --no-default-features --features otlp-export` and asserts that no `opentelemetry v0.25` package is present. The harness compiles and the assertion fails because both 0.25 and 0.26 are present. U2 owns GREEN.
-2. `otlp_export_feature_compiles` runs `cargo check --no-default-features --features otlp-export --lib` in an isolated temporary `CARGO_TARGET_DIR` and asserts success. The harness compiles and the assertion fails because the nested command exits 101 with the existing `SdkTracerProvider` and `SpanExporter::builder` unsupported-0.26 diagnostics. U3 owns GREEN.
-
-The subprocess command is `cargo check --lib`, never `cargo test`, so the meta-harness cannot recurse. Invocation failure is distinct from the expected nonzero result, and captured stderr is printed in the assertion.
-
-### RED B: provider ownership, export, and timeout
-
-U4 first creates shared interfaces using already compiling 0.26 types. U5 then adds tests only to the existing observability test module.
+Its runtime subprocesses use the minimal feature pair needed by the OTLP target:
 
 ```text
-cargo test --no-default-features --features otlp-export --lib server::observability::tests::otlp_provider_red -- --nocapture
+cargo tree --no-default-features --features cozo-backend,otlp-export
+cargo check --no-default-features --features cozo-backend,otlp-export --lib
 ```
 
-The library and tests must compile before these assertions run:
+`otlp_dependency_graph_uses_only_026` initially fails because 0.25 and 0.26 coexist. `otlp_export_feature_compiles` initially fails with the existing unsupported-0.26 diagnostics. Invocation failure is distinct from the intended nonzero result, stderr is retained, and the nested command is `cargo check`, never recursive `cargo test`.
 
-1. Emit `otlp-red-contract-span`, request flush, and assert `exported_span_names == [otlp-red-contract-span]`. Expected RED is an empty list because the layer-only path drops its provider.
-2. Assert the production effective timeout is exactly `Duration::from_secs(5)` even when `OTEL_BSP_EXPORT_TIMEOUT` is set differently. Expected RED is the SDK or environment value because no application override is wired.
-3. Inject a never-ready exporter with a cancellation token and test-only 25 ms limit. Pause Tokio time, advance 24 ms and assert not cancelled, then advance 1 ms and assert cancelled with a phase-and-limit failure. Expected RED is no bounded cancellation or report.
+### RED B: provider ownership, export, and per-export timeout
 
-U6 owns GREEN without changing the tests.
+```text
+cargo test --no-default-features --features cozo-backend,otlp-export --lib server::observability::tests::otlp_provider_red -- --nocapture
+```
+
+The compiling tests prove retained export and that `OTLP_EXPORT_TIMEOUT = 5s` overrides `OTEL_BSP_EXPORT_TIMEOUT` for each exporter future. A never-ready fake export is dropped at an injected 25 ms under paused Tokio time. That test proves only SDK cancellation of one export future; it does not make a cleanup-call claim.
 
 ### RED C: endpoint, attachment, and owner lifetime
 
 ```text
-cargo test --no-default-features --features otlp-export otlp_daemon_red -- --nocapture
+cargo test --no-default-features --features cozo-backend,otlp-export otlp_daemon_red -- --nocapture
 ```
 
-The lib and bin tests compile against U4 interfaces. `Cli::try_parse_from` and `Debug` output avoid direct access to a future enum field. Expected failures are a runtime clap unexpected-argument result for `--otlp-endpoint`, no recorded endpoint at the factory, and no exported span or retained owner. U8 makes endpoint assertions GREEN. U9 makes attachment and lifetime assertions GREEN.
+The lib and bin tests compile against U4 interfaces. Expected failures are runtime parser/handoff/attachment/lifetime assertions. U8 and U9 own sequential GREEN states.
 
-### RED D: cleanup coordination
-
-U9 creates the lifecycle runner while intentionally omitting cleanup. U10 then tests that current helper.
+### RED D: cleanup isolation and daemon-wait semantics
 
 ```text
-cargo test --no-default-features --features otlp-export --bin engram otlp_cleanup_red -- --nocapture
+cargo test --no-default-features --features cozo-backend,otlp-export --bin engram otlp_cleanup_red -- --nocapture
 ```
 
-The target and tests compile. Clean exit initially reports `(flush_calls, shutdown_calls) == (0, 0)` instead of `(1, 1)`. Combined daemon and cleanup failure lacks the cleanup diagnostic, and timeout failure is not surfaced. U11 owns GREEN without test edits.
+U10 uses fake synchronous cleanup methods with entered/release barriers. It proves returned flush results lead to one shutdown attempt; force-flush and shutdown stalls make the daemon wait time out at the injected/paused five-second deadline; and the result says completion unknown with a detached worker. The test releases and reaps the fake worker only after the production-facing assertion so the test process does not leak a thread. Current code is RED because U9 retains the owner but starts no cleanup worker.
 
-## Timeout Ownership and Semantics
+## Cleanup Ownership and Honest Guarantees
 
-`src/server/observability.rs` owns `OTLP_EXPORT_TIMEOUT = Duration::from_secs(5)`. It is application source policy, not CLI, workspace config, environment, or operator input. Production provider construction starts from `BatchConfigBuilder::default()` and then calls `with_max_export_timeout(OTLP_EXPORT_TIMEOUT)`, so `OTEL_BSP_EXPORT_TIMEOUT` cannot override the final production value.
+Two independent constants have non-overlapping meanings:
 
-The SDK `force_flush()` and `shutdown()` calls are synchronous and accept no timeout. Their exporter work is bounded where the SDK supports cancellation: the batch processor export future. Each phase has a five-second application cap. Cleanup always attempts one flush and one shutdown, so the declared two-phase maximum is ten seconds. A flush error does not skip shutdown. There is no retry and no outer async wrapper that pretends to cancel a still-running blocking thread.
+* `OTLP_EXPORT_TIMEOUT = 5s` in `src/server/observability.rs`: maximum for each exporter future/batch as implemented by SDK 0.26. It can cancel/drop that future.
+* `OTLP_CLEANUP_WAIT_TIMEOUT = 5s` in `src/bin/engram.rs`: one total monotonic deadline for the daemon to await the complete cleanup worker sequence. It cancels only the channel wait.
 
-The test-only constructor can inject 25 ms but production cannot. A pending fake exporter future carries a drop token. Paused Tokio time proves it remains live at 24 ms and is cancelled at 25 ms. Failure reports include phase, configured limit, and source. A clean daemon returns cleanup failure. If daemon and cleanup both fail, the daemon error remains primary and the cleanup failure is emitted diagnostically with phase and limit.
+After the daemon future ends, the lifecycle runner launches exactly one `std::thread` worker and transfers the explicit provider owner into it. The worker emits phase signals, calls `force_flush()` once, and calls `shutdown()` once only if flush returns, whether success or error. If flush never returns, shutdown cannot be reached and is not reported as attempted. The daemon awaits completion/phase signals under the total wait deadline.
+
+On timeout the receiver is dropped, the native `JoinHandle` is not joined, and the caller returns a diagnostic with `last_phase`, `wait_limit`, `completion=unknown`, and `worker_detached=true`. There is no retry. Queued spans, exporter I/O, SDK method completion, and resource release may remain unresolved. A worker panic or channel close is reported distinctly.
+
+The launcher must not use Tokio `spawn_blocking`, a runtime-owned `JoinSet`, or any drop path that waits for the worker. A thread-spawn failure must return immediately and avoid treating provider Drop as successful cleanup; a process-lifetime ownership cell/leak is acceptable on this rare fail-exit path and must be logged as an unresolved resource residual. The global subscriber remains process-static rather than becoming a caller-side cleanup oracle.
+
+The bounded statement is: **OTLP cleanup contributes at most five seconds of daemon wait after successful worker launch.** It is not: "flush completed in five seconds", "shutdown completed in five seconds", or "the calls were canceled". The main future can return at the deadline because no runtime blocking task or join remains. Rust process termination does not wait for a detached native thread; normal binary exit terminates it and the OS reclaims process resources. If this runner were embedded in a process that continues running, the detached worker could continue indefinitely; such reuse is prohibited without a separate reaper/process-isolation design.
+
+A clean daemon returns cleanup failure/timeout. If daemon and cleanup both fail, the daemon error remains primary and the complete cleanup diagnostic is emitted to stderr before return.
 
 ## Implementation Units
 
 ### U1 / 131.001-T — RED compile-neutral meta-harness
 
-One test file, at most three test/helper functions, two scenarios, 75 minutes. No manifest, lockfile, source, missing-symbol probe, external collector, socket, or nested test invocation.
+One test file, at most three test/helper functions, two scenarios, 75 minutes. Outer feature set: `cozo-backend`; nested OTLP commands: `cozo-backend,otlp-export`.
 
 ### U2 / 131.002-T — GREEN bridge graph
 
@@ -108,47 +122,49 @@ Only `Cargo.toml` and `Cargo.lock`, zero functions, one graph scenario, 45 minut
 
 ### U3 / 131.003-T — GREEN pinned-0.26 compile baseline
 
-Only `src/server/observability.rs`, at most three functions, two compile scenarios, 75 minutes. Use `trace::TracerProvider`, `new_exporter().tonic().with_endpoint(...).build_span_exporter()`, and the supported Tokio batch runtime. Preserve layer-only provider drop, no application timeout, no caller, and no cleanup.
+Only `src/server/observability.rs`, at most three functions, two compile scenarios, 75 minutes. Preserve layer-only provider drop, no application timeout, no caller, and no cleanup.
 
 ### U4 / 131.004-T — SCAFFOLD behavior-neutral seams
 
-Only `src/server/observability.rs` and `src/lib.rs`, at most four interface/adapter functions, two behavior-preservation scenarios, 90 minutes. Add shared exporter-factory and tracing-pipeline injection boundaries. Existing production behavior remains layer-only and formatting-only. No RED test or behavior implementation is hidden here.
+Only `src/server/observability.rs` and `src/lib.rs`, at most four functions, two scenarios, 90 minutes. Existing production behavior remains layer-only and formatting-only.
 
 ### U5 / 131.005-T — RED provider lifecycle
 
-One test module, at most four test/helper functions, three scenarios, 100 minutes. The feature-enabled harness compiles and fails only for retained export, exact timeout, and deterministic cancellation/reporting behavior.
+One test module, at most four functions, three scenarios, 100 minutes. Test retained export and the individual exporter timeout only.
 
-### U6 / 131.006-T — GREEN retained provider and timeout
+### U6 / 131.006-T — GREEN retained provider and per-export timeout
 
-Only `src/server/observability.rs`, at most four functions, three scenarios, 105 minutes. Retain the provider, expose layer plus explicit lifecycle results, and wire the five-second constant after environment-derived defaults. No production attachment.
+Only `src/server/observability.rs`, at most four functions, three scenarios, 105 minutes. Synchronous cleanup methods remain explicitly unbounded.
 
 ### U7 / 131.007-T — RED daemon endpoint and attachment
 
-Test-only modules in `src/bin/engram.rs` and `src/lib.rs`, at most four test/helper functions, three scenarios, 105 minutes. Tests compile against U4 and U6 interfaces and fail at runtime assertions only.
+Test-only modules in `src/bin/engram.rs` and `src/lib.rs`, at most four functions, three scenarios, 105 minutes.
 
 ### U8 / 131.008-T — GREEN endpoint propagation
 
-Only `src/bin/engram.rs` and `src/lib.rs`, at most four functions, three scenarios, 95 minutes. Add daemon-only flag and environment resolution and pass one typed value to the existing tracing seam. Attachment remains RED.
+Only `src/bin/engram.rs` and `src/lib.rs`, at most four functions, three scenarios, 95 minutes.
 
 ### U9 / 131.009-T — GREEN attachment and lifetime
 
-Only `src/lib.rs` and the daemon arm/helper in `src/bin/engram.rs`, at most four functions, three scenarios, 105 minutes. Attach beside stderr formatting, return the owner, and retain it across the complete daemon future. Cleanup remains absent.
+Only `src/lib.rs` and the daemon arm/helper in `src/bin/engram.rs`, at most four functions, three scenarios, 105 minutes. Cleanup remains absent.
 
-### U10 / 131.010-T — RED cleanup
+### U10 / 131.010-T — RED cleanup isolation
 
-One bin test module, at most four test/helper functions, three scenarios, 90 minutes. Test the existing runner for exactly-once clean, combined-failure, and timeout behavior.
+One bin test module, at most four functions, three scenario groups, 105 minutes. Deterministic barriers plus paused Tokio time distinguish caller timeout from worker completion.
 
-### U11 / 131.011-T — GREEN cleanup coordination
+### U11 / 131.011-T — GREEN detached cleanup worker
 
-Only the daemon runner/arm in `src/bin/engram.rs`, at most four functions, three scenarios, 105 minutes. Flush and shutdown once each on every exit, attempt shutdown after flush failure, and preserve failure precedence and diagnostics.
+Only `src/bin/engram.rs`, at most four functions, three scenario groups, 115 minutes. One native worker, one total daemon-wait deadline, no join, honest residual reporting, and existing error precedence.
 
 ### U12 / 131.012-T — VERIFY runtime
 
-At most two unchanged evidence surfaces, zero production functions, three scenario groups, 80 minutes. Rerun all four RED commands unchanged and prove endpoint-to-export-to-cleanup behavior without network.
+At most two unchanged evidence surfaces, zero production functions, three scenario groups, 90 minutes. Rerun all four corrected commands and verify no `spawn_blocking`/join path.
 
 ### U13 / 131.013-T — VERIFY quality and operations
 
-At most two evidence surfaces, zero functions, three gate groups, 90 minutes. Record dependency, all-features, focused, default, monitoring, and rollback evidence.
+At most two evidence surfaces, zero functions, three gate groups, 90 minutes. Record feature graph, quality, runtime, cleanup residual, monitoring, and rollback evidence.
+
+All estimates are 45-115 minutes and remain below the two-hour limit. Cleanup isolation remains one width-isolated implementation task, so no fourteenth task is required.
 
 ## Dependency Graph and Shipment
 
@@ -160,56 +176,55 @@ Strict chain:
 -> 131.011-T -> 131.012-T -> 131.013-T
 ```
 
-Shipment `125-S` contains parent `131-F` and all thirteen tasks in that order. It remains the sole queued and unclaimed shipment. Blocked shipments `126-S` through `129-S` are unchanged. PR 362 ordering is already satisfied; exact reviewed PR 363 integration and all claim guards remain required.
+Thirteen tasks produce exactly twelve task dependency edges. Shipment `125-S` contains parent `131-F` plus all thirteen tasks in that order: fourteen items total. It remains sole queued and unclaimed. Blocked shipments `126-S` through `129-S` remain blocked.
 
 ## Runtime Verification, Monitoring, and Rollback
 
-Precheck the optional feature and Tokio runtime. U12 runs the exact RED commands unchanged. It must observe one uniquely named span, owner retention through daemon use, cancellation at the injected virtual limit, the production five-second per-phase value, at most ten seconds for two sequential phases, exactly one flush and one shutdown, and visible failure precedence.
+Ship reruns the corrected RED commands unchanged. Deterministic tests must observe one span, owner retention, one-export-future cancellation at the injected limit, returned cleanup sequencing, and timeout results that explicitly say completion unknown. Controlled subprocess verification holds a fake cleanup method past the deadline and proves the child exits within the five-second application wait plus a two-second harness allowance. That proves process exit does not join the worker; it does not prove SDK cleanup completed.
 
-Ship owns a 30-minute or three-controlled-daemon-exit observation window after deployment. The manual log query counts OTLP export failure, cleanup timeout, cleanup failure, and daemon exit duration. Baseline and healthy threshold are zero timeout or failure records and every controlled exit below ten seconds. Rollback triggers are any exit reaching ten seconds, any hidden cleanup failure, a missing expected span in focused verification, or any default/all-features regression. Rollback is to disable `otlp-export` and revert the owning GREEN commit or commits; keep `125-S` unclaimed or return the defect to Stage until evidence is clean.
+For 30 minutes or three controlled exits, Ship monitors stderr/logs for export failure, cleanup-worker spawn failure, worker channel loss/panic, cleanup failure, cleanup-wait timeout, detached-worker outcome, and daemon exit duration. Healthy state is zero failure/timeout records and controlled exits below seven seconds. Any such failure, hidden residual, missing span, or feature-gate regression disables `otlp-export` and reverts the owning GREEN commits. Closure records whether any timed-out cleanup remained unresolved until process exit.
 
-## Plan Hardening
+## Plan Hardening — Exact-Head Rerun
 
-Hardening rerun: **required and satisfied** for external export, provider lifetime, synchronous cleanup, timeout ownership, and daemon error precedence.
+Hardening is **required and satisfied** for external export, provider lifetime, synchronous non-cancellable cleanup, process exit, and rollback.
 
-Reinforcing context included the constitution, strict-safety and release-observability instructions, OpenTelemetry 0.26 API evidence in review 5015140545, and compound guidance that a scope-local timeout does not prove a wider operation bounded. The design therefore names both the five-second exporter phase cap and the derived ten-second two-phase maximum, and it avoids an outer timeout that would abandon a blocking thread without cancellation.
+Reinforcing context: strict-safety and release-observability instructions; pinned OpenTelemetry 0.26 source listed above; `docs/compound/workflow-issues/linked-worktree-shared-startup-deadline-exact-cleanup-2026-08-19.md`, whose key lesson is that an inner timeout does not bound a wider operation.
 
 | ProposedAction | Targets | ActionRisk | Rollback | Approval required | ActionResult |
 |---|---|---|---|---|---|
-| Add compile-neutral RED meta-harness | One test file | moderate | Revert U1 | no | planned |
+| Add compile-neutral RED harness | One test file | moderate | Revert U1 | no | planned |
 | Align dependency family | Cargo manifest and lockfile | moderate | Restore bridge 0.26 | no | planned |
-| Repair compile baseline | Observability constructor | moderate | Revert U3 | no | planned |
-| Add shared test seams | Observability and tracing init | moderate | Revert U4 | no | planned |
-| Retain provider and own timeout | Observability provider | high | Revert U6 and keep feature disabled | preferred before rollout | planned |
-| Wire endpoint and attachment | Daemon CLI and tracing init | moderate | Revert U8 and U9 | no | planned |
-| Coordinate cleanup | Daemon lifecycle runner | high | Revert U11 and disable feature | preferred before rollout | planned |
-| Verify and observe | Focused harness and logs | low | Return defect to Stage | no | planned |
+| Retain provider and apply per-export policy | Observability provider | high | Revert U6; disable feature | preferred before rollout | planned |
+| Wire endpoint and attachment | Daemon CLI and tracing init | moderate | Revert U8/U9 | no | planned |
+| Isolate synchronous cleanup in a detached native worker | Daemon lifecycle runner | high | Revert U11; disable feature | preferred before rollout | planned |
+| Verify residual behavior and observe | Focused harness and logs | low | Return defect to Stage | no | planned |
 
-Protected invariants: every behavior GREEN has a compiling runtime RED; U1 never enables the broken feature in its own compilation; U4 adds interface only; production timeout is application-owned and environment-independent; pending export is actually cancelled by the SDK timeout; provider ownership outlives daemon use; flush and shutdown are exactly once; shutdown follows flush failure; no network oracle or unrelated config redesign is introduced; all tasks remain under two hours.
+Protected invariants: compiling REDs precede behavior GREENs; no command omits `cozo-backend`; per-export and daemon-wait constants are never conflated; no synchronous call is described as cancellable; timeout diagnostics say completion unknown; no runtime-owned blocking task or join can extend daemon return; all work remains under two hours.
 
-## Plan Review
+## Standard Plan Review — Exact-Head Rerun
 
-Gate: **PASS**. Standard review was rerun after hardening using constitution, Rust/API, architecture, scope, test-strategy, operational-readiness, learnings, and external-boundary security lenses. Cross-model and intercom dispatch were unavailable, so the local reviewer lenses are disclosed. This non-security maintenance plan has no unresolved P0 or P1 finding.
+Gate: **PASS**. Intercom and cross-model dispatch were unavailable, so the Stage caller ran constitution, Rust/API, architecture, scope, test-strategy, operational-readiness, learnings, and external-boundary security lenses locally. No unresolved P0/P1 remains.
 
 | ID | Persona | Severity | Finding | Disposition |
 |---|---|---|---|---|
-| C1 | Constitution | P1 | Original U1 could not produce a compiling RED. | Resolved by U1 runtime meta-harness, U2 graph GREEN, and U3 compile GREEN. |
-| T1 | Test strategy | P1 | Original provider and daemon RED named behavior before usable interfaces existed. | Resolved by explicit behavior-neutral U4 seam before U5 and U7. |
-| R1 | Rust/API | P1 | Synchronous cleanup could inherit the operator-controlled SDK default timeout. | Resolved by U6 constant plus `with_max_export_timeout` after defaults. |
-| A1 | Architecture | P1 | A broad combined repair would mix Cargo, provider, CLI, attachment, and lifecycle concerns. | Resolved by thirteen linear units with at most two files and one domain each. |
-| O1 | Operational readiness | P1 | Timeout cancellation, reporting, monitoring, and rollback were incomplete. | Resolved by paused-time cancellation in U5/U6, cleanup reporting in U10/U11, and U13 observation and rollback gates. |
-| S1 | Scope boundary | P2 | A seam task could hide implementation ahead of RED. | Resolved: U4 is behavior-preserving, has no tests, and forbids ownership, timeout, endpoint, attachment, and cleanup behavior. |
-| T2 | Test strategy | P2 | A cargo subprocess test could recurse or fail to invoke. | Resolved: U1 invokes only `cargo tree` and `cargo check --lib`, uses an isolated target directory, and distinguishes invocation errors. |
-| X1 | Security lens | P3 | OTLP tests could introduce network or secret handling. | Resolved by injected in-process exporters and explicit no-network/no-credential scope. |
+| R2 | Rust/API | P1 | SDK max export timeout does not bound synchronous provider cleanup. | Resolved: U6 limits its claim to each export future; U10/U11 bound only daemon wait and report completion unknown. |
+| A2 | Architecture | P1 | An async timeout around a blocking call would abandon runtime-owned work and could delay runtime shutdown. | Resolved: one detached `std::thread`, no `spawn_blocking`, no join, explicit process-exit residual. |
+| T3 | Test strategy | P1 | The timeout oracle could pass without proving the worker remained blocked. | Resolved: entered/release barriers, paused time, pending-at-4,999-ms check, and test-only release/reap. |
+| O2 | Operations | P1 | Timed-out resources and telemetry loss were undocumented. | Resolved: structured unknown/detached diagnostic, controlled child exit check, monitoring, rollback, and closure residual. |
+| C2 | Constitution | P1 | OTLP-only no-default commands compile unrelated missing Cozo surfaces. | Resolved: outer meta-harness uses `cozo-backend`; every OTLP graph/check/test command uses `cozo-backend,otlp-export`. |
+| S2 | Scope | P2 | Cleanup isolation might require another task. | Resolved: U11 stays one file, four functions, three scenario groups, 115 minutes; roster remains thirteen tasks. |
+| L1 | Learnings | P2 | Prior startup learning rejects inner-timeout-as-outer-bound reasoning. | Resolved in hardening and the two-constant design. |
+| X2 | Security | P3 | External exporter tests could cross network/credential boundaries. | Resolved by injected in-process fakes and no-network scope. |
 
-The review confirms the exact thirteen-edge chain, fourteen-item parent-first roster, 45 to 105 minute estimates, application timeout ownership, deterministic cancellation test, monitoring and rollback plan, and queued/unclaimed `125-S` state.
+Review confirms a fourteen-item roster, thirteen tasks, exactly twelve dependency edges, 45-115 minute estimates, one sole queued/unclaimed shipment, and no claim that SDK cleanup completed after the daemon deadline.
 
 ## References
 
-- PR 363 review 5015140545 and threads `PRRT_kwDORJEduc6b8O89`, `PRRT_kwDORJEduc6b8UJJ`, `PRRT_kwDORJEduc6b8UIv`
+- PR 363 reviews `5015373740`, `5015447062`; threads `PRRT_kwDORJEduc6b8xO2`, `PRRT_kwDORJEduc6b8_IN`
 - Stash `44E573BC`; feature `131-F`; shipment `125-S`
+- `Cargo.toml`, `Cargo.lock`
+- `src/server/observability.rs`, `src/lib.rs`, `src/bin/engram.rs`
 - `docs/decisions/2026-08-24-otlp-api-drift-fix-decision.md`
-- `src/server/observability.rs`, `src/lib.rs`, and `src/bin/engram.rs`
 - `docs/compound/workflow-issues/linked-worktree-shared-startup-deadline-exact-cleanup-2026-08-19.md`
 - `.github/instructions/strict-safety.instructions.md`
 - `.github/instructions/release-observability.instructions.md`

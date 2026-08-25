@@ -78,11 +78,13 @@ observations remain non-consensus planning input only.
   valid review.
 * Replacement active stash entries `172AE8CE`, `8C7733CE`, `721A42F0`, and
   `BD5DD62A` preserve links to the original archived stash IDs and blocked
-  planning targets. The former `harvested` markers are corrected to reason
+  planning targets. All four former `harvested` markers are corrected to reason
   `archived` with disposition `blocked_unverified_planning`: no original bug was
-  successfully harvested to executable work. Semantic archives `021-D` and
-  `022-D` name the exact queue source, accepted archival status, blocked
-  feature/review/shipment, and sole active replacement.
+  successfully harvested to executable work. Semantic archives `021-D`/`022-D`
+  and `024-D`/`025-D` name the exact queue source, accepted deliberation archive,
+  blocked feature/review/shipment, and sole active replacement. Specifically,
+  `024-D` -> `134-F` / `134.001-R` / `128-S` -> sole replacement `721A42F0`, and
+  `025-D` -> `135-F` / `135.001-R` / `129-S` -> sole replacement `BD5DD62A`.
 * Shipment `125-S` is unchanged in scope and remains the only queued shipment
   from this cycle, subject to its durable merge/review/competition/dependency
   claim guard.

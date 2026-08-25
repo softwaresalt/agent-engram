@@ -8,6 +8,7 @@ date: 2026-08-24
 agent: stage
 branch: stage/dark-factory-cycle2-20260824-1540
 pull_request: 363
+superseded_by: PR 363 exact-head reviews 5015373740 and 5015447062
 ---
 
 # PR 363 review 5015140545 planning remediation memory
@@ -38,22 +39,22 @@ Feature `131-F` has thirteen queued child tasks in one exact chain:
 
 Shipment `125-S` has the parent-first fourteen-item roster and remains the sole queued, unclaimed shipment. Blocked shipments `126-S` through `129-S` and their dependencies were not changed.
 
-Task estimates are: 75, 45, 75, 90, 100, 105, 105, 95, 105, 90, 105, 80, and 90 minutes. Every task declares one skill domain and atomic milestone and stays within two files or evidence surfaces, four functions, and three scenarios.
+Current task estimates are: 75, 45, 75, 90, 100, 105, 105, 95, 105, 105, 115, 90, and 90 minutes. Every task declares one skill domain and atomic milestone and stays within two files or evidence surfaces, four functions, and three scenarios.
 
 ## RED and timeout decisions
 
 The exact RED commands are recorded in the plan and tasks:
 
 ```text
-cargo test --no-default-features --test otlp_feature_compile_contract_test -- --nocapture
-cargo test --no-default-features --features otlp-export --lib server::observability::tests::otlp_provider_red -- --nocapture
-cargo test --no-default-features --features otlp-export otlp_daemon_red -- --nocapture
-cargo test --no-default-features --features otlp-export --bin engram otlp_cleanup_red -- --nocapture
+cargo test --no-default-features --features cozo-backend --test otlp_feature_compile_contract_test -- --nocapture
+cargo test --no-default-features --features cozo-backend,otlp-export --lib server::observability::tests::otlp_provider_red -- --nocapture
+cargo test --no-default-features --features cozo-backend,otlp-export otlp_daemon_red -- --nocapture
+cargo test --no-default-features --features cozo-backend,otlp-export --bin engram otlp_cleanup_red -- --nocapture
 ```
 
 The first test target compiles with `otlp-export` disabled and imports no OTLP production symbol. It fails runtime assertions around isolated `cargo tree` and `cargo check --lib` subprocess results. The later REDs compile against U4 interfaces that already exist.
 
-Production policy is `OTLP_EXPORT_TIMEOUT = Duration::from_secs(5)` in `src/server/observability.rs`, applied with `BatchConfigBuilder::with_max_export_timeout` after defaults. The environment cannot override it. Each synchronous cleanup phase receives the five-second exporter cap, with ten seconds declared for flush plus shutdown. Paused Tokio time and a 25 ms test-only value prove the pending export future is actually cancelled. Shutdown is attempted after flush failure. Clean and combined failures preserve the documented return and diagnostic precedence.
+Exact-head correction: `OTLP_EXPORT_TIMEOUT = 5s` applies to each exporter future only; it does not bound synchronous `force_flush()` or `shutdown()`. The current plan moves the explicit owner into one detached native worker and gives the daemon one five-second `OTLP_CLEANUP_WAIT_TIMEOUT` for the worker completion channel. Timeout reports completion unknown and detached residual; it does not claim cancellation. If flush returns, shutdown is attempted even on error; if flush never returns, shutdown is not falsely reported. Clean and combined failures preserve return/diagnostic precedence.
 
 ## Archive provenance
 
@@ -86,7 +87,7 @@ Plan hardening reran for external export, provider lifetime, timeout ownership, 
 - width, exact RED command, timeout ownership, roster, dependency, and stash replacement checks pass
 - scope and `git diff --check`: planning/backlog only and clean
 
-No Cargo command from the planned RED sequence was executed because Stage is planning-only.
+No Cargo build, check, test, or linter command from the planned RED sequence was executed because Stage is planning-only. Read-only Cargo metadata validates the corrected feature selection.
 
 ## Compact-context assessment
 
@@ -98,4 +99,4 @@ Substantive planning commit `7f36eed8de3f4fb7c0335497da3652636151f0b3` was pushe
 
 ## Next steps
 
-Ship may apply the proposed PR title/body facts, obtain any required exact-final-head review, and later claim only after every 125-S guard passes. The current PR title still says eight tasks and must not be treated as authoritative; the reviewed backlog roster has thirteen tasks plus parent.
+Ship may apply the proposed PR title/body facts, obtain any required exact-final-head review, and later claim only after every 125-S guard passes. The current PR title/body and backlog roster describe thirteen tasks plus parent and exactly twelve task dependency edges. Exact-head cleanup semantics and provenance still require the final reviewed commit before claim.
