@@ -3,7 +3,7 @@ title: "Retain one .engram capability through daemon-key selection"
 type: implementation-plan
 doc_type: plan
 date: 2026-08-24
-status: blocked-review
+status: reviewed-ready
 source: docs/decisions/2026-08-24-workspace-authority-followups-deliberation.md
 source_stash_id: "7B15B447"
 backlog_deliberation: "022-D"
@@ -37,11 +37,11 @@ Add one colocated deterministic test in `src/db/workspace.rs` for the absent-ID/
 
 ### U3 — GREEN: thread the retained child capability
 
-Refactor private helpers in `src/db/workspace.rs` so `daemon_key_for_workspace` obtains `Option<CapRoot>` for `.engram` once. Existing directories are opened no-follow once; cold start creates through the retained workspace root and then opens once. UUID probe/read, PID read, and identity publish receive that same retained child root. Remove internal helper shapes that reopen `.engram`. U1 and U2 turn green without changing public signatures. One file, fewer than five functions, target 110 minutes.
+Refactor private helpers in `src/db/workspace.rs` so `daemon_key_for_workspace` obtains one branch-scoped `.engram` `CapRoot`. For an existing child, open no-follow exactly once before the presence probe. For cold start, create only through the retained workspace root, then open the resulting child exactly once. From that point, the presence probe, UUID read, PID read, staging/publish path, and winner read all receive the same retained child; no branch helper may reopen `.engram` or derive a second child authority. The acceptance audit must enumerate all five interactions—presence probe, UUID read, PID read, cold-start create/open, and publish/read-back—and prove at most one retained child open after creation on each mutually exclusive branch. U1 and U2 turn green without changing public signatures. One file, fewer than five functions, target 110 minutes.
 
 ### U4 — Verification and closure
 
-Run targeted RED/GREEN evidence, the workspace identity unit/integration set, Windows and Linux CI, daemon-key stability across restart, and one ordinary cold start. Record the retained-child invariant, latency, rollback trigger, and any platform caveat in closure. Verification only, target 90 minutes.
+Run targeted RED/GREEN evidence, the workspace identity unit/integration set, Windows and Linux CI, daemon-key stability across restart, and one ordinary cold start. Record the retained-child invariant, latency, rollback trigger, platform caveat, concrete observation query/dashboard location, and measured baseline in closure. Verification only, target 90 minutes.
 
 ## Dependency Graph
 
@@ -59,7 +59,7 @@ Run targeted RED/GREEN evidence, the workspace identity unit/integration set, Wi
 | Risk | Mitigation |
 |---|---|
 | Cold start creates `.engram` too early and changes legacy behavior | Preserve the existing absent/present decision and test both branches. |
-| Ownership refactor accidentally reopens the child | Review every `.engram` open in `daemon_key_for_workspace`; exactly one retained child per branch. |
+| Ownership refactor accidentally reopens the child | Audit presence, UUID, PID, cold-start create/open, publish, and read-back; after capability-relative creation, exactly one retained child open is permitted per mutually exclusive branch. |
 | PID fixture becomes timing-based | Use current-process liveness and deterministic checkpointing; no sleeps. |
 | Public capability leakage | Private helpers only; public signatures unchanged. |
 
@@ -101,6 +101,18 @@ Gate: **PASS (standard review only)**. Hardening required and present. Personas 
 
 No unresolved standard-review P0/P1 finding remains. Review-fix cycles: 1 of 3.
 
-## Adversarial Multi-Model Review
 
-Gate: **BLOCKED**. This plan is security-sensitive and the operator requires genuine multi-model review. The current tool surface exposes no independent reviewer/subagent dispatch and no cross-model execution. Single-model persona simulation is not represented as multi-model consensus. Harvest, feature creation, and shipment assembly are prohibited until at least three independent cross-model reviewers return and HIGH-confidence P0/P1 findings are cleared.
+## Standard Plan Review Rerun — Cycle 5
+
+Gate: **PASS**. Six independent plan-review personas returned: Constitution Reviewer (one P3), Rust Reviewer (zero), Scope Boundary Auditor (zero), Learnings Researcher (zero), Architecture Strategist (zero), and Security Lens Reviewer (zero). No P0/P1/P2 finding remains.
+
+- **M-01 verified:** U3 enumerates presence probe, UUID read, PID read, cold-start create/open, and publish/read-back; it requires at most one retained child open after creation on each mutually exclusive branch and prohibits helper reopens.
+- **P3 operational advisory resolved in plan:** U4 records the concrete observation query/dashboard location and measured baseline in addition to owner, window, triggers, and latency.
+
+## Adversarial Multi-Model Review — Cycle 5 Final
+
+Gate: **PASS WITH LOW ADVISORIES**. Three independent configured reviewers (`openai/gpt-5.4-mini`, `anthropic/claude-sonnet-4.6`, and `anthropic/claude-opus-4.6`) covered security, architecture, concurrency/TOCTOU, Rust/API safety, scope, constitution, TDD, platform verification, operations, and dependencies. M-01 closed 3/3. No HIGH, MEDIUM, P0, or P1 finding remains.
+
+LOW advisory L-01 is acknowledged: `1CB366DB` starts only after this whole release unit, including U4 verification and closure, completes. This is already the plan dependency and is not deferred as hidden sequencing. Review-fix cycles: 1 of 3.
+
+Evidence: `docs/closure/2026-08-24-dark-factory-cycle5-four-plan-adversarial-review-rerun.md` and `docs/closure/2026-08-24-dark-factory-cycle5-four-plan-adversarial-review-final.md`.

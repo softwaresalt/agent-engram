@@ -3,7 +3,7 @@ title: "Fsync the Unix workspace identity parent with explicit failure precedenc
 type: implementation-plan
 doc_type: plan
 date: 2026-08-24
-status: blocked-review
+status: reviewed-ready
 source: docs/decisions/2026-08-24-workspace-id-parent-fsync-decision.md
 source_stash_id: "5DF94427"
 ---
@@ -122,6 +122,8 @@ Gate: **PASS (standard review only)**. Standard plan review was rerun after the 
 
 No unresolved standard-review P0/P1 findings remain. This operator-authorized remediation pass follows the prior three-cycle stop without weakening the gate.
 
-## Adversarial Multi-Model Review
+## Adversarial Multi-Model Review — Cycle 5 Final
 
-Gate: **BLOCKED**. This changes security-relevant workspace identity publication. Genuine independent cross-model review is unavailable in this session, and same-model persona review is not represented as consensus. Do not harvest a feature, task, or shipment and do not archive stash `5DF94427` until that gate clears.
+Gate: **PASS WITH LOW ADVISORY**. The valid three-model four-plan review found no HIGH, MEDIUM, P0, or P1 issue for this plan. Its single LOW API-feasibility advisory is explicit: confirm the exact safe public `Dir::reopen_dir`/`into_std_file` signatures against pinned cap-std 4.0.2 before GREEN; fail closed rather than using unsafe, raw handles, or ambient reopen. The final bounded rerun reconfirmed this unchanged pass and separate release width. Review-fix cycles: 0 of 3.
+
+Evidence: `docs/closure/2026-08-24-dark-factory-cycle5-four-plan-adversarial-review-rerun.md` and `docs/closure/2026-08-24-dark-factory-cycle5-four-plan-adversarial-review-final.md`.

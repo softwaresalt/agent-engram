@@ -1,10 +1,10 @@
 ---
-title: "Workspace identity plans — adversarial review dispatch blocker"
+title: "Workspace identity plans — adversarial review gate resolution"
 type: review-blocker
 doc_type: decision
 source: "operator-requested adversarial review gate"
 date: 2026-08-24
-status: blocked
+status: resolved
 plans:
   - docs/exec-plans/2026-08-24-7b15b447-daemon-key-engram-caproot-plan.md
   - docs/exec-plans/2026-08-24-1cb366db-bind-proof-composition-plan.md
@@ -12,27 +12,28 @@ plans:
   - docs/exec-plans/2026-08-24-5df94427-workspace-id-parent-fsync-plan.md
 ---
 
-# Workspace identity plans — adversarial review dispatch blocker
+# Workspace identity plans — adversarial review gate resolution
 
-## Gate Requirement
+## Resolution
 
-The operator requires adversarial multi-model review for security-sensitive workspace/daemon identity work. The repository overlay requires independent parallel reviewers and consensus weighting.
+The earlier dispatch blocker is resolved. The repository `Adversarial Review` custom agent dispatched three independent configured reviewers across `openai/gpt-5.4-mini`, `anthropic/claude-sonnet-4.6`, and `anthropic/claude-opus-4.6`. Each covered security, architecture, concurrency/TOCTOU, Rust safety/API feasibility, scope, constitution, TDD, platform verification, rollback/monitoring, and dependencies.
 
-## Availability Result
+The first instrumented attempt failed closed because runtime model self-introspection was unavailable; it produced no consensus claim. The valid rerun used checked-in reviewer frontmatter plus named dispatch slots as the workflow's canonical routing evidence. It found two MEDIUM P2 items (M-01 and M-02), both remediated in the plans. Standard plan review then passed, and the bounded adversarial rerun closed M-01 and M-02 by 3/3 agreement.
 
-The current agent tool surface has no subagent/reviewer dispatch operation and no cross-model execution endpoint. Engram search is also degraded by a daemon that never reaches Ready, but that does not itself prevent review; the missing independent model surface does. Sending repository content to an unconfigured external service is not an acceptable workaround.
+## Final Gate
 
-## Review Performed
+**PASS WITH LOW ADVISORIES.** No HIGH, MEDIUM, P0, or P1 finding remains for the four plans.
 
-Each plan received a standard same-session multi-persona review covering constitution, Rust/API, architecture, scope, tests, security, operations, and prior learnings. All standard P0/P1 findings were incorporated. This is explicitly not labeled multi-model consensus.
+- `7B15B447` is ready for harvest and must complete before `1CB366DB`.
+- `1CB366DB` is ready for dependent harvest.
+- `1C2A3CB3` is ready for a separate NTFS-gated release boundary; ReFS remains a residual.
+- `5DF94427` is ready for a separate Unix durability release boundary with a pre-GREEN safe API signature check.
+- `49000348` remains independently environment-blocked and was not reviewed as executable.
 
-## Gate Decision
+## Evidence
 
-**BLOCKED.** Do not harvest executable backlog units or assemble shipments for the four listed plans. Resume by dispatching at least three independent reviewers across available model families, merge findings by confidence, clear every HIGH-confidence P0/P1 item, and explicitly acknowledge every MEDIUM-confidence finding by fixing it or deferring it with rationale.
+- Failed-closed attempt: `docs/closure/2026-08-24-dark-factory-cycle5-four-plan-adversarial-review.md`
+- Valid consensus and queues: `docs/closure/2026-08-24-dark-factory-cycle5-four-plan-adversarial-review-rerun.md`
+- Final remediation rerun: `docs/closure/2026-08-24-dark-factory-cycle5-four-plan-adversarial-review-final.md`
 
-## Consequences
-
-- Stashes `1CB366DB`, `7B15B447`, `1C2A3CB3`, and `5DF94427` remain active.
-- Deliberations `021-D` and `022-D` are accepted decisions, not executable shipments.
-- `49000348` remains independently blocked on a real cloud-backed environment.
-- `44E573BC` is non-security optional-feature maintenance and is unaffected by this blocker.
+The ordered release boundary remains `7B15B447 -> 1CB366DB`; `1C2A3CB3` and `5DF94427` remain separate.

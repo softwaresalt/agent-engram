@@ -3,7 +3,7 @@ title: "Prove Windows canonical name and CapRoot identify one object"
 type: implementation-plan
 doc_type: plan
 date: 2026-08-24
-status: blocked-review
+status: reviewed-ready
 source: docs/decisions/2026-08-24-windows-caproot-object-identity-spike.md
 source_stash_id: "1C2A3CB3"
 ---
@@ -27,15 +27,15 @@ source_stash_id: "1C2A3CB3"
 
 ### U1 — RED: Windows different-object policy test
 
-Add one `#[cfg(windows)]` colocated test in `src/db/workspace.rs`: open a retained `CapRoot` for directory A, invoke `prove_names_same_object` with canonical directory B, and require rejection. The current Windows no-op must fail this assertion. This avoids a flaky rename race and directly tests the policy decision. One file, one scenario, target 60 minutes.
+Add one `#[cfg(windows)]` colocated test in `src/db/workspace.rs`: open a retained `CapRoot` for directory A, invoke `prove_names_same_object` with canonical directory B, and require rejection. In the same Windows-gated harness, call public `cap_fs_ext::MetadataExt::{dev, ino}` on the real value returned by `Dir::dir_metadata()` and assert the identity tuple can be formed without raw handles, private traits, `unsafe`, `unwrap`, `expect`, or production panic paths. This compile-and-behavior assertion is part of the gate: if the exact pinned 4.0.2 trait/type chain does not compile on Windows, the release unit fails closed rather than substituting an internal API. The current Windows no-op must fail the different-object assertion. This avoids a flaky rename race and directly tests the policy decision. One file, one scenario plus one API compile assertion, target 75 minutes.
 
 ### U2 — GREEN: cross-platform handle identity
 
-Refactor `CapRoot::object_identity` to use `cap_fs_ext::MetadataExt::{dev, ino}` over `dir_metadata()` on supported platforms; remove the Windows no-op from `prove_names_same_object`. Fail closed on identity-read/open errors. Do not import `_WindowsByHandle`, borrow raw handles, add unsafe, or upgrade dependencies. U1 turns green and Unix behavior remains equivalent. One file, two functions, target 90 minutes.
+Refactor `CapRoot::object_identity` to use public `cap_fs_ext::MetadataExt::{dev, ino}` over the exact `Dir::dir_metadata()` return type on supported platforms; remove the Windows no-op from `prove_names_same_object`. The Windows U1 compile assertion must prove the public trait/type bridge against pinned 4.0.2 before GREEN is accepted. Fail closed on identity-read/open errors and on inability to compile that public route. Do not import `_WindowsByHandle`, borrow raw handles, add unsafe, introduce panic-based production handling, or upgrade dependencies. U1 turns green and Unix behavior remains equivalent. One file, two functions, target 90 minutes.
 
 ### U3 — Windows verification and closure
 
-Run the targeted test, workspace TOCTOU/reparse suites, primary/worktree admission, and CI. Record the test volume filesystem. NTFS is the required gate. Record ReFS 128-bit file-ID truncation as a residual unless separate evidence proves the 64-bit pair sufficient. Verification only, target 90 minutes.
+Run the targeted test, workspace TOCTOU/reparse suites, primary/worktree admission, and CI. Record the test volume filesystem, concrete observation query/dashboard location, and measured admission/latency baseline. NTFS is the required gate. Record ReFS 128-bit file-ID truncation as a residual unless separate evidence proves the 64-bit pair sufficient. Verification only, target 90 minutes.
 
 ## Dependency Graph
 
@@ -75,7 +75,7 @@ Verify primary and linked worktree admission on NTFS and Linux, with no new skip
 |---|---|---|---|---|---|
 | Enable Windows same-object rejection | `src/db/workspace.rs` | high | revert U2 to Windows residual | preferred | planned |
 
-Protected invariants: handle-derived metadata only, fail closed, no unsafe, no public API, no unqualified ReFS claim.
+Protected invariants: handle-derived metadata only, compile-proven public `cap_fs_ext` trait/type bridge on the real Windows `dir_metadata()` result, fail closed, no unsafe/private/raw-handle fallback, no public API, no unqualified ReFS claim.
 
 ## Plan Review
 
@@ -89,6 +89,18 @@ Gate: **PASS (standard review only)**. Hardening required and present.
 
 No unresolved standard-review P0/P1 finding remains. Review-fix cycles: 1 of 3.
 
-## Adversarial Multi-Model Review
 
-Gate: **BLOCKED**. Cross-model reviewer dispatch is unavailable. This modifies a workspace trust-boundary proof, so the operator-requested adversarial consensus is mandatory before harvest. The spike and plan are durable, but no executable backlog or shipment is created.
+## Standard Plan Review Rerun — Cycle 5
+
+Gate: **PASS**. Six independent plan-review personas returned: Constitution Reviewer (one P3), Rust Reviewer (zero), Scope Boundary Auditor (zero), Learnings Researcher (zero), Architecture Strategist (zero), and Security Lens Reviewer (zero). No P0/P1/P2 finding remains.
+
+- **M-02 verified:** U1/U2 require the pinned public `cap_fs_ext` 4.0.2 trait/type bridge to compile against the real Windows `Dir::dir_metadata()` return type and prohibit private, raw-handle, or unsafe fallbacks.
+- **P3 operational advisory resolved in plan:** U3 records the concrete observation query/dashboard location, measured baseline, and NTFS volume evidence.
+
+## Adversarial Multi-Model Review — Cycle 5 Final
+
+Gate: **PASS WITH LOW ADVISORIES**. Three independent configured reviewers (`openai/gpt-5.4-mini`, `anthropic/claude-sonnet-4.6`, and `anthropic/claude-opus-4.6`) completed every required domain. M-02 closed 3/3. No HIGH, MEDIUM, P0, or P1 finding remains.
+
+LOW advisories are acknowledged: keep this release boundary separate from `5DF94427`; record the actual Windows runner and filesystem in closure; require NTFS for this gate and make no ReFS closure claim. Review-fix cycles: 1 of 3.
+
+Evidence: `docs/closure/2026-08-24-dark-factory-cycle5-four-plan-adversarial-review-rerun.md` and `docs/closure/2026-08-24-dark-factory-cycle5-four-plan-adversarial-review-final.md`.
