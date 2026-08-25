@@ -14,7 +14,7 @@ promoted_to:
 
 ## Problem Frame
 
-The optional `otlp-export` feature does not compile because `tracing-opentelemetry` 0.26 resolves against OpenTelemetry 0.25 while Engram directly pins 0.26, and the observability builder uses APIs unavailable in 0.26. The runtime design also drops its provider and lacks explicit cleanup ownership.
+The optional `otlp-export` feature does not compile because `tracing-opentelemetry` 0.26 resolves against OpenTelemetry 0.25 while Engram directly pins 0.26, and the observability builder uses APIs unavailable in 0.26. The runtime design returns only a layer and lacks a separately accessible application cleanup handle. Read-only pinned source corrects the prior assumption: `TracerProvider::library_tracer` passes `self.clone()` into `Tracer`, `Tracer` stores that provider clone, and `OpenTelemetryLayer` stores the tracer. Ending only the constructor-local provider binding therefore does not stop span processing.
 
 Pinned SDK 0.26 source shows that `force_flush()` and `shutdown()` enqueue messages and block on untimed oneshot responses. `max_export_timeout` races each exporter batch future only. It cannot establish a whole-call or two-call bound.
 
@@ -24,10 +24,10 @@ Use four compiling RED boundaries and thirteen linear tasks.
 
 1. Build the compile-neutral outer meta-harness with `--no-default-features --features cozo-backend`; nested OTLP tree/check commands use `--features cozo-backend,otlp-export`.
 2. Align only `tracing-opentelemetry` to 0.27 and the lockfile, then repair only the pinned-0.26 source compile baseline.
-3. Add a behavior-neutral exporter/tracing seam before feature-enabled tests.
-4. Run the provider RED with `cargo test --no-default-features --features cozo-backend,otlp-export --lib server::observability::tests::otlp_provider_red -- --nocapture`.
-5. Retain the provider and set `OTLP_EXPORT_TIMEOUT = 5s` after defaults. This bounds each exporter future only and may drop a never-ready export; it does not bound synchronous cleanup.
-6. Add the daemon endpoint/attachment RED and sequential endpoint and retention GREENs.
+3. Add a behavior-neutral exporter/tracing result/control seam before feature-enabled tests. It preserves the layer-held tracer/provider clone and reports the separate application lifecycle handle as unavailable.
+4. Run the provider RED with `cargo test --no-default-features --features cozo-backend,otlp-export --lib server::observability::tests::otlp_provider_red -- --nocapture`. A controlled local exporter first proves layer-held-clone export as an already-GREEN baseline; RED then fails on `LifecycleUnavailable`/missing explicit flush control and the missing source-owned per-export timeout.
+5. Return a separately accessible application provider handle alongside the attachable layer and set `OTLP_EXPORT_TIMEOUT = 5s` after defaults. The layer already retains a clone; the separate handle exists to invoke and observe force flush/shutdown. The timeout bounds each exporter future only and may drop a never-ready export; it does not bound synchronous cleanup.
+6. Add the daemon endpoint/attachment RED and sequential endpoint and retention GREENs. Flag/environment/absence precedence runs only in self-relaunched child test processes configured with `Command::env`/`env_remove`; no process-global mutation or serial lock is allowed.
 7. Add a cleanup RED using deterministic synchronous fake methods and phase barriers.
 8. Move the explicit provider owner into one dedicated detached `std::thread`. The worker calls `force_flush` once and calls `shutdown` once only after flush returns. The daemon waits once for at most `OTLP_CLEANUP_WAIT_TIMEOUT = 5s` on a phase/completion channel.
 9. On deadline, do not join or claim cancellation/completion. Return/log `completion=unknown`, last phase, wait limit, and detached-worker/resource residual. A clean daemon returns cleanup failure; a daemon error remains primary when both fail.
@@ -46,12 +46,14 @@ Thirteen tasks create exactly twelve task dependency edges. Each task is 45-115 
 
 ## Runtime and Rollback Decision
 
-Rerun all four corrected RED commands unchanged. Deterministic tests separately prove per-export cancellation and a bounded daemon wait whose timeout leaves synchronous completion unknown. A controlled child process held past the cleanup wait must exit within five seconds plus a two-second harness allowance, proving no join/runtime-blocking dependency rather than SDK completion.
+Rerun all four corrected RED commands unchanged. Deterministic tests separately prove layer-held provider-clone export, explicit application-handle flush/export, per-export cancellation, subprocess-isolated endpoint precedence, and a bounded daemon wait whose timeout leaves synchronous completion unknown. A controlled child process held past the cleanup wait must exit within five seconds plus a two-second harness allowance, proving no join/runtime-blocking dependency rather than SDK completion.
 
 For 30 minutes or three controlled exits, observe export failures, worker spawn/loss/panic, cleanup failures, cleanup-wait timeouts, detached-worker outcomes, and total exit latency. Disable `otlp-export` and revert the owning GREEN commits on any failure/timeout, hidden residual, child exit beyond seven seconds, missing span, or feature-gate regression.
 
 ## Constraints
 
+- Never describe dropping one local provider binding as stopping span processing; the layer transitively retains a provider clone.
+- Never use `std::env::set_var`, `std::env::remove_var`, an unsafe block, or a process-global environment lock in these tests; use `Command::env`/`env_remove` before child startup.
 - Never describe `force_flush()` or `shutdown()` as cancellable or operation-bounded in SDK 0.26.
 - Never infer a cleanup-call deadline from `max_export_timeout`.
 - No `spawn_blocking`, runtime-owned cleanup task, or production join.
@@ -62,8 +64,10 @@ For 30 minutes or three controlled exits, observe export failures, worker spawn/
 
 ## References
 
-- PR 363 reviews `5015373740` and `5015447062`
+- PR 363 reviews `5015373740`, `5015447062`, `5015636140`, and `5015710467`
 - `Cargo.toml`, `Cargo.lock`
-- Pinned `opentelemetry_sdk` 0.26 `trace/provider.rs` and `trace/span_processor.rs`
+- `Cargo.lock:2776-2779` and pinned `opentelemetry_sdk` 0.26 `trace/provider.rs:55-65,216-221`, `trace/tracer.rs:29-49`, and `trace/span_processor.rs`
+- `Cargo.lock:4612-4615` and pinned `tracing-opentelemetry-0.26.0/src/layer.rs:37-44,575-588`
+- `docs/compound/best-practices/rust-2024-set-var-unsafe-2026-05-07.md`
 - `src/server/observability.rs`, `src/lib.rs`, `src/bin/engram.rs`
 - `docs/exec-plans/2026-08-24-44e573bc-otlp-api-drift-plan.md`

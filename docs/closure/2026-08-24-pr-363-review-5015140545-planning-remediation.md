@@ -30,7 +30,7 @@ This is planning and backlog closure only. No application source, test, manifest
 
 ## Reviewed execution shape
 
-Feature `131-F` now has thirteen linear tasks. All estimates are 45 to 105 minutes. `131.001-T` remains one test file and 75 minutes. No task exceeds two files or evidence surfaces, four functions, three scenarios, one skill domain, or one atomic milestone.
+Feature `131-F` now has thirteen linear tasks. All estimates are 45 to 115 minutes. `131.001-T` remains one test file and 75 minutes. No task exceeds two files or evidence surfaces, four functions, three scenarios, one skill domain, or one atomic milestone.
 
 Shipment `125-S` contains the parent plus all thirteen tasks and remains queued and unclaimed. Blocked shipments `126-S` through `129-S` and their dependencies remain unchanged.
 
@@ -53,7 +53,7 @@ Plan hardening and standard review were rerun after the redesign. Gate: **PASS**
 Proposed title:
 
 ```text
-chore(stage): queue thirteen-task OTLP repair and fail-close identity plans
+chore(stage): queue 13-task OTLP repair; keep four identity plans blocked
 ```
 
-Current body facts: feature `131-F`; tasks `131.001-T` through `131.013-T`; fourteen-item parent-first roster; exactly twelve task dependency edges; five-second per-export-future policy; five-second daemon cleanup-wait deadline with unknown completion after timeout; `125-S` sole queued/unclaimed; blocked shipments unchanged; sole replacement pairs include `721A42F0` and `BD5DD62A`.
+Current body facts: feature `131-F`; tasks `131.001-T` through `131.013-T`; fourteen-item parent-first roster; exactly twelve task dependency edges; estimates 45-115 minutes; target index 1,126 artifacts; layer-held tracer/provider clone retention plus a separate explicit application lifecycle/flush handle; child-process-only endpoint environment tests; five-second per-export-future policy; five-second daemon cleanup-wait deadline with unknown completion after timeout; `125-S` sole queued/unclaimed; `126-S` through `129-S` blocked; sole replacement pairs include `721A42F0` and `BD5DD62A`. The exact copy-ready body is superseded by `docs/closure/2026-08-25-pr-363-review-5015710467-remediation.md`; Stage does not edit live PR metadata.

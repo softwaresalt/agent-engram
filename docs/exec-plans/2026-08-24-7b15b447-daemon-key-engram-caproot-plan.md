@@ -64,7 +64,7 @@ Run both deterministic existing-child checkpoints and the cold-start post-create
 
 ## Dependency Graph
 
-`U1 + U2 -> U3 -> U4`. Four tasks, four prerequisite edges inside the fan-in chain. `1CB366DB`/133-F remains dependent on terminal completion of this release unit.
+`U1 + U2 -> U3 -> U4`. Four tasks, exactly three prerequisite edges inside the fan-in chain: `U1 -> U3`, `U2 -> U3`, and `U3 -> U4`. `1CB366DB`/133-F remains dependent on terminal completion of this release unit.
 
 ## Decisions and Rationale
 
@@ -110,12 +110,13 @@ Gate: **FAIL / BLOCKED**. Local constitution, Rust/API, architecture, scope, tes
 | API-1 | P1 | No pinned safe portable create-and-retain primitive/protocol is demonstrated. | Open blocker on U3; implementation/harvest remains forbidden. |
 | TEST-1 | P1 | Existing tests did not checkpoint immediately after create and before first open. | U2 now requires the exact deterministic checkpoint. |
 | SCOPE-1 | P2 | Platform-specific proof may exceed one Rust file. | Resolve in a new spike/review before changing this blocked unit; do not hide dependency/API work in U3. |
+| EDGE-1 | P2 | Review `5015710467` found that the fan-in chain was mislabeled as four prerequisite edges. | Corrected to the exact three-edge backlog graph; blocked status and task dependencies are unchanged. |
 
 The standard gate cannot pass until `API-1` is resolved with pinned source evidence and the plan is reviewed again. The adversarial multi-model gate also remains failed/unverified. Status stays `blocked`; this plan is not harvest authorization.
 
 ## References
 
-- PR 363 review `5015447062`, thread `PRRT_kwDORJEduc6b8_I0`
+- PR 363 reviews `5015447062` and `5015710467`; thread `PRRT_kwDORJEduc6b8_I0`; suppressed `EDGE-1` finding
 - Stash `7B15B447`; blocked feature `132-F`; blocked review `132.001-R`; blocked shipment `126-S`; replacement stash `172AE8CE`
 - `src/db/workspace.rs`
 - `docs/closure/2026-08-24-dark-factory-cycle5-four-plan-adversarial-review-final.md`

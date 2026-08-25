@@ -57,7 +57,7 @@ The reviewed design makes `Command::Daemon` the canonical boundary: daemon-only 
 
 ## PR and review handoff
 
-Proposed title: `chore(stage): queue eight-task OTLP repair and fail-close identity plans`. The proposed body must state tasks `131.001-T` through `131.008-T`, the exact nine-item `125-S` roster, and `1,121` indexed artifacts. Stage does not mutate PR title/body. After commit/push, reply to and resolve the three exact Copilot threads from review 5014929105 and record suppressed review 5014953024 remediation in a PR comment.
+The historical eight-task title/body proposal from this checkpoint is withdrawn and must not be applied. Current copy-ready metadata is owned by `docs/closure/2026-08-25-pr-363-review-5015710467-remediation.md`: title `chore(stage): queue 13-task OTLP repair; keep four identity plans blocked`; tasks `131.001-T` through `131.013-T`; `131-F` plus thirteen tasks (fourteen roster items); exactly twelve task edges; 1,126 indexed artifacts; sole queued/unclaimed `125-S`; blocked `126-S` through `129-S`. Stage does not mutate live PR title/body. The review-5015710467 closure also records safe child-process environment tests and actual SDK provider retention semantics.
 
 ## Next steps
 
