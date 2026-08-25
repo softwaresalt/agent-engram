@@ -65,7 +65,7 @@ Step 5.5 scope guard PASS: harvest IDs were exactly `[131-F, 131.001-T, 131.002-
 
 ## Review Outcomes and Blockers
 
-- 44E573BC: plan-review PASS; hardening correctly not required.
+- 44E573BC: PR review required lifecycle hardening after the initial plan review; hardening and the repeated standard plan review now PASS with retained provider ownership, deterministic emitted-span proof, and bounded shutdown/failure contracts.
 - 1CB366DB, 7B15B447, 1C2A3CB3, 5DF94427: hardening present; standard persona review PASS; adversarial multi-model gate BLOCKED because no independent cross-model dispatch surface exists. No harvest or shipment created.
 - 49000348: investigation disposition BLOCKED on provider environment; no implementation plan/shipment.
 

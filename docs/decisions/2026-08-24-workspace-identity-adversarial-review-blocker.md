@@ -28,7 +28,7 @@ Each plan received a standard same-session multi-persona review covering constit
 
 ## Gate Decision
 
-**BLOCKED.** Do not harvest executable backlog units or assemble shipments for the four listed plans. Resume by dispatching at least three independent reviewers across available model families, merge findings by confidence, and clear every HIGH-confidence P0/P1 item.
+**BLOCKED.** Do not harvest executable backlog units or assemble shipments for the four listed plans. Resume by dispatching at least three independent reviewers across available model families, merge findings by confidence, clear every HIGH-confidence P0/P1 item, and explicitly acknowledge every MEDIUM-confidence finding by fixing it or deferring it with rationale.
 
 ## Consequences
 
