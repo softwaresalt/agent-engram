@@ -1,157 +1,215 @@
 ---
-title: "Align the tracing bridge and retain the OpenTelemetry 0.26 provider lifecycle"
+title: Align the tracing bridge and retain the OpenTelemetry 0.26 provider lifecycle
 type: implementation-plan
 doc_type: plan
 date: 2026-08-24
 status: reviewed
 source: docs/decisions/2026-08-24-otlp-api-drift-fix-decision.md
-source_stash_id: "44E573BC"
+source_stash_id: 44E573BC
+review_source: PR 363 review 5015140545
 ---
 
 # Align the tracing bridge and retain the OpenTelemetry 0.26 provider lifecycle
 
 ## Problem Frame
 
-The `otlp-export` feature does not compile because `src/server/observability.rs` uses API names that are unavailable in pinned OpenTelemetry 0.26, while `tracing-opentelemetry` 0.26 resolves against OpenTelemetry 0.25. Bridge 0.27 is the narrow compatible alignment. Compilation alone is insufficient: the current builder drops its local provider, has no production caller, and returns only a layer.
+The optional `otlp-export` target currently cannot compile. `tracing-opentelemetry` 0.26 introduces OpenTelemetry 0.25 beside the direct 0.26 family, while `src/server/observability.rs` names APIs that are not available in 0.26. The current builder also returns only a layer, drops its provider, has no production caller, has no application-owned exporter timeout, and has no explicit cleanup path.
 
-Read-only inspection at PR #363 HEAD `9dcd33f5e49583f8138f4896b70c89c00251e25f` establishes the real endpoint/config flow. `src/bin/engram.rs::Cli` parses `GlobalFlags`, whose `src/cli/flags.rs` definition has no OTLP field. `Command::Daemon` has no endpoint field and calls `engram::init_tracing(daemon_log_format())` before extracting `--workspace` and awaiting `engram::daemon::run`. `src/config/mod.rs::Config::otlp_endpoint` exists, but `Config::parse` has no production caller. `src/models/config.rs::PluginConfig::load` runs inside `daemon::run`, after tracing initialization, and has no OTLP field. `src/shim/lifecycle.rs` spawns `engram daemon --workspace <path>` and inherits process environment. `src/lib.rs::init_tracing` accepts only `LogFormat` and installs stderr formatting, while `build_otlp_layer` has no caller.
+Review 5015140545 identified a sequencing defect: a feature-enabled test that imports future provider or lifecycle symbols cannot reach a compiling-but-failing state while the production target itself fails to compile. A compile error in either production or the test is not RED behavior evidence. The repaired sequence first runs a meta-harness with `otlp-export` disabled, then aligns the graph, then repairs only feature compilation, then introduces an explicit behavior-neutral seam, and only then adds feature-enabled provider and daemon RED tests against interfaces that already exist.
 
-The executable repair therefore makes the daemon subcommand, not dead `Config` or workspace `PluginConfig`, the canonical endpoint boundary. A dedicated `Command::Daemon` option resolves `--otlp-endpoint` with `ENGRAM_OTLP_ENDPOINT` fallback; clap gives the explicit flag precedence. The daemon match arm passes that typed value into a daemon-only tracing initializer. A shim-spawned daemon receives the environment value through existing process inheritance, while the shim itself keeps its formatting-only initializer. No hidden config, GlobalFlags, PluginConfig, or shim-lifecycle work is required.
+Read-only inspection confirms the runtime boundary. `Command::Daemon` is currently a unit variant, calls `init_tracing(LogFormat)` before `daemon::run`, and has no endpoint. `GlobalFlags` has no endpoint. `Config::otlp_endpoint` has no production parser caller. `PluginConfig::load` occurs too late. The shim child inherits environment. The daemon subcommand is therefore the sole endpoint boundary.
 
 ## Requirements Trace
 
-| Requirement | Implementation action |
+| Requirement | Planned owner |
 |---|---|
-| Test first | U1 records endpoint propagation, API, ownership, attachment, export, and cleanup RED evidence before manifest or production edits. |
-| One OpenTelemetry type family | U2 changes only the tracing bridge manifest entry and generated lockfile. |
-| Explicit endpoint propagation | U3 adds daemon-subcommand flag/environment resolution and passes `Option<&str>` to a daemon-only tracing initialization seam. |
-| Pinned provider construction | U4 consumes the supplied endpoint argument and returns retained provider/layer ownership without reading config or environment. |
-| Production attachment and retention | U5 attaches OTLP in the daemon initializer and retains the returned owner across `daemon::run`. |
-| Bounded daemon shutdown | U6 performs exactly-once bounded cleanup with documented error precedence. |
-| Runtime proof | U7 verifies the complete configured endpoint-to-export path and failure behavior without network. |
-| Closure | U8 records dependency, all-features, focused, and default-feature evidence without implementation edits. |
-| Width isolation | Every unit is at most 105 minutes, touches at most 2 production or evidence surfaces, changes at most 4 functions, covers at most 3 scenarios, and has one skill domain and atomic milestone. |
+| Compiling initial RED | U1 uses a default-feature-disabled meta-harness and runtime subprocess assertions only. |
+| One OpenTelemetry family | U2 changes only the bridge and lockfile. |
+| Compiling optional target | U3 repairs supported 0.26 API use while preserving lifecycle defects. |
+| Explicit test seam | U4 introduces shared exporter and tracing-pipeline interfaces with no behavior GREEN. |
+| Compiling provider RED | U5 tests retained export and timeout through the existing seam. |
+| Provider ownership and timeout | U6 retains the provider and applies the application timeout in provider construction. |
+| Compiling daemon RED | U7 tests parser, exact endpoint handoff, attachment, and lifetime through existing APIs. |
+| Endpoint propagation | U8 owns the daemon CLI and typed handoff. |
+| Attachment and lifetime | U9 attaches the layer and retains the owner across daemon use. |
+| Compiling cleanup RED | U10 tests the existing lifecycle runner before cleanup implementation. |
+| Exactly-once cleanup | U11 owns flush, shutdown, failure precedence, and diagnostics. |
+| Runtime proof | U12 reruns every RED command unchanged and verifies the complete path. |
+| Closure | U13 records dependency, all-features, default, monitoring, and rollback evidence. |
+
+## Exact RED Sequence
+
+### RED A: compile-neutral graph and feature contract
+
+U1 adds only `tests/otlp_feature_compile_contract_test.rs`. The test target is built without `otlp-export`, imports no production OTLP symbol, and then launches bounded subprocess checks.
+
+```text
+cargo test --no-default-features --test otlp_feature_compile_contract_test -- --nocapture
+```
+
+Assertions and expected failures at the starting implementation state:
+
+1. `otlp_dependency_graph_uses_only_026` captures `cargo tree --no-default-features --features otlp-export` and asserts that no `opentelemetry v0.25` package is present. The harness compiles and the assertion fails because both 0.25 and 0.26 are present. U2 owns GREEN.
+2. `otlp_export_feature_compiles` runs `cargo check --no-default-features --features otlp-export --lib` in an isolated temporary `CARGO_TARGET_DIR` and asserts success. The harness compiles and the assertion fails because the nested command exits 101 with the existing `SdkTracerProvider` and `SpanExporter::builder` unsupported-0.26 diagnostics. U3 owns GREEN.
+
+The subprocess command is `cargo check --lib`, never `cargo test`, so the meta-harness cannot recurse. Invocation failure is distinct from the expected nonzero result, and captured stderr is printed in the assertion.
+
+### RED B: provider ownership, export, and timeout
+
+U4 first creates shared interfaces using already compiling 0.26 types. U5 then adds tests only to the existing observability test module.
+
+```text
+cargo test --no-default-features --features otlp-export --lib server::observability::tests::otlp_provider_red -- --nocapture
+```
+
+The library and tests must compile before these assertions run:
+
+1. Emit `otlp-red-contract-span`, request flush, and assert `exported_span_names == [otlp-red-contract-span]`. Expected RED is an empty list because the layer-only path drops its provider.
+2. Assert the production effective timeout is exactly `Duration::from_secs(5)` even when `OTEL_BSP_EXPORT_TIMEOUT` is set differently. Expected RED is the SDK or environment value because no application override is wired.
+3. Inject a never-ready exporter with a cancellation token and test-only 25 ms limit. Pause Tokio time, advance 24 ms and assert not cancelled, then advance 1 ms and assert cancelled with a phase-and-limit failure. Expected RED is no bounded cancellation or report.
+
+U6 owns GREEN without changing the tests.
+
+### RED C: endpoint, attachment, and owner lifetime
+
+```text
+cargo test --no-default-features --features otlp-export otlp_daemon_red -- --nocapture
+```
+
+The lib and bin tests compile against U4 interfaces. `Cli::try_parse_from` and `Debug` output avoid direct access to a future enum field. Expected failures are a runtime clap unexpected-argument result for `--otlp-endpoint`, no recorded endpoint at the factory, and no exported span or retained owner. U8 makes endpoint assertions GREEN. U9 makes attachment and lifetime assertions GREEN.
+
+### RED D: cleanup coordination
+
+U9 creates the lifecycle runner while intentionally omitting cleanup. U10 then tests that current helper.
+
+```text
+cargo test --no-default-features --features otlp-export --bin engram otlp_cleanup_red -- --nocapture
+```
+
+The target and tests compile. Clean exit initially reports `(flush_calls, shutdown_calls) == (0, 0)` instead of `(1, 1)`. Combined daemon and cleanup failure lacks the cleanup diagnostic, and timeout failure is not surfaced. U11 owns GREEN without test edits.
+
+## Timeout Ownership and Semantics
+
+`src/server/observability.rs` owns `OTLP_EXPORT_TIMEOUT = Duration::from_secs(5)`. It is application source policy, not CLI, workspace config, environment, or operator input. Production provider construction starts from `BatchConfigBuilder::default()` and then calls `with_max_export_timeout(OTLP_EXPORT_TIMEOUT)`, so `OTEL_BSP_EXPORT_TIMEOUT` cannot override the final production value.
+
+The SDK `force_flush()` and `shutdown()` calls are synchronous and accept no timeout. Their exporter work is bounded where the SDK supports cancellation: the batch processor export future. Each phase has a five-second application cap. Cleanup always attempts one flush and one shutdown, so the declared two-phase maximum is ten seconds. A flush error does not skip shutdown. There is no retry and no outer async wrapper that pretends to cancel a still-running blocking thread.
+
+The test-only constructor can inject 25 ms but production cannot. A pending fake exporter future carries a drop token. Paused Tokio time proves it remains live at 24 ms and is cancelled at 25 ms. Failure reports include phase, configured limit, and source. A clean daemon returns cleanup failure. If daemon and cleanup both fail, the daemon error remains primary and the cleanup failure is emitted diagnostically with phase and limit.
 
 ## Implementation Units
 
-### U1 — RED: endpoint, API, lifecycle, and export contract harness
+### U1 / 131.001-T — RED compile-neutral meta-harness
 
-Before any manifest or production edit, add the feature-gated failing contract and deterministic in-process exporter harness. Record the split dependency graph; unsupported 0.26 APIs; dead `Config::otlp_endpoint`; absent `GlobalFlags` endpoint; `Command::Daemon -> init_tracing(LogFormat) -> daemon::run` order; inherited shim-child environment; uncalled builder; provider drop; and missing cleanup. Scenario 1 covers explicit daemon flag precedence, inherited environment, absent endpoint, and arrival at a daemon-only initializer. Scenario 2 covers provider construction, production attachment, retained ownership, and one named exported span. Scenario 3 covers bounded exactly-once cleanup and combined-failure precedence.
+One test file, at most three test/helper functions, two scenarios, 75 minutes. No manifest, lockfile, source, missing-symbol probe, external collector, socket, or nested test invocation.
 
-Skill domain: test contract/harness. Maximum width: 2 test files, 4 test/helper functions, 3 scenarios. Estimate: 105 minutes. Atomic milestone: reproducible RED evidence is attached to `131.001-T`. No collector, socket, network, sleep polling, or unbounded retry is permitted.
+### U2 / 131.002-T — GREEN bridge graph
 
-### U2 — GREEN: align the tracing bridge dependency graph
+Only `Cargo.toml` and `Cargo.lock`, zero functions, one graph scenario, 45 minutes. The graph assertion turns GREEN while feature compilation stays RED.
 
-Change only `tracing-opentelemetry` from 0.26 to 0.27 and reconcile `Cargo.lock` to the existing direct OpenTelemetry 0.26 family. Reject unrelated package drift and leave every endpoint/runtime RED contract unchanged.
+### U3 / 131.003-T — GREEN pinned-0.26 compile baseline
 
-Skill domain: Cargo dependency management. Maximum width: exactly `Cargo.toml` and `Cargo.lock`, 0 changed functions, fewer than 5 dependency entries, 1 scenario. Estimate: 45 minutes. Atomic milestone: `cargo tree` shows one OpenTelemetry 0.26 family.
+Only `src/server/observability.rs`, at most three functions, two compile scenarios, 75 minutes. Use `trace::TracerProvider`, `new_exporter().tonic().with_endpoint(...).build_span_exporter()`, and the supported Tokio batch runtime. Preserve layer-only provider drop, no application timeout, no caller, and no cleanup.
 
-### U3 — GREEN: propagate the configured endpoint to daemon tracing
+### U4 / 131.004-T — SCAFFOLD behavior-neutral seams
 
-In `src/bin/engram.rs`, add `otlp_endpoint: Option<String>` to `Command::Daemon` with `#[arg(long, env = "ENGRAM_OTLP_ENDPOINT")]`, destructure it in the daemon match arm, and pass `as_deref()` into a dedicated daemon tracing initializer before `engram::daemon::run`. In `src/lib.rs`, add that daemon-only initialization seam while retaining the existing formatting-only `init_tracing(LogFormat)` used by `src/shim/mod.rs`. The seam receives the typed endpoint but does not construct or attach a provider yet. The existing shim spawn needs no edit because its daemon child inherits `ENGRAM_OTLP_ENDPOINT`. Do not use dead `Config::otlp_endpoint`, add a GlobalFlags field, load PluginConfig early, or edit shim lifecycle.
+Only `src/server/observability.rs` and `src/lib.rs`, at most four interface/adapter functions, two behavior-preservation scenarios, 90 minutes. Add shared exporter-factory and tracing-pipeline injection boundaries. Existing production behavior remains layer-only and formatting-only. No RED test or behavior implementation is hidden here.
 
-Skill domain: daemon CLI/config propagation. Maximum width: exactly `src/bin/engram.rs` and `src/lib.rs`, 4 functions, 3 direct-flag/inherited-environment/absent scenarios. Estimate: 95 minutes. Run the U1 harness unchanged. Atomic milestone: one explicit typed endpoint reaches the daemon tracing initialization boundary and only exporter assertions remain RED.
+### U5 / 131.005-T — RED provider lifecycle
 
-### U4 — GREEN: migrate the OpenTelemetry 0.26 provider constructor
+One test module, at most four test/helper functions, three scenarios, 100 minutes. The feature-enabled harness compiles and fails only for retained export, exact timeout, and deterministic cancellation/reporting behavior.
 
-In `src/server/observability.rs`, replace unsupported APIs with `opentelemetry_sdk::trace::TracerProvider`, `opentelemetry_otlp::new_exporter().tonic().with_endpoint(...).build_span_exporter()`, and the supported Tokio batch runtime. Replace the layer-only return with a narrow lifecycle owner that strongly retains the provider and exposes layer attachment plus explicit cleanup. The constructor accepts the U3 endpoint argument and must not read CLI, environment, `Config`, `PluginConfig`, or global state. The private exporter seam shares the same ownership path.
+### U6 / 131.006-T — GREEN retained provider and timeout
 
-Skill domain: Rust observability-provider construction. Maximum width: 1 production file, 4 functions, 3 scenarios. Estimate: 90 minutes. Atomic milestone: provider construction consumes the supplied endpoint and returns retained ownership while attachment remains RED.
+Only `src/server/observability.rs`, at most four functions, three scenarios, 105 minutes. Retain the provider, expose layer plus explicit lifecycle results, and wire the five-second constant after environment-derived defaults. No production attachment.
 
-### U5 — GREEN: attach OTLP and retain ownership across daemon use
+### U7 / 131.007-T — RED daemon endpoint and attachment
 
-In `src/lib.rs`, consume the existing daemon initializer `Option<&str>`, pass the exact value to the U4 constructor, attach its layer beside stderr formatting, and return the live lifecycle owner. In the `src/bin/engram.rs` daemon arm, store that owner across the complete `engram::daemon::run` future. The absent-endpoint, feature-disabled, and shim paths remain formatting-only. No endpoint reread or config edit is allowed.
+Test-only modules in `src/bin/engram.rs` and `src/lib.rs`, at most four test/helper functions, three scenarios, 105 minutes. Tests compile against U4 and U6 interfaces and fail at runtime assertions only.
 
-Skill domain: production tracing attachment/retention. Maximum width: exactly `src/lib.rs` and the daemon arm in `src/bin/engram.rs`, 4 functions, 3 scenarios. Estimate: 105 minutes. Atomic milestone: the propagated value drives production attachment and the owner survives daemon use.
+### U8 / 131.008-T — GREEN endpoint propagation
 
-### U6 — GREEN: bound daemon flush and shutdown
+Only `src/bin/engram.rs` and `src/lib.rs`, at most four functions, three scenarios, 95 minutes. Add daemon-only flag and environment resolution and pass one typed value to the existing tracing seam. Attachment remains RED.
 
-In the daemon arm of `src/bin/engram.rs`, use the retained U5 owner to invoke flush/shutdown exactly once on every exit path within a finite bound. A daemon error remains primary when run and cleanup both fail, with cleanup failure preserved diagnostically; cleanup failure after a clean run is returned. No retry loop, sleep polling, Drop-only success, endpoint parsing, provider construction, or attachment work is included.
+### U9 / 131.009-T — GREEN attachment and lifetime
 
-Skill domain: daemon lifecycle/error propagation. Maximum width: 1 production file, 4 functions, 3 scenarios. Estimate: 105 minutes. Atomic milestone: all U1 cleanup contracts are GREEN and finite.
+Only `src/lib.rs` and the daemon arm/helper in `src/bin/engram.rs`, at most four functions, three scenarios, 105 minutes. Attach beside stderr formatting, return the owner, and retain it across the complete daemon future. Cleanup remains absent.
 
-### U7 — VERIFY: prove configured runtime export and failure behavior
+### U10 / 131.010-T — RED cleanup
 
-Without implementation edits, drive the complete daemon CLI/environment -> tracing initializer -> provider -> attachment/retention -> cleanup path through the U1 in-process exporter. Prove the exact endpoint value reaches the shared constructor, one uniquely named span exports while ownership survives daemon use, cleanup occurs exactly once within the bound, combined failure follows the documented precedence, and the absent-endpoint control constructs no exporter.
+One bin test module, at most four test/helper functions, three scenarios, 90 minutes. Test the existing runner for exactly-once clean, combined-failure, and timeout behavior.
 
-Skill domain: runtime verification. Maximum width: 2 unchanged evidence surfaces, 0 changed production functions, 3 scenarios. Estimate: 80 minutes. Atomic milestone: exact focused commands and outcomes are recorded on `131.007-T`.
+### U11 / 131.011-T — GREEN cleanup coordination
 
-### U8 — VERIFY: close all-features and default quality gates
+Only the daemon runner/arm in `src/bin/engram.rs`, at most four functions, three scenarios, 105 minutes. Flush and shutdown once each on every exit, attempt shutdown after flush failure, and preserve failure precedence and diagnostics.
 
-Without source, test, manifest, lockfile, or config edits, record the dependency-tree proof, all-features check/clippy/focused tests, configured endpoint/lifecycle/export results, and default-feature gates. Return any distinct defect to Stage rather than widening the release unit.
+### U12 / 131.012-T — VERIFY runtime
 
-Skill domain: quality/closure evidence. Maximum width: 2 evidence surfaces, 0 changed functions, 3 gate groups. Estimate: 90 minutes. Atomic milestone: passing closure evidence is recorded on `131.008-T`.
+At most two unchanged evidence surfaces, zero production functions, three scenario groups, 80 minutes. Rerun all four RED commands unchanged and prove endpoint-to-export-to-cleanup behavior without network.
 
-## Dependency Graph
+### U13 / 131.013-T — VERIFY quality and operations
 
-Strict order: U1 -> U2 -> U3 -> U4 -> U5 -> U6 -> U7 -> U8, represented by `131.001-T -> 131.002-T -> 131.003-T -> 131.004-T -> 131.005-T -> 131.006-T -> 131.007-T -> 131.008-T`. Every unit is blocked by its immediate predecessor. PR #362 ordering is satisfied by merged commit `685f62668ac273a41a1f93fc9be2571510decae2`. Shipment `125-S` remains queued and unclaimed until the exact final reviewed PR #363 head is integrated and all claim guards pass.
+At most two evidence surfaces, zero functions, three gate groups, 90 minutes. Record dependency, all-features, focused, default, monitoring, and rollback evidence.
 
-## Decisions and Rationale
+## Dependency Graph and Shipment
 
-- Make the actual daemon subcommand the endpoint boundary because it owns tracing initialization; the old flat `Config` parser is unused and workspace `PluginConfig` loads too late.
-- Keep endpoint scope off `GlobalFlags`: OTLP config is daemon-startup-only, while shim behavior remains formatting-only.
-- Rely on existing child-process environment inheritance for normal shim startup; no shim lifecycle edit is needed.
-- Align bridge 0.27 to the pinned 0.26 family rather than broadening the telemetry upgrade.
-- Require provider construction to accept the propagated endpoint argument; no hidden environment/config read is permitted.
-- Separate propagation, construction, attachment/retention, cleanup, runtime proof, and closure so each milestone remains executable and width compliant.
-- Use one deterministic in-process exporter path; an external collector does not prove ownership or cleanup.
+Strict chain:
 
-## Risks and Caveats
+```text
+131.001-T -> 131.002-T -> 131.003-T -> 131.004-T -> 131.005-T
+-> 131.006-T -> 131.007-T -> 131.008-T -> 131.009-T -> 131.010-T
+-> 131.011-T -> 131.012-T -> 131.013-T
+```
 
-| Risk | Mitigation |
-|---|---|
-| Dead config field is mistaken for a live source | U1 records that `Config::parse` is unused; U3 names `Command::Daemon` as the sole canonical boundary. |
-| Explicit shim CLI override is lost | Supported normal shim contract is inherited `ENGRAM_OTLP_ENDPOINT`; direct `--otlp-endpoint` belongs to the daemon subcommand and is tested there. |
-| Provider rereads hidden global state | U4 accepts only the U3 endpoint argument; U5 passes the exact value. |
-| Provider drops before export | U4 returns retained ownership; U5 stores it across daemon use. |
-| Cleanup hangs or hides failure | U6 requires exactly-once finite cleanup and explicit error precedence. |
-| Runtime test bypasses production | U7 starts at the real daemon endpoint boundary and reuses the production constructor. |
-| Default build or dependency graph regresses | U8 separates all-features and default closure. |
+Shipment `125-S` contains parent `131-F` and all thirteen tasks in that order. It remains the sole queued and unclaimed shipment. Blocked shipments `126-S` through `129-S` are unchanged. PR 362 ordering is already satisfied; exact reviewed PR 363 integration and all claim guards remain required.
 
-## Plan Hardening Signals
+## Runtime Verification, Monitoring, and Rollback
 
-- Public API/schema/contract: present; tracing initialization and provider ownership contracts change behind a feature flag.
-- Security/auth/compliance: absent.
-- Migration/destructive action: absent.
-- External integration/checkpoint: present; OTLP is an external export surface, though verification is in process.
-- High runtime/rollback risk: present; wrong endpoint flow, lifetime, or cleanup silently loses telemetry.
+Precheck the optional feature and Tokio runtime. U12 runs the exact RED commands unchanged. It must observe one uniquely named span, owner retention through daemon use, cancellation at the injected virtual limit, the production five-second per-phase value, at most ten seconds for two sequential phases, exactly one flush and one shutdown, and visible failure precedence.
 
-Requires plan hardening: yes
-
-## Runtime Verification and Closure
-
-Precheck the `otlp-export` feature and Tokio runtime. Runtime verification must start from the real daemon endpoint boundary, prove exact-value propagation into the shared provider constructor, retain ownership through daemon execution, emit one uniquely named span, and complete explicit cleanup before a deterministic timeout. Failure injection must prove the daemon-versus-cleanup precedence. Roll back the owning GREEN unit and keep `125-S` unclaimed if endpoint propagation diverges, no span arrives, ownership ends early, cleanup exceeds the bound, failures are swallowed, OpenTelemetry 0.25 remains, or default features regress. Owner: Ship. Validation window: focused bounded harness plus all-features CI; no external collector checkpoint.
+Ship owns a 30-minute or three-controlled-daemon-exit observation window after deployment. The manual log query counts OTLP export failure, cleanup timeout, cleanup failure, and daemon exit duration. Baseline and healthy threshold are zero timeout or failure records and every controlled exit below ten seconds. Rollback triggers are any exit reaching ten seconds, any hidden cleanup failure, a missing expected span in focused verification, or any default/all-features regression. Rollback is to disable `otlp-export` and revert the owning GREEN commit or commits; keep `125-S` unclaimed or return the defect to Stage until evidence is clean.
 
 ## Plan Hardening
 
-Hardening rerun: **required and satisfied** after the endpoint flow was traced and the plan expanded to eight units. Reinforcing context included the constitution width rules, strict-safety vocabulary, current `Cli`/`GlobalFlags`/`Command::Daemon` path, dead flat `Config`, late workspace `PluginConfig`, shim spawn inheritance, `init_tracing`, and the uncalled builder. Engram indexed search and call mapping were used first; targeted source reads closed graph edges that the index did not expose.
+Hardening rerun: **required and satisfied** for external export, provider lifetime, synchronous cleanup, timeout ownership, and daemon error precedence.
+
+Reinforcing context included the constitution, strict-safety and release-observability instructions, OpenTelemetry 0.26 API evidence in review 5015140545, and compound guidance that a scope-local timeout does not prove a wider operation bounded. The design therefore names both the five-second exporter phase cap and the derived ten-second two-phase maximum, and it avoids an outer timeout that would abandon a blocking thread without cancellation.
 
 | ProposedAction | Targets | ActionRisk | Rollback | Approval required | ActionResult |
 |---|---|---|---|---|---|
-| Author endpoint/API/lifecycle/export RED contracts | At most 2 focused test files | moderate | Revert U1; keep shipment unclaimed | no | planned |
-| Align the bridge dependency family | `Cargo.toml`, `Cargo.lock` | moderate | Restore bridge 0.26 | no | planned |
-| Propagate daemon endpoint config | `src/bin/engram.rs`, `src/lib.rs` | moderate | Revert U3; preserve formatting-only init | no | planned |
-| Build retained provider from supplied endpoint | `src/server/observability.rs` | moderate | Revert U4 | no | planned |
-| Attach and retain the owner | `src/lib.rs`, daemon arm | moderate | Revert U5; keep cleanup blocked | no | planned |
-| Coordinate bounded cleanup | daemon arm | moderate | Revert U6; keep shipment unclaimed | no | planned |
-| Verify runtime endpoint-to-export behavior | Unchanged harness/evidence | low | Return defect to Stage | no | planned |
-| Run final closure gates | Verification evidence | low | Leave feature queued | no | planned |
+| Add compile-neutral RED meta-harness | One test file | moderate | Revert U1 | no | planned |
+| Align dependency family | Cargo manifest and lockfile | moderate | Restore bridge 0.26 | no | planned |
+| Repair compile baseline | Observability constructor | moderate | Revert U3 | no | planned |
+| Add shared test seams | Observability and tracing init | moderate | Revert U4 | no | planned |
+| Retain provider and own timeout | Observability provider | high | Revert U6 and keep feature disabled | preferred before rollout | planned |
+| Wire endpoint and attachment | Daemon CLI and tracing init | moderate | Revert U8 and U9 | no | planned |
+| Coordinate cleanup | Daemon lifecycle runner | high | Revert U11 and disable feature | preferred before rollout | planned |
+| Verify and observe | Focused harness and logs | low | Return defect to Stage | no | planned |
 
-Protected invariants: RED precedes every implementation edit; explicit flag precedence and inherited environment are tested; the endpoint flows once as a typed value and is never reread; shim and absent-endpoint paths remain formatting-only; each task stays within 105 minutes, 2 files, 4 functions, 3 scenarios, one skill domain, and one atomic milestone; provider ownership outlives subscriber and daemon use; cleanup is explicit, exactly once, and finite; no network oracle or unrelated config redesign is introduced. Any width breach returns to Stage for re-harvest.
+Protected invariants: every behavior GREEN has a compiling runtime RED; U1 never enables the broken feature in its own compilation; U4 adds interface only; production timeout is application-owned and environment-independent; pending export is actually cancelled by the SDK timeout; provider ownership outlives daemon use; flush and shutdown are exactly once; shutdown follows flush failure; no network oracle or unrelated config redesign is introduced; all tasks remain under two hours.
 
 ## Plan Review
 
-Gate: **PASS**. Standard review was rerun after hardening and eight-unit re-harvest. Local constitution, Rust/API, architecture, scope, test-strategy, operational-readiness, learnings, and external-boundary security lenses reviewed the actual current source flow. Cross-model persona and intercom tooling were unavailable; this is disclosed and non-blocking for this non-security maintenance plan.
+Gate: **PASS**. Standard review was rerun after hardening using constitution, Rust/API, architecture, scope, test-strategy, operational-readiness, learnings, and external-boundary security lenses. Cross-model and intercom dispatch were unavailable, so the local reviewer lenses are disclosed. This non-security maintenance plan has no unresolved P0 or P1 finding.
 
 | ID | Persona | Severity | Finding | Disposition |
 |---|---|---|---|---|
-| E1 | Architecture | P1 | Former U4 could not obtain an endpoint within `src/lib.rs` only; dead `Config::otlp_endpoint`, missing `GlobalFlags`, and pre-`daemon::run` initialization made it non-executable. | Resolved: U3 owns the exact two-file daemon-subcommand -> daemon-initializer handoff. |
-| E2 | Scope boundary | P1 | Returning ownership to the daemon while forbidding daemon edits was contradictory. | Resolved: U5 explicitly owns `src/lib.rs` and the `src/bin/engram.rs` daemon arm. |
-| T1 | Test strategy | P1 | Endpoint precedence and inherited-environment behavior lacked a RED oracle. | Resolved: U1 scenario 1 covers direct flag, inherited environment, absent endpoint, and typed arrival at the initializer. |
-| R1 | Rust/API | P1 | Provider construction could hide a second config lookup. | Resolved: U4 accepts the propagated endpoint argument only; U5 passes the exact value. |
-| C1 | Constitution | P1 | Adding plumbing to the former seven-unit plan could overload existing tasks. | Resolved: eight units cap at 105 minutes, 2 files, 4 functions, 3 scenarios, one domain, and one milestone. |
-| V1 | Operational readiness | P1 | Runtime export proof and broad closure are independent milestones. | Resolved: U7 owns runtime behavior; U8 owns dependency/all-features/default closure. |
-| S1 | Scope boundary | P2 | The unused flat `Config` field could remain misleading. | Accepted as explicit non-authoritative context; removing the legacy parser is unrelated cleanup and not required by the executable daemon path. |
-| X1 | Security lens | P3 | External export tests must not introduce credentials or network dependency. | Resolved by the in-process exporter and no-secret/no-network scope. |
+| C1 | Constitution | P1 | Original U1 could not produce a compiling RED. | Resolved by U1 runtime meta-harness, U2 graph GREEN, and U3 compile GREEN. |
+| T1 | Test strategy | P1 | Original provider and daemon RED named behavior before usable interfaces existed. | Resolved by explicit behavior-neutral U4 seam before U5 and U7. |
+| R1 | Rust/API | P1 | Synchronous cleanup could inherit the operator-controlled SDK default timeout. | Resolved by U6 constant plus `with_max_export_timeout` after defaults. |
+| A1 | Architecture | P1 | A broad combined repair would mix Cargo, provider, CLI, attachment, and lifecycle concerns. | Resolved by thirteen linear units with at most two files and one domain each. |
+| O1 | Operational readiness | P1 | Timeout cancellation, reporting, monitoring, and rollback were incomplete. | Resolved by paused-time cancellation in U5/U6, cleanup reporting in U10/U11, and U13 observation and rollback gates. |
+| S1 | Scope boundary | P2 | A seam task could hide implementation ahead of RED. | Resolved: U4 is behavior-preserving, has no tests, and forbids ownership, timeout, endpoint, attachment, and cleanup behavior. |
+| T2 | Test strategy | P2 | A cargo subprocess test could recurse or fail to invoke. | Resolved: U1 invokes only `cargo tree` and `cargo check --lib`, uses an isolated target directory, and distinguishes invocation errors. |
+| X1 | Security lens | P3 | OTLP tests could introduce network or secret handling. | Resolved by injected in-process exporters and explicit no-network/no-credential scope. |
 
-No unresolved P0 or P1 finding remains. The accepted P2 does not hide implementation work: U3 names the sole canonical endpoint boundary and all files/functions needed for propagation. Review confirms `131.001-T -> 131.002-T -> 131.003-T -> 131.004-T -> 131.005-T -> 131.006-T -> 131.007-T -> 131.008-T` and approves the updated roster in queued, unclaimed shipment `125-S`.
+The review confirms the exact thirteen-edge chain, fourteen-item parent-first roster, 45 to 105 minute estimates, application timeout ownership, deterministic cancellation test, monitoring and rollback plan, and queued/unclaimed `125-S` state.
+
+## References
+
+- PR 363 review 5015140545 and threads `PRRT_kwDORJEduc6b8O89`, `PRRT_kwDORJEduc6b8UJJ`, `PRRT_kwDORJEduc6b8UIv`
+- Stash `44E573BC`; feature `131-F`; shipment `125-S`
+- `docs/decisions/2026-08-24-otlp-api-drift-fix-decision.md`
+- `src/server/observability.rs`, `src/lib.rs`, and `src/bin/engram.rs`
+- `docs/compound/workflow-issues/linked-worktree-shared-startup-deadline-exact-cleanup-2026-08-19.md`
+- `.github/instructions/strict-safety.instructions.md`
+- `.github/instructions/release-observability.instructions.md`

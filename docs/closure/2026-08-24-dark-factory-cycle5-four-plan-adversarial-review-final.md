@@ -78,7 +78,11 @@ observations remain non-consensus planning input only.
   valid review.
 * Replacement active stash entries `172AE8CE`, `8C7733CE`, `721A42F0`, and
   `BD5DD62A` preserve links to the original archived stash IDs and blocked
-  harvested artifacts.
+  planning targets. The former `harvested` markers are corrected to reason
+  `archived` with disposition `blocked_unverified_planning`: no original bug was
+  successfully harvested to executable work. Semantic archives `021-D` and
+  `022-D` name the exact queue source, accepted archival status, blocked
+  feature/review/shipment, and sole active replacement.
 * Shipment `125-S` is unchanged in scope and remains the only queued shipment
   from this cycle, subject to its durable merge/review/competition/dependency
   claim guard.
