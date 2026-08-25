@@ -8,7 +8,8 @@ agent: stage
 branch: stage/dark-factory-cycle2-20260824-1540
 pull_request: 363
 starting_head: a45ffb3035cf08698c33fc22445a58eb409842cb
-status: remediation-in-progress
+substantive_commit: 45ab3946a0deba1aebcc65d5d3e615545145355e
+status: completed
 ---
 
 # PR 363 review 5015710467 Stage memory
@@ -42,9 +43,24 @@ Only active backlog planning artifacts `125-S`, `131-F`, and `131.003-T` through
 - `rg` was unavailable; targeted PowerShell `Select-String` was used only after Engram proved insufficient.
 - One exploratory SQL query used a nonexistent `type` column; dependency-aware CLI reads still confirmed the daemon-key edges.
 
-## Pending closure
+## Validation and publication
 
-- Verify all edited artifacts, exact safe semantics, source citations, graphs, widths, roster, docs/frontmatter/references, and planning-only diff.
-- Run target/full doctor and final target index sync.
-- Commit and push normally with trailers, reply to and resolve four threads, record the suppressed finding, then update this memory and closure with exact publication/thread evidence.
-- Do not claim or close any shipment and do not alter PR #362.
+- Target index sync: 1,126 artifacts, zero parse failures.
+- Target doctor: all eight changed backlog artifacts pass. Full read-only doctor exits zero with only 43 historical `archived_from_self_ref` and 38 historical `missing_shipped_event` advisories.
+- Shipment query: queued `[125-S]`; active `[]`; blocked `[126-S,127-S,128-S,129-S]`.
+- Graph query: OTLP has thirteen queued children and twelve linear edges; daemon-key has exactly three blocked edges. The `125-S` manifest has fourteen items.
+- Custom planning validator: 15 changed Markdown files pass YAML/frontmatter, final-newline, fence, unresolved-template, repository-reference, parent/status, width, graph, roster, safe-RED, and planning-only-scope checks. Estimates are 45-115 minutes.
+- Pinned SDK/bridge source and Cargo lock checksums were read directly; no Cargo build/check/test/linter command was run.
+- `git diff --check` passes; no source, test, Cargo, lockfile, config, workflow, shipment state, PR #362, merge, or claim change exists.
+- Substantive planning commit `45ab3946a0deba1aebcc65d5d3e615545145355e` was pushed normally. Replies `3850375727`, `3850375748`, `3850375735`, and `3850375759` were posted and all four threads resolved. Suppressed remediation comment `5406808549` records the three-edge correction. GraphQL returned zero unresolved threads.
+- Live PR title/body were not edited. Ship owns application of the exact copy-ready replacement in the closure.
+
+## Compact-context assessment
+
+The mandatory assessment found 153 memory files / 474,446 bytes, 71 plans / 1,173,605 bytes, and 115 closure files / 867,252 bytes. The current PR #363 plan, closure, and memories support queued or blocked work and must remain active. Broad historical compaction would exceed this exact-head remediation scope. Files compacted: 0; current artifacts preserved: all; decided-plans created: 0; closure summaries created: 0.
+
+## Handoff
+
+- Stage-side blockers are remediated. Ship-owned live PR metadata replacement remains intentionally unapplied.
+- Do not claim `125-S` until the final PR #363 head is merged to `origin/main`, final-head review state is clean, no competing shipment is active, and the exact fourteen-item/twelve-edge roster remains intact.
+- Keep `132-F`/`126-S` blocked until a separately reviewed spike proves a safe exact-create-and-retain primitive on supported platforms.
