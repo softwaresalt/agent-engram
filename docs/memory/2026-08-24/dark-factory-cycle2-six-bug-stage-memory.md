@@ -51,13 +51,13 @@ Risk rank differs from execution order: 7B15B447 must precede 1CB366DB by depend
 | 49000348 | 023-D blocked | cloud-placeholder spike (environment gate) |
 | 1C2A3CB3 | 024-D blocked | safe-API spike; Windows identity plan (standard PASS, adversarial BLOCKED) |
 | 5DF94427 | 025-D blocked | fsync decision; parent-fsync plan (standard PASS, adversarial BLOCKED) |
-| 44E573BC | 131-F; 131.001-T; 131.002-T; 131.003-T; 125-S | OTLP decision and reviewed PASS plan |
+| 44E573BC | 131-F; 131.001-T through 131.007-T; 125-S | OTLP decision and reviewed, width-isolated PASS plan |
 
 ## OTLP Harvest and Shipment
 
-Hierarchy: `131-F` -> `131.001-T` RED -> `131.002-T` GREEN -> `131.003-T` verification. Every task has acceptance criteria, parent ID, exact width/time cap, and explicit RED/GREEN edge.
+Current hierarchy after PR #363 width remediation: `131-F` -> `131.001-T` RED -> `131.002-T` dependency GREEN -> `131.003-T` provider GREEN -> `131.004-T` attachment GREEN -> `131.005-T` shutdown GREEN -> `131.006-T` runtime VERIFY -> `131.007-T` quality VERIFY. Every task has acceptance criteria, parent ID, a <=105-minute estimate, fewer than 3 files, fewer than 5 functions, fewer than 4 scenarios, one skill domain, and an explicit prerequisite edge.
 
-Step 5.5 scope guard PASS: harvest IDs were exactly `[131-F, 131.001-T, 131.002-T, 131.003-T]`; queued shipment `125-S` contains exactly those four IDs, parent first, with no pre-existing queue item. Only one independent shipment was produced, so operator batch/order/predecessor metadata is intentionally absent rather than hand-authored.
+Step 5.5 scope guard PASS after re-harvest: shipment `125-S` contains exactly `[131-F, 131.001-T, 131.002-T, 131.003-T, 131.004-T, 131.005-T, 131.006-T, 131.007-T]`, parent first and dependency ordered. It remains the only queued shipment and is unclaimed.
 
 ## Stash Disposition
 

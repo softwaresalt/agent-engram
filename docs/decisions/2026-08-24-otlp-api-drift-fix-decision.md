@@ -31,17 +31,17 @@ Add test-first contracts using a test-only in-process exporter path shared with 
 ## Constraints
 
 - Independent shipment; no workspace-identity files.
-- RED lifecycle contracts precede manifest, lockfile, or production changes.
+- `131.001-T` captures the complete API/lifecycle/export RED harness before manifest, lockfile, or production changes; every later task is dependency-blocked by that prerequisite chain.
 - Dependency scope is exactly `tracing-opentelemetry` 0.26 to 0.27 plus resulting lockfile reconciliation; no broader OpenTelemetry upgrade.
-- `131.002-T` owns provider retention, production daemon attachment, and shutdown/flush implementation; `131.003-T` independently verifies all-features and production-path runtime export behavior.
+- Width-isolated execution is mandatory: `131.002-T` aligns only Cargo dependencies; `131.003-T` migrates provider construction; `131.004-T` owns production layer attachment and provider retention; `131.005-T` owns bounded daemon flush/shutdown; `131.006-T` verifies runtime span export; and `131.007-T` closes all-features/default quality gates.
 - Provider ownership must outlive layer/subscriber use; explicit shutdown must flush or return a bounded error.
 - The configured endpoint must reach production daemon tracing initialization; no builder-only or test-only integration is accepted.
-- The deterministic local exporter is the runtime oracle; an external collector is neither required nor sufficient.
+- The deterministic local exporter in `131.001-T` is the runtime oracle reused by `131.006-T`; an external collector is neither required nor sufficient.
 
 ## References
 
 - Stash `44E573BC`
-- Feature `131-F`; shipment `125-S`
+- Feature `131-F`; tasks `131.001-T` through `131.007-T`; shipment `125-S`
 - `Cargo.toml` OpenTelemetry 0.26 entries
 - `cargo tree --features otlp-export` split 0.25/0.26 evidence
 - `tracing-opentelemetry` 0.27 dependency metadata

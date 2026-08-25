@@ -18,10 +18,10 @@ Performed one operator-authorized remediation pass on Stage-owned planning and b
 
 ## Artifacts Remediated
 
-- OTLP decision and plan: provider owner now outlives layer/subscriber use; `131.002-T` owns lifecycle implementation; shutdown/flush is explicit, finite, and error-propagating; `131.001-T` defines RED local-exporter contracts; `131.003-T` verifies all-features and deterministic exported-span behavior.
+- OTLP decision and plan: `131.001-T` defines the complete RED API/lifecycle/export harness; `131.002-T` aligns dependencies; `131.003-T` constructs the retained provider; `131.004-T` attaches production tracing; `131.005-T` bounds daemon cleanup; `131.006-T` verifies runtime export; and `131.007-T` closes quality gates.
 - Unix parent-fsync decision, plan, deliberation `025-D`, and active stash `5DF94427`: parent-sync failure overrides `Ok` and `AlreadyExists` success; other publication failures retain their original error; RED covers new-file, existing-winner, and safe sync-failure injection.
 - Archived stash `44E573BC`: exactly one archived record now carries `reason: harvested` and `harvested_artifact_id: 131-F`; it remains absent from the active stash.
-- Shipment `125-S`: exact roster remains `131-F`, `131.001-T`, `131.002-T`, and `131.003-T` in dependency order.
+- Shipment `125-S`: exact parent-first roster is `131-F` plus `131.001-T` through `131.007-T` in strict dependency order; it remains queued and unclaimed.
 
 ## Review Gates
 
@@ -30,10 +30,10 @@ Plan hardening and standard plan review were rerun for both affected plans. The 
 ## Validation
 
 - Dedicated Stage worktree `backlogit sync`: 1,090 artifacts, 0 parse failures.
-- Target doctor: `025-D`, `125-S`, `131-F`, and all three `131.*-T` artifacts pass.
+- Target doctor: `025-D`, `125-S`, `131-F`, and all seven `131.*-T` artifacts pass after current remediation validation.
 - Full doctor: only 43 pre-existing `archived_from_self_ref` advisories.
-- Hierarchy: `131-F` has exactly three child tasks; dependencies remain `131.001-T -> 131.002-T -> 131.003-T`.
-- Shipment: `125-S` remains `queued` with exact four-item manifest and PR #362 claim guard.
+- Hierarchy: `131-F` has exactly seven child tasks; dependencies are `131.001-T -> 131.002-T -> 131.003-T -> 131.004-T -> 131.005-T -> 131.006-T -> 131.007-T`.
+- Shipment: `125-S` remains queued and unclaimed with the exact eight-item parent-first manifest; PR #362 ordering is satisfied and the exact-head PR #363 guard remains.
 - Documentation: four targeted authoring-frontmatter lints pass; 10 changed planning/backlog documents have final newlines, balanced fences, no unresolved templates, and 12 valid repository cross-references.
 - JSONL: active and archived files parse; `44E573BC` is zero active and exactly one archived with harvested provenance. Archived duplicate `23F4C476` is pre-existing and unchanged; no duplicate was introduced.
 - Scope: all changed paths are under `.backlogit/` or `docs/`.

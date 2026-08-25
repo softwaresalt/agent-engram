@@ -25,8 +25,7 @@ metadata, force push, or PR #362 mutation occurred.
 
 ## Backlog dispositions
 
-* `125-S`: queued, exact roster unchanged (`131-F`, `131.001-T`, `131.002-T`,
-  `131.003-T`), claim guard expanded.
+* `125-S`: queued and unclaimed with exact parent-first roster `131-F` plus `131.001-T` through `131.007-T`; the width-remediated claim guard is current.
 * `126-S`–`129-S`: blocked and unclaimable.
 * `132-F`–`135-F`: blocked; all 14 child tasks blocked.
 * `132.001-R`–`135.001-R`: prior accepted adversarial gates invalidated and
@@ -41,10 +40,7 @@ metadata, force push, or PR #362 mutation occurred.
 
 ## Claim authorization
 
-Review alone never authorizes claim. For `125-S`, Ship must prove PR #362 and
-the exact final reviewed PR #363 head are on `origin/main`, exact-head reviews
-are clean with zero unresolved threads, no competing shipment is active, and
-the exact roster/dependencies are satisfied. A future requeue of `127-S` also
+Review alone never authorizes claim. PR #362 ordering is satisfied by merged commit `685f62668ac273a41a1f93fc9be2571510decae2`. For `125-S`, Ship must prove the exact final reviewed PR #363 head is on `origin/main`, exact-head reviews are clean with zero unresolved threads, no competing shipment is active, and the exact seven-task roster/dependencies are satisfied. A future requeue of `127-S` also
 requires terminal shipped proof for `126-S` through `132.004-T`.
 
 ## Proposed PR metadata for Ship
@@ -68,8 +64,7 @@ test, configuration, or dependency implementation changes are included.
 
 ## Surviving scope
 
-- 44E573BC -> 131-F and tasks 131.001-T through 131.003-T in queued shipment
-  125-S; exact RED -> GREEN -> VERIFY roster retained
+- 44E573BC -> 131-F and tasks 131.001-T through 131.007-T in queued shipment 125-S; exact RED -> four width-isolated GREEN slices -> runtime VERIFY -> quality VERIFY roster
 - 7B15B447 / 1CB366DB / 1C2A3CB3 / 5DF94427: original archive provenance
   retained; active replacements 172AE8CE / 8C7733CE / 721A42F0 / BD5DD62A
 - Features 132-F through 135-F, all 14 child tasks, invalidated review gates
@@ -89,16 +84,13 @@ are consensus-eligible.
 
 ## Claim guard
 
-Ship must not claim 125-S from this planning branch or after review alone.
-Before claim, prove: PR #362 merge commit is on origin/main; the exact final
-reviewed PR #363 head is on origin/main; reviews target that exact head with
-zero unresolved or adverse review state; no competing shipment is active; and
-the exact 125-S roster/dependencies are satisfied.
+Ship must not claim 125-S from this planning branch or after review alone. PR #362 ordering is satisfied by merged commit 685f62668ac273a41a1f93fc9be2571510decae2. Before claim, prove: the exact final reviewed PR #363 head is on origin/main; reviews target that exact head with zero unresolved or adverse review state; no competing shipment is active; and the exact seven-task 125-S roster/dependencies are satisfied.
 
 ## Validation
 
 - backlogit sync: 1,116 artifacts, zero parse failures
 - queued shipments: only 125-S; blocked: 126-S through 129-S; active: none
+- exact 131.001-T -> 131.002-T -> 131.003-T -> 131.004-T -> 131.005-T -> 131.006-T -> 131.007-T chain
 - exact 127-S -> 126-S and 133.001-T -> 132.004-T dependencies preserved
 - doctor: no new duplicate, orphan, partial-mutation, or root-conflict finding;
   historical archive/shipped-event advisories remain out of scope
@@ -123,13 +115,19 @@ advisories are unrelated and unchanged.
 
 ## Compact-context assessment
 
-Mandatory `compact-context` assessment ran with target `all`. Repository volume
-is 147 memory files (440,031 bytes), 71 plan files (1,157,918 bytes), and 112
-closure files (841,525 bytes). No in-scope file is eligible: the corrected
-reports, plans, blocker, and memories support queued or blocked current work,
-and unrelated historical compaction would violate the bounded PR #363 scope.
-Files compacted: 0. Decided-plans created: 0. Active/current artifacts
-preserved.
+Mandatory `compact-context` assessment ran with target `all`. The sole
+authoritative PR #363 baseline is terminal HEAD
+`543e378be9bc7a2541889b2f011dd2c69b7ca154`. Count tracked `*.md` blobs under
+exactly `docs/memory`, `docs/exec-plans`, and `docs/closure`, and sum the blob
+size from `git ls-tree -r -l 543e378be9bc7a2541889b2f011dd2c69b7ca154
+-- <scope>`. This immutable, line-ending-independent source yields 148 memory
+files (435,868 bytes), 71 plan files (1,143,652 bytes), and 112 closure files
+(826,421 bytes). Older working-tree totals are superseded; later planning-only
+commits do not alter this anchored baseline. No in-scope file is
+eligible: the corrected reports, plans, blocker, and memories support queued
+or blocked current work, and unrelated historical compaction would violate
+the bounded PR #363 scope. Files compacted: 0. Decided-plans created: 0.
+Active/current artifacts preserved.
 
 ## Next steps
 

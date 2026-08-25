@@ -57,14 +57,13 @@ remains correctly archived to queued feature `131-F` and shipment `125-S`.
 authorizes claim. Before claim, Ship must fetch `origin/main` and prove all of
 the following:
 
-1. PR #362 is merged and its merge commit is an ancestor of `origin/main`.
+1. Ordering evidence is satisfied: PR #362 merged as `685f62668ac273a41a1f93fc9be2571510decae2`.
 2. PR #363 is merged and its exact final reviewed planning head is an ancestor
    of `origin/main`.
 3. Review evidence targets that exact final PR #363 head, all review threads are
    resolved, and no review is pending or changes-requested.
 4. No competing shipment is active.
-5. The exact roster remains `131-F`, `131.001-T`, `131.002-T`, `131.003-T` and
-   the RED to GREEN to VERIFY dependencies are intact and satisfied.
+5. The exact roster is `131-F` plus `131.001-T` through `131.007-T`, and the strict RED -> dependency GREEN -> provider GREEN -> attachment GREEN -> shutdown GREEN -> runtime VERIFY -> quality VERIFY chain is intact and satisfied.
 
 Shipments `126-S`–`129-S` are blocked and cannot be claimed. If a future valid
 review permits requeue, each must also satisfy the five guards above. `127-S`
