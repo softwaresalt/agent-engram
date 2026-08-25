@@ -59,3 +59,11 @@ Create one normal commit with PR, shipment, feature, review, and source-head tra
 - Ship may apply the proposed title/body but must not claim any shipment from this PR.
 - A fresh exact-final-head review and authorized merge are the only remaining PR-publication blockers.
 - Any implementation requires a new, separately staged release from stash `8AD4BFE8` and three eligible complete-coverage reviewers.
+
+## Final provenance correction checkpoint
+
+- Started from exact PR head `749dc0c9a283651163fcdd2b2a43565ae248f0f2`.
+- Restored exact base/operator text for archived stashes `1CB366DB`, `1C2A3CB3`, and `5DF94427`; also restored the directly coupled `021-D` linked text.
+- Preserved fail-closed dispositions, blocked feature/review/shipment authority, replacement stash IDs, reasons, blocked manifests, and zero queued or active shipments.
+- Added the required fail-closed authority `source` reference. Targeted doc lint, JSONL/provenance checks, graph/status checks, sync, focused doctor, references, and diff checks pass.
+- Next: normal commit and push, reply to and resolve `PRRT_kwDORJEduc6cRg0R`, then post concise PR evidence. No merge, claim, status/roster change, force-push, or PR #362 mutation.

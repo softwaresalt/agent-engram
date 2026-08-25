@@ -2,6 +2,7 @@
 title: PR 363 fail-closed planning authority
 type: decision
 doc_type: decision
+source: "docs/closure/2026-08-25-pr-363-mandatory-escalation-review.md; PR #363 review 5020539491"
 date: 2026-08-25
 status: blocked
 pull_request: 363
