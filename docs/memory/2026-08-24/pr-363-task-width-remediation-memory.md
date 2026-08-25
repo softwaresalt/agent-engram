@@ -8,13 +8,14 @@ agent: stage
 branch: stage/dark-factory-cycle2-20260824-1540
 pull_request: 363
 starting_head: 543e378be9bc7a2541889b2f011dd2c69b7ca154
+planning_commit: 57e88065322d14c82aba7ad0542672a785196cfd
 ---
 
 # PR 363 OTLP task-width remediation memory
 
 ## Outcome
 
-Stage retrieved the exact current review bodies and both unresolved threads before editing. Suppressed review 5014783124 identified the over-wide `131.002-T`; thread `discussion_r3849425228` required the RED title to name lifecycle scope; thread `discussion_r3849392979` identified contradictory compact-context totals. No source, test, config, build, linter, shipment claim, shipment close, PR merge, amend, force push, or blocked security-shipment mutation occurred.
+Planning remediation is recorded in commit `57e88065322d14c82aba7ad0542672a785196cfd`. Stage retrieved the exact current review bodies and both unresolved threads before editing. Suppressed review 5014783124 identified the over-wide `131.002-T`; thread `discussion_r3849425228` required the RED title to name lifecycle scope; thread `discussion_r3849392979` identified contradictory compact-context totals. No source, test, config, build, linter, shipment claim, shipment close, PR merge, amend, force push, or blocked security-shipment mutation occurred.
 
 ## Decisions
 
