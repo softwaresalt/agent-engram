@@ -12,6 +12,8 @@ starting_head: 9dcd33f5e49583f8138f4896b70c89c00251e25f
 
 # PR 363 endpoint-flow remediation memory
 
+> **Current-authority notice:** This is historical source-head evidence only. Every eight- or thirteen-task, twelve-edge, fourteen-item, queued-shipment, or local-PASS statement below is superseded and must not guide execution. Current authority is `131-F`, `131.001-R`, `125-S`, and `docs/closure/2026-08-25-pr-363-mandatory-escalation-review.md`: seventeen tasks, sixteen edges, eighteen roster items, and failed-closed review.
+
 ## Outcome
 
 Stage remediated the executable-width blocker without source, test, manifest, lockfile, config, shipment claim/close, merge, amend, force-push, or blocked-security mutation. Feature `131-F` now has eight queued tasks, and `125-S` remains the sole queued, unclaimed shipment. This record supersedes the current-roster and current-index-count assertions in earlier PR #363 memories; their commit-specific historical evidence remains unchanged.

@@ -4,10 +4,14 @@ type: review-remediation
 doc_type: closure
 source: PR 363 reviews 5015373740 and 5015447062 at b1232cc4ec95015ef337c2ffa5b4055f009960f1
 date: 2026-08-24
-status: published-threads-resolved
+status: superseded-source-head-only
 ---
 
 # PR 363 exact-head five-blocker planning remediation
+
+## Supersession notice
+
+Historical evidence only. The thirteen-task, twelve-edge, fourteen-item, queued-shipment, and local-PASS statements below were true only for their pinned source head and must not guide current execution. Current authority is `125-S`, `131-F`, review `131.001-R`, the OTLP plan, and `docs/closure/2026-08-25-pr-363-mandatory-escalation-review.md`: seventeen tasks, sixteen edges, eighteen shipment items, and failed-closed review.
 
 ## Scope
 

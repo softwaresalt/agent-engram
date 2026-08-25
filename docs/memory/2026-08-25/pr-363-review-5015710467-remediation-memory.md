@@ -9,10 +9,14 @@ branch: stage/dark-factory-cycle2-20260824-1540
 pull_request: 363
 starting_head: a45ffb3035cf08698c33fc22445a58eb409842cb
 substantive_commit: 45ab3946a0deba1aebcc65d5d3e615545145355e
-status: completed
+status: superseded
 ---
 
 # PR 363 review 5015710467 Stage memory
+
+## Supersession notice
+
+Historical source-head memory only. All thirteen-task, twelve-edge, fourteen-item, queued-shipment, and local-PASS statements below are superseded. Current authority is the mandatory-escalation closure and backlog artifacts `131-F`, `131.001-R`, and `125-S`: seventeen tasks, sixteen edges, eighteen shipment items, and failed-closed review.
 
 ## Completed planning work
 

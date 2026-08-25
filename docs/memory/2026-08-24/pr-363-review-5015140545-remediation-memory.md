@@ -13,6 +13,8 @@ superseded_by: PR 363 exact-head reviews 5015373740 and 5015447062
 
 # PR 363 review 5015140545 planning remediation memory
 
+> **Current-authority notice:** This is historical source-head evidence only. Every eight- or thirteen-task, twelve-edge, fourteen-item, queued-shipment, or local-PASS statement below is superseded and must not guide execution. Current authority is `131-F`, `131.001-R`, `125-S`, and `docs/closure/2026-08-25-pr-363-mandatory-escalation-review.md`: seventeen tasks, sixteen edges, eighteen roster items, and failed-closed review.
+
 ## Outcome
 
 Stage retrieved the exact five unresolved threads and changed planning/backlog artifacts only. No application source, test, manifest, lockfile, configuration, build, test suite, source linter, shipment claim, shipment close, merge, amend, force push, or PR 362 mutation occurred.

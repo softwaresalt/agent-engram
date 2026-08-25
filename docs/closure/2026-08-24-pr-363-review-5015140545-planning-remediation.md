@@ -10,6 +10,8 @@ status: superseded-by-exact-head-remediation
 
 # PR 363 review 5015140545 planning remediation
 
+> **Current-authority notice:** This is historical source-head evidence only. Every eight- or thirteen-task, twelve-edge, fourteen-item, queued-shipment, or local-PASS statement below is superseded and must not guide execution. Current authority is `131-F`, `131.001-R`, `125-S`, and `docs/closure/2026-08-25-pr-363-mandatory-escalation-review.md`: seventeen tasks, sixteen edges, eighteen roster items, and failed-closed review.
+
 ## Exact-head supersession
 
 Reviews `5015373740` and `5015447062` supersede this record's cleanup-bound claims. The current design treats the SDK setting as a per-export-future limit only and uses a detached native worker plus a five-second bound on daemon wait, with completion unknown after timeout. See `docs/exec-plans/2026-08-24-44e573bc-otlp-api-drift-plan.md` and the exact-head remediation closure.
