@@ -14,8 +14,10 @@ unblocked: 130-S
 # Stage session — 2026-08-27
 
 > [!NOTE]
-> **No RCA restated.** Root cause and merge/runtime evidence for the
-> late-readiness sticky-proxy defect live in
+> **No RCA restated.** Root cause for the late-readiness sticky-proxy defect
+> lives in
+> `docs/decisions/2026-08-26-large-multi-repo-workspace-scale-spike.md`.
+> Prior verification-shipment evidence is in
 > `docs/exec-plans/2026-08-26-137-late-readiness-proxy-recovery-verification-plan.md`,
 > `docs/closure/130-S-2026-08-27-post-merge-closure.md`, and
 > `docs/closure/130-S-2026-08-27-runtime-verification.md`. This memory records

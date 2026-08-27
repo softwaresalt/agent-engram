@@ -425,7 +425,7 @@ Run from the repository root on the feature branch:
 
 ```powershell
 cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings -W clippy::pedantic
+cargo clippy --all-targets --all-features -- -D warnings -D clippy::pedantic
 cargo test --test contract_shim_stdio_initialize
 cargo test --test contract_shim_lifecycle
 cargo dev-test

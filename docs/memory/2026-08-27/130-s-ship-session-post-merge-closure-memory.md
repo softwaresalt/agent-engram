@@ -190,7 +190,7 @@ approved for merge in this session.
 
 ### PR #365 review-fix cycles (Copilot, post-push)
 
-Three review cycles against PR #365, each triggered by re-pushing this
+Six review cycles against PR #365, each triggered by re-pushing this
 branch and re-requesting Copilot review via the GraphQL
 `requestReviews(botIds: ["BOT_kgDOCnlnWA"])` mutation (the REST
 `requested_reviewers` endpoint and `gh pr edit --add-reviewer` both no-op
@@ -248,10 +248,34 @@ session's finding):
    keep resurfacing on every future whole-diff review pass until Stage
    revises the plan; that revision is Stage's job, not Ship's, and is
    explicitly out of this closure's mandate. Replied (again) and resolved
-   all threads for the zero-unresolved-threads gate; if Copilot re-raises
-   the same 7 `138-F` items on a subsequent review, Ship will record that as
-   an accepted, permanent, Stage-owned gap in the four-point gate summary
-   rather than opening a 5th remediation cycle.
+   all threads for the zero-unresolved-threads gate. **Clarification**: the
+   "final remediation round" decision applies only to the `138-F`
+   plan-feasibility content itself (Stage-owned, frozen as a documented
+   deferral); Ship continued fixing its own remaining mechanical/schema
+   issues in subsequent rounds below.
+5. Review at `9845a196` → 3 threads: 1 Ship-owned (the new post-mode
+   reconcile report used a non-canonical `result: PROCEED-CONFIRMED` field
+   instead of the `shipment-reconcile` skill's canonical
+   `recommendation: PROCEED` schema) — fixed in `d0fd3bd3` by rewriting the
+   report's frontmatter/body to the canonical schema (matching the
+   `123-S-post` precedent) and adding the required per-item table. The
+   other 2 (a `138-F` plan concurrency-race finding, and an observation that
+   `138.001-R`'s approval predates the feasibility findings) are further
+   instances of the same Stage-owned deferral — replied and resolved, not
+   fixed.
+6. Review at `d0fd3bd3` → 4 findings, all on previously-unchanged content:
+   (a) `130-S-pre-20260827T104137-0700.md`'s member table used `matched`
+   instead of `pre-archived` for six archive-only rows (schema
+   classification error, per the `108-S-pre`/`118-S-pre` precedent) —
+   fixed; (b) the Stage session memory
+   (`docs/memory/2026-08-27-stage-138-terminal-vs-transient-health-session.md`)
+   mislabeled the RCA the same way the plan/queue artifacts did — fixed for
+   consistency; (c) this memory's own review-cycle count was stale — fixed;
+   (d) the `138-F` plan's documented Clippy gate command used
+   `-W clippy::pedantic` instead of the repository-mandated
+   `-D clippy::pedantic` (`AGENTS.md:224`) — fixed as a simple, factual,
+   one-line correction (same class as the earlier cargo-target-name and
+   RCA-mislabel fixes; not a plan redesign).
 
 ## Remaining work / handoff (resolved in Session 2; retained for history)
 
