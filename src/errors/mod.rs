@@ -281,6 +281,8 @@ pub enum ShimFailureClass {
     EndpointDerivationFailure,
     /// The MCP stdio transport itself failed to bind or ended abnormally.
     TransportFailure,
+    /// The daemon's protocol or `_health` contract is incompatible with this shim.
+    ProtocolIncompatible,
 }
 
 impl ShimFailureClass {
@@ -292,6 +294,7 @@ impl ShimFailureClass {
             ShimFailureClass::ReadinessTimeout => 11,
             ShimFailureClass::EndpointDerivationFailure => 12,
             ShimFailureClass::TransportFailure => 13,
+            ShimFailureClass::ProtocolIncompatible => 14,
         }
     }
 
@@ -304,6 +307,7 @@ impl ShimFailureClass {
             ShimFailureClass::ReadinessTimeout => "readiness_timeout",
             ShimFailureClass::EndpointDerivationFailure => "endpoint_derivation_failure",
             ShimFailureClass::TransportFailure => "transport_failure",
+            ShimFailureClass::ProtocolIncompatible => "protocol_incompatible",
         }
     }
 
@@ -315,6 +319,7 @@ impl ShimFailureClass {
             ShimFailureClass::ReadinessTimeout => SHIM_READINESS_TIMEOUT,
             ShimFailureClass::EndpointDerivationFailure => SHIM_ENDPOINT_DERIVATION_FAILED,
             ShimFailureClass::TransportFailure => SHIM_TRANSPORT_FAILURE,
+            ShimFailureClass::ProtocolIncompatible => SHIM_PROTOCOL_INCOMPATIBLE,
         }
     }
 
@@ -339,6 +344,9 @@ impl ShimFailureClass {
             }
             ShimFailureClass::TransportFailure => {
                 "MCP stdio transport failed to bind or the session ended abnormally"
+            }
+            ShimFailureClass::ProtocolIncompatible => {
+                "daemon protocol or _health contract is incompatible with this shim"
             }
         }
     }
@@ -980,5 +988,36 @@ mod tests {
         assert_eq!(payload.error.code, 8010);
         assert_eq!(payload.error.name, "DaemonShutdownTimeout");
         assert_eq!(payload.error.details, Some(json!({ "timeout_ms": 2000 })));
+    }
+
+    /// Golden-record additivity check: pre-existing `ShimFailureClass` values
+    /// are byte-identical and the new `ProtocolIncompatible` is strictly additive.
+    #[test]
+    fn shim_failure_class_golden_record() {
+        // Pre-existing variants — values MUST NOT shift.
+        assert_eq!(ShimFailureClass::AdmissionFailure.exit_code(), 10);
+        assert_eq!(ShimFailureClass::AdmissionFailure.as_str(), "admission_failure");
+        assert_eq!(ShimFailureClass::AdmissionFailure.wire_code(), 15_001);
+
+        assert_eq!(ShimFailureClass::ReadinessTimeout.exit_code(), 11);
+        assert_eq!(ShimFailureClass::ReadinessTimeout.as_str(), "readiness_timeout");
+        assert_eq!(ShimFailureClass::ReadinessTimeout.wire_code(), 15_002);
+
+        assert_eq!(ShimFailureClass::EndpointDerivationFailure.exit_code(), 12);
+        assert_eq!(ShimFailureClass::EndpointDerivationFailure.as_str(), "endpoint_derivation_failure");
+        assert_eq!(ShimFailureClass::EndpointDerivationFailure.wire_code(), 15_003);
+
+        assert_eq!(ShimFailureClass::TransportFailure.exit_code(), 13);
+        assert_eq!(ShimFailureClass::TransportFailure.as_str(), "transport_failure");
+        assert_eq!(ShimFailureClass::TransportFailure.wire_code(), 15_004);
+
+        // New additive variant.
+        assert_eq!(ShimFailureClass::ProtocolIncompatible.exit_code(), 14);
+        assert_eq!(ShimFailureClass::ProtocolIncompatible.as_str(), "protocol_incompatible");
+        assert_eq!(ShimFailureClass::ProtocolIncompatible.wire_code(), 15_005);
+        assert_eq!(
+            ShimFailureClass::ProtocolIncompatible.record_message(),
+            "daemon protocol or _health contract is incompatible with this shim"
+        );
     }
 }
