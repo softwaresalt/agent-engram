@@ -16,11 +16,11 @@
 //! `run` now binds the stdio transport unconditionally and immediately, and
 //! evaluates the three preconditions concurrently in the background. The MCP
 //! session always answers `initialize` and serves the static `tools/list`
-//! catalog. If the preconditions fail, the session is degraded: `tools/call`
-//! returns a structured error naming the cause (see
-//! [`transport::ShimHandler::call_tool`]), and the shim's own process exit
-//! code and a durable startup-failure record carry the classified cause for
-//! offline diagnosis (see [`spawn_record_startup_failure`]).
+//! catalog. Permanent precondition failures keep the session degraded, while
+//! a daemon readiness deadline starts a late-readiness monitor so the same
+//! stdio session can recover when the named-pipe daemon finishes starting.
+//! Until recovery, `tools/call` returns a structured error naming the cause
+//! (see [`transport::ShimHandler::call_tool`]).
 
 pub mod ipc_client;
 pub mod lifecycle;
@@ -32,12 +32,13 @@ pub mod version;
 
 use std::io::Write as _;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::json;
 use tokio::sync::watch;
 
-use crate::errors::{EngramError, ShimFailureClass, ShimStartupError};
+use crate::errors::{DaemonError, EngramError, ShimFailureClass, ShimStartupError};
 
 /// IPC request timeout used once a daemon endpoint is `Ready`. Deliberately
 /// NOT used to bound awaiting the deferred startup outcome (see
@@ -46,6 +47,10 @@ use crate::errors::{EngramError, ShimFailureClass, ShimStartupError};
 /// `tools/call` to report a false `readiness_timeout` while
 /// `ensure_daemon_running` was still within its own valid, longer budget.
 const IPC_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+/// Initial interval between late daemon-readiness probes.
+const RECOVERY_INITIAL_BACKOFF_MS: u64 = 50;
+/// Maximum interval between late daemon-readiness probes.
+const RECOVERY_MAX_BACKOFF_MS: u64 = 1_000;
 
 /// Outcome of the deferred startup preconditions (workspace admission, daemon
 /// readiness, IPC endpoint derivation), computed concurrently with serving
@@ -54,8 +59,11 @@ const IPC_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 pub enum StartupOutcome {
     /// All preconditions succeeded; tool calls may be forwarded to `endpoint`.
     Ready { endpoint: String },
-    /// A precondition failed; the session stays up but every `tools/call`
-    /// must fail with the recorded, classified cause.
+    /// The initial daemon-readiness budget expired, but the endpoint remains
+    /// eligible for recovery without restarting the stdio session.
+    WaitingForReadiness { endpoint: String, message: String },
+    /// A permanent precondition failed; the session stays up but every
+    /// `tools/call` must fail with the recorded, classified cause.
     Degraded {
         class: ShimFailureClass,
         message: String,
@@ -69,6 +77,10 @@ impl StartupOutcome {
             message: err.to_string(),
         }
     }
+}
+
+fn readiness_failure_is_recoverable(error: &EngramError) -> bool {
+    matches!(error, EngramError::Daemon(DaemonError::NotReady { .. }))
 }
 
 /// Resolve the workspace argument in priority order: `workspace_override`
@@ -124,7 +136,7 @@ fn resolve_workspace_arg(workspace_override: Option<&str>) -> Result<String, Eng
 /// responsiveness (both already happened by the time this returns).
 async fn compute_startup_outcome(
     workspace_override: Option<String>,
-    outcome_tx: &watch::Sender<Option<StartupOutcome>>,
+    outcome_tx: &Arc<watch::Sender<Option<StartupOutcome>>>,
 ) -> (StartupOutcome, Option<tokio::task::JoinHandle<()>>) {
     let publish = |outcome: StartupOutcome| {
         let _ = outcome_tx.send(Some(outcome.clone()));
@@ -172,10 +184,37 @@ async fn compute_startup_outcome(
     };
 
     if let Err(err) = lifecycle::ensure_daemon_running(&workspace_path).await {
-        let outcome = publish(StartupOutcome::degraded(
-            ShimFailureClass::ReadinessTimeout,
-            &err,
-        ));
+        if !readiness_failure_is_recoverable(&err) {
+            let outcome = publish(StartupOutcome::degraded(
+                ShimFailureClass::ReadinessTimeout,
+                &err,
+            ));
+            let handle = spawn_record_startup_failure(
+                Some(workspace_path.display().to_string()),
+                ShimFailureClass::ReadinessTimeout,
+            );
+            return (outcome, handle);
+        }
+
+        let endpoint = match crate::daemon::ipc_server::ipc_endpoint(&workspace_path) {
+            Ok(endpoint) => endpoint,
+            Err(endpoint_err) => {
+                let outcome = publish(StartupOutcome::degraded(
+                    ShimFailureClass::EndpointDerivationFailure,
+                    &endpoint_err,
+                ));
+                let handle = spawn_record_startup_failure(
+                    Some(workspace_path.display().to_string()),
+                    ShimFailureClass::EndpointDerivationFailure,
+                );
+                return (outcome, handle);
+            }
+        };
+        let outcome = publish(StartupOutcome::WaitingForReadiness {
+            endpoint: endpoint.clone(),
+            message: err.to_string(),
+        });
+        spawn_late_readiness_monitor(outcome_tx.clone(), endpoint);
         let handle = spawn_record_startup_failure(
             Some(workspace_path.display().to_string()),
             ShimFailureClass::ReadinessTimeout,
@@ -197,6 +236,37 @@ async fn compute_startup_outcome(
             (outcome, handle)
         }
     }
+}
+
+/// Continue probing a daemon after the initial readiness attribution deadline.
+///
+/// Exactly one monitor is spawned per shim startup. It updates the shared
+/// watch channel when the named-pipe daemon becomes ready and stops when the
+/// stdio session drops all receivers.
+fn spawn_late_readiness_monitor(
+    outcome_tx: Arc<watch::Sender<Option<StartupOutcome>>>,
+    endpoint: String,
+) {
+    tokio::spawn(async move {
+        let mut delay_ms = RECOVERY_INITIAL_BACKOFF_MS;
+        loop {
+            tokio::select! {
+                () = outcome_tx.closed() => return,
+                () = tokio::time::sleep(Duration::from_millis(delay_ms)) => {}
+            }
+
+            if lifecycle::check_health(&endpoint).await {
+                tracing::info!(
+                    endpoint = %endpoint,
+                    "daemon became ready after the shim startup deadline"
+                );
+                let _ = outcome_tx.send(Some(StartupOutcome::Ready { endpoint }));
+                return;
+            }
+
+            delay_ms = (delay_ms * 2).min(RECOVERY_MAX_BACKOFF_MS);
+        }
+    });
 }
 
 /// Fire-and-forget the best-effort durable startup-failure record write
@@ -357,10 +427,16 @@ pub async fn run(workspace_override: Option<&str>) -> Result<(), EngramError> {
 
     let workspace_override = workspace_override.map(str::to_owned);
     let (outcome_tx, outcome_rx) = watch::channel(None);
-    let startup_task =
+    let outcome_tx = Arc::new(outcome_tx);
+    let outcome_observer = outcome_rx.clone();
+    let transport_outcome_tx = Arc::downgrade(&outcome_tx);
+    let mut startup_task =
         tokio::spawn(async move { compute_startup_outcome(workspace_override, &outcome_tx).await });
 
-    let session_result = transport::run_shim(outcome_rx, IPC_REQUEST_TIMEOUT).await;
+    let session_result =
+        transport::run_shim(transport_outcome_tx, outcome_rx, IPC_REQUEST_TIMEOUT).await;
+    let outcome_at_session_end = outcome_observer.borrow().clone();
+    drop(outcome_observer);
 
     // The MCP session has already ended (client disconnected or transport
     // closed). The background precondition task's own result is only needed
@@ -372,7 +448,7 @@ pub async fn run(workspace_override: Option<&str>) -> Result<(), EngramError> {
     // linger (the background task is dropped/cancelled when the runtime
     // shuts down at process exit).
     let (outcome, record_task) =
-        match tokio::time::timeout(Duration::from_secs(2), startup_task).await {
+        match tokio::time::timeout(Duration::from_secs(2), &mut startup_task).await {
             Ok(Ok((outcome, record_task))) => (outcome, record_task),
             Ok(Err(join_err)) => (
                 StartupOutcome::Degraded {
@@ -382,11 +458,13 @@ pub async fn run(workspace_override: Option<&str>) -> Result<(), EngramError> {
                 None,
             ),
             Err(_elapsed) => {
-                // No definitive classification available in time; treat as a
-                // benign, unclassified session end rather than guessing a cause.
+                startup_task.abort();
+                let _ = startup_task.await;
                 (
-                    StartupOutcome::Ready {
-                        endpoint: String::new(),
+                    StartupOutcome::Degraded {
+                        class: ShimFailureClass::TransportFailure,
+                        message: "startup precondition task did not finish before session teardown"
+                            .to_owned(),
                     },
                     None,
                 )
@@ -407,11 +485,21 @@ pub async fn run(workspace_override: Option<&str>) -> Result<(), EngramError> {
     // precondition classification, since it is the more proximate cause.
     session_result?;
 
-    if let StartupOutcome::Degraded { class, message } = outcome {
-        return Err(EngramError::ShimStartup(ShimStartupError {
-            class,
-            message,
-        }));
+    let latest_outcome = outcome_at_session_end.unwrap_or(outcome);
+    match latest_outcome {
+        StartupOutcome::Ready { .. } => {}
+        StartupOutcome::WaitingForReadiness { message, .. } => {
+            return Err(EngramError::ShimStartup(ShimStartupError {
+                class: ShimFailureClass::ReadinessTimeout,
+                message,
+            }));
+        }
+        StartupOutcome::Degraded { class, message } => {
+            return Err(EngramError::ShimStartup(ShimStartupError {
+                class,
+                message,
+            }));
+        }
     }
 
     Ok(())
