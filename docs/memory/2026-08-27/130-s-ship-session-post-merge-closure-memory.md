@@ -276,7 +276,7 @@ session's finding):
    `-D clippy::pedantic` (`AGENTS.md:224`) — fixed as a simple, factual,
    one-line correction (same class as the earlier cargo-target-name and
    RCA-mislabel fixes; not a plan redesign).
-7. Review at `c6fed9dd` → 1 primary finding (the reconcile-summary sentence
+7. Review at `a12c4295` → 1 primary finding (the reconcile-summary sentence
    didn't name `130-S` itself among `archived_ids`) — fixed in `c6fed9dd`.
    Three more previously-missed items surfaced in the collapsed summary:
    (a) `138-F.md`'s `spike_ref` link to `137.001-R` misused a link type
