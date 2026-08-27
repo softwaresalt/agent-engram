@@ -136,25 +136,80 @@ session. Verified unchanged before and after all work:
 * No destructive cleanup was performed: no branch deletion, no worktree
   removal, per explicit operator instruction.
 
-## Remaining work / handoff
+## Session 2 — closure resolution (2026-08-27, continued)
 
-1. **Stage**: triage `137.006-T` (terminal-vs-transient `check_health` error
-   classification gap + missing single-flight concurrency contract test).
-   Either schedule it for implementation (which will naturally complete the
-   task and unblock `130-S` shipment closure) or formally re-scope/re-parent
-   it away from `137-F` if it should not gate this shipment's closure.
-2. **Ship (future session)**: once `137.006-T` is resolved one way or the
-   other, re-run `backlogit shipment ship 130-S --sha
-   2e1e01cf0405280ecf9a1e3c21402db3ad9af0f0 ...` to complete backlog closure,
-   then the closure-index resync.
-3. **Closure artifacts durability**: this memory file plus the two
-   `docs/closure/130-S-2026-08-27-*.md` files and the two
-   `.backlogit/reconcile/130-S-*.md` reports were authored in the isolated
-   worktree, which already has a clean working tree relative to its own
-   branch tip except for these new files. Per repository policy, durable
-   persistence of post-merge closure artifacts goes through a normal PR
-   (no direct push to `main`), opened from this same worktree/branch or a
-   fresh follow-up branch — **not yet opened as of this memory**; see the
-   session's structured result for current status. Merge of any such
-   closure PR requires separate explicit operator approval; the approval
-   already given covers only PR #364.
+Resumed in the same isolated worktree/branch (now `chore/130-s-post-merge-closure`,
+still the same physical worktree path). Operator approval this session
+covers only PR #364 (already merged in Session 1); PR #365 is **not**
+approved for merge in this session.
+
+* Re-read `130-S`, `137-F`, and the new Stage artifacts. Confirmed: `130-S`'s
+  exact persisted manifest is unchanged (`137-F`, `137.001-T`…`137.005-T`);
+  Stage re-parented `137.006-T` (not cloned) into independent feature `138-F`
+  / task `138.001-T`, with a reviewed plan/hardening/review gate
+  (`138.001-R`, approved with changes, 2 cycles); `137-F` now has zero
+  queued/non-terminal children; new shipment `131-S`
+  (`138-F, 138.002-T, 138.003-T, 138.001-T, 138.004-T, 138.005-T, 138.006-T,
+  138.007-T`) is `status: queued`, unclaimed — not executed this cycle.
+* Pre-mode reconcile: `backlogit doctor --check-over-archived-features
+  --check-shipped-event-completeness --format json` — zero findings against
+  `130-S`/`137-F`/`137.00N-T`/`138-F`/`138.00N-T`/`131-S`.
+* `backlogit move 137-F --status done` → succeeded (no non-terminal children
+  remain). `backlogit sync`.
+* `backlogit shipment ship 130-S --sha 2e1e01cf0405280ecf9a1e3c21402db3ad9af0f0
+  --message "Merge pull request #364 from
+  feat/137-late-readiness-proxy-recovery-verification: fix(shim): recover
+  cached readiness_timeout via late-readiness monitor and single-flight
+  probe" --author "Derek Williams
+  <42183845+softwaresalt@users.noreply.github.com>"` → **succeeded**, no
+  `--force-gates`. `archived_ids`: `137.001-R`, `137.001-T`…`137.005-T`,
+  `130-S`, `137-F`. `returned_ids`: none. `shipment_status: shipped`.
+* Post-mode reconcile: re-synced index; confirmed `130-S`
+  (`status: archived`, `archived_status: shipped`, commit recorded,
+  `commit_links` populated with message/author) and `137-F`
+  (`status: archived`, `archived_status: done`) both terminal with merge
+  evidence; `131-S` and `138-F`/all seven `138.00N-T` confirmed still
+  `queued`, unclaimed. Full detail in
+  `.backlogit/reconcile/130-S-post-20260827T112336-0700.md`.
+* Updated `docs/closure/130-S-2026-08-27-post-merge-closure.md` (verdict
+  `SHIPPED`, follow-up now points to `138-F`/`131-S`, added a note
+  addressing the Copilot PR #365 finding on `137.005-T`'s stash-conflict
+  precondition — the isolated-worktree commit path satisfied the
+  precondition's intent even though root's `.backlogit/stash.jsonl` conflict
+  remains genuinely unresolved and untouched) and
+  `docs/closure/130-S-2026-08-27-runtime-verification.md` (reworded the
+  verdict so it no longer claims terminal-path fail-closed behavior that was
+  never exercised by the suite — addressing Copilot's second PR #365
+  finding). Did not edit the archived `137.005-T` task itself (immutable
+  terminal history) or the prior session's halt/pre reconcile reports
+  (accurate point-in-time records).
+* Did not touch, claim, or execute `131-S` or any `138-*` artifact.
+* Root worktree (`C:\Source\GitHub\engram`) reconfirmed untouched: still
+  `UU .backlogit/stash.jsonl` and staged `M .gitignore`, HEAD still
+  `19ae3160b7040e16213eba9ef7611f6573d3f4cd`.
+
+## Remaining work / handoff (resolved in Session 2; retained for history)
+
+1. ~~**Stage**: triage `137.006-T`...~~ — **Done**: Stage re-scoped
+   `137.006-T` into independent feature `138-F` / task `138.001-T` with a
+   reviewed plan/hardening/review gate, queued under new shipment `131-S`.
+   `130-S` was not blocked on implementation; it was unblocked by the
+   re-scope.
+2. ~~**Ship (future session)**: once `137.006-T` is resolved...~~ — **Done**:
+   `backlogit shipment ship 130-S --sha 2e1e01cf... ...` re-run successfully
+   in Session 2 after `137-F` was moved to `done`; `130-S` is now
+   `shipped`/archived; closure-index resync completed
+   (`CLOSURE_INDEX_SYNC_OK` — see structured result).
+3. **Closure artifacts durability**: this memory file, the two
+   `docs/closure/130-S-2026-08-27-*.md` files (both updated in Session 2),
+   and the `.backlogit/reconcile/130-S-*.md` reports (a new post-mode report
+   added in Session 2) were authored/updated in the isolated worktree. PR
+   #365 (opened in Session 1 from this branch) carries these artifacts;
+   Session 2 pushed the updated HEAD and refreshed the PR. Merge of PR #365
+   requires **separate, new, explicit operator approval** — the approval
+   already given covers only PR #364, and is explicitly noted as
+   insufficient for PR #365 in this session's instructions.
+4. **New follow-up handoff to Stage/future Ship**: `131-S`
+   (`138-F, 138.002-T, 138.003-T, 138.001-T, 138.004-T, 138.005-T,
+   138.006-T, 138.007-T`) is `queued`, unclaimed. Not claimed or executed in
+   this cycle per explicit instruction.

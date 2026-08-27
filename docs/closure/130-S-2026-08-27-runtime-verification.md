@@ -90,7 +90,9 @@ errors (admission/CLI parity smoke check).
 
 ### Follow-up (why PASS WITH FOLLOW-UP, not plain PASS)
 
-Copilot's PR #364 review (routed to backlog as `137.006-T`, queued, not part
+Copilot's PR #364 review (originally routed to backlog as `137.006-T`;
+Stage has since re-parented it, not cloned, into the independently-owned
+feature `138-F` / task `138.001-T`, queued under shipment `131-S` — not part
 of this shipment's manifest and not implemented here) identifies a narrower
 gap: `shim::lifecycle::check_health` collapses every `fetch_health` error
 (including a genuinely terminal `IpcError::VersionMismatch`/protocol
@@ -108,9 +110,13 @@ test. Both are legitimate, correctly out-of-scope-for-137-F follow-up items.
 ### Verdict and handoff
 
 **PASS WITH FOLLOW-UP**. The merged late-readiness recovery behavior verified
-correctly: recoverable states recover, terminal states stay fail-closed, and
-teardown is deterministic on disconnect. The one identified residual gap
-(terminal-vs-transient `check_health` error classification for the narrow
-post-timeout protocol-mismatch case, plus the missing single-flight
-concurrency contract test) is tracked as `137.006-T`, queued, not fixed here.
-Feeding to `operational-closure` below.
+correctly for the paths this suite exercises: the transient cached
+`readiness_timeout` path recovers automatically once the daemon becomes
+ready, the pre-existing admission/endpoint/shutdown terminal paths remain
+fail-closed, and teardown is deterministic on client disconnect. This suite
+does **not** exercise, and therefore this verdict makes no claim about,
+fail-closed behavior for a daemon that becomes reachable but is permanently
+protocol-incompatible *after* the initial readiness deadline — that specific
+terminal `check_health` path is a known, tracked gap (see above), not a
+verified-passing one. Feeding to `operational-closure` below; the gap is now
+owned by `138-F` (queued shipment `131-S`), not `130-S`.
