@@ -703,4 +703,52 @@ mod tests {
             );
         }
     }
+
+    /// N1 — happy-path probe-count neutrality pin (138.011-T).
+    ///
+    /// When the session is already `Ready`, `forwarding_endpoint` returns the
+    /// endpoint immediately without invoking the probe function at all. This
+    /// pins the exact request-path probe count: **0** probes per `tools/call`
+    /// in the happy path (the same behavior as `main` at `2e1e01cf`).
+    ///
+    /// NEUTRALITY PIN: must be GREEN at authoring. If this fails, the phase-1
+    /// seam (138.013-T) introduced a behavior change.
+    #[tokio::test]
+    async fn n1_happy_path_zero_request_path_probes() {
+        let probe_count = Arc::new(AtomicUsize::new(0));
+        let pc = Arc::clone(&probe_count);
+        let probe: ProbeFn = Arc::new(move |_| {
+            let pc = Arc::clone(&pc);
+            Box::pin(async move {
+                pc.fetch_add(1, AtomicOrdering::SeqCst);
+                true
+            })
+        });
+
+        let (tx, rx) = watch::channel(None);
+        let tx = Arc::new(tx);
+        // Publish Ready — the happy path.
+        let _ = tx.send(Some(StartupOutcome::Ready {
+            endpoint: "test-happy-path-endpoint".to_owned(),
+        }));
+        let handler = ShimHandler::with_probe(
+            Arc::downgrade(&tx),
+            rx,
+            Duration::from_secs(30),
+            probe,
+        );
+
+        // Multiple forwarding_endpoint calls in the Ready state.
+        for _ in 0..10 {
+            let result = handler.forwarding_endpoint().await;
+            assert!(matches!(result, Ok(ref e) if e == "test-happy-path-endpoint"));
+        }
+
+        // N1 PIN: exactly 0 probes in the happy path.
+        assert_eq!(
+            probe_count.load(AtomicOrdering::SeqCst),
+            0,
+            "N1 NEUTRALITY PIN: ready-state forwarding_endpoint must perform exactly 0 probes"
+        );
+    }
 }

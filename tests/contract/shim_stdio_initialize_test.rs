@@ -1038,3 +1038,41 @@ async fn r5_truncated_response_is_transient() {
     let resp = send_tools_call(&mut stdin, &mut stdout, 10).await;
     assert_transient_recoverable(&resp, "R5");
 }
+
+// ── C4 Teardown Neutrality (138.011-T) ───────────────────────────────────────
+
+/// C4 teardown — after terminal latch, client disconnect terminates promptly
+/// (138.011-T).
+///
+/// Pre-existing half: `shim_aborts_unresolved_startup_after_client_disconnects`
+/// remains GREEN and byte-unmodified (verified by running it, not by copying).
+///
+/// NEW-RED half: after a terminal latch, disconnecting the MCP client (closing
+/// stdin) must still cause the shim to exit within a bounded time. The monitor's
+/// `outcome_tx.closed()` remains the sole non-probe exit path. Currently RED
+/// because terminal latching does not exist — the shim times out on daemon
+/// readiness and the exit may take the full timeout budget.
+#[tokio::test]
+async fn c4_terminal_latch_client_disconnect_terminates_promptly() {
+    let workspace = workspace_with_valid_git_root();
+    let mut child = spawn_shim_with_failing_daemon(workspace.path());
+    let (mut stdin, mut stdout) = initialize_shim_mcp(&mut child).await;
+
+    // Get the first degraded tools/call so we know the session is active.
+    let resp = send_tools_call(&mut stdin, &mut stdout, 10).await;
+    // Assert terminal (protocol_incompatible) — RED because current code
+    // returns readiness_timeout.
+    assert_terminal_protocol_incompatible(&resp, "C4 pre-disconnect");
+
+    // Close stdin to simulate client disconnect.
+    stdin.shutdown().await.expect("close stdin");
+    drop(stdin);
+    drop(stdout);
+
+    // The shim must exit promptly (within 2 seconds) after terminal + disconnect.
+    let exit_result = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
+    assert!(
+        exit_result.is_ok(),
+        "C4: after terminal latch + client disconnect, shim must exit within 2s"
+    );
+}
