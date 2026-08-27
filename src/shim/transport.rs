@@ -24,20 +24,21 @@ use tracing::instrument;
 use crate::daemon::protocol::IpcRequest;
 use crate::errors::{EngramError, ShimFailureClass, ShimStartupError};
 use crate::shim::StartupOutcome;
+use crate::shim::lifecycle::{HealthOutcome, TerminalKind};
 
 const RECOVERY_PROBE_COOLDOWN: Duration = Duration::from_millis(250);
 
 /// Type alias for the probe function used by `ShimHandler`.
 ///
-/// Defaults to [`crate::shim::lifecycle::check_health`]. Tests can inject a
+/// Defaults to [`crate::shim::lifecycle::probe_health`]. Tests can inject a
 /// custom implementation via [`ShimHandler::with_probe`] to script outcomes
 /// and observe probe counts without touching the real IPC path.
-type ProbeFn = Arc<dyn Fn(String) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> + Send + Sync>;
+type ProbeFn = Arc<dyn Fn(String) -> std::pin::Pin<Box<dyn std::future::Future<Output = HealthOutcome> + Send>> + Send + Sync>;
 
 /// Build the default production probe function.
 fn default_probe() -> ProbeFn {
     Arc::new(|endpoint: String| {
-        Box::pin(async move { crate::shim::lifecycle::check_health(&endpoint).await })
+        Box::pin(async move { crate::shim::lifecycle::probe_health(&endpoint).await })
     })
 }
 
@@ -178,21 +179,69 @@ impl ShimHandler {
                             return Err(EndpointResolutionError::Recoverable { message });
                         }
 
-                        if !(self.probe)(endpoint.clone()).await {
-                            recovery.last_failure = Some(Instant::now());
-                            return Err(EndpointResolutionError::Recoverable { message });
+                        match (self.probe)(endpoint.clone()).await {
+                            HealthOutcome::Ready => {
+                                recovery.last_failure = None;
+                                if let Some(startup_tx) = self.startup_tx.upgrade() {
+                                    startup_tx.send_if_modified(|current| {
+                                        if matches!(current, Some(StartupOutcome::Degraded { .. })) {
+                                            return false; // Degraded is absorbing
+                                        }
+                                        *current = Some(StartupOutcome::Ready {
+                                            endpoint: endpoint.clone(),
+                                        });
+                                        true
+                                    });
+                                }
+                                Ok(endpoint)
+                            }
+                            HealthOutcome::Transient => {
+                                recovery.last_failure = Some(Instant::now());
+                                Err(EndpointResolutionError::Recoverable { message })
+                            }
+                            HealthOutcome::Terminal(kind) => {
+                                let terminal_message = terminal_kind_message(&kind);
+                                if let Some(startup_tx) = self.startup_tx.upgrade() {
+                                    startup_tx.send_if_modified(|current| {
+                                        if matches!(current, Some(StartupOutcome::Degraded { .. })) {
+                                            return false; // Already terminal
+                                        }
+                                        *current = Some(StartupOutcome::Degraded {
+                                            class: ShimFailureClass::ProtocolIncompatible,
+                                            message: terminal_message.clone(),
+                                        });
+                                        true
+                                    });
+                                }
+                                Err(EndpointResolutionError::Permanent {
+                                    class: ShimFailureClass::ProtocolIncompatible,
+                                    message: terminal_message,
+                                })
+                            }
                         }
-
-                        recovery.last_failure = None;
-                        if let Some(startup_tx) = self.startup_tx.upgrade() {
-                            let _ = startup_tx.send(Some(StartupOutcome::Ready {
-                                endpoint: endpoint.clone(),
-                            }));
-                        }
-                        Ok(endpoint)
                     }
                 }
             }
+        }
+    }
+}
+
+/// Fixed, client-safe message for a terminal `HealthOutcome` kind.
+///
+/// Contains NO daemon-supplied free-form text, no paths, no env values.
+fn terminal_kind_message(kind: &TerminalKind) -> String {
+    match kind {
+        TerminalKind::VersionMismatch { expected, actual } => {
+            format!("daemon protocol version {actual} is incompatible (expected {expected})")
+        }
+        TerminalKind::MethodNotFound => {
+            "daemon does not implement the _health method".to_owned()
+        }
+        TerminalKind::MissingResult => {
+            "daemon _health response omitted the result payload".to_owned()
+        }
+        TerminalKind::UndecodablePayload => {
+            "daemon _health result could not be decoded".to_owned()
         }
     }
 }
@@ -419,6 +468,7 @@ pub async fn run_shim(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shim::lifecycle::{HealthOutcome, TerminalKind};
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     use std::time::Duration;
 
@@ -490,7 +540,7 @@ mod tests {
                     pc.fetch_add(1, AtomicOrdering::SeqCst);
                     pe.notify_one();
                     rel.notified().await;
-                    false // transient failure
+                    HealthOutcome::Transient
                 })
             });
 
@@ -554,7 +604,7 @@ mod tests {
                 let pc = Arc::clone(&pc);
                 Box::pin(async move {
                     pc.fetch_add(1, AtomicOrdering::SeqCst);
-                    false // transient
+                    HealthOutcome::Transient
                 })
             });
 
@@ -605,8 +655,7 @@ mod tests {
             let pc = Arc::clone(&probe_count);
             let pe = Arc::clone(&probe_entered);
             let rel = Arc::clone(&release);
-            // Probe returns false: simulates a terminal outcome once
-            // HealthOutcome-based classification exists (138.001-T).
+            // Probe returns Terminal: simulates a terminal outcome.
             let probe: ProbeFn = Arc::new(move |_| {
                 let pc = Arc::clone(&pc);
                 let pe = Arc::clone(&pe);
@@ -615,7 +664,7 @@ mod tests {
                     pc.fetch_add(1, AtomicOrdering::SeqCst);
                     pe.notify_one();
                     rel.notified().await;
-                    false // will become HealthOutcome::Terminal after 138.001-T
+                    HealthOutcome::Terminal(TerminalKind::MethodNotFound)
                 })
             });
 
@@ -683,7 +732,7 @@ mod tests {
                 let pc = Arc::clone(&pc);
                 Box::pin(async move {
                     pc.fetch_add(1, AtomicOrdering::SeqCst);
-                    false // terminal
+                    HealthOutcome::Terminal(TerminalKind::MethodNotFound)
                 })
             });
 
@@ -721,7 +770,7 @@ mod tests {
             let pc = Arc::clone(&pc);
             Box::pin(async move {
                 pc.fetch_add(1, AtomicOrdering::SeqCst);
-                true
+                HealthOutcome::Ready
             })
         });
 
