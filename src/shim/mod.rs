@@ -185,6 +185,22 @@ async fn compute_startup_outcome(
     };
 
     if let Err(err) = lifecycle::ensure_daemon_running(&workspace_path).await {
+        // Terminal protocol incompatibility detected at startup.
+        if matches!(
+            &err,
+            EngramError::Ipc(crate::errors::IpcError::VersionMismatch { .. })
+        ) {
+            let outcome = publish(StartupOutcome::degraded(
+                ShimFailureClass::ProtocolIncompatible,
+                &err,
+            ));
+            let handle = spawn_record_startup_failure(
+                Some(workspace_path.display().to_string()),
+                ShimFailureClass::ProtocolIncompatible,
+            );
+            return (outcome, handle);
+        }
+
         if !readiness_failure_is_recoverable(&err) {
             let outcome = publish(StartupOutcome::degraded(
                 ShimFailureClass::ReadinessTimeout,
@@ -215,7 +231,7 @@ async fn compute_startup_outcome(
             endpoint: endpoint.clone(),
             message: err.to_string(),
         });
-        spawn_late_readiness_monitor(outcome_tx.clone(), endpoint);
+        spawn_late_readiness_monitor(outcome_tx.clone(), endpoint, workspace_path.display().to_string());
         let handle = spawn_record_startup_failure(
             Some(workspace_path.display().to_string()),
             ShimFailureClass::ReadinessTimeout,
@@ -241,11 +257,11 @@ async fn compute_startup_outcome(
 
 /// Type alias for the monitor's health-probe function.
 ///
-/// Defaults to [`lifecycle::check_health`]. Tests can inject a custom
+/// Defaults to [`lifecycle::probe_health`]. Tests can inject a custom
 /// implementation via the `probe` parameter to script outcomes and observe
 /// monitor probe cadence deterministically.
 type MonitorProbeFn = Arc<
-    dyn Fn(String) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>>
+    dyn Fn(String) -> std::pin::Pin<Box<dyn std::future::Future<Output = lifecycle::HealthOutcome> + Send>>
         + Send
         + Sync,
 >;
@@ -253,8 +269,26 @@ type MonitorProbeFn = Arc<
 /// Build the default production monitor probe function.
 fn default_monitor_probe() -> MonitorProbeFn {
     Arc::new(|endpoint: String| {
-        Box::pin(async move { lifecycle::check_health(&endpoint).await })
+        Box::pin(async move { lifecycle::probe_health(&endpoint).await })
     })
+}
+
+/// Fixed, client-safe message for a terminal `HealthOutcome` in the monitor path.
+fn terminal_kind_monitor_message(kind: &lifecycle::TerminalKind) -> String {
+    match kind {
+        lifecycle::TerminalKind::VersionMismatch { expected, actual } => {
+            format!("daemon protocol version {actual} is incompatible (expected {expected})")
+        }
+        lifecycle::TerminalKind::MethodNotFound => {
+            "daemon does not implement the _health method".to_owned()
+        }
+        lifecycle::TerminalKind::MissingResult => {
+            "daemon _health response omitted the result payload".to_owned()
+        }
+        lifecycle::TerminalKind::UndecodablePayload => {
+            "daemon _health result could not be decoded".to_owned()
+        }
+    }
 }
 
 /// Continue probing a daemon after the initial readiness attribution deadline.
@@ -265,12 +299,14 @@ fn default_monitor_probe() -> MonitorProbeFn {
 fn spawn_late_readiness_monitor(
     outcome_tx: Arc<watch::Sender<Option<StartupOutcome>>>,
     endpoint: String,
+    workspace_hint: String,
 ) {
     spawn_late_readiness_monitor_with_probe(
         outcome_tx,
         endpoint,
         default_monitor_probe(),
         Arc::new(AtomicUsize::new(0)),
+        workspace_hint,
     );
 }
 
@@ -283,26 +319,77 @@ fn spawn_late_readiness_monitor_with_probe(
     endpoint: String,
     probe: MonitorProbeFn,
     probe_count: Arc<AtomicUsize>,
+    workspace_hint: String,
 ) {
     tokio::spawn(async move {
         let mut delay_ms = RECOVERY_INITIAL_BACKOFF_MS;
         loop {
+            // Optimisation: exit early if another path already latched Degraded.
+            if outcome_tx
+                .borrow()
+                .as_ref()
+                .is_some_and(|o| matches!(o, StartupOutcome::Degraded { .. }))
+            {
+                return;
+            }
+
             tokio::select! {
                 () = outcome_tx.closed() => return,
                 () = tokio::time::sleep(Duration::from_millis(delay_ms)) => {}
             }
 
             probe_count.fetch_add(1, Ordering::Relaxed);
-            if (probe)(endpoint.clone()).await {
-                tracing::info!(
-                    endpoint = %endpoint,
-                    "daemon became ready after the shim startup deadline"
-                );
-                let _ = outcome_tx.send(Some(StartupOutcome::Ready { endpoint }));
-                return;
+            match (probe)(endpoint.clone()).await {
+                lifecycle::HealthOutcome::Ready => {
+                    tracing::info!(
+                        endpoint = %endpoint,
+                        "daemon became ready after the shim startup deadline"
+                    );
+                    // Monotonic: refuse to overwrite Degraded.
+                    outcome_tx.send_if_modified(|current| {
+                        if matches!(current, Some(StartupOutcome::Degraded { .. })) {
+                            return false;
+                        }
+                        *current = Some(StartupOutcome::Ready {
+                            endpoint: endpoint.clone(),
+                        });
+                        true
+                    });
+                    return;
+                }
+                lifecycle::HealthOutcome::Transient => {
+                    delay_ms = (delay_ms * 2).min(RECOVERY_MAX_BACKOFF_MS);
+                }
+                lifecycle::HealthOutcome::Terminal(kind) => {
+                    let message = terminal_kind_monitor_message(&kind);
+                    tracing::warn!(
+                        endpoint = %endpoint,
+                        terminal_kind = ?kind,
+                        "daemon protocol incompatible — monitor stopping"
+                    );
+                    // Monotonic: Degraded is absorbing.
+                    outcome_tx.send_if_modified(|current| {
+                        if matches!(current, Some(StartupOutcome::Degraded { .. })) {
+                            return false;
+                        }
+                        *current = Some(StartupOutcome::Degraded {
+                            class: ShimFailureClass::ProtocolIncompatible,
+                            message: message.clone(),
+                        });
+                        true
+                    });
+                    // Late-terminal durable record (best-effort, sole writer).
+                    let wh = workspace_hint.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        write_startup_failure_record(
+                            &wh,
+                            ShimFailureClass::ProtocolIncompatible,
+                        );
+                    })
+                    .await;
+                    return;
+                }
             }
-
-            delay_ms = (delay_ms * 2).min(RECOVERY_MAX_BACKOFF_MS);
         }
     });
 }
@@ -482,9 +569,10 @@ pub async fn run(workspace_override: Option<&str>) -> Result<(), EngramError> {
     // process teardown for however long `ensure_daemon_running`'s internal
     // readiness budget (up to 30s+) takes if the client vanished before any
     // `tools/call` ever needed the outcome. Bound the join with a short
-    // grace period; if the task is still pending, exit cleanly rather than
-    // linger (the background task is dropped/cancelled when the runtime
-    // shuts down at process exit).
+    // grace period; if the task is still pending, classify as TransportFailure
+    // (exit code 13) since the session ended before preconditions resolved
+    // (the background task is dropped/cancelled when the runtime shuts down
+    // at process exit).
     let (outcome, record_task) =
         match tokio::time::timeout(Duration::from_secs(2), &mut startup_task).await {
             Ok(Ok((outcome, record_task))) => (outcome, record_task),
@@ -633,7 +721,7 @@ mod tests {
                 let pc = Arc::clone(&pc);
                 Box::pin(async move {
                     pc.fetch_add(1, Ordering::SeqCst);
-                    false // simulates terminal (after 138.001-T this would be HealthOutcome::Terminal)
+                    lifecycle::HealthOutcome::Terminal(lifecycle::TerminalKind::MethodNotFound)
                 })
             });
 
@@ -646,6 +734,7 @@ mod tests {
                 "test-endpoint".to_owned(),
                 probe,
                 count,
+            "test-workspace".to_owned(),
             );
 
             // Advance time enough for the monitor to probe and (should) stop.
@@ -696,7 +785,7 @@ mod tests {
                 let pc = Arc::clone(&pc);
                 Box::pin(async move {
                     pc.fetch_add(1, Ordering::SeqCst);
-                    false // transient: version-compatible but not ready
+                    lifecycle::HealthOutcome::Transient
                 })
             });
 
@@ -709,6 +798,7 @@ mod tests {
                 "test-endpoint".to_owned(),
                 probe,
                 count,
+            "test-workspace".to_owned(),
             );
 
             // Advance 500ms in small steps.
@@ -763,13 +853,17 @@ mod tests {
             let call_count = Arc::new(AtomicUsize::new(0));
             let cc = Arc::clone(&call_count);
 
-            // Probe: returns false on first call, true on second+ (simulating
+            // Probe: returns Transient on first call, Ready on second+ (simulating
             // daemon becoming ready while request path has already latched Degraded).
             let probe: MonitorProbeFn = Arc::new(move |_| {
                 let cc = Arc::clone(&cc);
                 Box::pin(async move {
                     let n = cc.fetch_add(1, Ordering::SeqCst);
-                    n >= 1 // first probe: false (transient), subsequent: true (ready)
+                    if n >= 1 {
+                        lifecycle::HealthOutcome::Ready
+                    } else {
+                        lifecycle::HealthOutcome::Transient
+                    }
                 })
             });
 
@@ -782,6 +876,7 @@ mod tests {
                 "test-endpoint".to_owned(),
                 probe,
                 count,
+            "test-workspace".to_owned(),
             );
 
             // Let the first probe fire (returns false).
