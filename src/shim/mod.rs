@@ -612,4 +612,203 @@ mod tests {
             "the returned handle must correspond to <workspace>/.engram/diagnostics"
         );
     }
+
+    // ── 138-F Monitor Behavior (T6, R2b, C5) ─────────────────────────────
+
+    /// T6 — monitor stops on terminal (138.012-T).
+    ///
+    /// With no tools/call, a probe that returns false (simulating a terminal
+    /// protocol mismatch) should cause the monitor to publish `Degraded` and
+    /// exit. The probe count reaches a fixed value and stays constant for
+    /// >= 2s (> `RECOVERY_MAX_BACKOFF_MS`).
+    ///
+    /// NEW-RED: the monitor currently never publishes Degraded — it retries
+    /// indefinitely until `outcome_tx.closed()` or probe returns true.
+    #[tokio::test(start_paused = true)]
+    async fn t6_monitor_stops_on_terminal() {
+        for _ in 0..5 {
+            let probe_count = Arc::new(AtomicUsize::new(0));
+            let pc = Arc::clone(&probe_count);
+            let probe: MonitorProbeFn = Arc::new(move |_| {
+                let pc = Arc::clone(&pc);
+                Box::pin(async move {
+                    pc.fetch_add(1, Ordering::SeqCst);
+                    false // simulates terminal (after 138.001-T this would be HealthOutcome::Terminal)
+                })
+            });
+
+            let (tx, mut rx) = tokio::sync::watch::channel(None::<StartupOutcome>);
+            let tx = Arc::new(tx);
+            let count = Arc::clone(&probe_count);
+
+            spawn_late_readiness_monitor_with_probe(
+                Arc::clone(&tx),
+                "test-endpoint".to_owned(),
+                probe,
+                count,
+            );
+
+            // Advance time enough for the monitor to probe and (should) stop.
+            for _ in 0..300 {
+                tokio::time::advance(Duration::from_millis(10)).await;
+                tokio::task::yield_now().await;
+            }
+
+            // Assert the monitor published Degraded.
+            let current = rx.borrow_and_update().clone();
+            // RED: currently the monitor never publishes Degraded
+            assert!(
+                matches!(
+                    current,
+                    Some(StartupOutcome::Degraded { .. })
+                ),
+                "T6: monitor must publish Degraded on terminal; got {current:?}"
+            );
+
+            // Assert probe count is stable (monitor stopped).
+            let count_before = probe_count.load(Ordering::SeqCst);
+            for _ in 0..200 {
+                tokio::time::advance(Duration::from_millis(10)).await;
+                tokio::task::yield_now().await;
+            }
+            let count_after = probe_count.load(Ordering::SeqCst);
+            assert_eq!(
+                count_before, count_after,
+                "T6: probe count must be stable after terminal (monitor stopped)"
+            );
+        }
+    }
+
+    /// R2b — monitor keeps probing on transient (138.012-T).
+    ///
+    /// A bound counting probe returns false (version-compatible non-ready).
+    /// The monitor probe counter strictly increases across a 1s window and
+    /// NO `Degraded` is ever published (the session stays recoverable).
+    ///
+    /// GREEN PIN: this is the current monitor behavior (retries on false).
+    /// Guards against over-terminalization in the monitor path.
+    #[tokio::test(start_paused = true)]
+    async fn r2b_monitor_keeps_probing_on_transient() {
+        for _ in 0..5 {
+            let probe_count = Arc::new(AtomicUsize::new(0));
+            let pc = Arc::clone(&probe_count);
+            let probe: MonitorProbeFn = Arc::new(move |_| {
+                let pc = Arc::clone(&pc);
+                Box::pin(async move {
+                    pc.fetch_add(1, Ordering::SeqCst);
+                    false // transient: version-compatible but not ready
+                })
+            });
+
+            let (tx, mut rx) = tokio::sync::watch::channel(None::<StartupOutcome>);
+            let tx = Arc::new(tx);
+            let count = Arc::clone(&probe_count);
+
+            spawn_late_readiness_monitor_with_probe(
+                Arc::clone(&tx),
+                "test-endpoint".to_owned(),
+                probe,
+                count,
+            );
+
+            // Advance 500ms in small steps.
+            for _ in 0..50 {
+                tokio::time::advance(Duration::from_millis(10)).await;
+                tokio::task::yield_now().await;
+            }
+            let mid_count = probe_count.load(Ordering::SeqCst);
+            assert!(mid_count > 0, "R2b: monitor must probe at least once in 500ms");
+
+            // Advance another 500ms.
+            for _ in 0..50 {
+                tokio::time::advance(Duration::from_millis(10)).await;
+                tokio::task::yield_now().await;
+            }
+            let final_count = probe_count.load(Ordering::SeqCst);
+            assert!(
+                final_count > mid_count,
+                "R2b: probe count must strictly increase over 1s; mid={mid_count}, final={final_count}"
+            );
+
+            // No Degraded published.
+            let current = rx.borrow_and_update().clone();
+            assert!(
+                !matches!(current, Some(StartupOutcome::Degraded { .. })),
+                "R2b: monitor must NOT publish Degraded on transient failures"
+            );
+
+            // Clean up: drop tx to allow monitor to exit
+            drop(tx);
+            tokio::task::yield_now().await;
+        }
+    }
+
+    /// C5 — request-terminal vs monitor race guard (138.012-T).
+    ///
+    /// The request path latches `Degraded` while the monitor is mid-backoff.
+    /// The monitor's next probe returns `true` (Ready). The monitor MUST NOT
+    /// publish `Ready` — the final published state must remain `Degraded`.
+    ///
+    /// This is the BLOCKING guard for the revision-1 fail-open race: without
+    /// monotonic latch (`send_if_modified`), the monitor unconditionally
+    /// overwrites the watch channel value including a Degraded published by
+    /// the request path.
+    ///
+    /// NEW-RED: the current monitor calls `outcome_tx.send(Some(Ready {..}))`
+    /// unconditionally, overwriting any Degraded already set.
+    #[tokio::test(start_paused = true)]
+    async fn c5_request_terminal_vs_monitor_race() {
+        for _ in 0..5 {
+            let probe_count = Arc::new(AtomicUsize::new(0));
+            let call_count = Arc::new(AtomicUsize::new(0));
+            let cc = Arc::clone(&call_count);
+
+            // Probe: returns false on first call, true on second+ (simulating
+            // daemon becoming ready while request path has already latched Degraded).
+            let probe: MonitorProbeFn = Arc::new(move |_| {
+                let cc = Arc::clone(&cc);
+                Box::pin(async move {
+                    let n = cc.fetch_add(1, Ordering::SeqCst);
+                    n >= 1 // first probe: false (transient), subsequent: true (ready)
+                })
+            });
+
+            let (tx, mut rx) = tokio::sync::watch::channel(None::<StartupOutcome>);
+            let tx = Arc::new(tx);
+            let count = Arc::clone(&probe_count);
+
+            spawn_late_readiness_monitor_with_probe(
+                Arc::clone(&tx),
+                "test-endpoint".to_owned(),
+                probe,
+                count,
+            );
+
+            // Let the first probe fire (returns false).
+            for _ in 0..10 {
+                tokio::time::advance(Duration::from_millis(10)).await;
+                tokio::task::yield_now().await;
+            }
+
+            // Simulate request path latching Degraded (external write to channel).
+            let _ = tx.send(Some(StartupOutcome::Degraded {
+                class: ShimFailureClass::ReadinessTimeout,
+                message: "terminal latch by request path (placeholder for ProtocolIncompatible)".to_owned(),
+            }));
+
+            // Let the monitor's next backoff fire — probe returns true.
+            for _ in 0..30 {
+                tokio::time::advance(Duration::from_millis(10)).await;
+                tokio::task::yield_now().await;
+            }
+
+            // Final state: must still be Degraded, not Ready.
+            let current = rx.borrow_and_update().clone();
+            // RED: monitor currently overwrites Degraded with Ready
+            assert!(
+                matches!(current, Some(StartupOutcome::Degraded { .. })),
+                "C5: final state must be Degraded (not overwritten by monitor Ready); got {current:?}"
+            );
+        }
+    }
 }
