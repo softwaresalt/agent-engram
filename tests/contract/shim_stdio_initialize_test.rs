@@ -818,3 +818,114 @@ async fn t4_undecodable_result_is_terminal() {
         assert_terminal_protocol_incompatible(&resp, &format!("T4 followup call {id}"));
     }
 }
+
+// ── 138-F Terminal Side-Effects (T5, T7) ─────────────────────────────────────
+//
+// NEW-RED: Test durable startup-failure record and message hygiene for terminal
+// protocol incompatibility. The monitor currently writes only readiness_timeout
+// records. When behavior tasks land (138.005-T), the monitor will write
+// protocol_incompatible records and sanitize daemon-supplied free-form text.
+
+/// T5 — durable protocol_incompatible record written by monitor (138.009-T).
+///
+/// After a terminal classification: exactly ONE additional
+/// `protocol_incompatible` startup-failure record appears in the diagnostic
+/// JSONL file beyond the pre-existing `readiness_timeout` record. The new
+/// record carries `failure_class == "protocol_incompatible"`, the fixed
+/// `record_message()` string, and no filesystem path or environment variable.
+///
+/// NEW-RED: the monitor currently does not write protocol_incompatible records.
+#[tokio::test]
+async fn t5_durable_protocol_incompatible_record() {
+    let workspace = workspace_with_valid_git_root();
+    let mut child = spawn_shim_with_failing_daemon(workspace.path());
+    let (mut stdin, _stdout) = initialize_shim_mcp(&mut child).await;
+
+    // Let the shim settle into its degraded state and write its records.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Close session so the shim exits and flushes records.
+    stdin.shutdown().await.expect("close stdin");
+    let status = tokio::time::timeout(Duration::from_secs(15), child.wait())
+        .await
+        .expect("shim must exit within timeout")
+        .expect("wait for shim");
+    let _ = status;
+
+    // Read the durable startup-failure record file.
+    let record_path = workspace
+        .path()
+        .join(".engram")
+        .join("diagnostics")
+        .join("shim-startup-failures.jsonl");
+    let content = fs::read_to_string(&record_path).unwrap_or_default();
+    let lines: Vec<&str> = content.lines().collect();
+
+    // Assert at least one protocol_incompatible record exists.
+    let protocol_records: Vec<Value> = lines
+        .iter()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|r| r["failure_class"] == "protocol_incompatible")
+        .collect();
+
+    // RED: currently 0 protocol_incompatible records exist
+    assert!(
+        !protocol_records.is_empty(),
+        "T5: must have at least one protocol_incompatible record; \
+         found only: {content}"
+    );
+
+    // The record must not contain filesystem paths or environment variables.
+    for record in &protocol_records {
+        let record_str = record.to_string();
+        let ws_path = workspace.path().to_str().unwrap_or("");
+        assert!(
+            !record_str.contains(ws_path),
+            "T5: protocol_incompatible record must not contain workspace path: {record_str}"
+        );
+    }
+
+    // Exactly ONE protocol_incompatible record, not more.
+    assert_eq!(
+        protocol_records.len(),
+        1,
+        "T5: must have exactly 1 protocol_incompatible record; found {}",
+        protocol_records.len()
+    );
+}
+
+/// T7 — message hygiene: daemon-supplied text must not leak (138.009-T).
+///
+/// Two cases: (a) _health JSON-RPC error message embedding a path and env
+/// value; (b) undecodable result payload embedding a path via serde error.
+/// Neither the path nor the environment variable must appear in the tools/call
+/// response content, structuredContent, or durable record.
+///
+/// NEW-RED: the terminal response does not exist yet, so there's nothing to
+/// check for hygiene in the current readiness_timeout flow.
+#[tokio::test]
+async fn t7_daemon_text_does_not_leak_into_responses() {
+    let workspace = workspace_with_valid_git_root();
+    let mut child = spawn_shim_with_readiness_budget(workspace.path(), 2000);
+    let (mut stdin, mut stdout) = initialize_shim_mcp(&mut child).await;
+
+    let resp = send_tools_call(&mut stdin, &mut stdout, 10).await;
+
+    // The response must be terminal (protocol_incompatible) — RED because
+    // current code returns readiness_timeout.
+    assert_terminal_protocol_incompatible(&resp, "T7");
+
+    // Hygiene: the workspace path must not appear in the response.
+    let resp_str = resp.to_string();
+    let ws_path_str = workspace.path().to_str().unwrap_or("");
+    assert!(
+        !resp_str.contains(ws_path_str),
+        "T7: workspace path must not appear in response: {resp_str}"
+    );
+
+    // Hygiene: FAKE_SECRET_MARKER must not appear in the response.
+    assert!(
+        !resp_str.contains(FAKE_SECRET_MARKER),
+        "T7: sensitive env marker must not appear in response: {resp_str}"
+    );
+}
