@@ -2,9 +2,13 @@
 title: Plan review — terminal vs transient health classification in the shim late-readiness recovery path
 date: 2026-08-27
 type: plan-review
-status: approved-with-changes
+status: superseded
+superseded_by: docs/reviews/2026-08-27-138-terminal-vs-transient-health-classification-plan-review-r2.md
+superseded_by_artifact: 138.002-R
+superseded_reason: Verdict predates the 12+ plan-feasibility findings raised by Copilot on PR #365 against plan revision 1
 reviewer: stage (adversarial gate)
 plan: docs/exec-plans/2026-08-27-138-terminal-vs-transient-health-classification-plan.md
+plan_revision: 1
 hardening: docs/exec-plans/2026-08-27-138-terminal-vs-transient-health-classification-hardening.md
 source: Copilot review on PR #364 (merge commit 2e1e01cf0405280ecf9a1e3c21402db3ad9af0f0)
 feature: 138-F
@@ -13,6 +17,25 @@ origin_shipment: 130-S
 review_artifact: 138.001-R
 cycles: 2
 ---
+
+> [!CAUTION]
+> **SUPERSEDED — do not cite this review as an active gate.**
+> This verdict applies to **plan revision 1** and predates the 12+ feasibility
+> and correctness findings raised by Copilot on PR #365 (harness/seam compile
+> ordering, concurrency-barrier deadlock, clock-seam gap, compatibility-veto
+> consumer, missing terminal-record write path, over-broad JSON-RPC error
+> classification, task granularity, IPC framing, `expected`/`actual` validity,
+> review-gate classification, message hygiene, and a fail-open
+> monitor-overwrites-`Degraded` race).
+>
+> The active gate is
+> `docs/reviews/2026-08-27-138-terminal-vs-transient-health-classification-plan-review-r2.md`
+> (`138.002-R`), against **plan revision 2**.
+>
+> Retained unmodified for provenance and for the revision-2 review's analysis of
+> *why this gate passed a non-executable plan* — it probed design intent but not
+> mechanical executability.
+
 
 ## Verdict
 
