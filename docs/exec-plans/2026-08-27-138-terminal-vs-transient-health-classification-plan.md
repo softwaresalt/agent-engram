@@ -23,8 +23,10 @@ hardening: docs/exec-plans/2026-08-27-138-terminal-vs-transient-health-classific
 > [!NOTE]
 > **No RCA is restated here.** The root-cause analysis for the late-readiness
 > sticky-proxy defect lives in
-> `docs/exec-plans/2026-08-26-137-late-readiness-proxy-recovery-verification-plan.md`
-> and its merge/runtime evidence in
+> `docs/decisions/2026-08-26-large-multi-repo-workspace-scale-spike.md`. The
+> prior verification plan for that shipment is
+> `docs/exec-plans/2026-08-26-137-late-readiness-proxy-recovery-verification-plan.md`,
+> and its merge/runtime evidence is in
 > `docs/closure/130-S-2026-08-27-post-merge-closure.md` and
 > `docs/closure/130-S-2026-08-27-runtime-verification.md`. This plan addresses
 > only the **residual review finding** left explicitly out of scope by that

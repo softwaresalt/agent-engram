@@ -188,6 +188,52 @@ approved for merge in this session.
   `UU .backlogit/stash.jsonl` and staged `M .gitignore`, HEAD still
   `19ae3160b7040e16213eba9ef7611f6573d3f4cd`.
 
+### PR #365 review-fix cycles (Copilot, post-push)
+
+Three review cycles against PR #365, each triggered by re-pushing this
+branch and re-requesting Copilot review via the GraphQL
+`requestReviews(botIds: ["BOT_kgDOCnlnWA"])` mutation (the REST
+`requested_reviewers` endpoint and `gh pr edit --add-reviewer` both no-op
+for this bot login in this environment, consistent with the pre-merge
+session's finding):
+
+1. Review at `86bca897` (from Session 1) → 2 findings, both Ship-owned
+   (the `137.005-T` stash-precondition wording and an overstated
+   fail-closed claim in the runtime-verification verdict). Fixed in
+   `fc9a6ec3`.
+2. Review at `fc9a6ec3` → 6 findings: 2 more Ship-owned overclaim/typo
+   issues in the closure docs, 1 in the Stage `138-F` exec-plan (nonexistent
+   `cargo test` target names), and 3 duplicate/typo items. Fixed in
+   `be7158ab`.
+3. Review at `be7158ab` → 12 unresolved threads. Ship fixed the 4 that are
+   Ship-owned closure-artifact content: a residual "terminal states stay
+   terminal" overclaim, a missing monitoring-plan table (added with SLI/
+   source/baseline/threshold/owner), the mandatory P-007 archive
+   deleted-file guard missing from the new post-mode reconcile report, and
+   an unverifiable per-process correlation claim in the new monitoring SLI
+   (marked as a population-level heuristic instead, since the diagnostics
+   record schema has no PID/session key). Ship also fixed one simple,
+   factual, non-architectural mislabeling in the Stage-owned `138-F` plan
+   and queue artifacts (the RCA reference pointed at the prior verification
+   plan instead of the actual decision-doc RCA — same class of trivial
+   correction as the earlier cargo-target-name fix).
+   **Explicitly deferred to Stage, not fixed by Ship**: 7 remaining findings
+   are deep technical/architectural critiques of the `138-F` implementation
+   plan itself (TDD-harness compile-ability given a not-yet-built `with_probe`
+   seam, a barrier-placement deadlock in the concurrency test design, a
+   task-granularity/width-isolation split, an unverifiable compatibility-veto
+   consumer, a missing terminal-record write path for T5, an
+   over-broad JSON-RPC-error terminal classification, and a `std::time::Instant`
+   vs. `tokio::time` clock-seam gap). `138-F` is Stage-owned, not-yet-claimed,
+   not-yet-executed work with its own already-passed review gate
+   (`138.001-R`, approved with changes, 2 cycles); redesigning its technical
+   plan is Stage's job and explicitly out of this closure cycle's mandate
+   (no source/test/config changes; do not claim/execute `138-F`/`131-S`).
+   Replied on each of these 7 threads pointing to this disposition and to
+   Stage as the owner for its next planning/deliberation pass on `138-F`
+   before `138.002-T` (the harness task) begins, then resolved the threads
+   per the required zero-unresolved-threads merge gate for *this* PR.
+
 ## Remaining work / handoff (resolved in Session 2; retained for history)
 
 1. ~~**Stage**: triage `137.006-T`...~~ — **Done**: Stage re-scoped
@@ -213,3 +259,15 @@ approved for merge in this session.
    (`138-F, 138.002-T, 138.003-T, 138.001-T, 138.004-T, 138.005-T,
    138.006-T, 138.007-T`) is `queued`, unclaimed. Not claimed or executed in
    this cycle per explicit instruction.
+5. **New: Stage must re-triage the `138-F` plan before `138.002-T` starts**.
+   Copilot's PR #365 review surfaced 7 substantive feasibility findings
+   against `docs/exec-plans/2026-08-27-138-terminal-vs-transient-health-
+   classification-plan.md` (harness compile-order vs. the `with_probe` seam,
+   a concurrency-test barrier deadlock, a task-width split, an unverifiable
+   compatibility-veto consumer, a missing terminal durable-record write for
+   T5, an over-broad `_health` JSON-RPC-error terminal classification, and a
+   `std::time::Instant` vs. `tokio::time` clock-seam gap for the cooldown
+   test). These were **not** fixed by Ship — `138-F` is Stage-owned,
+   unclaimed work outside this closure's mandate. Stage should address them
+   (revise the plan and/or re-run `138.001-R`) before `138.002-T` (the
+   harness task) is claimed and executed.
