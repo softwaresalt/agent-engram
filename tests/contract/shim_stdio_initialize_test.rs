@@ -630,3 +630,191 @@ fn startup_failure_record_relative_path_is_documented() {
         "durable startup-failure record path convention must stay stable for docs/troubleshooting.md"
     );
 }
+
+// ── 138-F Terminal Classification Matrix (T1–T4) ─────────────────────────────
+//
+// NEW-RED: These tests scaffold the plan's terminal classification scenarios.
+// They assert `protocol_incompatible` / 15005 / recoverable==false which does
+// not exist yet (current code returns readiness_timeout / 15002). When behavior
+// tasks 138.001-T and 138.004-T land, the shim will classify protocol-level
+// incompatibility as terminal and these tests will turn GREEN.
+//
+// The setup currently uses `spawn_shim_with_failing_daemon` as the simplest
+// harness that gets the shim into a degraded state. When 138.004-T lands, the
+// setup will be updated to use the 138.002-T H1 `FakeHealthResponder` with
+// scenario-specific scripts (VersionMismatch, JsonRpcError -32601, etc.) so
+// the shim can exercise the terminal classification path end-to-end.
+
+/// Shared assertion for T1–T4 terminal classification contract tests.
+///
+/// Asserts: `failure_class == "protocol_incompatible"`, `engram_code == 15005`,
+/// `recoverable == false`, no `retry_after_ms`, content text contains
+/// "protocol_incompatible".
+fn assert_terminal_protocol_incompatible(call_response: &Value, context: &str) {
+    assert!(
+        call_response.get("error").is_none(),
+        "{context}: terminal tools/call must be a successful JSON-RPC response \
+         carrying result.isError=true: {call_response}"
+    );
+    assert_eq!(
+        call_response["result"]["isError"], true,
+        "{context}: terminal tools/call must have isError=true: {call_response}"
+    );
+    let structured = &call_response["result"]["structuredContent"];
+    assert_eq!(
+        structured["failure_class"], "protocol_incompatible",
+        "{context}: terminal failure_class must be protocol_incompatible: {call_response}"
+    );
+    assert_eq!(
+        structured["engram_code"], 15005,
+        "{context}: terminal engram_code must be 15005: {call_response}"
+    );
+    assert_eq!(
+        structured["recoverable"], false,
+        "{context}: terminal must be non-recoverable: {call_response}"
+    );
+    assert!(
+        structured.get("retry_after_ms").is_none()
+            || structured["retry_after_ms"].is_null(),
+        "{context}: terminal must NOT carry retry_after_ms: {call_response}"
+    );
+    let content_text = call_response["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or("");
+    assert!(
+        content_text.contains("protocol_incompatible"),
+        "{context}: content text must name protocol_incompatible: {content_text}"
+    );
+}
+
+/// Helper: initialize the shim over MCP stdio and return stdin/stdout handles
+/// ready for tools/call requests.
+async fn initialize_shim_mcp(
+    child: &mut tokio::process::Child,
+) -> (
+    tokio::process::ChildStdin,
+    BufReader<tokio::process::ChildStdout>,
+) {
+    let mut stdin = child.stdin.take().expect("capture shim stdin");
+    let stdout = child.stdout.take().expect("capture shim stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    stdin
+        .write_all(
+            br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t-matrix-contract","version":"1.0"}}}
+"#,
+        )
+        .await
+        .expect("write MCP initialize");
+    let _ = read_bounded_mcp_line(&mut stdout, Duration::from_secs(20), "initialize response").await;
+    (stdin, stdout)
+}
+
+/// Helper: send tools/call and parse the JSON response.
+async fn send_tools_call(
+    stdin: &mut tokio::process::ChildStdin,
+    stdout: &mut BufReader<tokio::process::ChildStdout>,
+    id: u64,
+) -> Value {
+    let frame = format!(
+        r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{{"name":"get_workspace_status","arguments":{{}}}}}}"#,
+    );
+    stdin
+        .write_all(format!("{frame}\n").as_bytes())
+        .await
+        .expect("write tools/call");
+    let line = read_bounded_mcp_line(stdout, Duration::from_secs(30), "tools/call response").await;
+    serde_json::from_str(line.trim()).expect("parse tools/call response")
+}
+
+/// T1 — daemon replies with wrong `protocol_version` (138.008-T).
+///
+/// When the daemon's `_health` response carries a `protocol_version` that
+/// differs from `ENGRAM_PROTOCOL_VERSION`, the shim must classify this as
+/// terminal protocol incompatibility and never retry.
+///
+/// NEW-RED: currently the shim returns `readiness_timeout`, not
+/// `protocol_incompatible`.
+#[tokio::test]
+async fn t1_wrong_protocol_version_is_terminal() {
+    let workspace = workspace_with_valid_git_root();
+    let mut child = spawn_shim_with_failing_daemon(workspace.path());
+    let (mut stdin, mut stdout) = initialize_shim_mcp(&mut child).await;
+
+    // First tools/call: should get terminal protocol_incompatible
+    let resp = send_tools_call(&mut stdin, &mut stdout, 10).await;
+    assert_terminal_protocol_incompatible(&resp, "T1 first call");
+
+    // Three further tools/call: identical terminal payload, 0 additional probes
+    for id in 11..=13 {
+        let resp = send_tools_call(&mut stdin, &mut stdout, id).await;
+        assert_terminal_protocol_incompatible(&resp, &format!("T1 followup call {id}"));
+    }
+}
+
+/// T2 — daemon returns JSON-RPC error -32601 Method Not Found (138.008-T).
+///
+/// A `-32601` response to `_health` proves the daemon does not implement the
+/// health protocol at all. The shim must classify this as terminal.
+///
+/// NEW-RED: currently the shim returns `readiness_timeout`, not
+/// `protocol_incompatible`.
+#[tokio::test]
+async fn t2_jsonrpc_method_not_found_is_terminal() {
+    let workspace = workspace_with_valid_git_root();
+    let mut child = spawn_shim_with_failing_daemon(workspace.path());
+    let (mut stdin, mut stdout) = initialize_shim_mcp(&mut child).await;
+
+    let resp = send_tools_call(&mut stdin, &mut stdout, 10).await;
+    assert_terminal_protocol_incompatible(&resp, "T2 first call");
+
+    for id in 11..=13 {
+        let resp = send_tools_call(&mut stdin, &mut stdout, id).await;
+        assert_terminal_protocol_incompatible(&resp, &format!("T2 followup call {id}"));
+    }
+}
+
+/// T3 — daemon returns valid JSON-RPC with missing `result` (138.008-T).
+///
+/// A response with no `result` key and no `error` key is a protocol violation.
+/// The shim must classify this as terminal protocol incompatibility.
+///
+/// NEW-RED: currently the shim returns `readiness_timeout`, not
+/// `protocol_incompatible`.
+#[tokio::test]
+async fn t3_missing_result_is_terminal() {
+    let workspace = workspace_with_valid_git_root();
+    let mut child = spawn_shim_with_failing_daemon(workspace.path());
+    let (mut stdin, mut stdout) = initialize_shim_mcp(&mut child).await;
+
+    let resp = send_tools_call(&mut stdin, &mut stdout, 10).await;
+    assert_terminal_protocol_incompatible(&resp, "T3 first call");
+
+    for id in 11..=13 {
+        let resp = send_tools_call(&mut stdin, &mut stdout, id).await;
+        assert_terminal_protocol_incompatible(&resp, &format!("T3 followup call {id}"));
+    }
+}
+
+/// T4 — daemon returns valid JSON-RPC with undecodable `result` (138.008-T).
+///
+/// A response where `result` is present but cannot be deserialized as
+/// `HealthCheckResult` indicates a structurally incompatible daemon. The shim
+/// must classify this as terminal.
+///
+/// NEW-RED: currently the shim returns `readiness_timeout`, not
+/// `protocol_incompatible`.
+#[tokio::test]
+async fn t4_undecodable_result_is_terminal() {
+    let workspace = workspace_with_valid_git_root();
+    let mut child = spawn_shim_with_failing_daemon(workspace.path());
+    let (mut stdin, mut stdout) = initialize_shim_mcp(&mut child).await;
+
+    let resp = send_tools_call(&mut stdin, &mut stdout, 10).await;
+    assert_terminal_protocol_incompatible(&resp, "T4 first call");
+
+    for id in 11..=13 {
+        let resp = send_tools_call(&mut stdin, &mut stdout, id).await;
+        assert_terminal_protocol_incompatible(&resp, &format!("T4 followup call {id}"));
+    }
+}
