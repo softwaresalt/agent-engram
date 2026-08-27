@@ -110,5 +110,17 @@ restores symmetry rather than inventing semantics.
 
 1. Commit and push the Stage artifacts on `chore/130-s-post-merge-closure`.
 2. Complete `137-F` and close `130-S` — no force override required.
-3. Claim `131-S` when ready. Start at `138.002-T` (harness); it is the only task
-   with no upstream blocker.
+3. **Do not claim `131-S` / `138.002-T` yet.** PR #365's Copilot review
+   surfaced 12+ plan/task-feasibility defects against the `138-F` plan and
+   its harvested tasks (harness/seam compile-ordering, a concurrency-test
+   barrier deadlock, a `std::time::Instant` vs. `tokio::time` clock-seam
+   gap, an unverifiable compatibility-veto consumer, a missing
+   terminal-record write path, over-broad JSON-RPC-error classification,
+   `138.002-T`'s task-granularity/scope violation, IPC-framing assumptions
+   in the hardening doc, and `expected`/`actual` fields required on
+   terminal outcomes that cannot supply them). See the consolidated list in
+   `docs/memory/2026-08-27/130-s-ship-session-post-merge-closure-memory.md`
+   (Session 2, PR #365 review-fix cycles section). Stage must revise the
+   plan/hardening and re-run `138.001-R` (or record a formal addendum)
+   before `138.002-T` is claimed — otherwise an agent following only this
+   memory could start a known-unexecutable plan.
