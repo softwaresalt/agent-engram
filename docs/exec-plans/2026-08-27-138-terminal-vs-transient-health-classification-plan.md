@@ -424,8 +424,8 @@ Run from the repository root on the feature branch:
 ```powershell
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings -W clippy::pedantic
-cargo test --test shim_stdio_initialize_test
-cargo test --test shim_lifecycle_test
+cargo test --test contract_shim_stdio_initialize
+cargo test --test contract_shim_lifecycle
 cargo dev-test
 cargo audit
 ```
@@ -433,7 +433,7 @@ cargo audit
 Concurrency determinism check (`138.006-T` acceptance, flake gate):
 
 ```powershell
-cargo test --test shim_stdio_initialize_test -- --exact --nocapture <concurrency_case> ; # repeat x5, zero flakes
+cargo test --test contract_shim_stdio_initialize -- --exact --nocapture <concurrency_case> ; # repeat x5, zero flakes
 ```
 
 ## Out of Scope

@@ -34,7 +34,7 @@ the pre-merge checkpoint) before merging:
    `db68add3514e1d85e9354fe2c93f63ec7e31c006` == current HEAD. ✓ (An earlier
    Copilot review at an older commit `d8488a1f...` is superseded by this
    later one — expected and correctly disregarded.)
-2. Copilot absent from `requestRequests`: GraphQL `reviewRequests.nodes` is
+2. Copilot absent from `reviewRequests`: GraphQL `reviewRequests.nodes` is
    empty. ✓
 3. Zero unresolved review threads: all 5 `reviewThreads.nodes[].isResolved`
    are `true`. ✓

@@ -85,8 +85,11 @@ errors (admission/CLI parity smoke check).
   (test-only, isolated temp workspaces).
 * The change set itself (fail-open/fail-closed classification of daemon
   readiness state) is the risky surface under test; its `ActionResult` here
-  is **contained and passing**: recoverable states stay recoverable, terminal
-  states stay terminal, per the five contract assertions above.
+  is **contained and passing** for the five paths actually asserted above:
+  delayed-then-ready recovery, invalid-workspace admission failure,
+  daemon-failure tool-call degradation, client-disconnect teardown, and the
+  documented startup-failure record path. This does **not** cover every
+  terminal health classification — see the follow-up gap below.
 
 ### Follow-up (why PASS WITH FOLLOW-UP, not plain PASS)
 
@@ -112,11 +115,14 @@ test. Both are legitimate, correctly out-of-scope-for-137-F follow-up items.
 **PASS WITH FOLLOW-UP**. The merged late-readiness recovery behavior verified
 correctly for the paths this suite exercises: the transient cached
 `readiness_timeout` path recovers automatically once the daemon becomes
-ready, the pre-existing admission/endpoint/shutdown terminal paths remain
-fail-closed, and teardown is deterministic on client disconnect. This suite
-does **not** exercise, and therefore this verdict makes no claim about,
-fail-closed behavior for a daemon that becomes reachable but is permanently
-protocol-incompatible *after* the initial readiness deadline — that specific
-terminal `check_health` path is a known, tracked gap (see above), not a
+ready, the tested invalid-workspace admission-failure path and the tested
+daemon-failure tool-call degradation path remain fail-closed, and teardown
+is deterministic on client disconnect. This suite does **not** inject an
+endpoint-derivation failure or a shutdown failure, so this verdict makes no
+claim about those specific paths. It also does **not** exercise, and
+therefore makes no claim about, fail-closed behavior for a daemon that
+becomes reachable but is permanently protocol-incompatible *after* the
+initial readiness deadline — that specific terminal `check_health` path is a
+known, tracked gap (see above), not a
 verified-passing one. Feeding to `operational-closure` below; the gap is now
 owned by `138-F` (queued shipment `131-S`), not `130-S`.

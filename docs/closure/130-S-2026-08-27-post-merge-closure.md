@@ -48,7 +48,7 @@ disabled) with explicit operator approval recorded in-session
 | Ancestry | `git fetch origin main` then `git merge-base --is-ancestor 2e1e01cf... origin/main` → exit `0` |
 | Merge strategy | `--merge` (merge commit); squash/rebase disabled repo-wide |
 | Pre-merge Copilot review at HEAD | `commit_id db68add3...` == HEAD; state `COMMENTED` |
-| Requested reviewers at merge | none (Copilot absent from `requestRequests`) |
+| Requested reviewers at merge | none (Copilot absent from `reviewRequests`) |
 | Unresolved review threads at merge | 0 of 5 (`isResolved: true` on all) |
 | `mergeStateStatus` / `mergeable` (pre-merge) | `CLEAN` / `MERGEABLE` |
 | CI checks | `build`: SUCCESS, `start-launcher-windows`: SUCCESS |
@@ -122,9 +122,10 @@ binary. No maintenance window required.
   reproducing post-merge).
 * A production/field report of a permanently protocol-incompatible daemon
   (e.g., version mismatch) being reported as `recoverable: true` indefinitely
-  instead of terminal — this is the known, tracked, and accepted residual
-  gap (`137.006-T`); escalate if observed in the field before that follow-up
-  lands.
+  instead of terminal — this is the known, tracked residual gap, now owned
+  by `138-F` (queued shipment `131-S`, not `137.006-T` directly — see
+  Outstanding Follow-Up below); escalate if observed in the field before
+  that follow-up lands.
 * Any new panic, deadlock, or resource leak attributable to the single-flight
   probe/cooldown path.
 
@@ -136,17 +137,30 @@ through the same PR review/CI/approval pipeline as any other change. No data
 migration or external state requires separate rollback — the change is
 in-process shim/daemon logic only.
 
-## Validation Window
+## Validation Window & Monitoring Plan
 
-Standard: next 2 normal development sessions / daemon lifecycles that
-naturally exercise a slow or delayed daemon startup (this defect is
-startup-timing-dependent and cannot be forced on a fixed calendar schedule;
-observe opportunistically whenever a `readiness_timeout` is logged).
+There is no external metrics/APM backend for this CLI/daemon tool; the only
+currently-instrumented sources are the structured startup-failure diagnostics
+file and the CI contract suite. Monitoring is therefore log/CI-based, not
+dashboard-based:
+
+| SLI | Source / query | Baseline | Threshold (escalate) | Owner |
+|---|---|---|---|---|
+| Readiness-timeout sessions recover without restart | For each `failure_class: readiness_timeout` record in `<workspace>/.engram/diagnostics/shim-startup-failures.jsonl` (exit-code taxonomy `11`, wire `recoverable: true`), confirm the same stdio process subsequently forwards a successful `tools/call` (cross-reference client activity in `.copilot/logs/process-*.log`) | 100% recover once the daemon reports ready (pre-fix: sticky-proxy defect made this 0%) | Any `readiness_timeout` record with **no** subsequent successful forward on the same process before the session ends | Repository maintainer (`softwaresalt`) |
+| Terminal daemons misreported as recoverable | Grep shim diagnostics/log output for `recoverable: true` following a `VersionMismatch`/protocol-incompatible `_health` payload arriving after the initial readiness deadline | N/A (known, unfixed gap — this is the exact defect `138-F` closes) | Any field occurrence, at any time, until `138-F` ships | Repository maintainer (`softwaresalt`) |
+| Orphaned probe/monitor tasks after disconnect | `contract_shim_stdio_initialize::shim_aborts_unresolved_startup_after_client_disconnects` in CI on every `main` build; manual process-list spot-check (`Get-Process`/`ps`) after a deliberate client disconnect during opportunistic observation | 0 orphaned processes/tasks | Any orphaned process/task surviving past the teardown budget | Repository maintainer (`softwaresalt`) |
+
+Observation window: opportunistic across the next 2 normal development
+sessions/daemon lifecycles that naturally exercise a slow or delayed daemon
+startup — this defect is startup-timing-dependent and cannot be forced on a
+fixed calendar schedule; check the diagnostics file whenever a
+`readiness_timeout` is logged.
 
 ## Owner
 
 Ship agent / repository maintainer (`softwaresalt`) for monitoring; Stage
-owns triage and scheduling of the queued follow-up `137.006-T`.
+owns triage and scheduling of the queued follow-up (now `138-F` / shipment
+`131-S`).
 
 ## Outstanding Follow-Up (Not Part of This Closure)
 
