@@ -101,7 +101,7 @@ When runtime artifacts are suspect:
 Move to the operations guide when you need to inspect logs, latency, or report
 surfaces in more detail.
 
-## Stdio initialize startup failures (early-child-exit diagnostics)
+## Stdio initialize and readiness failures
 
 If an MCP client (for example GitHub Copilot CLI) reports a failure while
 initializing the `engram` MCP server over stdio — a message like `failed to
@@ -110,12 +110,16 @@ initialize MCP client`, `Send message error`, or a Windows `os error 232`
 Since 124-F (stash 870B1AFF), `engram shim` always binds the MCP stdio
 transport and answers `initialize` before evaluating whether the workspace is
 admissible, the daemon is ready, or the IPC endpoint can be derived. If one of
-those preconditions fails, the session stays up in a **degraded** state:
-`tools/list` still returns the full catalog, but every `tools/call` fails with
-a structured error naming the real cause. The pipe-closed symptom a client
-reports today is almost always caused by a stale installed binary that
-predates this fix (see the version-skew signal below), not by a live defect
-in the current build.
+those preconditions fails permanently, the session stays up in a **degraded**
+state: `tools/list` still returns the full catalog, but every `tools/call`
+fails with a structured error naming the real cause.
+
+A readiness-budget expiry is different. The error includes
+`recoverable: true` and `retry_after_ms`, and the same stdio process continues
+probing the named-pipe or Unix-socket daemon. Later calls are forwarded as soon
+as that daemon reports ready; the MCP client does not need to restart the
+session. Spawn, protocol, shutdown, admission, and endpoint failures remain
+terminal and report `recoverable: false`.
 
 ### Exit-code taxonomy
 
@@ -123,23 +127,22 @@ When the shim process exits, its exit code classifies why:
 
 | Exit code | Class | Meaning |
 |---|---|---|
-| `0` | — | Clean shutdown; no precondition ever failed |
+| `0` | — | Clean shutdown; startup succeeded or a transient readiness timeout recovered before disconnect |
 | `10` | `admission_failure` | The workspace path does not exist, is not a Git repository root, or the working directory could not be resolved |
-| `11` | `readiness_timeout` | The daemon did not reach a ready state (spawn failure, respawn shutdown timeout, or the readiness budget was exceeded) |
+| `11` | `readiness_timeout` | The daemon did not reach a ready state before disconnect, or daemon startup failed permanently |
 | `12` | `endpoint_derivation_failure` | The IPC endpoint (named pipe or Unix socket path) could not be derived for the workspace |
 | `13` | `transport_failure` | The MCP stdio transport itself failed to bind, or the session ended with a protocol error (for example, no client ever sent `initialize` before disconnecting) |
 
-These codes apply even when the MCP protocol exchange itself looked
-successful to the client (the session answered `initialize`/`tools/list`
-normally but every `tools/call` failed) — the exit code reflects whether the
-session was ever degraded, independent of what the client observed over the
-wire. A wrapper script or CI job that checks `$LASTEXITCODE` (or `$?` on
-POSIX shells) after a manual `engram shim` invocation can rely on these codes
-without parsing stderr.
+These codes apply even when the MCP protocol exchange itself looked successful
+to the client. The exit code reflects the state when the client disconnected:
+a recovered session exits `0`, while a session that remained degraded exits
+with its classified failure. A wrapper script or CI job that checks
+`$LASTEXITCODE` (or `$?` on POSIX shells) after a manual `engram shim`
+invocation can rely on these codes without parsing stderr.
 
 ### Startup-failure record
 
-Every degraded startup writes one JSON line to:
+Every startup deadline or terminal startup failure writes one JSON line to:
 
 ```text
 <workspace>/.engram/diagnostics/shim-startup-failures.jsonl
@@ -149,9 +152,11 @@ Each record contains exactly four fields — a `timestamp` (RFC 3339), the
 `binary_version` (the build's `ENGRAM_BUILD_HASH`, falling back to the crate
 version), the `failure_class` (one of the four names above), and a sanitized
 `message`. The record never contains credentials, tokens, environment
-variable values, or paths outside the workspace; persisting the record is
-best-effort and failures to write it are swallowed (the process exit code and
-stderr line remain the primary signal).
+variable values, or paths outside the workspace. A readiness-timeout record
+shows that the initial deadline was exceeded; it does not by itself prove that
+the session failed to recover later. Persisting the record is best-effort, and
+failures to write it are swallowed (the process exit code and stderr line
+remain the primary terminal signal).
 
 ### stdout purity invariant
 
@@ -338,4 +343,3 @@ Copilot version as part of this procedure.
    must have the same default as before this change. Increasing the readiness
    timeout was explicitly rejected as a fix — it masks the symptom without
    addressing the handshake ordering defect.
-

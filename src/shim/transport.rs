@@ -6,9 +6,9 @@
 //! text items are extracted and returned as MCP content; otherwise the full
 //! result is serialised as a single text block.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::sync::{Arc, Weak};
+use std::time::{Duration, Instant};
 
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, Content, Implementation, ListToolsResult,
@@ -17,12 +17,29 @@ use rmcp::model::{
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler};
 use serde_json::Value;
-use tokio::sync::watch;
+use tokio::sync::{Mutex, watch};
 use tracing::instrument;
 
 use crate::daemon::protocol::IpcRequest;
 use crate::errors::{EngramError, ShimFailureClass, ShimStartupError};
 use crate::shim::StartupOutcome;
+
+const RECOVERY_PROBE_COOLDOWN: Duration = Duration::from_millis(250);
+
+#[derive(Default)]
+struct RecoveryProbeState {
+    last_failure: Option<Instant>,
+}
+
+enum EndpointResolutionError {
+    Permanent {
+        class: ShimFailureClass,
+        message: String,
+    },
+    Recoverable {
+        message: String,
+    },
+}
 
 // ── Handler ───────────────────────────────────────────────────────────────────
 
@@ -40,9 +57,13 @@ use crate::shim::StartupOutcome;
 /// catalog regardless of startup outcome.
 #[derive(Clone)]
 pub struct ShimHandler {
+    /// Weak publisher retained only while late-readiness recovery is active.
+    startup_tx: Weak<watch::Sender<Option<StartupOutcome>>>,
     /// Deferred startup outcome, published once workspace admission, daemon
     /// readiness, and IPC endpoint derivation resolve. `None` until resolved.
     startup: watch::Receiver<Option<StartupOutcome>>,
+    /// Single-flight guard for request-triggered late-readiness probes.
+    recovery_lock: Arc<Mutex<RecoveryProbeState>>,
     /// Request timeout for IPC calls and for awaiting startup resolution.
     timeout: Duration,
     /// Monotonically incrementing request-id counter for JSON-RPC requests.
@@ -52,9 +73,15 @@ pub struct ShimHandler {
 impl ShimHandler {
     /// Create a new `ShimHandler` that awaits the deferred startup outcome
     /// on `startup` before forwarding requests.
-    pub fn new(startup: watch::Receiver<Option<StartupOutcome>>, timeout: Duration) -> Self {
+    pub fn new(
+        startup_tx: Weak<watch::Sender<Option<StartupOutcome>>>,
+        startup: watch::Receiver<Option<StartupOutcome>>,
+        timeout: Duration,
+    ) -> Self {
         Self {
+            startup_tx,
             startup,
+            recovery_lock: Arc::new(Mutex::new(RecoveryProbeState::default())),
             timeout,
             next_id: Arc::new(AtomicU64::new(1)),
         }
@@ -91,6 +118,45 @@ impl ShimHandler {
             }
         }
     }
+
+    async fn forwarding_endpoint(&self) -> Result<String, EndpointResolutionError> {
+        match self.await_startup_outcome().await {
+            StartupOutcome::Ready { endpoint } => Ok(endpoint),
+            StartupOutcome::Degraded { class, message } => {
+                Err(EndpointResolutionError::Permanent { class, message })
+            }
+            StartupOutcome::WaitingForReadiness { .. } => {
+                let mut recovery = self.recovery_lock.lock().await;
+                match self.await_startup_outcome().await {
+                    StartupOutcome::Ready { endpoint } => Ok(endpoint),
+                    StartupOutcome::Degraded { class, message } => {
+                        Err(EndpointResolutionError::Permanent { class, message })
+                    }
+                    StartupOutcome::WaitingForReadiness { endpoint, message } => {
+                        if recovery
+                            .last_failure
+                            .is_some_and(|failed_at| failed_at.elapsed() < RECOVERY_PROBE_COOLDOWN)
+                        {
+                            return Err(EndpointResolutionError::Recoverable { message });
+                        }
+
+                        if !crate::shim::lifecycle::check_health(&endpoint).await {
+                            recovery.last_failure = Some(Instant::now());
+                            return Err(EndpointResolutionError::Recoverable { message });
+                        }
+
+                        recovery.last_failure = None;
+                        if let Some(startup_tx) = self.startup_tx.upgrade() {
+                            let _ = startup_tx.send(Some(StartupOutcome::Ready {
+                                endpoint: endpoint.clone(),
+                            }));
+                        }
+                        Ok(endpoint)
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl ServerHandler for ShimHandler {
@@ -123,10 +189,17 @@ impl ServerHandler for ShimHandler {
         _cx: RequestContext<RoleServer>,
     ) -> impl std::future::Future<Output = Result<CallToolResult, ErrorData>> + Send + '_ {
         async move {
-            let endpoint = match self.await_startup_outcome().await {
-                StartupOutcome::Ready { endpoint } => endpoint,
-                StartupOutcome::Degraded { class, message } => {
-                    return Ok(degraded_call_tool_result(class, &message));
+            let endpoint = match self.forwarding_endpoint().await {
+                Ok(endpoint) => endpoint,
+                Err(EndpointResolutionError::Permanent { class, message }) => {
+                    return Ok(degraded_call_tool_result(class, &message, false));
+                }
+                Err(EndpointResolutionError::Recoverable { message }) => {
+                    return Ok(degraded_call_tool_result(
+                        ShimFailureClass::ReadinessTimeout,
+                        &message,
+                        true,
+                    ));
                 }
             };
 
@@ -212,16 +285,26 @@ fn domain_to_mcp(err: EngramError) -> ErrorData {
 /// `daemon::ipc_server` and `cli::runner::friendly_error_message`) are both
 /// machine-parseable via `structured_content` and human-visible in the
 /// rendered `content` text.
-fn degraded_call_tool_result(class: ShimFailureClass, message: &str) -> CallToolResult {
+fn degraded_call_tool_result(
+    class: ShimFailureClass,
+    message: &str,
+    recoverable: bool,
+) -> CallToolResult {
     let err = EngramError::ShimStartup(ShimStartupError {
         class,
         message: message.to_owned(),
     });
-    CallToolResult::structured_error(serde_json::json!({
+    let mut structured = serde_json::json!({
         "engram_code": class.wire_code(),
         "failure_class": class.as_str(),
         "message": err.to_string(),
-    }))
+        "recoverable": recoverable,
+    });
+    if recoverable {
+        structured["retry_after_ms"] =
+            Value::from(u64::try_from(RECOVERY_PROBE_COOLDOWN.as_millis()).unwrap_or(u64::MAX));
+    }
+    CallToolResult::structured_error(structured)
 }
 
 // ── Server entry point ────────────────────────────────────────────────────────
@@ -270,10 +353,11 @@ fn stdio_transport() -> StdioTransportPair {
 /// if the rmcp server fails to bind or the MCP session ends with a protocol
 /// error.
 pub async fn run_shim(
+    startup_tx: Weak<watch::Sender<Option<StartupOutcome>>>,
     startup: watch::Receiver<Option<StartupOutcome>>,
     timeout: Duration,
 ) -> Result<(), EngramError> {
-    let handler = ShimHandler::new(startup, timeout);
+    let handler = ShimHandler::new(startup_tx, startup, timeout);
     let transport = stdio_transport();
 
     let running = rmcp::serve_server(handler, transport).await.map_err(|e| {
@@ -308,8 +392,9 @@ mod tests {
     /// omitted from the agent even though `list_tools`/`call_tool` are implemented.
     #[test]
     fn get_info_advertises_tools_capability() {
-        let (_tx, rx) = watch::channel(None);
-        let handler = ShimHandler::new(rx, Duration::from_secs(1));
+        let (tx, rx) = watch::channel(None);
+        let tx = Arc::new(tx);
+        let handler = ShimHandler::new(Arc::downgrade(&tx), rx, Duration::from_secs(1));
         let info = handler.get_info();
         assert!(
             info.capabilities.tools.is_some(),
