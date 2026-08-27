@@ -180,8 +180,11 @@ Preconditions (hard blockers, all must hold before V5 starts):
 
 Acceptance:
 
-* The commit contains exactly the eight change-set paths above plus the two
-  archived `136` artifacts; it does **not** revert, restage, or otherwise alter
+* The commit contains exactly the eight change-set paths above, the two
+  archived `136` artifacts, and the governing `137` planning/backlog artifacts
+  themselves (this plan, its review, the `137-F`/`137.00x-T` feature and task
+  records, and shipment `130-S`) — the full governed audit record, not a
+  narrower subset; it does **not** revert, restage, or otherwise alter
   the pre-existing staged `.gitignore` modification.
 * The commit message references `137-F` and cites `136-F` / `136.001-T` as the
   originating ad-hoc implementation.
