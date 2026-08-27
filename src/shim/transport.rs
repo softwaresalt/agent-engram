@@ -419,6 +419,7 @@ pub async fn run_shim(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     use std::time::Duration;
 
     /// The shim's `initialize` handshake MUST advertise the `tools` capability.
@@ -438,5 +439,268 @@ mod tests {
             info.capabilities.tools.is_some(),
             "shim get_info() must advertise the MCP tools capability so clients discover engram tools"
         );
+    }
+
+    // ── 138-F concurrency / amplification harness ─────────────────────────
+
+    /// Build a `ShimHandler` in `WaitingForReadiness` state with a custom probe.
+    fn handler_in_waiting(probe: ProbeFn) -> (Arc<watch::Sender<Option<StartupOutcome>>>, ShimHandler) {
+        let (tx, rx) = watch::channel(None);
+        let tx = Arc::new(tx);
+        let _ = tx.send(Some(StartupOutcome::WaitingForReadiness {
+            endpoint: "test-endpoint".to_owned(),
+            message: "waiting for readiness (test)".to_owned(),
+        }));
+        let handler = ShimHandler::with_probe(
+            Arc::downgrade(&tx),
+            rx,
+            Duration::from_secs(30),
+            probe,
+        );
+        (tx, handler)
+    }
+
+    /// C1 — single-flight suppresses concurrent probes (138.006-T).
+    ///
+    /// 8 callers synchronized by a start barrier outside the handler. The seam
+    /// probe signals `probe_entered` on entry then awaits `release`. While held
+    /// assert `probe_count == 1`. After release and join: `probe_count == 1`
+    /// and all 8 returned recoverable payloads (the 7 non-winners parked on the
+    /// mutex, saw fresh cooldown, and returned without probing). No sleeps; the
+    /// probe never waits on sibling callers (D8 corrected topology).
+    ///
+    /// NEW-RED: asserts all callers get recoverable; currently green because
+    /// the single-flight mutex + cooldown already produce this result. This test
+    /// pins the current behavior so that Phase 3 changes preserve it.
+    #[tokio::test]
+    async fn c1_single_flight_suppresses_concurrent_probes() {
+        for _ in 0..5 {
+            let probe_count = Arc::new(AtomicUsize::new(0));
+            let probe_entered = Arc::new(tokio::sync::Notify::new());
+            let release = Arc::new(tokio::sync::Notify::new());
+
+            let pc = Arc::clone(&probe_count);
+            let pe = Arc::clone(&probe_entered);
+            let rel = Arc::clone(&release);
+            let probe: ProbeFn = Arc::new(move |_endpoint| {
+                let pc = Arc::clone(&pc);
+                let pe = Arc::clone(&pe);
+                let rel = Arc::clone(&rel);
+                Box::pin(async move {
+                    pc.fetch_add(1, AtomicOrdering::SeqCst);
+                    pe.notify_one();
+                    rel.notified().await;
+                    false // transient failure
+                })
+            });
+
+            let (_tx, handler) = handler_in_waiting(probe);
+            let start = Arc::new(tokio::sync::Barrier::new(9)); // 8 callers + test driver
+
+            let mut handles = Vec::new();
+            for _ in 0..8 {
+                let h = handler.clone();
+                let b = Arc::clone(&start);
+                handles.push(tokio::spawn(async move {
+                    b.wait().await;
+                    h.forwarding_endpoint().await
+                }));
+            }
+            start.wait().await;
+
+            // Wait for the single winner to enter the probe.
+            probe_entered.notified().await;
+            assert_eq!(
+                probe_count.load(AtomicOrdering::SeqCst),
+                1,
+                "C1: only one probe should be in-flight while held"
+            );
+
+            // Release the probe.
+            release.notify_one();
+
+            let mut recoverable_count = 0;
+            for h in handles {
+                let result = h.await.expect("task should not panic");
+                match result {
+                    Err(EndpointResolutionError::Recoverable { .. }) => recoverable_count += 1,
+                    _ => {}
+                }
+            }
+            assert_eq!(
+                probe_count.load(AtomicOrdering::SeqCst),
+                1,
+                "C1: total probes must be 1"
+            );
+            assert_eq!(recoverable_count, 8, "C1: all 8 callers should get recoverable");
+        }
+    }
+
+    /// C2 — cooldown suppresses a follow-up probe (138.006-T).
+    ///
+    /// Uses `start_paused = true` for deterministic time control. After a
+    /// transient probe at `t0`: a call at `t0 + 50 ms` performs 0 probes and
+    /// returns recoverable; a call after `t0 + 250 ms` performs exactly 1 probe.
+    /// Requires the 138.013-T `tokio::time::Instant` clock seam.
+    ///
+    /// NEW-RED: asserts cooldown behavior; currently green because the 250 ms
+    /// cooldown already works. Pins the current behavior for Phase 3.
+    #[tokio::test(start_paused = true)]
+    async fn c2_cooldown_suppresses_followup_probe() {
+        for _ in 0..5 {
+            let probe_count = Arc::new(AtomicUsize::new(0));
+            let pc = Arc::clone(&probe_count);
+            let probe: ProbeFn = Arc::new(move |_| {
+                let pc = Arc::clone(&pc);
+                Box::pin(async move {
+                    pc.fetch_add(1, AtomicOrdering::SeqCst);
+                    false // transient
+                })
+            });
+
+            let (_tx, handler) = handler_in_waiting(probe);
+
+            // First probe at t0.
+            let r = handler.forwarding_endpoint().await;
+            assert!(matches!(r, Err(EndpointResolutionError::Recoverable { .. })));
+            assert_eq!(probe_count.load(AtomicOrdering::SeqCst), 1, "C2: first call probes");
+
+            // At t0 + 50 ms: within cooldown, no probe.
+            tokio::time::advance(Duration::from_millis(50)).await;
+            let r = handler.forwarding_endpoint().await;
+            assert!(matches!(r, Err(EndpointResolutionError::Recoverable { .. })));
+            assert_eq!(
+                probe_count.load(AtomicOrdering::SeqCst),
+                1,
+                "C2: within cooldown should not probe"
+            );
+
+            // At t0 + 250 ms: cooldown expired, should probe again.
+            tokio::time::advance(Duration::from_millis(200)).await;
+            let r = handler.forwarding_endpoint().await;
+            assert!(matches!(r, Err(EndpointResolutionError::Recoverable { .. })));
+            assert_eq!(
+                probe_count.load(AtomicOrdering::SeqCst),
+                2,
+                "C2: after cooldown should probe"
+            );
+        }
+    }
+
+    /// C3 — terminal latch under concurrency (138.006-T).
+    ///
+    /// 8 concurrent calls where the single in-flight probe resolves with a
+    /// terminal outcome. All 8 must return the terminal (Permanent) payload,
+    /// total probe count is 1, and a 9th call afterwards performs 0 probes.
+    ///
+    /// NEW-RED: currently `probe() -> false` yields `Recoverable`, not
+    /// `Permanent`. The terminal latch does not exist until 138.004-T lands.
+    #[tokio::test]
+    async fn c3_terminal_latch_under_concurrency() {
+        for _ in 0..5 {
+            let probe_count = Arc::new(AtomicUsize::new(0));
+            let probe_entered = Arc::new(tokio::sync::Notify::new());
+            let release = Arc::new(tokio::sync::Notify::new());
+
+            let pc = Arc::clone(&probe_count);
+            let pe = Arc::clone(&probe_entered);
+            let rel = Arc::clone(&release);
+            // Probe returns false: simulates a terminal outcome once
+            // HealthOutcome-based classification exists (138.001-T).
+            let probe: ProbeFn = Arc::new(move |_| {
+                let pc = Arc::clone(&pc);
+                let pe = Arc::clone(&pe);
+                let rel = Arc::clone(&rel);
+                Box::pin(async move {
+                    pc.fetch_add(1, AtomicOrdering::SeqCst);
+                    pe.notify_one();
+                    rel.notified().await;
+                    false // will become HealthOutcome::Terminal after 138.001-T
+                })
+            });
+
+            let (_tx, handler) = handler_in_waiting(probe);
+            let start = Arc::new(tokio::sync::Barrier::new(9));
+
+            let mut handles = Vec::new();
+            for _ in 0..8 {
+                let h = handler.clone();
+                let b = Arc::clone(&start);
+                handles.push(tokio::spawn(async move {
+                    b.wait().await;
+                    h.forwarding_endpoint().await
+                }));
+            }
+            start.wait().await;
+            probe_entered.notified().await;
+            release.notify_one();
+
+            let mut permanent_count = 0;
+            for h in handles {
+                let result = h.await.expect("task should not panic");
+                if matches!(result, Err(EndpointResolutionError::Permanent { .. })) {
+                    permanent_count += 1;
+                }
+            }
+            // RED: currently false → Recoverable, not Permanent (no terminal latch)
+            assert_eq!(
+                permanent_count, 8,
+                "C3: all 8 should get terminal (Permanent) payload"
+            );
+            assert_eq!(
+                probe_count.load(AtomicOrdering::SeqCst),
+                1,
+                "C3: total probes must be 1"
+            );
+
+            // 9th call: terminal is latched, must perform 0 additional probes.
+            let before = probe_count.load(AtomicOrdering::SeqCst);
+            let ninth = handler.forwarding_endpoint().await;
+            assert_eq!(
+                probe_count.load(AtomicOrdering::SeqCst),
+                before,
+                "C3: 9th call must not probe (terminal latched)"
+            );
+            assert!(
+                matches!(ninth, Err(EndpointResolutionError::Permanent { .. })),
+                "C3: 9th call must still return terminal payload"
+            );
+        }
+    }
+
+    /// N2 — no extra round trip (138.006-T).
+    ///
+    /// A terminal outcome must consume exactly 1 `_health` request, not 2.
+    ///
+    /// NEW-RED: currently `probe() -> false` yields `Recoverable`, not
+    /// `Permanent`. Terminal classification does not exist until 138.001-T.
+    #[tokio::test]
+    async fn n2_terminal_outcome_consumes_exactly_one_probe() {
+        for _ in 0..5 {
+            let probe_count = Arc::new(AtomicUsize::new(0));
+            let pc = Arc::clone(&probe_count);
+            let probe: ProbeFn = Arc::new(move |_| {
+                let pc = Arc::clone(&pc);
+                Box::pin(async move {
+                    pc.fetch_add(1, AtomicOrdering::SeqCst);
+                    false // terminal
+                })
+            });
+
+            let (_tx, handler) = handler_in_waiting(probe);
+
+            // First call: should produce exactly 1 probe.
+            let result = handler.forwarding_endpoint().await;
+            assert_eq!(
+                probe_count.load(AtomicOrdering::SeqCst),
+                1,
+                "N2: terminal must consume exactly 1 probe"
+            );
+            // RED: currently returns Recoverable, not Permanent
+            assert!(
+                matches!(result, Err(EndpointResolutionError::Permanent { .. })),
+                "N2: terminal outcome should be permanent"
+            );
+        }
     }
 }
