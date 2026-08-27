@@ -8,7 +8,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, Content, Implementation, ListToolsResult,
@@ -18,6 +18,7 @@ use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler};
 use serde_json::Value;
 use tokio::sync::{Mutex, watch};
+use tokio::time::Instant;
 use tracing::instrument;
 
 use crate::daemon::protocol::IpcRequest;
@@ -25,6 +26,20 @@ use crate::errors::{EngramError, ShimFailureClass, ShimStartupError};
 use crate::shim::StartupOutcome;
 
 const RECOVERY_PROBE_COOLDOWN: Duration = Duration::from_millis(250);
+
+/// Type alias for the probe function used by `ShimHandler`.
+///
+/// Defaults to [`crate::shim::lifecycle::check_health`]. Tests can inject a
+/// custom implementation via [`ShimHandler::with_probe`] to script outcomes
+/// and observe probe counts without touching the real IPC path.
+type ProbeFn = Arc<dyn Fn(String) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> + Send + Sync>;
+
+/// Build the default production probe function.
+fn default_probe() -> ProbeFn {
+    Arc::new(|endpoint: String| {
+        Box::pin(async move { crate::shim::lifecycle::check_health(&endpoint).await })
+    })
+}
 
 #[derive(Default)]
 struct RecoveryProbeState {
@@ -68,6 +83,9 @@ pub struct ShimHandler {
     timeout: Duration,
     /// Monotonically incrementing request-id counter for JSON-RPC requests.
     next_id: Arc<AtomicU64>,
+    /// Health-probe function invoked during late-readiness recovery.
+    /// Default: [`crate::shim::lifecycle::check_health`].
+    probe: ProbeFn,
 }
 
 impl ShimHandler {
@@ -84,6 +102,26 @@ impl ShimHandler {
             recovery_lock: Arc::new(Mutex::new(RecoveryProbeState::default())),
             timeout,
             next_id: Arc::new(AtomicU64::new(1)),
+            probe: default_probe(),
+        }
+    }
+
+    /// Test-only constructor that overrides the health-probe function.
+    #[cfg(test)]
+    #[allow(dead_code)] // Used by 138.006-T concurrency tests
+    pub(crate) fn with_probe(
+        startup_tx: Weak<watch::Sender<Option<StartupOutcome>>>,
+        startup: watch::Receiver<Option<StartupOutcome>>,
+        timeout: Duration,
+        probe: ProbeFn,
+    ) -> Self {
+        Self {
+            startup_tx,
+            startup,
+            recovery_lock: Arc::new(Mutex::new(RecoveryProbeState::default())),
+            timeout,
+            next_id: Arc::new(AtomicU64::new(1)),
+            probe,
         }
     }
 
@@ -140,7 +178,7 @@ impl ShimHandler {
                             return Err(EndpointResolutionError::Recoverable { message });
                         }
 
-                        if !crate::shim::lifecycle::check_health(&endpoint).await {
+                        if !(self.probe)(endpoint.clone()).await {
                             recovery.last_failure = Some(Instant::now());
                             return Err(EndpointResolutionError::Recoverable { message });
                         }
