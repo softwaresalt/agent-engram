@@ -190,7 +190,7 @@ approved for merge in this session.
 
 ### PR #365 review-fix cycles (Copilot, post-push)
 
-Eight review cycles against PR #365, each triggered by re-pushing this
+Ten review cycles against PR #365, each triggered by re-pushing this
 branch and re-requesting Copilot review via the GraphQL
 `requestReviews(botIds: ["BOT_kgDOCnlnWA"])` mutation (the REST
 `requested_reviewers` endpoint and `gh pr edit --add-reviewer` both no-op
@@ -300,16 +300,46 @@ session's finding):
    Both are further `138-F` plan-feasibility content — replied, recorded as
    required Stage re-triage items, resolved as accepted follow-up, not
    fixed.
-9. **Total: 8 Copilot review cycles across PR #365.** Every Ship-owned
-   (closure-doc, memory, reconcile-report, backlog-metadata) finding across
-   all 8 cycles was fixed. Every finding that required redesigning `138-F`'s
-   own implementation plan (concurrency/seam/clock/message-hygiene/
-   review-gate-classification feasibility — 9 distinct items across the
-   cycles) was explicitly declined as out of this closure's mandate and
-   handed to Stage, with each thread replied to and resolved so the PR's
-   zero-unresolved-threads gate is met without silently dropping the
-   findings. Stage must revise/re-review the `138-F` plan before
-   `138.002-T` is claimed; see the consolidated list above.
+9. Review at `5c3d8ec4` → 3 findings: 1 Ship-owned (the monitoring SLI's
+   "field record volume does not diverge from CI-observed rates" threshold
+   had no valid denominator — the diagnostics file records no recovery
+   event and CI supplies pass/fail, not a rate) — fixed in `de8b078f` by
+   reframing each diagnostics record as a manual-investigation trigger and
+   using the CI pass rate plus confirmed field reports as the actual
+   baseline/threshold. The other 2 (a `138.005-T` teardown-comment
+   correction dropped during re-scope; a `138.001-T`/exec-plan
+   `expected`/`actual` acceptance criterion impossible for non-
+   `VersionMismatch` terminal outcomes) are further `138-F` plan/task
+   content — deferred to Stage as before.
+10. Review after `de8b078f` → 3 more `138-F` task-content findings
+    (repeat of the `expected`/`actual` gap on both `138.001-T` and the exec
+    plan, plus a `138.002-T` task-granularity/scope violation). All three
+    are Stage-owned `138-F` plan/task-decomposition content — deferred,
+    replied, resolved. **Ship is stopping the review-remediation loop here**
+    (10 cycles, all Ship-owned content fixed, 12+ distinct `138-F`
+    plan-feasibility/task-granularity findings consistently and
+    transparently deferred to Stage with each thread replied and resolved).
+    Further whole-diff Copilot passes will very likely keep surfacing
+    additional `138-F` plan/task issues for as long as that unrevised plan
+    content remains in this PR; that is expected, accepted, and is Stage's
+    remediation surface, not evidence of an incomplete Ship closure. The
+    four-point merge gate is evaluated against the review's **presence** at
+    current HEAD and the **resolved-threads/mergeable** state, consistent
+    with the PR #364 precedent (also merged with a `COMMENTED`, not
+    `APPROVED`, review) — not against Copilot reaching a clean verdict on
+    content Ship does not own.
+11. **Total: 10 Copilot review cycles across PR #365.** Every Ship-owned
+    (closure-doc, memory, reconcile-report, backlog-metadata) finding
+    across all cycles was fixed. Every finding that required redesigning
+    `138-F`'s own implementation plan/tasks (concurrency/seam/clock/
+    message-hygiene/review-gate-classification/task-granularity/
+    field-validity feasibility — 12+ distinct items across the cycles) was
+    explicitly declined as out of this closure's mandate and handed to
+    Stage, with every thread replied to and resolved so the PR's
+    zero-unresolved-threads gate is met without silently dropping the
+    findings. Stage must revise/re-review the `138-F` plan and its harvested
+    tasks before `138.001-T`/`138.002-T` are claimed; see the consolidated
+    list above.
 
 ## Remaining work / handoff (resolved in Session 2; retained for history)
 
