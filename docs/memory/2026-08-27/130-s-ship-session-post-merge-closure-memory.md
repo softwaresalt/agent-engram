@@ -190,7 +190,7 @@ approved for merge in this session.
 
 ### PR #365 review-fix cycles (Copilot, post-push)
 
-Six review cycles against PR #365, each triggered by re-pushing this
+Eight review cycles against PR #365, each triggered by re-pushing this
 branch and re-requesting Copilot review via the GraphQL
 `requestReviews(botIds: ["BOT_kgDOCnlnWA"])` mutation (the REST
 `requested_reviewers` endpoint and `gh pr edit --add-reviewer` both no-op
@@ -276,6 +276,40 @@ session's finding):
    `-D clippy::pedantic` (`AGENTS.md:224`) — fixed as a simple, factual,
    one-line correction (same class as the earlier cargo-target-name and
    RCA-mislabel fixes; not a plan redesign).
+7. Review at `c6fed9dd` → 1 primary finding (the reconcile-summary sentence
+   didn't name `130-S` itself among `archived_ids`) — fixed in `c6fed9dd`.
+   Three more previously-missed items surfaced in the collapsed summary:
+   (a) `138-F.md`'s `spike_ref` link to `137.001-R` misused a link type
+   reserved for spike/deliberation provenance — fixed to `related_to`;
+   (b) the post-merge-closure monitoring row for terminal-daemon
+   misclassification instructed grepping a `recoverable` field that
+   doesn't exist in the diagnostics log — rewritten as a manual-reproduction
+   capture instruction; (c) the `130-S-halt-20260827T104502-0700.md`
+   (Session 1 historical report) `recommendation` field used a nonstandard
+   `operator/Stage` variant instead of the canonical
+   `HALT — operator reconcile required` — fixed (Stage-routing detail
+   already lived in the report body, so nothing was lost). All fixed in
+   `f312e134`.
+8. Review after `f312e134` → 2 final threads: the halt report's
+   `recommendation` value (already fixed above, just needed a reply) and a
+   new Stage-owned `138-F` plan-review-gate finding (the plan/hardening
+   review left `Pass` without the `ActionRisk`/approval/rollback/
+   `ActionResult` records its own elevated-blast-radius trigger requires)
+   plus a companion message-hygiene gap for T5 (a daemon's raw JSON-RPC
+   error message could leak a path into the fixed terminal client message).
+   Both are further `138-F` plan-feasibility content — replied, recorded as
+   required Stage re-triage items, resolved as accepted follow-up, not
+   fixed.
+9. **Total: 8 Copilot review cycles across PR #365.** Every Ship-owned
+   (closure-doc, memory, reconcile-report, backlog-metadata) finding across
+   all 8 cycles was fixed. Every finding that required redesigning `138-F`'s
+   own implementation plan (concurrency/seam/clock/message-hygiene/
+   review-gate-classification feasibility — 9 distinct items across the
+   cycles) was explicitly declined as out of this closure's mandate and
+   handed to Stage, with each thread replied to and resolved so the PR's
+   zero-unresolved-threads gate is met without silently dropping the
+   findings. Stage must revise/re-review the `138-F` plan before
+   `138.002-T` is claimed; see the consolidated list above.
 
 ## Remaining work / handoff (resolved in Session 2; retained for history)
 
