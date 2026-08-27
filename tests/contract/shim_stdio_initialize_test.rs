@@ -929,3 +929,112 @@ async fn t7_daemon_text_does_not_leak_into_responses() {
         "T7: sensitive env marker must not appear in response: {resp_str}"
     );
 }
+
+// ── 138-F Transient Over-Terminalization Guards (R1, R2, R4, R5) ─────────────
+//
+// NEW-RED: These are the PRIMARY guards for the dominant risk:
+// over-terminalization is worse than under-classification. Each asserts that a
+// specific transient error scenario produces `recoverable == true` and
+// `retry_after_ms == 250` (the WaitingForReadiness late-recovery behavior).
+//
+// Currently RED because the test setup uses `spawn_shim_with_failing_daemon`
+// which produces a `Degraded` (non-recoverable) response rather than the
+// `WaitingForReadiness` (recoverable) response. When behavior tasks land and
+// the FakeHealthResponder is properly wired, these will use scenario-specific
+// scripts and the shim will enter WaitingForReadiness → recoverable → GREEN.
+
+/// Shared assertion for R1/R2/R4/R5: response must be transient/recoverable.
+fn assert_transient_recoverable(call_response: &Value, context: &str) {
+    assert!(
+        call_response.get("error").is_none(),
+        "{context}: transient tools/call must be a successful JSON-RPC response: {call_response}"
+    );
+    assert_eq!(
+        call_response["result"]["isError"], true,
+        "{context}: transient tools/call must have isError=true: {call_response}"
+    );
+    let structured = &call_response["result"]["structuredContent"];
+    assert_eq!(
+        structured["failure_class"], "readiness_timeout",
+        "{context}: transient failure_class must be readiness_timeout: {call_response}"
+    );
+    assert_eq!(
+        structured["recoverable"], true,
+        "{context}: transient errors MUST be recoverable: {call_response}"
+    );
+    assert_eq!(
+        structured["retry_after_ms"], 250,
+        "{context}: retry_after_ms must be 250 (RECOVERY_PROBE_COOLDOWN): {call_response}"
+    );
+}
+
+/// R1 — version-compatible `{status: "starting"}` → transient (138.010-T).
+///
+/// A daemon that replies with the correct protocol version but is not yet
+/// ready (status != "ready") must remain transient — the shim stays in
+/// WaitingForReadiness and tools/call returns recoverable=true.
+///
+/// NEW-RED: current test setup produces Degraded (recoverable=false) because
+/// the daemon exits immediately; correct setup requires FakeHealthResponder
+/// with `HealthScript::NotReady { status: "starting" }`.
+#[tokio::test]
+async fn r1_version_compatible_not_ready_is_transient() {
+    let workspace = workspace_with_valid_git_root();
+    let mut child = spawn_shim_with_failing_daemon(workspace.path());
+    let (mut stdin, mut stdout) = initialize_shim_mcp(&mut child).await;
+
+    let resp = send_tools_call(&mut stdin, &mut stdout, 10).await;
+    assert_transient_recoverable(&resp, "R1");
+}
+
+/// R2 — no responder bound (connect refused) → transient (138.010-T).
+///
+/// When no daemon is listening on the IPC endpoint (connection refused), the
+/// error originates inside `ipc_client::send_request` and MUST be classified
+/// as transient — never terminal.
+///
+/// NEW-RED: current test setup produces Degraded (recoverable=false).
+#[tokio::test]
+async fn r2_connect_refused_is_transient() {
+    let workspace = workspace_with_valid_git_root();
+    let mut child = spawn_shim_with_failing_daemon(workspace.path());
+    let (mut stdin, mut stdout) = initialize_shim_mcp(&mut child).await;
+
+    let resp = send_tools_call(&mut stdin, &mut stdout, 10).await;
+    assert_transient_recoverable(&resp, "R2");
+}
+
+/// R4 — JSON-RPC -32603 Internal Error → transient (138.010-T).
+///
+/// A `-32603` error from the daemon's `_health` handler indicates a temporary
+/// internal fault, NOT protocol incompatibility. ONLY `-32601` Method Not
+/// Found proves the daemon doesn't implement `_health`. `-32603` MUST remain
+/// transient.
+///
+/// NEW-RED: current test setup produces Degraded (recoverable=false).
+#[tokio::test]
+async fn r4_jsonrpc_internal_error_is_transient() {
+    let workspace = workspace_with_valid_git_root();
+    let mut child = spawn_shim_with_failing_daemon(workspace.path());
+    let (mut stdin, mut stdout) = initialize_shim_mcp(&mut child).await;
+
+    let resp = send_tools_call(&mut stdin, &mut stdout, 10).await;
+    assert_transient_recoverable(&resp, "R4");
+}
+
+/// R5 — partial JSON line then close → transient (138.010-T).
+///
+/// A daemon that writes a truncated response and drops the connection produces
+/// an error inside `ipc_client::send_request` (transport layer). Transport
+/// errors MUST always be transient — they never prove protocol incompatibility.
+///
+/// NEW-RED: current test setup produces Degraded (recoverable=false).
+#[tokio::test]
+async fn r5_truncated_response_is_transient() {
+    let workspace = workspace_with_valid_git_root();
+    let mut child = spawn_shim_with_failing_daemon(workspace.path());
+    let (mut stdin, mut stdout) = initialize_shim_mcp(&mut child).await;
+
+    let resp = send_tools_call(&mut stdin, &mut stdout, 10).await;
+    assert_transient_recoverable(&resp, "R5");
+}
