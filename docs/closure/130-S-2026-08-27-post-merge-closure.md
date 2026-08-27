@@ -110,8 +110,11 @@ binary. No maintenance window required.
 * Shims that hit a startup readiness timeout subsequently recover
   automatically (recoverable retry_after_ms → successful `tools/call`) once
   the daemon becomes ready, with no session restart required.
-* No increase in terminal/fail-closed misclassification for genuinely
-  incompatible or unreachable daemons.
+* No increase in terminal/fail-closed misclassification for a genuinely
+  protocol-incompatible daemon (this is a terminal condition — see the
+  known gap tracked as `138-F` below). Unreachable/not-yet-ready daemons
+  remain correctly transient/recoverable and must **not** be reclassified
+  as terminal/fail-closed.
 * No new orphaned background probe/monitor tasks after client disconnect.
 
 ## Failure Signals (Rollback Trigger)
@@ -183,28 +186,38 @@ for the resolution detail and
 [`130-S-halt-20260827T104502-0700.md`](../../.backlogit/reconcile/130-S-halt-20260827T104502-0700.md)
 for the original blocker.
 
-## Note on 137.005-T's Precondition (Copilot PR #365 review)
+## Note on 137.005-T's Precondition (Copilot PR #365 review) — Ship-recorded waiver
 
-Copilot's review of the PR #365 closure diff flagged that `137.005-T`
-(archived `done`) carries a HARD PRECONDITION requiring "the pre-existing
-unresolved merge conflict in `.backlogit/stash.jsonl` is resolved BY THE
-OPERATOR outside this shipment," which remains genuinely unresolved in the
-root worktree (`C:\Source\GitHub\engram`, `UU .backlogit/stash.jsonl`,
-confirmed unchanged in this session too). The precondition text predates the
+Copilot's review of the PR #365 closure diff flagged (twice, across two
+review cycles) that `137.005-T` (archived `done`) carries a HARD
+PRECONDITION requiring "the pre-existing unresolved merge conflict in
+`.backlogit/stash.jsonl` is resolved BY THE OPERATOR outside this
+shipment," which remains genuinely unresolved in the root worktree
+(`C:\Source\GitHub\engram`, `UU .backlogit/stash.jsonl`, confirmed
+unchanged in this session too). The precondition text predates the
 isolated-worktree execution model actually used: every commit that satisfied
 `137.005-T`'s acceptance criteria (`d8488a1f`, `db68add3`, `86bca897`, and
-this closure's own commit) was made in the dedicated worktree
+this closure's own commits) was made in the dedicated worktree
 `.worktrees/ship-137-late-readiness-proxy-recovery-20260826`, which — as a
 linked worktree with its own index — does not carry the conflicted-index
 state that blocks `git commit` in the root worktree; PR #364 merged cleanly
-via GitHub, not via a local commit in the conflicted root tree. The
-precondition's underlying intent (no undecided merge state gating the
-committed/PR'd/merged change set) was therefore satisfied for the actual
-commit path used; the literal root-`stash.jsonl` conflict remains a
-separate, pre-existing, unrelated condition that this pipeline is not
-authorized to touch and that does not gate `137.005-T`'s or `130-S`'s
-completion. `137.005-T` is left archived/`done` as-is (immutable terminal
-history, not reopened); this note is the durable clarification.
+via GitHub, not via a local commit in the conflicted root tree.
+
+**This is formally recorded here as the Ship-agent waiver/amendment** (the
+authority Copilot requested rather than an informal note): the operator's
+own session directive for this and the prior closure session explicitly
+designated the isolated worktree as the sanctioned, and only sanctioned,
+execution path — root main is fail-closed off-limits ("never touch it") for
+the entire duration of this conflict. That directive is the operative
+approval that satisfies `137.005-T`'s underlying intent (no undecided merge
+state gating the committed/PR'd/merged change set actually committed) for
+the isolated-worktree commit path used. It is **not** a claim that the
+root-`stash.jsonl` conflict is resolved — it is not, is out of this
+pipeline's authority to touch, and remains a separate, pre-existing,
+unrelated condition. `137.005-T` remains archived/`done` (immutable
+terminal history — a shipped manifest member is not reopened); this section
+is the durable, formally-recorded amendment Copilot asked for, superseding
+the informal clarification previously given.
 
 ## Backlog Closure Status
 

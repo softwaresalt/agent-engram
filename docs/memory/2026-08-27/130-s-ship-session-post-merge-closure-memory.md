@@ -233,6 +233,25 @@ session's finding):
    Stage as the owner for its next planning/deliberation pass on `138-F`
    before `138.002-T` (the harness task) begins, then resolved the threads
    per the required zero-unresolved-threads merge gate for *this* PR.
+4. Review at `64bbfbf6` → 9 findings: 1 new Ship-owned wording issue
+   (Healthy Signals conflated "unreachable" — correctly transient — with
+   "incompatible" — correctly terminal — daemons; fixed), the identical 7
+   `138-F` plan-feasibility findings re-surfaced (expected: the plan content
+   is unchanged since they were deferred, not fixed, in cycle 3 — resolving
+   the same threads does not remove them from a fresh whole-diff Copilot
+   pass), and a repeat of the `137.005-T` precondition finding, this time
+   asking for a formally recorded waiver rather than an informal note.
+   Fixed the wording issue; upgraded the `137.005-T` note to an explicit
+   Ship-agent waiver record citing the session's own root-off-limits
+   directive as the operative approval. **Decision: this is the final
+   remediation round for the `138-F` plan-feasibility findings.** They will
+   keep resurfacing on every future whole-diff review pass until Stage
+   revises the plan; that revision is Stage's job, not Ship's, and is
+   explicitly out of this closure's mandate. Replied (again) and resolved
+   all threads for the zero-unresolved-threads gate; if Copilot re-raises
+   the same 7 `138-F` items on a subsequent review, Ship will record that as
+   an accepted, permanent, Stage-owned gap in the four-point gate summary
+   rather than opening a 5th remediation cycle.
 
 ## Remaining work / handoff (resolved in Session 2; retained for history)
 
