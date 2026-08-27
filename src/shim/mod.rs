@@ -32,6 +32,7 @@ pub mod version;
 
 use std::io::Write as _;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -238,6 +239,24 @@ async fn compute_startup_outcome(
     }
 }
 
+/// Type alias for the monitor's health-probe function.
+///
+/// Defaults to [`lifecycle::check_health`]. Tests can inject a custom
+/// implementation via the `probe` parameter to script outcomes and observe
+/// monitor probe cadence deterministically.
+type MonitorProbeFn = Arc<
+    dyn Fn(String) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// Build the default production monitor probe function.
+fn default_monitor_probe() -> MonitorProbeFn {
+    Arc::new(|endpoint: String| {
+        Box::pin(async move { lifecycle::check_health(&endpoint).await })
+    })
+}
+
 /// Continue probing a daemon after the initial readiness attribution deadline.
 ///
 /// Exactly one monitor is spawned per shim startup. It updates the shared
@@ -247,6 +266,24 @@ fn spawn_late_readiness_monitor(
     outcome_tx: Arc<watch::Sender<Option<StartupOutcome>>>,
     endpoint: String,
 ) {
+    spawn_late_readiness_monitor_with_probe(
+        outcome_tx,
+        endpoint,
+        default_monitor_probe(),
+        Arc::new(AtomicUsize::new(0)),
+    );
+}
+
+/// Inner monitor entry point with injectable probe function and observable
+/// counter. Production callers use [`spawn_late_readiness_monitor`] which
+/// supplies the defaults.
+#[allow(dead_code)] // Used by 138.012-T monitor tests
+fn spawn_late_readiness_monitor_with_probe(
+    outcome_tx: Arc<watch::Sender<Option<StartupOutcome>>>,
+    endpoint: String,
+    probe: MonitorProbeFn,
+    probe_count: Arc<AtomicUsize>,
+) {
     tokio::spawn(async move {
         let mut delay_ms = RECOVERY_INITIAL_BACKOFF_MS;
         loop {
@@ -255,7 +292,8 @@ fn spawn_late_readiness_monitor(
                 () = tokio::time::sleep(Duration::from_millis(delay_ms)) => {}
             }
 
-            if lifecycle::check_health(&endpoint).await {
+            probe_count.fetch_add(1, Ordering::Relaxed);
+            if (probe)(endpoint.clone()).await {
                 tracing::info!(
                     endpoint = %endpoint,
                     "daemon became ready after the shim startup deadline"
