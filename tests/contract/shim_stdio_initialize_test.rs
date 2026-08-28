@@ -951,7 +951,7 @@ async fn t5_durable_protocol_incompatible_record() {
             initial: Box::new(HealthScript::NotReady {
                 status: "starting".into(),
             }),
-            switch_after: 5,
+            switch_after: 8,
             then: Box::new(HealthScript::VersionMismatch { version: 999 }),
         },
         200,
@@ -960,7 +960,7 @@ async fn t5_durable_protocol_incompatible_record() {
     let (stdin, _stdout) = initialize_shim_mcp(&mut child).await;
 
     // Wait for the monitor to latch terminal and write the record.
-    tokio::time::sleep(Duration::from_millis(800)).await;
+    tokio::time::sleep(Duration::from_millis(1200)).await;
 
     // Let the shim settle into its degraded state and write its records.
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -981,28 +981,67 @@ async fn t5_durable_protocol_incompatible_record() {
         .join("shim-startup-failures.jsonl");
     let content = fs::read_to_string(&record_path).unwrap_or_default();
     let lines: Vec<&str> = content.lines().collect();
-
-    // Assert at least one protocol_incompatible record exists.
-    let protocol_records: Vec<Value> = lines
+    let all_records: Vec<Value> = lines
         .iter()
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .collect();
+
+    // Baseline: the pre-existing readiness_timeout record (written at
+    // src/shim/mod.rs:218-221 when the initial readiness deadline expires,
+    // before the monitor is ever spawned) must be present and unaffected.
+    let readiness_timeout_records: Vec<&Value> = all_records
+        .iter()
+        .filter(|r| r["failure_class"] == "readiness_timeout")
+        .collect();
+    assert_eq!(
+        readiness_timeout_records.len(),
+        1,
+        "T5: the pre-existing readiness_timeout record must be present exactly once, \
+         byte-unchanged by this feature; found {}: {content}",
+        readiness_timeout_records.len()
+    );
+
+    // Assert at least one protocol_incompatible record exists.
+    let protocol_records: Vec<&Value> = all_records
+        .iter()
         .filter(|r| r["failure_class"] == "protocol_incompatible")
         .collect();
 
-    // RED: currently 0 protocol_incompatible records exist
     assert!(
         !protocol_records.is_empty(),
         "T5: must have at least one protocol_incompatible record; \
          found only: {content}"
     );
 
-    // The record must not contain filesystem paths or environment variables.
+    // Exact schema and content contract for every protocol_incompatible
+    // record: the fixed four-field key set, the fixed record_message()
+    // string, and no filesystem path, workspace path, or environment value.
+    let ws_path = workspace.path().to_str().unwrap_or("");
     for record in &protocol_records {
         let record_str = record.to_string();
-        let ws_path = workspace.path().to_str().unwrap_or("");
+        let obj = record.as_object().unwrap_or_else(|| {
+            panic!("T5: protocol_incompatible record must be a JSON object: {record_str}")
+        });
+        let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec!["binary_version", "failure_class", "message", "timestamp"],
+            "T5: protocol_incompatible record must have exactly the documented four-field \
+             schema, no more and no fewer: {record_str}"
+        );
+        assert_eq!(
+            record["message"], "daemon protocol or _health contract is incompatible with this shim",
+            "T5: protocol_incompatible record message must be the fixed, variable-free \
+             ShimFailureClass::ProtocolIncompatible::record_message() string: {record_str}"
+        );
         assert!(
             !record_str.contains(ws_path),
             "T5: protocol_incompatible record must not contain workspace path: {record_str}"
+        );
+        assert!(
+            !record_str.contains(FAKE_SECRET_MARKER),
+            "T5: protocol_incompatible record must not contain any environment value: {record_str}"
         );
     }
 

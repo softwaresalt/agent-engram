@@ -186,7 +186,18 @@ async fn handle_connection(
             resp_line.push('\n');
             let _ = send.write_all(resp_line.as_bytes()).await;
             let _ = send.flush().await;
-            shutdown.notify_waiters();
+            // `notify_one`, not `notify_waiters`: the latter does not retain
+            // a permit for a waiter that has not yet re-registered by the
+            // time this fires (accept_loop's `tokio::select!` briefly drops
+            // out of `shutdown.notified()` between loop iterations), which
+            // could silently lose the shutdown signal and leave the
+            // listener bound. `notify_one` stores exactly one permit when no
+            // task is currently waiting, so the accept loop's next
+            // `shutdown.notified().await` reliably observes it regardless
+            // of timing (Copilot review finding on PR #366). Exactly one
+            // task (accept_loop) ever awaits this Notify, so single-permit
+            // semantics are correct here.
+            shutdown.notify_one();
             return;
         }
         if method == "_health" {

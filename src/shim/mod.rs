@@ -550,7 +550,7 @@ pub async fn run(workspace_override: Option<&str>) -> Result<(), EngramError> {
     let (outcome_tx, outcome_rx) = watch::channel(None);
     let outcome_tx = Arc::new(outcome_tx);
     let outcome_observer = outcome_rx.clone();
-    let transport_outcome_tx = Arc::downgrade(&outcome_tx);
+    let transport_outcome_tx = Arc::clone(&outcome_tx);
     let mut startup_task =
         tokio::spawn(async move { compute_startup_outcome(workspace_override, &outcome_tx).await });
 

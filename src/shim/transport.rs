@@ -6,8 +6,8 @@
 //! text items are extracted and returned as MCP content; otherwise the full
 //! result is serialised as a single text block.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use rmcp::model::{
@@ -77,8 +77,22 @@ enum EndpointResolutionError {
 /// catalog regardless of startup outcome.
 #[derive(Clone)]
 pub struct ShimHandler {
-    /// Weak publisher retained only while late-readiness recovery is active.
-    startup_tx: Weak<watch::Sender<Option<StartupOutcome>>>,
+    /// Strong publisher, live for the handler's entire lifetime.
+    ///
+    /// MUST be a strong `Arc`, not `Weak`: the request-triggered probe below
+    /// publishes a terminal `Degraded` latch as safety-critical proof that a
+    /// daemon is incompatible, and that publish must never silently no-op.
+    /// A `Weak` reference here raced against the independently-spawned
+    /// late-readiness monitor exiting and dropping its own strong sender:
+    /// if the monitor published `Ready` and returned (dropping the last
+    /// other strong sender) marginally before this handler's own Terminal
+    /// branch reached `upgrade()`, the upgrade would fail, the publish
+    /// would be silently skipped, and the shared channel would stay stuck
+    /// at `Ready` even though this call just proved the daemon incompatible
+    /// — a fail-open gap (Copilot review finding on PR #366). Holding a
+    /// strong `Arc` here for the handler's lifetime makes the publish
+    /// unconditional and removes the race entirely.
+    startup_tx: Arc<watch::Sender<Option<StartupOutcome>>>,
     /// Deferred startup outcome, published once workspace admission, daemon
     /// readiness, and IPC endpoint derivation resolve. `None` until resolved.
     startup: watch::Receiver<Option<StartupOutcome>>,
@@ -97,7 +111,7 @@ impl ShimHandler {
     /// Create a new `ShimHandler` that awaits the deferred startup outcome
     /// on `startup` before forwarding requests.
     pub fn new(
-        startup_tx: Weak<watch::Sender<Option<StartupOutcome>>>,
+        startup_tx: Arc<watch::Sender<Option<StartupOutcome>>>,
         startup: watch::Receiver<Option<StartupOutcome>>,
         timeout: Duration,
     ) -> Self {
@@ -114,7 +128,7 @@ impl ShimHandler {
     /// Test-only constructor that overrides the health-probe function.
     #[cfg(test)]
     pub(crate) fn with_probe(
-        startup_tx: Weak<watch::Sender<Option<StartupOutcome>>>,
+        startup_tx: Arc<watch::Sender<Option<StartupOutcome>>>,
         startup: watch::Receiver<Option<StartupOutcome>>,
         timeout: Duration,
         probe: ProbeFn,
@@ -185,18 +199,15 @@ impl ShimHandler {
                         match (self.probe)(endpoint.clone()).await {
                             HealthOutcome::Ready => {
                                 recovery.last_failure = None;
-                                if let Some(startup_tx) = self.startup_tx.upgrade() {
-                                    startup_tx.send_if_modified(|current| {
-                                        if matches!(current, Some(StartupOutcome::Degraded { .. }))
-                                        {
-                                            return false; // Degraded is absorbing
-                                        }
-                                        *current = Some(StartupOutcome::Ready {
-                                            endpoint: endpoint.clone(),
-                                        });
-                                        true
+                                self.startup_tx.send_if_modified(|current| {
+                                    if matches!(current, Some(StartupOutcome::Degraded { .. })) {
+                                        return false; // Degraded is absorbing
+                                    }
+                                    *current = Some(StartupOutcome::Ready {
+                                        endpoint: endpoint.clone(),
                                     });
-                                }
+                                    true
+                                });
                                 Ok(endpoint)
                             }
                             HealthOutcome::Transient => {
@@ -205,19 +216,16 @@ impl ShimHandler {
                             }
                             HealthOutcome::Terminal(kind) => {
                                 let terminal_message = kind.client_message();
-                                if let Some(startup_tx) = self.startup_tx.upgrade() {
-                                    startup_tx.send_if_modified(|current| {
-                                        if matches!(current, Some(StartupOutcome::Degraded { .. }))
-                                        {
-                                            return false; // Already terminal
-                                        }
-                                        *current = Some(StartupOutcome::Degraded {
-                                            class: ShimFailureClass::ProtocolIncompatible,
-                                            message: terminal_message.clone(),
-                                        });
-                                        true
+                                self.startup_tx.send_if_modified(|current| {
+                                    if matches!(current, Some(StartupOutcome::Degraded { .. })) {
+                                        return false; // Already terminal
+                                    }
+                                    *current = Some(StartupOutcome::Degraded {
+                                        class: ShimFailureClass::ProtocolIncompatible,
+                                        message: terminal_message.clone(),
                                     });
-                                }
+                                    true
+                                });
                                 Err(EndpointResolutionError::Permanent {
                                     class: ShimFailureClass::ProtocolIncompatible,
                                     message: terminal_message,
@@ -428,7 +436,7 @@ fn stdio_transport() -> StdioTransportPair {
 /// if the rmcp server fails to bind or the MCP session ends with a protocol
 /// error.
 pub async fn run_shim(
-    startup_tx: Weak<watch::Sender<Option<StartupOutcome>>>,
+    startup_tx: Arc<watch::Sender<Option<StartupOutcome>>>,
     startup: watch::Receiver<Option<StartupOutcome>>,
     timeout: Duration,
 ) -> Result<(), EngramError> {
@@ -471,7 +479,7 @@ mod tests {
     fn get_info_advertises_tools_capability() {
         let (tx, rx) = watch::channel(None);
         let tx = Arc::new(tx);
-        let handler = ShimHandler::new(Arc::downgrade(&tx), rx, Duration::from_secs(1));
+        let handler = ShimHandler::new(Arc::clone(&tx), rx, Duration::from_secs(1));
         let info = handler.get_info();
         assert!(
             info.capabilities.tools.is_some(),
@@ -491,8 +499,7 @@ mod tests {
             endpoint: "test-endpoint".to_owned(),
             message: "waiting for readiness (test)".to_owned(),
         }));
-        let handler =
-            ShimHandler::with_probe(Arc::downgrade(&tx), rx, Duration::from_secs(30), probe);
+        let handler = ShimHandler::with_probe(Arc::clone(&tx), rx, Duration::from_secs(30), probe);
         (tx, handler)
     }
 
@@ -720,6 +727,96 @@ mod tests {
         }
     }
 
+    /// C6 — inverse race: an independent publisher (standing in for the
+    /// late-readiness monitor) publishes `Ready` WHILE the request-triggered
+    /// probe is already in flight and later resolves `Terminal`. The
+    /// request path's terminal latch must still win — `Degraded` is the
+    /// final state — because `Degraded` proof arriving after `Ready` is
+    /// definitive and must not be dropped merely because it lands second.
+    ///
+    /// This is the "inverse" direction of C5 (monitor Ready racing a
+    /// request-path Terminal, rather than a request-path Degraded racing a
+    /// monitor Ready) — the pairing Copilot review requested on PR #366 to
+    /// accompany the fix that made `ShimHandler.startup_tx` a strong `Arc`
+    /// (previously `Weak`, which could fail to publish at all if the
+    /// monitor had already exited and dropped the last other strong
+    /// sender).
+    #[tokio::test]
+    async fn c6_inverse_race_monitor_ready_then_request_terminal_still_latches() {
+        let probe_entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let pe = Arc::clone(&probe_entered);
+        let rel = Arc::clone(&release);
+
+        // Probe blocks until released, then resolves Terminal — simulating
+        // a request-triggered probe that is already in flight when an
+        // independent publisher (the monitor) races ahead and publishes
+        // Ready on the same shared channel.
+        let probe: ProbeFn = Arc::new(move |_| {
+            let pe = Arc::clone(&pe);
+            let rel = Arc::clone(&rel);
+            Box::pin(async move {
+                pe.notify_one();
+                rel.notified().await;
+                HealthOutcome::Terminal(TerminalKind::MethodNotFound)
+            })
+        });
+
+        let (tx, handler) = handler_in_waiting(probe);
+        let mut rx = tx.subscribe();
+
+        let call = tokio::spawn({
+            let handler = handler.clone();
+            async move { handler.forwarding_endpoint().await }
+        });
+
+        // Wait for the request-path probe to genuinely enter (in flight).
+        probe_entered.notified().await;
+
+        // Simulate the monitor independently publishing Ready while the
+        // request-path probe is still in flight.
+        tx.send_if_modified(|current| {
+            if matches!(current, Some(StartupOutcome::Degraded { .. })) {
+                return false;
+            }
+            *current = Some(StartupOutcome::Ready {
+                endpoint: "test-endpoint".to_owned(),
+            });
+            true
+        });
+        assert!(
+            matches!(
+                rx.borrow_and_update().clone(),
+                Some(StartupOutcome::Ready { .. })
+            ),
+            "C6 setup: the simulated monitor publish must have landed as Ready first"
+        );
+
+        // Simulate the monitor task exiting immediately after publishing
+        // Ready, dropping its own strong sender — the exact sequence
+        // Copilot's review flagged. Only ShimHandler's own strong Arc
+        // (this test's whole point) keeps the channel writable from here.
+        drop(tx);
+
+        // Release the in-flight probe; it now resolves Terminal and must
+        // still be able to publish — ShimHandler.startup_tx is a strong Arc,
+        // so this publish can never silently no-op even after the
+        // monitor-stand-in's own sender has been dropped.
+        release.notify_one();
+        let result = call.await.expect("task should not panic");
+        assert!(
+            matches!(result, Err(EndpointResolutionError::Permanent { .. })),
+            "C6: the caller whose probe resolved Terminal must get the terminal payload"
+        );
+
+        let final_state = rx.borrow_and_update().clone();
+        assert!(
+            matches!(final_state, Some(StartupOutcome::Degraded { .. })),
+            "C6: final state must be Degraded — a later-arriving Terminal proof must win over an \
+             earlier Ready, and must never be silently dropped; got {final_state:?}"
+        );
+    }
+
     /// N2 — no extra round trip (138.006-T).
     ///
     /// A terminal outcome must consume exactly 1 `_health` request, not 2.
@@ -783,8 +880,7 @@ mod tests {
         let _ = tx.send(Some(StartupOutcome::Ready {
             endpoint: "test-happy-path-endpoint".to_owned(),
         }));
-        let handler =
-            ShimHandler::with_probe(Arc::downgrade(&tx), rx, Duration::from_secs(30), probe);
+        let handler = ShimHandler::with_probe(Arc::clone(&tx), rx, Duration::from_secs(30), probe);
 
         // Multiple forwarding_endpoint calls in the Ready state.
         for _ in 0..10 {
