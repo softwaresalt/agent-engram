@@ -1005,7 +1005,7 @@ async fn t7_daemon_text_does_not_leak_into_responses() {
     let ws_path_str = workspace.path().to_str().unwrap_or("").to_owned();
     // Embed the workspace path AND the fake secret in the error message so we
     // can verify neither leaks into the client-visible response.
-    let poisoned_message = format!("internal error at {ws_path_str} env={FAKE_SECRET_MARKER}",);
+    let poisoned_message = format!("internal error at {ws_path_str} env={FAKE_SECRET_MARKER}");
     let (mut child, _fake, _ep) = spawn_shim_with_fake_health(
         workspace.path(),
         HealthScript::JsonRpcError {
