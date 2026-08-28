@@ -969,6 +969,15 @@ async fn run_startup_driver(
     ttl: Arc<TtlTimer>,
     shutdown_tx: Arc<watch::Sender<bool>>,
 ) {
+    #[cfg(debug_assertions)]
+    if let Some(delay_ms) = std::env::var("ENGRAM_TEST_STARTUP_DELAY_MS")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+    {
+        debug!(delay_ms, "applying test-only daemon startup delay");
+        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+    }
+
     if let Err(error) = crate::tools::lifecycle::set_workspace(Arc::clone(&state), workspace).await
     {
         error!(%error, "workspace hydration failed — initiating shutdown");
@@ -976,7 +985,7 @@ async fn run_startup_driver(
         return;
     }
 
-    info!("workspace hydration complete — daemon ready to serve");
+    info!("workspace binding published; background database hydration started");
     ttl.reset();
     let ttl_task = Arc::clone(&ttl);
     tokio::spawn(async move {

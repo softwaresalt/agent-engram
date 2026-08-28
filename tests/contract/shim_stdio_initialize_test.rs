@@ -24,6 +24,10 @@ use serde_json::Value;
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 
+use engram::daemon::protocol::IpcRequest;
+use engram::shim::ipc_client::{probe, send_request};
+use engram::shim::lifecycle::check_health;
+
 /// A marker value planted in the environment to prove it is never echoed
 /// into stdout, stderr, or the durable startup-failure record.
 const FAKE_SECRET_MARKER: &str = "engram-test-secret-marker-4f1c9b7e";
@@ -75,6 +79,85 @@ fn spawn_shim_with_failing_daemon(workspace: &Path) -> tokio::process::Child {
         .kill_on_drop(true)
         .spawn()
         .expect("spawn engram shim")
+}
+
+fn spawn_shim_with_readiness_budget(workspace: &Path, timeout_ms: u64) -> tokio::process::Child {
+    tokio::process::Command::new(env!("CARGO_BIN_EXE_engram"))
+        .args(["shim", "--workspace"])
+        .arg(workspace)
+        .env_remove("ENGRAM_DATA_DIR")
+        .env("CARGO_BIN_EXE_engram", env!("CARGO_BIN_EXE_engram"))
+        .env("ENGRAM_READY_TIMEOUT_MS", timeout_ms.to_string())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn engram shim")
+}
+
+async fn spawn_delayed_daemon(workspace: &Path, delay_ms: u64) -> (tokio::process::Child, String) {
+    let endpoint =
+        engram::daemon::ipc_server::ipc_endpoint(workspace).expect("derive daemon endpoint");
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_engram"))
+        .args(["daemon", "--workspace"])
+        .arg(workspace)
+        .env_remove("ENGRAM_DATA_DIR")
+        .env("ENGRAM_TEST_STARTUP_DELAY_MS", delay_ms.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn delayed daemon");
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if probe(&endpoint, Duration::from_millis(100)).await.is_ok() {
+            return (child, endpoint);
+        }
+        assert!(
+            child.try_wait().expect("inspect delayed daemon").is_none(),
+            "delayed daemon exited before binding its endpoint"
+        );
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "delayed daemon did not bind within 10s"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+async fn wait_for_daemon_ready(endpoint: &str) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while !check_health(endpoint).await {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "delayed daemon did not become ready within 30s"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+async fn shutdown_daemon(child: &mut tokio::process::Child, endpoint: &str) {
+    let request = IpcRequest {
+        jsonrpc: "2.0".to_owned(),
+        id: Some(Value::from(9001)),
+        method: "_shutdown".to_owned(),
+        params: None,
+    };
+    let response = send_request(endpoint, &request, Duration::from_secs(2))
+        .await
+        .expect("request delayed daemon shutdown");
+    assert!(
+        response.error.is_none(),
+        "delayed daemon rejected shutdown: {response:?}"
+    );
+    let status = tokio::time::timeout(Duration::from_secs(5), child.wait())
+        .await
+        .expect("delayed daemon must exit within 5s")
+        .expect("wait for delayed daemon");
+    assert!(status.success(), "delayed daemon exited unsuccessfully");
 }
 
 /// Scenarios (a), (b), (c): `initialize` completes, `tools/list` returns the
@@ -186,6 +269,10 @@ async fn shim_serves_initialize_and_tools_list_then_degrades_tool_calls_on_daemo
         structured["failure_class"], "readiness_timeout",
         "degraded tools/call structured content must carry the failure_class: {call_response}"
     );
+    assert_eq!(
+        structured["recoverable"], false,
+        "a daemon process that exited during startup must remain terminal: {call_response}"
+    );
     let content_text = call_response["result"]["content"][0]["text"]
         .as_str()
         .expect("degraded tools/call must carry visible content text");
@@ -291,6 +378,154 @@ async fn shim_serves_initialize_and_tools_list_then_degrades_tool_calls_on_daemo
     assert!(
         saw_record,
         "durable startup-failure record must contain at least one entry"
+    );
+}
+
+/// A readiness timeout is an attribution deadline, not a permanent session
+/// failure. The same long-lived stdio shim must recover when the workspace
+/// daemon later becomes ready at the named-pipe endpoint.
+#[tokio::test]
+async fn shim_recovers_after_timed_out_daemon_later_becomes_ready() {
+    let workspace = workspace_with_valid_git_root();
+    let (mut daemon, endpoint) = spawn_delayed_daemon(workspace.path(), 1000).await;
+    let mut child = spawn_shim_with_readiness_budget(workspace.path(), 1);
+    let mut stdin = child.stdin.take().expect("capture shim stdin");
+    let stdout = child.stdout.take().expect("capture shim stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    stdin
+        .write_all(
+            br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"late-readiness-recovery-contract","version":"1.0"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_workspace_status","arguments":{}}}
+"#,
+        )
+        .await
+        .expect("initialize shim and request status before daemon readiness");
+
+    let initialize_line = read_bounded_mcp_line(
+        &mut stdout,
+        Duration::from_secs(20),
+        "MCP initialize response",
+    )
+    .await;
+    let initialize_response: Value = serde_json::from_str(initialize_line.trim())
+        .expect("initialize stdout must contain one MCP frame");
+    assert!(
+        initialize_response.get("error").is_none(),
+        "initialize must succeed before daemon readiness: {initialize_response}"
+    );
+
+    let degraded_line = read_bounded_mcp_line(
+        &mut stdout,
+        Duration::from_secs(20),
+        "initial degraded tools/call response",
+    )
+    .await;
+    let degraded_response: Value = serde_json::from_str(degraded_line.trim())
+        .expect("degraded tools/call stdout must contain one MCP frame");
+    assert_eq!(
+        degraded_response["result"]["structuredContent"]["failure_class"], "readiness_timeout",
+        "the first call must observe the intentional readiness timeout: {degraded_response}"
+    );
+    assert_eq!(
+        degraded_response["result"]["structuredContent"]["recoverable"], true,
+        "late daemon readiness must be explicitly retryable for MCP agents: {degraded_response}"
+    );
+    assert!(
+        degraded_response["result"]["structuredContent"]["retry_after_ms"]
+            .as_u64()
+            .is_some_and(|retry_after_ms| retry_after_ms > 0),
+        "a recoverable error must tell agents when to retry: {degraded_response}"
+    );
+
+    wait_for_daemon_ready(&endpoint).await;
+
+    stdin
+        .write_all(
+            br#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_workspace_status","arguments":{}}}
+"#,
+        )
+        .await
+        .expect("request status through the same shim after daemon readiness");
+    let recovered_line = read_bounded_mcp_line(
+        &mut stdout,
+        Duration::from_secs(10),
+        "recovered tools/call response",
+    )
+    .await;
+    let recovered_response: Value = serde_json::from_str(recovered_line.trim())
+        .expect("recovered tools/call stdout must contain one MCP frame");
+    assert!(
+        recovered_response.get("error").is_none(),
+        "the recovered request must not return a JSON-RPC error: {recovered_response}"
+    );
+    assert_ne!(
+        recovered_response["result"]["isError"], true,
+        "the same shim must forward calls after late daemon readiness: {recovered_response}"
+    );
+
+    shutdown_daemon(&mut daemon, &endpoint).await;
+    stdin.shutdown().await.expect("close MCP stdin");
+    drop(stdin);
+    let exit_status = tokio::time::timeout(Duration::from_secs(5), child.wait())
+        .await
+        .expect("recovered shim must exit within 5s of stdin closing")
+        .expect("wait for recovered shim");
+    assert!(
+        exit_status.success(),
+        "a shim that recovered before session end must exit successfully: {exit_status}"
+    );
+}
+
+/// A client disconnect must cancel unresolved startup work instead of keeping
+/// the stdio process alive for the daemon's full readiness budget.
+#[tokio::test]
+async fn shim_aborts_unresolved_startup_after_client_disconnects() {
+    let workspace = workspace_with_valid_git_root();
+    let (mut daemon, endpoint) = spawn_delayed_daemon(workspace.path(), 5000).await;
+    let mut child = spawn_shim_with_readiness_budget(workspace.path(), 30_000);
+    let mut stdin = child.stdin.take().expect("capture shim stdin");
+    let stdout = child.stdout.take().expect("capture shim stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    stdin
+        .write_all(
+            br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"startup-cancellation-contract","version":"1.0"}}}
+"#,
+        )
+        .await
+        .expect("initialize shim while daemon startup remains unresolved");
+    let initialize_line = read_bounded_mcp_line(
+        &mut stdout,
+        Duration::from_secs(20),
+        "MCP initialize response",
+    )
+    .await;
+    let initialize_response: Value = serde_json::from_str(initialize_line.trim())
+        .expect("initialize stdout must contain one MCP frame");
+    assert!(
+        initialize_response.get("error").is_none(),
+        "initialize must not wait for daemon readiness: {initialize_response}"
+    );
+
+    let disconnected_at = Instant::now();
+    stdin.shutdown().await.expect("close MCP stdin");
+    drop(stdin);
+    let exit_status = tokio::time::timeout(Duration::from_secs(5), child.wait())
+        .await
+        .expect("shim must cancel unresolved startup within 5s")
+        .expect("wait for cancelled shim");
+    shutdown_daemon(&mut daemon, &endpoint).await;
+
+    assert!(
+        disconnected_at.elapsed() < Duration::from_secs(5),
+        "shim waited too long after client disconnect"
+    );
+    assert_eq!(
+        exit_status.code(),
+        Some(13),
+        "unresolved startup teardown must report transport_failure"
     );
 }
 

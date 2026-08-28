@@ -80,6 +80,8 @@ tmp/
 .backlogit/telemetry.jsonl
 .backlogit/telemetry-sessions.jsonl
 .backlogit/.telemetry-checkpoint.json
+.backlogit/checkpoints/
+.backlogit/runtime/
 
 # graphtor-docs — managed by graphtor-docs install
 .graphtor/

@@ -47,6 +47,14 @@ pub type Db = CozoDb;
 
 type DbOpenLock = Arc<Mutex<()>>;
 
+struct DbStartupTimings {
+    process_lock: Duration,
+    file_lock: Duration,
+    database_open: Duration,
+    schema_bootstrap: Duration,
+    blocking_total: Duration,
+}
+
 // Intentionally retain one lock per concrete DB path for the daemon lifetime.
 // Weak/strong-count eviction reintroduces a TOCTOU window where concurrent
 // callers can race to install distinct locks for the same path.
@@ -108,6 +116,7 @@ impl SchemaTarget for CozoDb {
 /// (another process is opening the same DB), the database cannot be opened,
 /// or schema bootstrap fails with an unexpected error.
 pub async fn connect_db(data_dir: &Path, branch: &str) -> Result<Db, EngramError> {
+    let connect_started = Instant::now();
     let branch_safe = branch.replace(['/', '\\', ':'], "_");
     let db_dir = data_dir.join("cozo").join(&branch_safe);
     std::fs::create_dir_all(&db_dir)
@@ -115,6 +124,9 @@ pub async fn connect_db(data_dir: &Path, branch: &str) -> Result<Db, EngramError
 
     let db_path = db_dir.join("engram.db");
     let lock_path = db_dir.join("engram.db.lock");
+    let db_bytes = std::fs::metadata(&db_path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
     let db_path_str = db_path
         .to_str()
         .ok_or_else(|| map_db_err("CozoDB path is not valid UTF-8"))?
@@ -139,64 +151,94 @@ pub async fn connect_db(data_dir: &Path, branch: &str) -> Result<Db, EngramError
     // deadline so the task itself enforces the timeout — there is no dangling
     // background thread after a timeout return. 50 ms polling interval keeps
     // CPU overhead negligible while bounding the worst-case latency.
-    let cozo_db = tokio::task::spawn_blocking(move || -> Result<CozoDb, EngramError> {
-        let open_lock = connect_db_open_lock(&db_path);
-        let _open_guard = match open_lock.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
+    let (cozo_db, timings) =
+        tokio::task::spawn_blocking(move || -> Result<(CozoDb, DbStartupTimings), EngramError> {
+            let blocking_started = Instant::now();
+            let process_lock_started = Instant::now();
+            let open_lock = connect_db_open_lock(&db_path);
+            let _open_guard = match open_lock.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            let process_lock = process_lock_started.elapsed();
 
-        let lock_file = std::fs::OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(false)
-            .open(&lock_path)
-            .map_err(|e| map_db_err(format!("cannot open CozoDB lock file: {e}")))?;
-        let mut file_lock = fd_lock::RwLock::new(lock_file);
-        let deadline = Instant::now() + Duration::from_secs(30);
-        // Poll with try_write so the thread respects the deadline and exits cleanly.
-        let _guard = loop {
-            if let Ok(guard) = file_lock.try_write() {
-                break guard;
-            } else if Instant::now() >= deadline {
-                return Err(map_db_err(
-                    "cannot acquire CozoDB lock: timed out after 30 s \
+            let file_lock_started = Instant::now();
+            let lock_file = std::fs::OpenOptions::new()
+                .create(true)
+                .read(true)
+                .write(true)
+                .truncate(false)
+                .open(&lock_path)
+                .map_err(|e| map_db_err(format!("cannot open CozoDB lock file: {e}")))?;
+            let mut file_lock = fd_lock::RwLock::new(lock_file);
+            let deadline = Instant::now() + Duration::from_secs(30);
+            // Poll with try_write so the thread respects the deadline and exits cleanly.
+            let _guard = loop {
+                if let Ok(guard) = file_lock.try_write() {
+                    break guard;
+                } else if Instant::now() >= deadline {
+                    return Err(map_db_err(
+                        "cannot acquire CozoDB lock: timed out after 30 s \
                      (another process is opening the same database)",
-                ));
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        };
-        // Bounded reopen-retry (086.002-T): the serialisation lock above prevents
-        // the CONCURRENT-open panic, but a rapid SEQUENTIAL reopen can still hit a
-        // transient `database is locked` (SQLITE_BUSY) when the OS releases a
-        // just-closed handle's lock lazily (Windows lag). cozo 0.7.x `unwrap()`s
-        // internally, so that transient surfaces as a PANIC, not an Err (U015-FLK1;
-        // docs/compound/concurrency-issues/cozodb-sqlite-lock-panic-2026-05-01.md).
-        // `catch_busy_panic` converts that busy panic into a retryable error so the
-        // bounded back-off (+jitter) can absorb it; non-busy panics are re-raised.
-        // Interim SQLITE_BUSY mitigation — durable fix tracked as 041.002-T
-        // (removable once cozo >= 0.8 handles SQLITE_BUSY gracefully).
-        let db = open_db_with_retry(
-            || {
-                catch_busy_panic(|| {
-                    cozo::DbInstance::new("sqlite", &db_path_str, Default::default())
-                })
-            },
-            |attempt| std::thread::sleep(reopen_backoff(attempt)),
-        )?;
-        let cozo_db = CozoDb {
-            inner: Arc::new(db),
-        };
-        // Bootstrap runs inside the lock so schema writes are serialised
-        // across concurrent callers (intra-process U015-FLK1 residual fix).
-        schema::run_schema_bootstrap(&cozo_db)?;
-        Ok(cozo_db)
-        // `_guard` dropped here — lock released after open + bootstrap
-    })
-    .await
-    .map_err(|join_err| map_db_err(format!("DB open task panicked: {join_err}")))??;
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            };
+            let file_lock = file_lock_started.elapsed();
+            // Bounded reopen-retry (086.002-T): the serialisation lock above prevents
+            // the CONCURRENT-open panic, but a rapid SEQUENTIAL reopen can still hit a
+            // transient `database is locked` (SQLITE_BUSY) when the OS releases a
+            // just-closed handle's lock lazily (Windows lag). cozo 0.7.x `unwrap()`s
+            // internally, so that transient surfaces as a PANIC, not an Err (U015-FLK1;
+            // docs/compound/concurrency-issues/cozodb-sqlite-lock-panic-2026-05-01.md).
+            // `catch_busy_panic` converts that busy panic into a retryable error so the
+            // bounded back-off (+jitter) can absorb it; non-busy panics are re-raised.
+            // Interim SQLITE_BUSY mitigation — durable fix tracked as 041.002-T
+            // (removable once cozo >= 0.8 handles SQLITE_BUSY gracefully).
+            let db_open_started = Instant::now();
+            let db = open_db_with_retry(
+                || {
+                    catch_busy_panic(|| {
+                        cozo::DbInstance::new("sqlite", &db_path_str, Default::default())
+                    })
+                },
+                |attempt| std::thread::sleep(reopen_backoff(attempt)),
+            )?;
+            let database_open = db_open_started.elapsed();
+            let cozo_db = CozoDb {
+                inner: Arc::new(db),
+            };
+            // Bootstrap runs inside the lock so schema writes are serialised
+            // across concurrent callers (intra-process U015-FLK1 residual fix).
+            let schema_started = Instant::now();
+            schema::run_schema_bootstrap(&cozo_db)?;
+            let schema_bootstrap = schema_started.elapsed();
+            Ok((
+                cozo_db,
+                DbStartupTimings {
+                    process_lock,
+                    file_lock,
+                    database_open,
+                    schema_bootstrap,
+                    blocking_total: blocking_started.elapsed(),
+                },
+            ))
+            // `_guard` dropped here — lock released after open + bootstrap
+        })
+        .await
+        .map_err(|join_err| map_db_err(format!("DB open task panicked: {join_err}")))??;
 
+    tracing::info!(
+        process_lock_ms = %timings.process_lock.as_millis(),
+        file_lock_ms = %timings.file_lock.as_millis(),
+        database_open_ms = %timings.database_open.as_millis(),
+        schema_bootstrap_ms = %timings.schema_bootstrap.as_millis(),
+        blocking_total_ms = %timings.blocking_total.as_millis(),
+        connect_total_ms = %connect_started.elapsed().as_millis(),
+        db_bytes,
+        branch,
+        "CozoDB startup timing"
+    );
     Ok(cozo_db)
 }
 
