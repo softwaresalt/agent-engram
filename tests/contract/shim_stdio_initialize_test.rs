@@ -803,7 +803,7 @@ async fn t1_wrong_protocol_version_is_terminal() {
             initial: Box::new(HealthScript::NotReady {
                 status: "starting".into(),
             }),
-            switch_after: 5,
+            switch_after: 8,
             then: Box::new(HealthScript::VersionMismatch { version: 999 }),
         },
         200,
@@ -812,7 +812,16 @@ async fn t1_wrong_protocol_version_is_terminal() {
     let (mut stdin, mut stdout) = initialize_shim_mcp(&mut child).await;
 
     // Wait for the monitor/forwarding probe to fire and latch terminal.
-    tokio::time::sleep(Duration::from_millis(800)).await;
+    // switch_after=8 keeps every pre-deadline ensure_daemon_running probe on
+    // the initial NotReady response (its own faster polling exhausts its
+    // 200ms budget at ~5 probes), forcing a genuine timeout into
+    // WaitingForReadiness before the monitor's own slower probing later
+    // discovers the VersionMismatch — otherwise ensure_daemon_running's own
+    // fast-fail-on-VersionMismatch escape (daemon_ready) could observe the
+    // switched response before the deadline and classify terminal via the
+    // pre-startup path instead of the late-readiness path this test targets
+    // (Copilot review finding on PR #366).
+    tokio::time::sleep(Duration::from_millis(1200)).await;
 
     // First tools/call: should get terminal protocol_incompatible
     let resp = send_tools_call(&mut stdin, &mut stdout, 10).await;
@@ -1323,7 +1332,7 @@ async fn c4_terminal_latch_client_disconnect_terminates_promptly() {
             initial: Box::new(HealthScript::NotReady {
                 status: "starting".into(),
             }),
-            switch_after: 5,
+            switch_after: 8,
             then: Box::new(HealthScript::VersionMismatch { version: 999 }),
         },
         200,
@@ -1331,8 +1340,10 @@ async fn c4_terminal_latch_client_disconnect_terminates_promptly() {
     .await;
     let (mut stdin, mut stdout) = initialize_shim_mcp(&mut child).await;
 
-    // Wait for terminal latch.
-    tokio::time::sleep(Duration::from_millis(800)).await;
+    // Wait for terminal latch. switch_after=8 (see t1_wrong_protocol_version_is_terminal
+    // for the full rationale) ensures this exercises the late-readiness
+    // monitor path, not the pre-deadline ensure_daemon_running fast-fail path.
+    tokio::time::sleep(Duration::from_millis(1200)).await;
 
     // Get the first degraded tools/call so we know the session is active.
     let resp = send_tools_call(&mut stdin, &mut stdout, 10).await;
