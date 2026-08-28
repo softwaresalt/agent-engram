@@ -33,7 +33,11 @@ const RECOVERY_PROBE_COOLDOWN: Duration = Duration::from_millis(250);
 /// Defaults to [`crate::shim::lifecycle::probe_health`]. Tests can inject a
 /// custom implementation via [`ShimHandler::with_probe`] to script outcomes
 /// and observe probe counts without touching the real IPC path.
-type ProbeFn = Arc<dyn Fn(String) -> std::pin::Pin<Box<dyn std::future::Future<Output = HealthOutcome> + Send>> + Send + Sync>;
+type ProbeFn = Arc<
+    dyn Fn(String) -> std::pin::Pin<Box<dyn std::future::Future<Output = HealthOutcome> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// Build the default production probe function.
 fn default_probe() -> ProbeFn {
@@ -184,7 +188,8 @@ impl ShimHandler {
                                 recovery.last_failure = None;
                                 if let Some(startup_tx) = self.startup_tx.upgrade() {
                                     startup_tx.send_if_modified(|current| {
-                                        if matches!(current, Some(StartupOutcome::Degraded { .. })) {
+                                        if matches!(current, Some(StartupOutcome::Degraded { .. }))
+                                        {
                                             return false; // Degraded is absorbing
                                         }
                                         *current = Some(StartupOutcome::Ready {
@@ -203,7 +208,8 @@ impl ShimHandler {
                                 let terminal_message = terminal_kind_message(&kind);
                                 if let Some(startup_tx) = self.startup_tx.upgrade() {
                                     startup_tx.send_if_modified(|current| {
-                                        if matches!(current, Some(StartupOutcome::Degraded { .. })) {
+                                        if matches!(current, Some(StartupOutcome::Degraded { .. }))
+                                        {
                                             return false; // Already terminal
                                         }
                                         *current = Some(StartupOutcome::Degraded {
@@ -234,15 +240,11 @@ fn terminal_kind_message(kind: &TerminalKind) -> String {
         TerminalKind::VersionMismatch { expected, actual } => {
             format!("daemon protocol version {actual} is incompatible (expected {expected})")
         }
-        TerminalKind::MethodNotFound => {
-            "daemon does not implement the _health method".to_owned()
-        }
+        TerminalKind::MethodNotFound => "daemon does not implement the _health method".to_owned(),
         TerminalKind::MissingResult => {
             "daemon _health response omitted the result payload".to_owned()
         }
-        TerminalKind::UndecodablePayload => {
-            "daemon _health result could not be decoded".to_owned()
-        }
+        TerminalKind::UndecodablePayload => "daemon _health result could not be decoded".to_owned(),
     }
 }
 
@@ -494,19 +496,17 @@ mod tests {
     // ── 138-F concurrency / amplification harness ─────────────────────────
 
     /// Build a `ShimHandler` in `WaitingForReadiness` state with a custom probe.
-    fn handler_in_waiting(probe: ProbeFn) -> (Arc<watch::Sender<Option<StartupOutcome>>>, ShimHandler) {
+    fn handler_in_waiting(
+        probe: ProbeFn,
+    ) -> (Arc<watch::Sender<Option<StartupOutcome>>>, ShimHandler) {
         let (tx, rx) = watch::channel(None);
         let tx = Arc::new(tx);
         let _ = tx.send(Some(StartupOutcome::WaitingForReadiness {
             endpoint: "test-endpoint".to_owned(),
             message: "waiting for readiness (test)".to_owned(),
         }));
-        let handler = ShimHandler::with_probe(
-            Arc::downgrade(&tx),
-            rx,
-            Duration::from_secs(30),
-            probe,
-        );
+        let handler =
+            ShimHandler::with_probe(Arc::downgrade(&tx), rx, Duration::from_secs(30), probe);
         (tx, handler)
     }
 
@@ -523,6 +523,7 @@ mod tests {
     /// the single-flight mutex + cooldown already produce this result. This test
     /// pins the current behavior so that Phase 3 changes preserve it.
     #[tokio::test]
+    #[allow(clippy::similar_names)]
     async fn c1_single_flight_suppresses_concurrent_probes() {
         for _ in 0..5 {
             let probe_count = Arc::new(AtomicUsize::new(0));
@@ -572,9 +573,8 @@ mod tests {
             let mut recoverable_count = 0;
             for h in handles {
                 let result = h.await.expect("task should not panic");
-                match result {
-                    Err(EndpointResolutionError::Recoverable { .. }) => recoverable_count += 1,
-                    _ => {}
+                if let Err(EndpointResolutionError::Recoverable { .. }) = result {
+                    recoverable_count += 1;
                 }
             }
             assert_eq!(
@@ -582,7 +582,10 @@ mod tests {
                 1,
                 "C1: total probes must be 1"
             );
-            assert_eq!(recoverable_count, 8, "C1: all 8 callers should get recoverable");
+            assert_eq!(
+                recoverable_count, 8,
+                "C1: all 8 callers should get recoverable"
+            );
         }
     }
 
@@ -612,13 +615,23 @@ mod tests {
 
             // First probe at t0.
             let r = handler.forwarding_endpoint().await;
-            assert!(matches!(r, Err(EndpointResolutionError::Recoverable { .. })));
-            assert_eq!(probe_count.load(AtomicOrdering::SeqCst), 1, "C2: first call probes");
+            assert!(matches!(
+                r,
+                Err(EndpointResolutionError::Recoverable { .. })
+            ));
+            assert_eq!(
+                probe_count.load(AtomicOrdering::SeqCst),
+                1,
+                "C2: first call probes"
+            );
 
             // At t0 + 50 ms: within cooldown, no probe.
             tokio::time::advance(Duration::from_millis(50)).await;
             let r = handler.forwarding_endpoint().await;
-            assert!(matches!(r, Err(EndpointResolutionError::Recoverable { .. })));
+            assert!(matches!(
+                r,
+                Err(EndpointResolutionError::Recoverable { .. })
+            ));
             assert_eq!(
                 probe_count.load(AtomicOrdering::SeqCst),
                 1,
@@ -628,7 +641,10 @@ mod tests {
             // At t0 + 250 ms: cooldown expired, should probe again.
             tokio::time::advance(Duration::from_millis(200)).await;
             let r = handler.forwarding_endpoint().await;
-            assert!(matches!(r, Err(EndpointResolutionError::Recoverable { .. })));
+            assert!(matches!(
+                r,
+                Err(EndpointResolutionError::Recoverable { .. })
+            ));
             assert_eq!(
                 probe_count.load(AtomicOrdering::SeqCst),
                 2,
@@ -646,6 +662,7 @@ mod tests {
     /// NEW-RED: currently `probe() -> false` yields `Recoverable`, not
     /// `Permanent`. The terminal latch does not exist until 138.004-T lands.
     #[tokio::test]
+    #[allow(clippy::similar_names)]
     async fn c3_terminal_latch_under_concurrency() {
         for _ in 0..5 {
             let probe_count = Arc::new(AtomicUsize::new(0));
@@ -780,12 +797,8 @@ mod tests {
         let _ = tx.send(Some(StartupOutcome::Ready {
             endpoint: "test-happy-path-endpoint".to_owned(),
         }));
-        let handler = ShimHandler::with_probe(
-            Arc::downgrade(&tx),
-            rx,
-            Duration::from_secs(30),
-            probe,
-        );
+        let handler =
+            ShimHandler::with_probe(Arc::downgrade(&tx), rx, Duration::from_secs(30), probe);
 
         // Multiple forwarding_endpoint calls in the Ready state.
         for _ in 0..10 {

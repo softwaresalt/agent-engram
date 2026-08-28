@@ -18,7 +18,7 @@ use crate::daemon::protocol::{HealthCheckResult, IpcRequest};
 use crate::db::workspace::{canonicalize_workspace, normalize_canonical};
 use crate::errors::{DaemonError, EngramError, IpcError};
 use crate::shim::pidfile::PidFile;
-use crate::shim::version::{ensure_protocol_compatible, ENGRAM_PROTOCOL_VERSION};
+use crate::shim::version::{ENGRAM_PROTOCOL_VERSION, ensure_protocol_compatible};
 
 // ── Backoff constants ─────────────────────────────────────────────────────────
 
@@ -121,19 +121,16 @@ pub(crate) async fn probe_health(endpoint: &str) -> HealthOutcome {
         params: None,
     };
 
-    let response = match crate::shim::ipc_client::send_request(
-        endpoint,
-        &request,
-        Duration::from_millis(500),
-    )
-    .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            debug!(error = %e, "health probe transport error (transient)");
-            return HealthOutcome::Transient;
-        }
-    };
+    let response =
+        match crate::shim::ipc_client::send_request(endpoint, &request, Duration::from_millis(500))
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                debug!(error = %e, "health probe transport error (transient)");
+                return HealthOutcome::Transient;
+            }
+        };
 
     // JSON-RPC error classification.
     if let Some(error) = response.error {

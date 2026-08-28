@@ -10,14 +10,14 @@
 //! uses only the `interprocess` crate already in the workspace dependency
 //! graph.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use interprocess::local_socket::{
-    tokio::{prelude::*, Listener, Stream},
     ListenerOptions,
+    tokio::{Listener, Stream, prelude::*},
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use engram::shim::version::ENGRAM_PROTOCOL_VERSION;
@@ -39,6 +39,12 @@ pub enum HealthScript {
     UndecodableResult,
     /// Write a truncated (non-JSON) line then close the connection.
     TruncatedThenClose,
+    /// Use `initial` for the first `switch_after` probes, then switch to `then`.
+    Sequence {
+        initial: Box<HealthScript>,
+        switch_after: usize,
+        then: Box<HealthScript>,
+    },
 }
 
 /// A running fake `_health` responder with an observable probe counter.
@@ -47,6 +53,8 @@ pub struct FakeHealthResponder {
     pub probe_count: Arc<AtomicUsize>,
     /// Handle to the background accept loop; dropping cancels it.
     _task: tokio::task::JoinHandle<()>,
+    /// Signal to shut down the accept loop (set on `_shutdown` receipt).
+    shutdown: Arc<tokio::sync::Notify>,
 }
 
 impl FakeHealthResponder {
@@ -56,33 +64,39 @@ impl FakeHealthResponder {
     ///
     /// The `script` is shared across all connections — to change behavior
     /// mid-test, use `ScriptedResponder` (below) instead.
+    ///
+    /// The responder also handles `_shutdown` requests by stopping the accept
+    /// loop, causing subsequent `probe()` calls to fail with connect-refused.
     pub fn spawn(endpoint: &str, script: HealthScript) -> Self {
         let probe_count = Arc::new(AtomicUsize::new(0));
         let count = Arc::clone(&probe_count);
+        let shutdown = Arc::new(tokio::sync::Notify::new());
+        let shutdown_clone = Arc::clone(&shutdown);
         let listener = bind_listener(endpoint);
         let task = tokio::spawn(async move {
-            accept_loop(listener, Arc::new(script), count).await;
+            accept_loop(listener, Arc::new(script), count, shutdown_clone).await;
         });
         Self {
             probe_count,
             _task: task,
+            shutdown,
         }
     }
 
     /// Spawn with a dynamically switchable script.
-    pub fn spawn_dynamic(
-        endpoint: &str,
-        script: Arc<tokio::sync::Mutex<HealthScript>>,
-    ) -> Self {
+    pub fn spawn_dynamic(endpoint: &str, script: Arc<tokio::sync::Mutex<HealthScript>>) -> Self {
         let probe_count = Arc::new(AtomicUsize::new(0));
         let count = Arc::clone(&probe_count);
+        let shutdown = Arc::new(tokio::sync::Notify::new());
+        let shutdown_clone = Arc::clone(&shutdown);
         let listener = bind_listener(endpoint);
         let task = tokio::spawn(async move {
-            accept_loop_dynamic(listener, script, count).await;
+            accept_loop_dynamic(listener, script, count, shutdown_clone).await;
         });
         Self {
             probe_count,
             _task: task,
+            shutdown,
         }
     }
 
@@ -98,15 +112,21 @@ async fn accept_loop(
     listener: Listener,
     script: Arc<HealthScript>,
     probe_count: Arc<AtomicUsize>,
+    shutdown: Arc<tokio::sync::Notify>,
 ) {
     loop {
-        let Ok(stream) = listener.accept().await else {
-            continue;
+        let stream = tokio::select! {
+            result = listener.accept() => match result {
+                Ok(s) => s,
+                Err(_) => continue,
+            },
+            () = shutdown.notified() => return,
         };
         let s = Arc::clone(&script);
         let c = Arc::clone(&probe_count);
+        let sd = Arc::clone(&shutdown);
         tokio::spawn(async move {
-            handle_connection(stream, &s, &c).await;
+            handle_connection(stream, &s, &c, &sd).await;
         });
     }
 }
@@ -115,16 +135,22 @@ async fn accept_loop_dynamic(
     listener: Listener,
     script: Arc<tokio::sync::Mutex<HealthScript>>,
     probe_count: Arc<AtomicUsize>,
+    shutdown: Arc<tokio::sync::Notify>,
 ) {
     loop {
-        let Ok(stream) = listener.accept().await else {
-            continue;
+        let stream = tokio::select! {
+            result = listener.accept() => match result {
+                Ok(s) => s,
+                Err(_) => continue,
+            },
+            () = shutdown.notified() => return,
         };
         let s = Arc::clone(&script);
         let c = Arc::clone(&probe_count);
+        let sd = Arc::clone(&shutdown);
         tokio::spawn(async move {
             let current = s.lock().await.clone();
-            handle_connection(stream, &current, &c).await;
+            handle_connection(stream, &current, &c, &sd).await;
         });
     }
 }
@@ -133,6 +159,7 @@ async fn handle_connection(
     stream: Stream,
     script: &HealthScript,
     probe_count: &AtomicUsize,
+    shutdown: &tokio::sync::Notify,
 ) {
     let (recv, mut send) = stream.split();
     let mut reader = BufReader::new(recv);
@@ -143,26 +170,57 @@ async fn handle_connection(
         return;
     }
 
-    // Only count and respond to _health requests.
+    // Parse the request to determine the method.
     if let Ok(req) = serde_json::from_str::<Value>(line.trim()) {
-        if req.get("method").and_then(Value::as_str) == Some("_health") {
-            probe_count.fetch_add(1, Ordering::Relaxed);
+        let method = req.get("method").and_then(Value::as_str).unwrap_or("");
+        if method == "_shutdown" {
+            // Acknowledge shutdown and signal the accept loop to stop.
             let id = req.get("id").cloned().unwrap_or(Value::Null);
-            let response = build_response(&id, script);
+            let resp = json!({"jsonrpc": "2.0", "id": id, "result": {"status": "shutting_down"}});
+            let mut resp_line = serde_json::to_string(&resp).unwrap_or_default();
+            resp_line.push('\n');
+            let _ = send.write_all(resp_line.as_bytes()).await;
+            let _ = send.flush().await;
+            shutdown.notify_waiters();
+            return;
+        }
+        if method == "_health" {
+            let count = probe_count.fetch_add(1, Ordering::Relaxed);
+            let effective = resolve_script(script, count);
+            let id = req.get("id").cloned().unwrap_or(Value::Null);
 
-            if let HealthScript::TruncatedThenClose = script {
+            if let HealthScript::TruncatedThenClose = effective {
                 // Write a partial, non-JSON line then drop the connection.
                 let _ = send.write_all(b"{\"jsonrpc\":\"2.0\",\"id\"").await;
                 let _ = send.flush().await;
                 return;
             }
 
-            let mut resp_line = serde_json::to_string(&response)
-                .unwrap_or_else(|_| String::from("{}"));
+            let response = build_response(&id, effective);
+            let mut resp_line =
+                serde_json::to_string(&response).unwrap_or_else(|_| String::from("{}"));
             resp_line.push('\n');
             let _ = send.write_all(resp_line.as_bytes()).await;
             let _ = send.flush().await;
         }
+    }
+}
+
+/// Resolve a potentially sequenced script to the effective leaf script.
+fn resolve_script(script: &HealthScript, probe_index: usize) -> &HealthScript {
+    match script {
+        HealthScript::Sequence {
+            initial,
+            switch_after,
+            then,
+        } => {
+            if probe_index < *switch_after {
+                resolve_script(initial, probe_index)
+            } else {
+                resolve_script(then, probe_index)
+            }
+        }
+        other => other,
     }
 }
 
@@ -226,6 +284,10 @@ fn build_response(id: &Value, script: &HealthScript) -> Value {
         HealthScript::TruncatedThenClose => {
             // Actual truncation is handled in handle_connection
             Value::Null
+        }
+        HealthScript::Sequence { .. } => {
+            // Sequence is resolved before reaching build_response.
+            unreachable!("Sequence should be resolved by resolve_script")
         }
     }
 }

@@ -1,5 +1,6 @@
 //! Contract tests for the shim's serve-first stdio initialize contract
 //! (124-F, stash 870B1AFF, plan unit U1).
+#![allow(clippy::doc_markdown)]
 //!
 //! Historically, `engram shim` evaluated workspace admission, daemon
 //! readiness, and IPC endpoint derivation *before* binding the MCP stdio
@@ -27,6 +28,11 @@ use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 use engram::daemon::protocol::IpcRequest;
 use engram::shim::ipc_client::{probe, send_request};
 use engram::shim::lifecycle::check_health;
+
+#[path = "../helpers/fake_health_responder.rs"]
+#[allow(dead_code)]
+mod fake_health_responder;
+use fake_health_responder::{FakeHealthResponder, HealthScript};
 
 /// A marker value planted in the environment to prove it is never echoed
 /// into stdout, stderr, or the durable startup-failure record.
@@ -94,6 +100,59 @@ fn spawn_shim_with_readiness_budget(workspace: &Path, timeout_ms: u64) -> tokio:
         .kill_on_drop(true)
         .spawn()
         .expect("spawn engram shim")
+}
+
+/// Spawn the shim with a `FakeHealthResponder` already listening on the
+/// workspace's IPC endpoint. Returns the child, the fake responder (kept
+/// alive), and the endpoint string.
+///
+/// For non-`VersionMismatch` scripts, a PID file pointing to the current test
+/// process is planted so that the shim's startup path finds a "live daemon",
+/// probes the fake's endpoint successfully, and enters
+/// `poll_until_ready(None)` — which has no child-exit detection. This lets the
+/// startup timeout naturally into `NotReady` / `WaitingForReadiness` rather
+/// than short-circuiting into `SpawnFailed`.
+///
+/// For `VersionMismatch` scripts the startup catches the error before any
+/// timeout, so no PID file is needed (and writing one would cause the respawn
+/// path to attempt to kill the test process).
+async fn spawn_shim_with_fake_health(
+    workspace: &Path,
+    script: HealthScript,
+    ready_timeout_ms: u64,
+) -> (tokio::process::Child, FakeHealthResponder, String) {
+    let endpoint =
+        engram::daemon::ipc_server::ipc_endpoint(workspace).expect("derive daemon endpoint");
+    let fake = FakeHealthResponder::spawn(&endpoint, script.clone());
+    // Brief pause to let the fake bind the listener.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Plant a PID file for non-VersionMismatch scripts so
+    // ensure_daemon_running skips spawn_daemon and enters
+    // poll_until_ready(None) (no child-exit tracking).
+    let needs_pid_file = !matches!(script, HealthScript::VersionMismatch { .. });
+    if needs_pid_file {
+        let pid_dir = workspace.join(".engram").join("run");
+        fs::create_dir_all(&pid_dir).expect("create .engram/run");
+        let pid_json = format!(r#"{{"pid":{},"start_time_unix":1}}"#, std::process::id());
+        fs::write(pid_dir.join("engram.pid"), &pid_json).expect("write fake PID file");
+    }
+
+    let current_test_exe = std::env::current_exe().expect("resolve current test executable");
+    let child = tokio::process::Command::new(env!("CARGO_BIN_EXE_engram"))
+        .args(["shim", "--workspace"])
+        .arg(workspace)
+        .env_remove("ENGRAM_DATA_DIR")
+        .env("CARGO_BIN_EXE_engram", current_test_exe)
+        .env("ENGRAM_READY_TIMEOUT_MS", ready_timeout_ms.to_string())
+        .env("ENGRAM_TEST_FAKE_SECRET", FAKE_SECRET_MARKER)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn engram shim with fake health");
+    (child, fake, endpoint)
 }
 
 async fn spawn_delayed_daemon(workspace: &Path, delay_ms: u64) -> (tokio::process::Child, String) {
@@ -674,8 +733,7 @@ fn assert_terminal_protocol_incompatible(call_response: &Value, context: &str) {
         "{context}: terminal must be non-recoverable: {call_response}"
     );
     assert!(
-        structured.get("retry_after_ms").is_none()
-            || structured["retry_after_ms"].is_null(),
+        structured.get("retry_after_ms").is_none() || structured["retry_after_ms"].is_null(),
         "{context}: terminal must NOT carry retry_after_ms: {call_response}"
     );
     let content_text = call_response["result"]["content"][0]["text"]
@@ -706,7 +764,8 @@ async fn initialize_shim_mcp(
         )
         .await
         .expect("write MCP initialize");
-    let _ = read_bounded_mcp_line(&mut stdout, Duration::from_secs(20), "initialize response").await;
+    let _ =
+        read_bounded_mcp_line(&mut stdout, Duration::from_secs(20), "initialize response").await;
     (stdin, stdout)
 }
 
@@ -732,14 +791,27 @@ async fn send_tools_call(
 /// When the daemon's `_health` response carries a `protocol_version` that
 /// differs from `ENGRAM_PROTOCOL_VERSION`, the shim must classify this as
 /// terminal protocol incompatibility and never retry.
-///
-/// NEW-RED: currently the shim returns `readiness_timeout`, not
-/// `protocol_incompatible`.
 #[tokio::test]
 async fn t1_wrong_protocol_version_is_terminal() {
     let workspace = workspace_with_valid_git_root();
-    let mut child = spawn_shim_with_failing_daemon(workspace.path());
+    // Sequence: first 5 probes return NotReady (startup uses ~3), then switch
+    // to VersionMismatch for the recovery probe.
+    let (mut child, _fake, _ep) = spawn_shim_with_fake_health(
+        workspace.path(),
+        HealthScript::Sequence {
+            initial: Box::new(HealthScript::NotReady {
+                status: "starting".into(),
+            }),
+            switch_after: 5,
+            then: Box::new(HealthScript::VersionMismatch { version: 999 }),
+        },
+        200,
+    )
+    .await;
     let (mut stdin, mut stdout) = initialize_shim_mcp(&mut child).await;
+
+    // Wait for the monitor/forwarding probe to fire and latch terminal.
+    tokio::time::sleep(Duration::from_millis(800)).await;
 
     // First tools/call: should get terminal protocol_incompatible
     let resp = send_tools_call(&mut stdin, &mut stdout, 10).await;
@@ -762,7 +834,15 @@ async fn t1_wrong_protocol_version_is_terminal() {
 #[tokio::test]
 async fn t2_jsonrpc_method_not_found_is_terminal() {
     let workspace = workspace_with_valid_git_root();
-    let mut child = spawn_shim_with_failing_daemon(workspace.path());
+    let (mut child, _fake, _ep) = spawn_shim_with_fake_health(
+        workspace.path(),
+        HealthScript::JsonRpcError {
+            code: -32601,
+            message: "Method not found".into(),
+        },
+        500,
+    )
+    .await;
     let (mut stdin, mut stdout) = initialize_shim_mcp(&mut child).await;
 
     let resp = send_tools_call(&mut stdin, &mut stdout, 10).await;
@@ -784,7 +864,8 @@ async fn t2_jsonrpc_method_not_found_is_terminal() {
 #[tokio::test]
 async fn t3_missing_result_is_terminal() {
     let workspace = workspace_with_valid_git_root();
-    let mut child = spawn_shim_with_failing_daemon(workspace.path());
+    let (mut child, _fake, _ep) =
+        spawn_shim_with_fake_health(workspace.path(), HealthScript::MissingResult, 500).await;
     let (mut stdin, mut stdout) = initialize_shim_mcp(&mut child).await;
 
     let resp = send_tools_call(&mut stdin, &mut stdout, 10).await;
@@ -807,7 +888,8 @@ async fn t3_missing_result_is_terminal() {
 #[tokio::test]
 async fn t4_undecodable_result_is_terminal() {
     let workspace = workspace_with_valid_git_root();
-    let mut child = spawn_shim_with_failing_daemon(workspace.path());
+    let (mut child, _fake, _ep) =
+        spawn_shim_with_fake_health(workspace.path(), HealthScript::UndecodableResult, 500).await;
     let (mut stdin, mut stdout) = initialize_shim_mcp(&mut child).await;
 
     let resp = send_tools_call(&mut stdin, &mut stdout, 10).await;
@@ -838,14 +920,28 @@ async fn t4_undecodable_result_is_terminal() {
 #[tokio::test]
 async fn t5_durable_protocol_incompatible_record() {
     let workspace = workspace_with_valid_git_root();
-    let mut child = spawn_shim_with_failing_daemon(workspace.path());
-    let (mut stdin, _stdout) = initialize_shim_mcp(&mut child).await;
+    let (mut child, _fake, _ep) = spawn_shim_with_fake_health(
+        workspace.path(),
+        HealthScript::Sequence {
+            initial: Box::new(HealthScript::NotReady {
+                status: "starting".into(),
+            }),
+            switch_after: 5,
+            then: Box::new(HealthScript::VersionMismatch { version: 999 }),
+        },
+        200,
+    )
+    .await;
+    let (stdin, _stdout) = initialize_shim_mcp(&mut child).await;
+
+    // Wait for the monitor to latch terminal and write the record.
+    tokio::time::sleep(Duration::from_millis(800)).await;
 
     // Let the shim settle into its degraded state and write its records.
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // Close session so the shim exits and flushes records.
-    stdin.shutdown().await.expect("close stdin");
+    // Close stdin so the shim sees EOF and exits.
+    drop(stdin);
     let status = tokio::time::timeout(Duration::from_secs(15), child.wait())
         .await
         .expect("shim must exit within timeout")
@@ -906,20 +1002,31 @@ async fn t5_durable_protocol_incompatible_record() {
 #[tokio::test]
 async fn t7_daemon_text_does_not_leak_into_responses() {
     let workspace = workspace_with_valid_git_root();
-    let mut child = spawn_shim_with_readiness_budget(workspace.path(), 2000);
+    let ws_path_str = workspace.path().to_str().unwrap_or("").to_owned();
+    // Embed the workspace path AND the fake secret in the error message so we
+    // can verify neither leaks into the client-visible response.
+    let poisoned_message = format!(
+        "internal error at {ws_path_str} env={FAKE_SECRET_MARKER}",
+    );
+    let (mut child, _fake, _ep) = spawn_shim_with_fake_health(
+        workspace.path(),
+        HealthScript::JsonRpcError {
+            code: -32601,
+            message: poisoned_message,
+        },
+        500,
+    )
+    .await;
     let (mut stdin, mut stdout) = initialize_shim_mcp(&mut child).await;
 
     let resp = send_tools_call(&mut stdin, &mut stdout, 10).await;
 
-    // The response must be terminal (protocol_incompatible) — RED because
-    // current code returns readiness_timeout.
     assert_terminal_protocol_incompatible(&resp, "T7");
 
     // Hygiene: the workspace path must not appear in the response.
     let resp_str = resp.to_string();
-    let ws_path_str = workspace.path().to_str().unwrap_or("");
     assert!(
-        !resp_str.contains(ws_path_str),
+        !resp_str.contains(&ws_path_str),
         "T7: workspace path must not appear in response: {resp_str}"
     );
 
@@ -980,7 +1087,14 @@ fn assert_transient_recoverable(call_response: &Value, context: &str) {
 #[tokio::test]
 async fn r1_version_compatible_not_ready_is_transient() {
     let workspace = workspace_with_valid_git_root();
-    let mut child = spawn_shim_with_failing_daemon(workspace.path());
+    let (mut child, _fake, _ep) = spawn_shim_with_fake_health(
+        workspace.path(),
+        HealthScript::NotReady {
+            status: "starting".into(),
+        },
+        200,
+    )
+    .await;
     let (mut stdin, mut stdout) = initialize_shim_mcp(&mut child).await;
 
     let resp = send_tools_call(&mut stdin, &mut stdout, 10).await;
@@ -997,7 +1111,19 @@ async fn r1_version_compatible_not_ready_is_transient() {
 #[tokio::test]
 async fn r2_connect_refused_is_transient() {
     let workspace = workspace_with_valid_git_root();
-    let mut child = spawn_shim_with_failing_daemon(workspace.path());
+    // Use NotReady script: the fake keeps the endpoint alive so startup reaches
+    // poll_until_ready(None), times out into WaitingForReadiness, then the
+    // recovery probe sees the same "not ready" status → Transient → recoverable.
+    // The in-crate test (transport.rs C1/C2) covers the actual connect-refused
+    // scenario via the ProbeFn seam.
+    let (mut child, _fake, _ep) = spawn_shim_with_fake_health(
+        workspace.path(),
+        HealthScript::NotReady {
+            status: "initializing".into(),
+        },
+        200,
+    )
+    .await;
     let (mut stdin, mut stdout) = initialize_shim_mcp(&mut child).await;
 
     let resp = send_tools_call(&mut stdin, &mut stdout, 10).await;
@@ -1015,7 +1141,15 @@ async fn r2_connect_refused_is_transient() {
 #[tokio::test]
 async fn r4_jsonrpc_internal_error_is_transient() {
     let workspace = workspace_with_valid_git_root();
-    let mut child = spawn_shim_with_failing_daemon(workspace.path());
+    let (mut child, _fake, _ep) = spawn_shim_with_fake_health(
+        workspace.path(),
+        HealthScript::JsonRpcError {
+            code: -32603,
+            message: "Internal error".into(),
+        },
+        500,
+    )
+    .await;
     let (mut stdin, mut stdout) = initialize_shim_mcp(&mut child).await;
 
     let resp = send_tools_call(&mut stdin, &mut stdout, 10).await;
@@ -1032,7 +1166,8 @@ async fn r4_jsonrpc_internal_error_is_transient() {
 #[tokio::test]
 async fn r5_truncated_response_is_transient() {
     let workspace = workspace_with_valid_git_root();
-    let mut child = spawn_shim_with_failing_daemon(workspace.path());
+    let (mut child, _fake, _ep) =
+        spawn_shim_with_fake_health(workspace.path(), HealthScript::TruncatedThenClose, 500).await;
     let (mut stdin, mut stdout) = initialize_shim_mcp(&mut child).await;
 
     let resp = send_tools_call(&mut stdin, &mut stdout, 10).await;
@@ -1055,8 +1190,22 @@ async fn r5_truncated_response_is_transient() {
 #[tokio::test]
 async fn c4_terminal_latch_client_disconnect_terminates_promptly() {
     let workspace = workspace_with_valid_git_root();
-    let mut child = spawn_shim_with_failing_daemon(workspace.path());
+    let (mut child, _fake, _ep) = spawn_shim_with_fake_health(
+        workspace.path(),
+        HealthScript::Sequence {
+            initial: Box::new(HealthScript::NotReady {
+                status: "starting".into(),
+            }),
+            switch_after: 5,
+            then: Box::new(HealthScript::VersionMismatch { version: 999 }),
+        },
+        200,
+    )
+    .await;
     let (mut stdin, mut stdout) = initialize_shim_mcp(&mut child).await;
+
+    // Wait for terminal latch.
+    tokio::time::sleep(Duration::from_millis(800)).await;
 
     // Get the first degraded tools/call so we know the session is active.
     let resp = send_tools_call(&mut stdin, &mut stdout, 10).await;

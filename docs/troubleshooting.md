@@ -132,6 +132,7 @@ When the shim process exits, its exit code classifies why:
 | `11` | `readiness_timeout` | The daemon did not reach a ready state before disconnect, or daemon startup failed permanently |
 | `12` | `endpoint_derivation_failure` | The IPC endpoint (named pipe or Unix socket path) could not be derived for the workspace |
 | `13` | `transport_failure` | The MCP stdio transport itself failed to bind, or the session ended with a protocol error (for example, no client ever sent `initialize` before disconnecting) |
+| `14` | `protocol_incompatible` | The daemon's protocol or `_health` contract is incompatible with this shim version — retrying will never succeed |
 
 These codes apply even when the MCP protocol exchange itself looked successful
 to the client. The exit code reflects the state when the client disconnected:
@@ -139,6 +140,29 @@ a recovered session exits `0`, while a session that remained degraded exits
 with its classified failure. A wrapper script or CI job that checks
 `$LASTEXITCODE` (or `$?` on POSIX shells) after a manual `engram shim`
 invocation can rely on these codes without parsing stderr.
+
+### Transient vs terminal health classification
+
+The shim's late-readiness recovery path classifies `_health` probe failures
+into two categories:
+
+| Category | Wire code | `failure_class` | `recoverable` | `retry_after_ms` | Exit code | Operator action |
+|---|---|---|---|---|---|---|
+| **Transient** | `15002` | `readiness_timeout` | `true` | `250` | `11` | Wait and retry — the daemon is warming up, unreachable, timed out, reset, or answering a non-ready status |
+| **Terminal** | `15005` | `protocol_incompatible` | `false` | *(absent)* | `14` | Upgrade or replace the daemon — retrying will never succeed |
+
+**What makes a probe terminal (proven incompatibility only):**
+
+- Daemon returned JSON-RPC error `-32601` Method Not Found for `_health`
+- Daemon response omitted the `result` payload entirely
+- Daemon `result` could not be decoded as a valid health response
+- Daemon protocol version does not match the shim's expected version
+
+**What stays transient (transport errors, by construction):**
+
+- Connection refused, timeout, reset, EOF, truncated response
+- JSON-RPC error codes other than `-32601` (including `-32603`, `-32700`, `-32600`)
+- Version-compatible daemon reporting a non-ready status
 
 ### Startup-failure record
 
@@ -150,8 +174,9 @@ Every startup deadline or terminal startup failure writes one JSON line to:
 
 Each record contains exactly four fields — a `timestamp` (RFC 3339), the
 `binary_version` (the build's `ENGRAM_BUILD_HASH`, falling back to the crate
-version), the `failure_class` (one of the four names above), and a sanitized
-`message`. The record never contains credentials, tokens, environment
+version), the `failure_class` (one of `admission_failure`, `readiness_timeout`,
+`endpoint_derivation_failure`, `transport_failure`, or `protocol_incompatible`),
+and a sanitized `message`. The record never contains credentials, tokens, environment
 variable values, or paths outside the workspace. A readiness-timeout record
 shows that the initial deadline was exceeded; it does not by itself prove that
 the session failed to recover later. Persisting the record is best-effort, and

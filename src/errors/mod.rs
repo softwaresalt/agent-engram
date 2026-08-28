@@ -996,24 +996,42 @@ mod tests {
     fn shim_failure_class_golden_record() {
         // Pre-existing variants — values MUST NOT shift.
         assert_eq!(ShimFailureClass::AdmissionFailure.exit_code(), 10);
-        assert_eq!(ShimFailureClass::AdmissionFailure.as_str(), "admission_failure");
+        assert_eq!(
+            ShimFailureClass::AdmissionFailure.as_str(),
+            "admission_failure"
+        );
         assert_eq!(ShimFailureClass::AdmissionFailure.wire_code(), 15_001);
 
         assert_eq!(ShimFailureClass::ReadinessTimeout.exit_code(), 11);
-        assert_eq!(ShimFailureClass::ReadinessTimeout.as_str(), "readiness_timeout");
+        assert_eq!(
+            ShimFailureClass::ReadinessTimeout.as_str(),
+            "readiness_timeout"
+        );
         assert_eq!(ShimFailureClass::ReadinessTimeout.wire_code(), 15_002);
 
         assert_eq!(ShimFailureClass::EndpointDerivationFailure.exit_code(), 12);
-        assert_eq!(ShimFailureClass::EndpointDerivationFailure.as_str(), "endpoint_derivation_failure");
-        assert_eq!(ShimFailureClass::EndpointDerivationFailure.wire_code(), 15_003);
+        assert_eq!(
+            ShimFailureClass::EndpointDerivationFailure.as_str(),
+            "endpoint_derivation_failure"
+        );
+        assert_eq!(
+            ShimFailureClass::EndpointDerivationFailure.wire_code(),
+            15_003
+        );
 
         assert_eq!(ShimFailureClass::TransportFailure.exit_code(), 13);
-        assert_eq!(ShimFailureClass::TransportFailure.as_str(), "transport_failure");
+        assert_eq!(
+            ShimFailureClass::TransportFailure.as_str(),
+            "transport_failure"
+        );
         assert_eq!(ShimFailureClass::TransportFailure.wire_code(), 15_004);
 
         // New additive variant.
         assert_eq!(ShimFailureClass::ProtocolIncompatible.exit_code(), 14);
-        assert_eq!(ShimFailureClass::ProtocolIncompatible.as_str(), "protocol_incompatible");
+        assert_eq!(
+            ShimFailureClass::ProtocolIncompatible.as_str(),
+            "protocol_incompatible"
+        );
         assert_eq!(ShimFailureClass::ProtocolIncompatible.wire_code(), 15_005);
         assert_eq!(
             ShimFailureClass::ProtocolIncompatible.record_message(),

@@ -32,8 +32,8 @@ pub mod version;
 
 use std::io::Write as _;
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use serde_json::json;
@@ -231,7 +231,11 @@ async fn compute_startup_outcome(
             endpoint: endpoint.clone(),
             message: err.to_string(),
         });
-        spawn_late_readiness_monitor(outcome_tx.clone(), endpoint, workspace_path.display().to_string());
+        spawn_late_readiness_monitor(
+            outcome_tx.clone(),
+            endpoint,
+            workspace_path.display().to_string(),
+        );
         let handle = spawn_record_startup_failure(
             Some(workspace_path.display().to_string()),
             ShimFailureClass::ReadinessTimeout,
@@ -261,16 +265,17 @@ async fn compute_startup_outcome(
 /// implementation via the `probe` parameter to script outcomes and observe
 /// monitor probe cadence deterministically.
 type MonitorProbeFn = Arc<
-    dyn Fn(String) -> std::pin::Pin<Box<dyn std::future::Future<Output = lifecycle::HealthOutcome> + Send>>
+    dyn Fn(
+            String,
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = lifecycle::HealthOutcome> + Send>>
         + Send
         + Sync,
 >;
 
 /// Build the default production monitor probe function.
 fn default_monitor_probe() -> MonitorProbeFn {
-    Arc::new(|endpoint: String| {
-        Box::pin(async move { lifecycle::probe_health(&endpoint).await })
-    })
+    Arc::new(|endpoint: String| Box::pin(async move { lifecycle::probe_health(&endpoint).await }))
 }
 
 /// Fixed, client-safe message for a terminal `HealthOutcome` in the monitor path.
@@ -381,10 +386,7 @@ fn spawn_late_readiness_monitor_with_probe(
                     // Late-terminal durable record (best-effort, sole writer).
                     let wh = workspace_hint.clone();
                     let _ = tokio::task::spawn_blocking(move || {
-                        write_startup_failure_record(
-                            &wh,
-                            ShimFailureClass::ProtocolIncompatible,
-                        );
+                        write_startup_failure_record(&wh, ShimFailureClass::ProtocolIncompatible);
                     })
                     .await;
                     return;
@@ -734,7 +736,7 @@ mod tests {
                 "test-endpoint".to_owned(),
                 probe,
                 count,
-            "test-workspace".to_owned(),
+                "test-workspace".to_owned(),
             );
 
             // Advance time enough for the monitor to probe and (should) stop.
@@ -747,10 +749,7 @@ mod tests {
             let current = rx.borrow_and_update().clone();
             // RED: currently the monitor never publishes Degraded
             assert!(
-                matches!(
-                    current,
-                    Some(StartupOutcome::Degraded { .. })
-                ),
+                matches!(current, Some(StartupOutcome::Degraded { .. })),
                 "T6: monitor must publish Degraded on terminal; got {current:?}"
             );
 
@@ -798,7 +797,7 @@ mod tests {
                 "test-endpoint".to_owned(),
                 probe,
                 count,
-            "test-workspace".to_owned(),
+                "test-workspace".to_owned(),
             );
 
             // Advance 500ms in small steps.
@@ -807,7 +806,10 @@ mod tests {
                 tokio::task::yield_now().await;
             }
             let mid_count = probe_count.load(Ordering::SeqCst);
-            assert!(mid_count > 0, "R2b: monitor must probe at least once in 500ms");
+            assert!(
+                mid_count > 0,
+                "R2b: monitor must probe at least once in 500ms"
+            );
 
             // Advance another 500ms.
             for _ in 0..50 {
@@ -876,7 +878,7 @@ mod tests {
                 "test-endpoint".to_owned(),
                 probe,
                 count,
-            "test-workspace".to_owned(),
+                "test-workspace".to_owned(),
             );
 
             // Let the first probe fire (returns false).
@@ -888,7 +890,8 @@ mod tests {
             // Simulate request path latching Degraded (external write to channel).
             let _ = tx.send(Some(StartupOutcome::Degraded {
                 class: ShimFailureClass::ReadinessTimeout,
-                message: "terminal latch by request path (placeholder for ProtocolIncompatible)".to_owned(),
+                message: "terminal latch by request path (placeholder for ProtocolIncompatible)"
+                    .to_owned(),
             }));
 
             // Let the monitor's next backoff fire — probe returns true.
