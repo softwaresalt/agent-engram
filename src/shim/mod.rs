@@ -345,7 +345,7 @@ fn spawn_late_readiness_monitor_with_probe(
                         "daemon became ready after the shim startup deadline"
                     );
                     // Monotonic: refuse to overwrite Degraded.
-                    outcome_tx.send_if_modified(|current| {
+                    let published = outcome_tx.send_if_modified(|current| {
                         if matches!(current, Some(StartupOutcome::Degraded { .. })) {
                             return false;
                         }
@@ -354,6 +354,32 @@ fn spawn_late_readiness_monitor_with_probe(
                         });
                         true
                     });
+                    if !published {
+                        // The request path latched Degraded{ProtocolIncompatible}
+                        // while this exact probe was in flight (the C5 race,
+                        // this time with the monitor's own probe resolving
+                        // Ready). The monitor is exiting immediately either
+                        // way — this is its only remaining chance to write
+                        // the promised late-terminal record; the top-of-loop
+                        // check on a future iteration will never run because
+                        // this branch always returns.
+                        let externally_latched_class =
+                            outcome_tx.borrow().as_ref().and_then(|o| match o {
+                                StartupOutcome::Degraded { class, .. } => Some(*class),
+                                _ => None,
+                            });
+                        if externally_latched_class == Some(ShimFailureClass::ProtocolIncompatible)
+                        {
+                            let wh = workspace_hint.clone();
+                            let _ = tokio::task::spawn_blocking(move || {
+                                write_startup_failure_record(
+                                    &wh,
+                                    ShimFailureClass::ProtocolIncompatible,
+                                );
+                            })
+                            .await;
+                        }
+                    }
                     return;
                 }
                 lifecycle::HealthOutcome::Transient => {
@@ -851,6 +877,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn c5_request_terminal_vs_monitor_race() {
         for _ in 0..5 {
+            let workspace = tempfile::TempDir::new().expect("workspace tempdir");
+            let workspace_hint = workspace.path().display().to_string();
             let probe_count = Arc::new(AtomicUsize::new(0));
             let call_count = Arc::new(AtomicUsize::new(0));
             let cc = Arc::clone(&call_count);
@@ -888,7 +916,7 @@ mod tests {
                 "test-endpoint".to_owned(),
                 probe,
                 count,
-                "test-workspace".to_owned(),
+                workspace_hint.clone(),
             );
 
             // Advance the paused clock past the first (Transient) probe and
@@ -936,6 +964,43 @@ mod tests {
                 probe_count.load(Ordering::SeqCst),
                 2,
                 "C5: exactly 2 probes (Transient, then the raced Ready) — no further probing after the race"
+            );
+
+            // The monitor's Ready branch lost the race (its publish was
+            // rejected because Degraded was already latched); it must still
+            // have written the promised late-terminal record before
+            // exiting, since this is its only remaining chance to do so —
+            // the top-of-loop early-return check never runs again after
+            // this branch returns (Copilot review finding on PR #366).
+            //
+            // The write happens on tokio's real (non-virtual) blocking
+            // thread pool, which `tokio::time::advance` does not drive —
+            // give it a short real-wall-clock allowance to complete and
+            // retry a few times rather than asserting immediately.
+            let mut content = String::new();
+            let record_path = workspace
+                .path()
+                .join(".engram")
+                .join("diagnostics")
+                .join("shim-startup-failures.jsonl");
+            for attempt in 0..20 {
+                content = std::fs::read_to_string(&record_path).unwrap_or_default();
+                if content.contains("protocol_incompatible") {
+                    break;
+                }
+                let _ = attempt;
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            let protocol_records = content
+                .lines()
+                .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+                .filter(|r| r["failure_class"] == "protocol_incompatible")
+                .count();
+            assert_eq!(
+                protocol_records, 1,
+                "C5: the monitor must write exactly one protocol_incompatible record even when \
+                 its own Ready publish loses the race to an externally-latched Degraded; \
+                 record file contents: {content}"
             );
         }
     }

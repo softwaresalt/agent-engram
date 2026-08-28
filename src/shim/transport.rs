@@ -199,7 +199,7 @@ impl ShimHandler {
                         match (self.probe)(endpoint.clone()).await {
                             HealthOutcome::Ready => {
                                 recovery.last_failure = None;
-                                self.startup_tx.send_if_modified(|current| {
+                                let published = self.startup_tx.send_if_modified(|current| {
                                     if matches!(current, Some(StartupOutcome::Degraded { .. })) {
                                         return false; // Degraded is absorbing
                                     }
@@ -208,11 +208,45 @@ impl ShimHandler {
                                     });
                                     true
                                 });
-                                Ok(endpoint)
+                                if published {
+                                    Ok(endpoint)
+                                } else {
+                                    // Reconcile with the channel: a concurrent
+                                    // publisher (the independent monitor)
+                                    // latched Degraded while THIS probe was
+                                    // in flight and resolved Ready. Forwarding
+                                    // this call to the daemon anyway would
+                                    // contradict the now-authoritative
+                                    // terminal state (Copilot review finding
+                                    // on PR #366) — report the terminal
+                                    // classification that actually won
+                                    // instead of the stale Ready this probe
+                                    // observed.
+                                    match self.startup_tx.borrow().clone() {
+                                        Some(StartupOutcome::Degraded { class, message }) => {
+                                            Err(EndpointResolutionError::Permanent {
+                                                class,
+                                                message,
+                                            })
+                                        }
+                                        _ => Ok(endpoint),
+                                    }
+                                }
                             }
                             HealthOutcome::Transient => {
                                 recovery.last_failure = Some(Instant::now());
-                                Err(EndpointResolutionError::Recoverable { message })
+                                // Reconcile with the channel: a concurrent
+                                // publisher may have latched Degraded while
+                                // this probe was in flight and resolved
+                                // Transient — report the terminal
+                                // classification that actually won instead of
+                                // a stale Recoverable.
+                                match self.startup_tx.borrow().clone() {
+                                    Some(StartupOutcome::Degraded { class, message }) => {
+                                        Err(EndpointResolutionError::Permanent { class, message })
+                                    }
+                                    _ => Err(EndpointResolutionError::Recoverable { message }),
+                                }
                             }
                             HealthOutcome::Terminal(kind) => {
                                 let terminal_message = kind.client_message();
@@ -814,6 +848,77 @@ mod tests {
             matches!(final_state, Some(StartupOutcome::Degraded { .. })),
             "C6: final state must be Degraded — a later-arriving Terminal proof must win over an \
              earlier Ready, and must never be silently dropped; got {final_state:?}"
+        );
+    }
+
+    /// C7 — the other inverse race: an independent publisher (standing in
+    /// for the monitor) latches `Degraded` WHILE the request-triggered probe
+    /// is already in flight and later resolves `Ready`. The request path
+    /// must NOT forward the call on the strength of its own stale `Ready`
+    /// result — it must reconcile with the channel and report the
+    /// already-latched terminal classification instead.
+    ///
+    /// This is the counterpart to C6 covering the two remaining
+    /// probe-outcome branches (`Ready` and `Transient`) that previously
+    /// returned their own probe's verdict unconditionally, even when a
+    /// concurrent publisher had already latched `Degraded` while that exact
+    /// probe was in flight (Copilot review finding on PR #366: "the current
+    /// tools/call is forwarded even though the session is already
+    /// degraded").
+    #[tokio::test]
+    async fn c7_request_ready_reconciles_with_concurrently_latched_terminal() {
+        let probe_entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let pe = Arc::clone(&probe_entered);
+        let rel = Arc::clone(&release);
+
+        // Probe blocks until released, then resolves Ready — simulating a
+        // request-triggered probe already in flight when an independent
+        // publisher (the monitor) races ahead and latches Degraded.
+        let probe: ProbeFn = Arc::new(move |_| {
+            let pe = Arc::clone(&pe);
+            let rel = Arc::clone(&rel);
+            Box::pin(async move {
+                pe.notify_one();
+                rel.notified().await;
+                HealthOutcome::Ready
+            })
+        });
+
+        let (tx, handler) = handler_in_waiting(probe);
+
+        let call = tokio::spawn({
+            let handler = handler.clone();
+            async move { handler.forwarding_endpoint().await }
+        });
+
+        probe_entered.notified().await;
+
+        // Simulate the monitor independently latching Degraded while the
+        // request-path probe is still in flight.
+        tx.send_if_modified(|current| {
+            if matches!(current, Some(StartupOutcome::Degraded { .. })) {
+                return false;
+            }
+            *current = Some(StartupOutcome::Degraded {
+                class: ShimFailureClass::ProtocolIncompatible,
+                message: "monitor latched terminal (test)".to_owned(),
+            });
+            true
+        });
+
+        release.notify_one();
+        let result = call.await.expect("task should not panic");
+        assert!(
+            matches!(result, Err(EndpointResolutionError::Permanent { .. })),
+            "C7: a stale Ready must not forward the call once a concurrent publisher has already \
+             latched Degraded — the caller must get the terminal classification instead"
+        );
+
+        let final_state = tx.borrow().clone();
+        assert!(
+            matches!(final_state, Some(StartupOutcome::Degraded { .. })),
+            "C7: final state must remain Degraded; got {final_state:?}"
         );
     }
 
