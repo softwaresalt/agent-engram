@@ -56,10 +56,21 @@ pub enum HealthScript {
 pub struct FakeHealthResponder {
     /// Number of `_health` requests received so far.
     pub probe_count: Arc<AtomicUsize>,
-    /// Handle to the background accept loop; dropping cancels it.
-    _task: tokio::task::JoinHandle<()>,
+    /// Handle to the background accept loop. Aborted (not merely detached)
+    /// by this struct's `Drop` impl — a plain `JoinHandle` drop only
+    /// detaches the task, it does not cancel it, which would otherwise
+    /// leave the accept loop and bound platform endpoint alive across test
+    /// boundaries and risk cross-test interference (Copilot review finding
+    /// on PR #366).
+    task: tokio::task::JoinHandle<()>,
     /// Signal to shut down the accept loop (set on `_shutdown` receipt).
     shutdown: Arc<tokio::sync::Notify>,
+}
+
+impl Drop for FakeHealthResponder {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
 }
 
 impl FakeHealthResponder {
@@ -83,7 +94,7 @@ impl FakeHealthResponder {
         });
         Self {
             probe_count,
-            _task: task,
+            task,
             shutdown,
         }
     }
@@ -100,7 +111,7 @@ impl FakeHealthResponder {
         });
         Self {
             probe_count,
-            _task: task,
+            task,
             shutdown,
         }
     }

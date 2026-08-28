@@ -169,7 +169,7 @@ and treat the call as non-retryable — do not infer retryability from
     "structuredContent": {
       "engram_code": 15002,
       "failure_class": "readiness_timeout",
-      "message": "daemon did not reach a ready state within the configured budget",
+      "message": "shim failure (readiness_timeout): daemon did not reach a ready state within the configured budget",
       "recoverable": true,
       "retry_after_ms": 250
     }
@@ -183,7 +183,7 @@ and treat the call as non-retryable — do not infer retryability from
     "structuredContent": {
       "engram_code": 15005,
       "failure_class": "protocol_incompatible",
-      "message": "daemon protocol version 999 is incompatible (expected 1)",
+      "message": "shim failure (protocol_incompatible): daemon protocol version 999 is incompatible (expected 1)",
       "recoverable": false
     }
   }

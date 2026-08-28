@@ -34,7 +34,7 @@ this session:
 | `cargo test --lib shim::` | 38/38 pass, 5x repeat zero flakes |
 | `cargo test --test contract_shim_stdio_initialize` | 17/17 pass, 5x repeat zero flakes, wall time 6-10s (budget 20s) |
 | `cargo test --test contract_shim_lifecycle` | 13/13 pass |
-| `cargo dev-test` (full workspace) | 100% clean on the final commit (`6af36553`) — 0 failures |
+| `cargo dev-test` (full workspace) | 100% clean (0 failures) as of the last code commit before this closure artifact |
 | `cargo fmt --all -- --check` | pass |
 | `cargo clippy --all-targets -- -D warnings -D clippy::pedantic` | pass |
 | `cargo audit` | pass, 14 pre-existing allowed advisories, no new advisories |
@@ -52,12 +52,17 @@ Operator-facing monitoring guidance is shipped in this same PR at
 `docs/troubleshooting.md`'s "Transient vs terminal health classification"
 section and its "Agent integration contract" subsection:
 
-- **Terminal** (`protocol_incompatible`, wire `15005`, exit `14`): a durable
-  record is appended to `<workspace>/.engram/diagnostics/shim-startup-failures.jsonl`
-  the first time either publisher (the request-triggered probe or the
-  independent late-readiness monitor) latches it. Operators alerting on this
-  file should treat a `protocol_incompatible` line as requiring a daemon
-  upgrade/replacement, not a retry.
+- **Terminal** (`protocol_incompatible`, wire `15005`, exit `14`): the
+  independent late-readiness monitor is the sole writer of a durable record
+  to `<workspace>/.engram/diagnostics/shim-startup-failures.jsonl` — the
+  request-triggered publisher never writes one directly, even when it is the
+  one that latches the terminal state first. The write is best-effort and
+  monitor-mediated: if the client disconnects before the monitor's next
+  backoff tick observes the (possibly externally-latched) terminal state, no
+  record is written at all. Operators alerting on this file should treat a
+  `protocol_incompatible` line as requiring a daemon upgrade/replacement,
+  not a retry, but should not treat its absence as proof a terminal
+  classification never occurred.
 - **Transient** (`readiness_timeout`, wire `15002`, exit `11`): unchanged
   from the pre-existing contract; no new monitoring surface.
 - Agents/integrators: `recoverable` is the sole retry signal;
@@ -95,9 +100,17 @@ and making tokio's `test-util` feature an explicit dev-dependency.
 
 ## Verdict
 
-**Ready for operator merge approval.** All quality gates pass, the
-structured review gate found no P0 findings (P1s addressed across four
-Copilot review-fix cycles closed at the documented circuit breaker), CI is
-green, and the current-HEAD Copilot review (commit `6af36553`) has 0
-unresolved threads. Merge is explicitly gated on operator approval and has
-not been requested or performed by Ship.
+**Ready for operator merge approval, pending one final external gate.** All
+quality gates pass, and the structured review gate found no P0 findings (P1s
+addressed across four Copilot review-fix cycles). This closure artifact is
+itself committed to the PR, which advances the PR's HEAD — a committed
+closure file cannot claim in advance that the current-HEAD Copilot review
+gate has passed for the commit that contains the claim. The outstanding,
+external, mechanically-checked gate before merge is: a Copilot review whose
+`commit_id` equals the PR's final HEAD sha, that review having 0 unresolved
+threads, Copilot removed from `requested_reviewers`, and CI green at that
+same sha (`github-pr-automation.instructions.md` §1.2). Ship verifies this
+4-point gate via the GitHub API immediately before requesting operator
+merge approval, after this commit (and any further review-fix commit) has
+landed and been re-reviewed. Merge itself is explicitly gated on operator
+approval and has not been requested or performed by Ship.
