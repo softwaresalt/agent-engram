@@ -37,6 +37,11 @@ pub enum HealthScript {
     MissingResult,
     /// Valid JSON-RPC response with an undecodable `result`.
     UndecodableResult,
+    /// Valid JSON-RPC response with an undecodable `result` whose
+    /// wrong-typed `protocol_version` field is the caller-supplied string
+    /// (used to prove serde's "invalid type" error text — which echoes the
+    /// received value verbatim — never reaches an agent-visible surface).
+    UndecodableResultWithPoisonedText(String),
     /// Write a truncated (non-JSON) line then close the connection.
     TruncatedThenClose,
     /// Use `initial` for the first `switch_after` probes, then switch to `then`.
@@ -279,6 +284,14 @@ fn build_response(id: &Value, script: &HealthScript) -> Value {
             "id": id,
             "result": {
                 "status": 42
+            }
+        }),
+        HealthScript::UndecodableResultWithPoisonedText(poisoned) => json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": {
+                "status": "ready",
+                "protocol_version": poisoned
             }
         }),
         HealthScript::TruncatedThenClose => {

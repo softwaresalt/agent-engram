@@ -152,16 +152,16 @@ into two categories:
 | **Terminal** | `15005` | `protocol_incompatible` | `false` | *(absent)* | `14` | Upgrade or replace the daemon — retrying will never succeed |
 
 **Agent integration contract:** `recoverable` is the sole authoritative retry
-signal — never key retry logic off `failure_class` alone. Check
-`retry_after_ms` for *key presence*, not truthiness or non-null: the key is
-present only on the recoverable/transient branch and is never `null` or `0`
-when present. Any `failure_class` value an integration does not recognize
-MUST be treated as non-retryable by default (fail closed on unknown values),
-since new additive `failure_class` values (such as `protocol_incompatible`
-in this release) may be introduced in future releases. Example payloads
+signal — never key retry logic off `failure_class` alone; treat `failure_class`
+as diagnostic-only. Check `retry_after_ms` for *key presence*, not truthiness
+or non-null: the key is present only on the recoverable/transient branch and
+is never `null` or `0` when present. If `recoverable` is itself missing or of
+an unexpected type (a malformed or unrecognized future payload), fail closed
+and treat the call as non-retryable — do not infer retryability from
+`failure_class` or any other field. Example payloads
 (`tools/call` response, abbreviated):
 
-```json
+```text
 // Transient
 {
   "result": {

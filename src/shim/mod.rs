@@ -310,12 +310,25 @@ fn spawn_late_readiness_monitor_with_probe(
     tokio::spawn(async move {
         let mut delay_ms = RECOVERY_INITIAL_BACKOFF_MS;
         loop {
-            // Optimisation: exit early if another path already latched Degraded.
-            if outcome_tx
-                .borrow()
-                .as_ref()
-                .is_some_and(|o| matches!(o, StartupOutcome::Degraded { .. }))
-            {
+            // Another path (the request-triggered probe) may have already
+            // latched Degraded. Exit early — but the monitor is the sole
+            // late-terminal record writer (see the doc comment on
+            // `spawn_record_startup_failure`), so if the externally-latched
+            // outcome is a terminal ProtocolIncompatible classification the
+            // monitor never itself probed, write the promised diagnostic
+            // record before returning rather than silently skipping it.
+            let externally_latched_class = outcome_tx.borrow().as_ref().and_then(|o| match o {
+                StartupOutcome::Degraded { class, .. } => Some(*class),
+                _ => None,
+            });
+            if let Some(class) = externally_latched_class {
+                if class == ShimFailureClass::ProtocolIncompatible {
+                    let wh = workspace_hint.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        write_startup_failure_record(&wh, class);
+                    })
+                    .await;
+                }
                 return;
             }
 
@@ -818,31 +831,47 @@ mod tests {
 
     /// C5 — request-terminal vs monitor race guard (138.012-T).
     ///
-    /// The request path latches `Degraded` while the monitor is mid-backoff.
-    /// The monitor's next probe returns `true` (Ready). The monitor MUST NOT
-    /// publish `Ready` — the final published state must remain `Degraded`.
+    /// The request path latches `Degraded` WHILE the monitor's second probe
+    /// is already in flight (genuinely concurrent with the probe call, not
+    /// merely before it starts), and that in-flight probe then resolves
+    /// `Ready`. The monitor's `Ready` branch MUST NOT publish `Ready` over
+    /// an externally-latched `Degraded` — the final published state must
+    /// remain `Degraded`.
     ///
     /// This is the BLOCKING guard for the revision-1 fail-open race: without
-    /// monotonic latch (`send_if_modified`), the monitor unconditionally
-    /// overwrites the watch channel value including a Degraded published by
-    /// the request path.
-    ///
-    /// NEW-RED: the current monitor calls `outcome_tx.send(Some(Ready {..}))`
-    /// unconditionally, overwriting any Degraded already set.
+    /// a monotonic latch (`send_if_modified`) in the `Ready` branch itself,
+    /// the monitor would unconditionally overwrite the watch channel value
+    /// including a `Degraded` published by the request path. The race is
+    /// deliberately forced to land *inside* the second probe call (via
+    /// `Notify` signals, not sleeps) so a regression that removed only the
+    /// top-of-loop early-return optimisation (leaving the unconditional
+    /// `send` in the `Ready` branch) would still be caught — the earlier
+    /// version of this test exited via the early-return before the second
+    /// probe ever ran, and so could not have caught that regression.
     #[tokio::test(start_paused = true)]
     async fn c5_request_terminal_vs_monitor_race() {
         for _ in 0..5 {
             let probe_count = Arc::new(AtomicUsize::new(0));
             let call_count = Arc::new(AtomicUsize::new(0));
             let cc = Arc::clone(&call_count);
+            let probe_entered = Arc::new(tokio::sync::Notify::new());
+            let release_probe = Arc::new(tokio::sync::Notify::new());
+            let pe = Arc::clone(&probe_entered);
+            let rp = Arc::clone(&release_probe);
 
-            // Probe: returns Transient on first call, Ready on second+ (simulating
-            // daemon becoming ready while request path has already latched Degraded).
+            // Probe: Transient on the first call. On the second call, signal
+            // that it has genuinely entered, block on a test-controlled
+            // release, then resolve Ready — landing the race window inside
+            // the in-flight probe rather than before it starts.
             let probe: MonitorProbeFn = Arc::new(move |_| {
                 let cc = Arc::clone(&cc);
+                let pe = Arc::clone(&pe);
+                let rp = Arc::clone(&rp);
                 Box::pin(async move {
                     let n = cc.fetch_add(1, Ordering::SeqCst);
                     if n >= 1 {
+                        pe.notify_one();
+                        rp.notified().await;
                         lifecycle::HealthOutcome::Ready
                     } else {
                         lifecycle::HealthOutcome::Transient
@@ -862,31 +891,51 @@ mod tests {
                 "test-workspace".to_owned(),
             );
 
-            // Let the first probe fire (returns false).
-            for _ in 0..10 {
-                tokio::time::advance(Duration::from_millis(10)).await;
-                tokio::task::yield_now().await;
-            }
-
-            // Simulate request path latching Degraded (external write to channel).
-            let _ = tx.send(Some(StartupOutcome::Degraded {
-                class: ShimFailureClass::ReadinessTimeout,
-                message: "terminal latch by request path (placeholder for ProtocolIncompatible)"
-                    .to_owned(),
-            }));
-
-            // Let the monitor's next backoff fire — probe returns true.
+            // Advance the paused clock past the first (Transient) probe and
+            // into the second backoff tick, entering the second probe call.
             for _ in 0..30 {
                 tokio::time::advance(Duration::from_millis(10)).await;
                 tokio::task::yield_now().await;
+                if probe_count.load(Ordering::SeqCst) >= 2 {
+                    break;
+                }
+            }
+            probe_entered.notified().await;
+            assert_eq!(
+                probe_count.load(Ordering::SeqCst),
+                2,
+                "C5 setup: the second probe must have genuinely entered before the race is injected"
+            );
+
+            // Race: latch Degraded (simulating the request path) WHILE the
+            // second probe is still in flight, awaiting release.
+            let _ = tx.send(Some(StartupOutcome::Degraded {
+                class: ShimFailureClass::ProtocolIncompatible,
+                message: "terminal latch by request path".to_owned(),
+            }));
+            tokio::task::yield_now().await;
+
+            // Release the in-flight probe; it now resolves Ready.
+            release_probe.notify_one();
+
+            // Let the monitor process the Ready result and (incorrectly, if
+            // regressed) publish it.
+            for _ in 0..20 {
+                tokio::time::advance(Duration::from_millis(10)).await;
+                tokio::task::yield_now().await;
             }
 
-            // Final state: must still be Degraded, not Ready.
+            // Final state: must still be Degraded, not Ready — the race must
+            // not un-latch a proven-terminal session.
             let current = rx.borrow_and_update().clone();
-            // RED: monitor currently overwrites Degraded with Ready
             assert!(
                 matches!(current, Some(StartupOutcome::Degraded { .. })),
-                "C5: final state must be Degraded (not overwritten by monitor Ready); got {current:?}"
+                "C5: final state must be Degraded (not overwritten by a concurrent monitor Ready); got {current:?}"
+            );
+            assert_eq!(
+                probe_count.load(Ordering::SeqCst),
+                2,
+                "C5: exactly 2 probes (Transient, then the raced Ready) — no further probing after the race"
             );
         }
     }

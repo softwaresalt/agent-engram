@@ -733,8 +733,9 @@ fn assert_terminal_protocol_incompatible(call_response: &Value, context: &str) {
         "{context}: terminal must be non-recoverable: {call_response}"
     );
     assert!(
-        structured.get("retry_after_ms").is_none() || structured["retry_after_ms"].is_null(),
-        "{context}: terminal must NOT carry retry_after_ms: {call_response}"
+        structured.get("retry_after_ms").is_none(),
+        "{context}: terminal must NOT carry a retry_after_ms key at all (agents branch on key \
+         presence, not truthiness — an explicit null would still be wrong): {call_response}"
     );
     let content_text = call_response["result"]["content"][0]["text"]
         .as_str()
@@ -796,7 +797,7 @@ async fn t1_wrong_protocol_version_is_terminal() {
     let workspace = workspace_with_valid_git_root();
     // Sequence: first 5 probes return NotReady (startup uses ~3), then switch
     // to VersionMismatch for the recovery probe.
-    let (mut child, _fake, _ep) = spawn_shim_with_fake_health(
+    let (mut child, fake, _ep) = spawn_shim_with_fake_health(
         workspace.path(),
         HealthScript::Sequence {
             initial: Box::new(HealthScript::NotReady {
@@ -818,10 +819,16 @@ async fn t1_wrong_protocol_version_is_terminal() {
     assert_terminal_protocol_incompatible(&resp, "T1 first call");
 
     // Three further tools/call: identical terminal payload, 0 additional probes
+    let count_before_followups = fake.count();
     for id in 11..=13 {
         let resp = send_tools_call(&mut stdin, &mut stdout, id).await;
         assert_terminal_protocol_incompatible(&resp, &format!("T1 followup call {id}"));
     }
+    assert_eq!(
+        fake.count(),
+        count_before_followups,
+        "T1: terminal-latch followup tools/call must issue zero additional _health probes"
+    );
 }
 
 /// T2 — daemon returns JSON-RPC error -32601 Method Not Found (138.008-T).
@@ -834,7 +841,7 @@ async fn t1_wrong_protocol_version_is_terminal() {
 #[tokio::test]
 async fn t2_jsonrpc_method_not_found_is_terminal() {
     let workspace = workspace_with_valid_git_root();
-    let (mut child, _fake, _ep) = spawn_shim_with_fake_health(
+    let (mut child, fake, _ep) = spawn_shim_with_fake_health(
         workspace.path(),
         HealthScript::JsonRpcError {
             code: -32601,
@@ -848,10 +855,16 @@ async fn t2_jsonrpc_method_not_found_is_terminal() {
     let resp = send_tools_call(&mut stdin, &mut stdout, 10).await;
     assert_terminal_protocol_incompatible(&resp, "T2 first call");
 
+    let count_before_followups = fake.count();
     for id in 11..=13 {
         let resp = send_tools_call(&mut stdin, &mut stdout, id).await;
         assert_terminal_protocol_incompatible(&resp, &format!("T2 followup call {id}"));
     }
+    assert_eq!(
+        fake.count(),
+        count_before_followups,
+        "T2: terminal-latch followup tools/call must issue zero additional _health probes"
+    );
 }
 
 /// T3 — daemon returns valid JSON-RPC with missing `result` (138.008-T).
@@ -864,17 +877,23 @@ async fn t2_jsonrpc_method_not_found_is_terminal() {
 #[tokio::test]
 async fn t3_missing_result_is_terminal() {
     let workspace = workspace_with_valid_git_root();
-    let (mut child, _fake, _ep) =
+    let (mut child, fake, _ep) =
         spawn_shim_with_fake_health(workspace.path(), HealthScript::MissingResult, 500).await;
     let (mut stdin, mut stdout) = initialize_shim_mcp(&mut child).await;
 
     let resp = send_tools_call(&mut stdin, &mut stdout, 10).await;
     assert_terminal_protocol_incompatible(&resp, "T3 first call");
 
+    let count_before_followups = fake.count();
     for id in 11..=13 {
         let resp = send_tools_call(&mut stdin, &mut stdout, id).await;
         assert_terminal_protocol_incompatible(&resp, &format!("T3 followup call {id}"));
     }
+    assert_eq!(
+        fake.count(),
+        count_before_followups,
+        "T3: terminal-latch followup tools/call must issue zero additional _health probes"
+    );
 }
 
 /// T4 — daemon returns valid JSON-RPC with undecodable `result` (138.008-T).
@@ -888,17 +907,23 @@ async fn t3_missing_result_is_terminal() {
 #[tokio::test]
 async fn t4_undecodable_result_is_terminal() {
     let workspace = workspace_with_valid_git_root();
-    let (mut child, _fake, _ep) =
+    let (mut child, fake, _ep) =
         spawn_shim_with_fake_health(workspace.path(), HealthScript::UndecodableResult, 500).await;
     let (mut stdin, mut stdout) = initialize_shim_mcp(&mut child).await;
 
     let resp = send_tools_call(&mut stdin, &mut stdout, 10).await;
     assert_terminal_protocol_incompatible(&resp, "T4 first call");
 
+    let count_before_followups = fake.count();
     for id in 11..=13 {
         let resp = send_tools_call(&mut stdin, &mut stdout, id).await;
         assert_terminal_protocol_incompatible(&resp, &format!("T4 followup call {id}"));
     }
+    assert_eq!(
+        fake.count(),
+        count_before_followups,
+        "T4: terminal-latch followup tools/call must issue zero additional _health probes"
+    );
 }
 
 // ── 138-F Terminal Side-Effects (T5, T7) ─────────────────────────────────────
@@ -992,15 +1017,13 @@ async fn t5_durable_protocol_incompatible_record() {
 
 /// T7 — message hygiene: daemon-supplied text must not leak (138.009-T).
 ///
-/// Two cases: (a) _health JSON-RPC error message embedding a path and env
-/// value; (b) undecodable result payload embedding a path via serde error.
+/// Two cases: (a) `_health` JSON-RPC error message embedding a path and env
+/// value; (b) undecodable result payload embedding a path via a serde "invalid
+/// type" error (which echoes the received value verbatim in its message).
 /// Neither the path nor the environment variable must appear in the tools/call
-/// response content, structuredContent, or durable record.
-///
-/// NEW-RED: the terminal response does not exist yet, so there's nothing to
-/// check for hygiene in the current readiness_timeout flow.
+/// response content or structuredContent.
 #[tokio::test]
-async fn t7_daemon_text_does_not_leak_into_responses() {
+async fn t7a_daemon_text_does_not_leak_into_responses_jsonrpc_error() {
     let workspace = workspace_with_valid_git_root();
     let ws_path_str = workspace.path().to_str().unwrap_or("").to_owned();
     // Embed the workspace path AND the fake secret in the error message so we
@@ -1019,19 +1042,59 @@ async fn t7_daemon_text_does_not_leak_into_responses() {
 
     let resp = send_tools_call(&mut stdin, &mut stdout, 10).await;
 
-    assert_terminal_protocol_incompatible(&resp, "T7");
+    assert_terminal_protocol_incompatible(&resp, "T7a");
 
     // Hygiene: the workspace path must not appear in the response.
     let resp_str = resp.to_string();
     assert!(
         !resp_str.contains(&ws_path_str),
-        "T7: workspace path must not appear in response: {resp_str}"
+        "T7a: workspace path must not appear in response: {resp_str}"
     );
 
     // Hygiene: FAKE_SECRET_MARKER must not appear in the response.
     assert!(
         !resp_str.contains(FAKE_SECRET_MARKER),
-        "T7: sensitive env marker must not appear in response: {resp_str}"
+        "T7a: sensitive env marker must not appear in response: {resp_str}"
+    );
+}
+
+/// T7(b) — the second daemon-controlled text source: an undecodable `result`
+/// payload whose wrong-typed `protocol_version` field is a poisoned string
+/// (workspace path + fake secret). Serde's "invalid type" error text echoes
+/// the received value verbatim (`src/shim/lifecycle.rs`'s
+/// `format!("invalid _health payload: {e}")`), so this proves the decode-
+/// failure path is sanitized identically to the JSON-RPC error-message path
+/// covered by T7(a) — a hygiene test that exercised only (a) would leave (b)
+/// unguarded (Copilot review finding on PR #366).
+#[tokio::test]
+async fn t7b_daemon_text_does_not_leak_into_responses_undecodable_payload() {
+    let workspace = workspace_with_valid_git_root();
+    let ws_path_str = workspace.path().to_str().unwrap_or("").to_owned();
+    let poisoned = format!("{ws_path_str}/env={FAKE_SECRET_MARKER}");
+    let (mut child, _fake, _ep) = spawn_shim_with_fake_health(
+        workspace.path(),
+        HealthScript::UndecodableResultWithPoisonedText(poisoned.clone()),
+        500,
+    )
+    .await;
+    let (mut stdin, mut stdout) = initialize_shim_mcp(&mut child).await;
+
+    let resp = send_tools_call(&mut stdin, &mut stdout, 10).await;
+
+    assert_terminal_protocol_incompatible(&resp, "T7b");
+
+    let resp_str = resp.to_string();
+    assert!(
+        !resp_str.contains(&ws_path_str),
+        "T7b: workspace path must not appear in response: {resp_str}"
+    );
+    assert!(
+        !resp_str.contains(FAKE_SECRET_MARKER),
+        "T7b: sensitive env marker must not appear in response: {resp_str}"
+    );
+    assert!(
+        !resp_str.contains(&poisoned),
+        "T7b: the poisoned serde-error-echoed value must not appear in response: {resp_str}"
     );
 }
 
@@ -1104,17 +1167,15 @@ async fn r1_version_compatible_not_ready_is_transient() {
 /// When no daemon is listening on the IPC endpoint (connection refused), the
 /// error originates inside `ipc_client::send_request` and MUST be classified
 /// as transient — never terminal.
-///
-/// NEW-RED: current test setup produces Degraded (recoverable=false).
 #[tokio::test]
 async fn r2_connect_refused_is_transient() {
     let workspace = workspace_with_valid_git_root();
-    // Use NotReady script: the fake keeps the endpoint alive so startup reaches
-    // poll_until_ready(None), times out into WaitingForReadiness, then the
-    // recovery probe sees the same "not ready" status → Transient → recoverable.
-    // The in-crate test (transport.rs C1/C2) covers the actual connect-refused
-    // scenario via the ProbeFn seam.
-    let (mut child, _fake, _ep) = spawn_shim_with_fake_health(
+    // Start with a bound NotReady responder so the shim's startup path finds
+    // a "live daemon", reaches poll_until_ready(None), and times out into
+    // WaitingForReadiness (ensure_daemon_running's own readiness budget,
+    // including any respawn-ladder logic, runs and fully completes exactly
+    // once here — before the fake is ever touched).
+    let (mut child, fake, ep) = spawn_shim_with_fake_health(
         workspace.path(),
         HealthScript::NotReady {
             status: "initializing".into(),
@@ -1123,6 +1184,35 @@ async fn r2_connect_refused_is_transient() {
     )
     .await;
     let (mut stdin, mut stdout) = initialize_shim_mcp(&mut child).await;
+
+    // First tools/call: blocks on await_startup_outcome until
+    // compute_startup_outcome publishes WaitingForReadiness (its own
+    // ensure_daemon_running budget has now fully elapsed), then the
+    // request-triggered recovery probe sees the still-bound NotReady
+    // responder and returns Recoverable. This confirms ensure_daemon_running
+    // has already resolved and will not run again for the rest of this test.
+    let warmup_resp = send_tools_call(&mut stdin, &mut stdout, 1).await;
+    assert_transient_recoverable(&warmup_resp, "R2 warmup (bound NotReady responder)");
+
+    // NOW genuinely unbind the responder (via its `_shutdown` handling,
+    // which stops its accept loop and drops the listener), so the NEXT
+    // recovery probe — routed exclusively through
+    // transport::ShimHandler::forwarding_endpoint, never back through
+    // ensure_daemon_running or its respawn ladder — hits a real connection
+    // refusal originating inside ipc_client::send_request.
+    let shutdown_request = IpcRequest {
+        jsonrpc: "2.0".to_owned(),
+        id: Some(Value::from(9001)),
+        method: "_shutdown".to_owned(),
+        params: None,
+    };
+    send_request(&ep, &shutdown_request, Duration::from_secs(2))
+        .await
+        .expect("request fake responder shutdown");
+    drop(fake);
+    // Give the accept loop a moment to actually return and drop the
+    // listener, unbinding the platform endpoint.
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     let resp = send_tools_call(&mut stdin, &mut stdout, 10).await;
     assert_transient_recoverable(&resp, "R2");
