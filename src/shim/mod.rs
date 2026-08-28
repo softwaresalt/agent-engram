@@ -577,8 +577,52 @@ pub async fn run(workspace_override: Option<&str>) -> Result<(), EngramError> {
     let outcome_tx = Arc::new(outcome_tx);
     let outcome_observer = outcome_rx.clone();
     let transport_outcome_tx = Arc::clone(&outcome_tx);
-    let mut startup_task =
+
+    // `ShimHandler` holds a strong `Arc` clone of `outcome_tx` (see
+    // `transport::ShimHandler.startup_tx`'s doc comment), so the channel
+    // never closes on its own for the handler's lifetime — a panic inside
+    // `compute_startup_outcome` before its first publish would otherwise
+    // leave every `await_startup_outcome` call awaiting `changed()` forever
+    // (Copilot review finding on PR #366). Supervise the startup task
+    // explicitly instead of relying on channel-closure detection: a
+    // dedicated watchdog awaits its `JoinHandle` and, on `JoinError`
+    // (panic or cancellation), immediately publishes a degraded outcome
+    // itself using this same strong sender, so no in-flight or future
+    // `tools/call` can hang. `result_rx` carries the resolved outcome
+    // (from either path) to this function's own post-session
+    // classification below, replacing a second, separate join of the same
+    // task (a `JoinHandle` must not be polled from two independent
+    // call sites once it has already resolved).
+    let watchdog_outcome_tx = Arc::clone(&outcome_tx);
+    let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+    let startup_task =
         tokio::spawn(async move { compute_startup_outcome(workspace_override, &outcome_tx).await });
+    tokio::spawn(async move {
+        match startup_task.await {
+            Ok((outcome, record_task)) => {
+                let _ = result_tx.send((outcome, record_task));
+            }
+            Err(join_err) => {
+                let message = format!("startup precondition task did not complete: {join_err}");
+                let degraded = StartupOutcome::Degraded {
+                    class: ShimFailureClass::TransportFailure,
+                    message: message.clone(),
+                };
+                watchdog_outcome_tx.send_if_modified(|current| {
+                    if current.is_some() {
+                        // Should be unreachable (compute_startup_outcome
+                        // always publishes before returning on every
+                        // non-panic path), but never regress an
+                        // already-published outcome.
+                        return false;
+                    }
+                    *current = Some(degraded.clone());
+                    true
+                });
+                let _ = result_tx.send((degraded, None));
+            }
+        }
+    });
 
     let session_result =
         transport::run_shim(transport_outcome_tx, outcome_rx, IPC_REQUEST_TIMEOUT).await;
@@ -590,34 +634,30 @@ pub async fn run(workspace_override: Option<&str>) -> Result<(), EngramError> {
     // to classify the final exit code/diagnostics — it must not block
     // process teardown for however long `ensure_daemon_running`'s internal
     // readiness budget (up to 30s+) takes if the client vanished before any
-    // `tools/call` ever needed the outcome. Bound the join with a short
-    // grace period; if the task is still pending, classify as TransportFailure
-    // (exit code 13) since the session ended before preconditions resolved
-    // (the background task is dropped/cancelled when the runtime shuts down
-    // at process exit).
-    let (outcome, record_task) =
-        match tokio::time::timeout(Duration::from_secs(2), &mut startup_task).await {
-            Ok(Ok((outcome, record_task))) => (outcome, record_task),
-            Ok(Err(join_err)) => (
-                StartupOutcome::Degraded {
-                    class: ShimFailureClass::TransportFailure,
-                    message: format!("startup precondition task did not complete: {join_err}"),
-                },
-                None,
-            ),
-            Err(_elapsed) => {
-                startup_task.abort();
-                let _ = startup_task.await;
-                (
-                    StartupOutcome::Degraded {
-                        class: ShimFailureClass::TransportFailure,
-                        message: "startup precondition task did not finish before session teardown"
-                            .to_owned(),
-                    },
-                    None,
-                )
-            }
-        };
+    // `tools/call` ever needed the outcome. Bound the wait with a short
+    // grace period; if the watchdog is still pending, classify as
+    // TransportFailure (exit code 13) since the session ended before
+    // preconditions resolved (the background tasks are dropped/cancelled
+    // when the runtime shuts down at process exit).
+    let (outcome, record_task) = match tokio::time::timeout(Duration::from_secs(2), result_rx).await
+    {
+        Ok(Ok((outcome, record_task))) => (outcome, record_task),
+        Ok(Err(_recv_err)) => (
+            StartupOutcome::Degraded {
+                class: ShimFailureClass::TransportFailure,
+                message: "startup precondition task did not complete: watchdog dropped".to_owned(),
+            },
+            None,
+        ),
+        Err(_elapsed) => (
+            StartupOutcome::Degraded {
+                class: ShimFailureClass::TransportFailure,
+                message: "startup precondition task did not finish before session teardown"
+                    .to_owned(),
+            },
+            None,
+        ),
+    };
 
     // Give the (already-published, non-critical-path) durable-record write
     // a short best-effort grace period to finish before the runtime shuts
