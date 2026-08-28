@@ -86,6 +86,36 @@ pub(crate) enum TerminalKind {
     UndecodablePayload,
 }
 
+impl TerminalKind {
+    /// Fixed, client-safe message for this terminal outcome.
+    ///
+    /// Used by both the request-triggered single-flight probe
+    /// (`transport::ShimHandler::forwarding_endpoint`) and the independent
+    /// late-readiness monitor (`spawn_late_readiness_monitor`) as their sole
+    /// source of terminal-outcome wording, so the two independent publishers
+    /// can never report divergent text for the same classified cause.
+    /// Contains no daemon-supplied free-form text, path, or environment
+    /// value — only fixed, variable-free strings with `VersionMismatch`'s
+    /// own typed `expected`/`actual` fields interpolated.
+    #[must_use]
+    pub(crate) fn client_message(&self) -> String {
+        match self {
+            TerminalKind::VersionMismatch { expected, actual } => {
+                format!("daemon protocol version {actual} is incompatible (expected {expected})")
+            }
+            TerminalKind::MethodNotFound => {
+                "daemon does not implement the _health method".to_owned()
+            }
+            TerminalKind::MissingResult => {
+                "daemon _health response omitted the result payload".to_owned()
+            }
+            TerminalKind::UndecodablePayload => {
+                "daemon _health result could not be decoded".to_owned()
+            }
+        }
+    }
+}
+
 /// Outcome of a single `_health` probe, preserving terminal vs transient
 /// classification at construction time.
 #[derive(Debug, Clone, PartialEq, Eq)]

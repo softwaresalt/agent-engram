@@ -151,6 +151,45 @@ into two categories:
 | **Transient** | `15002` | `readiness_timeout` | `true` | `250` | `11` | Wait and retry — the daemon is warming up, unreachable, timed out, reset, or answering a non-ready status |
 | **Terminal** | `15005` | `protocol_incompatible` | `false` | *(absent)* | `14` | Upgrade or replace the daemon — retrying will never succeed |
 
+**Agent integration contract:** `recoverable` is the sole authoritative retry
+signal — never key retry logic off `failure_class` alone. Check
+`retry_after_ms` for *key presence*, not truthiness or non-null: the key is
+present only on the recoverable/transient branch and is never `null` or `0`
+when present. Any `failure_class` value an integration does not recognize
+MUST be treated as non-retryable by default (fail closed on unknown values),
+since new additive `failure_class` values (such as `protocol_incompatible`
+in this release) may be introduced in future releases. Example payloads
+(`tools/call` response, abbreviated):
+
+```json
+// Transient
+{
+  "result": {
+    "isError": true,
+    "structuredContent": {
+      "engram_code": 15002,
+      "failure_class": "readiness_timeout",
+      "message": "daemon did not reach a ready state within the configured budget",
+      "recoverable": true,
+      "retry_after_ms": 250
+    }
+  }
+}
+
+// Terminal
+{
+  "result": {
+    "isError": true,
+    "structuredContent": {
+      "engram_code": 15005,
+      "failure_class": "protocol_incompatible",
+      "message": "daemon protocol version 999 is incompatible (expected 1)",
+      "recoverable": false
+    }
+  }
+}
+```
+
 **What makes a probe terminal (proven incompatibility only):**
 
 - Daemon returned JSON-RPC error `-32601` Method Not Found for `_health`

@@ -278,24 +278,6 @@ fn default_monitor_probe() -> MonitorProbeFn {
     Arc::new(|endpoint: String| Box::pin(async move { lifecycle::probe_health(&endpoint).await }))
 }
 
-/// Fixed, client-safe message for a terminal `HealthOutcome` in the monitor path.
-fn terminal_kind_monitor_message(kind: &lifecycle::TerminalKind) -> String {
-    match kind {
-        lifecycle::TerminalKind::VersionMismatch { expected, actual } => {
-            format!("daemon protocol version {actual} is incompatible (expected {expected})")
-        }
-        lifecycle::TerminalKind::MethodNotFound => {
-            "daemon does not implement the _health method".to_owned()
-        }
-        lifecycle::TerminalKind::MissingResult => {
-            "daemon _health response omitted the result payload".to_owned()
-        }
-        lifecycle::TerminalKind::UndecodablePayload => {
-            "daemon _health result could not be decoded".to_owned()
-        }
-    }
-}
-
 /// Continue probing a daemon after the initial readiness attribution deadline.
 ///
 /// Exactly one monitor is spawned per shim startup. It updates the shared
@@ -318,7 +300,6 @@ fn spawn_late_readiness_monitor(
 /// Inner monitor entry point with injectable probe function and observable
 /// counter. Production callers use [`spawn_late_readiness_monitor`] which
 /// supplies the defaults.
-#[allow(dead_code)] // Used by 138.012-T monitor tests
 fn spawn_late_readiness_monitor_with_probe(
     outcome_tx: Arc<watch::Sender<Option<StartupOutcome>>>,
     endpoint: String,
@@ -366,7 +347,7 @@ fn spawn_late_readiness_monitor_with_probe(
                     delay_ms = (delay_ms * 2).min(RECOVERY_MAX_BACKOFF_MS);
                 }
                 lifecycle::HealthOutcome::Terminal(kind) => {
-                    let message = terminal_kind_monitor_message(&kind);
+                    let message = kind.client_message();
                     tracing::warn!(
                         endpoint = %endpoint,
                         terminal_kind = ?kind,

@@ -24,7 +24,7 @@ use tracing::instrument;
 use crate::daemon::protocol::IpcRequest;
 use crate::errors::{EngramError, ShimFailureClass, ShimStartupError};
 use crate::shim::StartupOutcome;
-use crate::shim::lifecycle::{HealthOutcome, TerminalKind};
+use crate::shim::lifecycle::HealthOutcome;
 
 const RECOVERY_PROBE_COOLDOWN: Duration = Duration::from_millis(250);
 
@@ -89,7 +89,7 @@ pub struct ShimHandler {
     /// Monotonically incrementing request-id counter for JSON-RPC requests.
     next_id: Arc<AtomicU64>,
     /// Health-probe function invoked during late-readiness recovery.
-    /// Default: [`crate::shim::lifecycle::check_health`].
+    /// Default: [`crate::shim::lifecycle::probe_health`].
     probe: ProbeFn,
 }
 
@@ -113,7 +113,6 @@ impl ShimHandler {
 
     /// Test-only constructor that overrides the health-probe function.
     #[cfg(test)]
-    #[allow(dead_code)] // Used by 138.006-T concurrency tests
     pub(crate) fn with_probe(
         startup_tx: Weak<watch::Sender<Option<StartupOutcome>>>,
         startup: watch::Receiver<Option<StartupOutcome>>,
@@ -205,7 +204,7 @@ impl ShimHandler {
                                 Err(EndpointResolutionError::Recoverable { message })
                             }
                             HealthOutcome::Terminal(kind) => {
-                                let terminal_message = terminal_kind_message(&kind);
+                                let terminal_message = kind.client_message();
                                 if let Some(startup_tx) = self.startup_tx.upgrade() {
                                     startup_tx.send_if_modified(|current| {
                                         if matches!(current, Some(StartupOutcome::Degraded { .. }))
@@ -235,19 +234,6 @@ impl ShimHandler {
 /// Fixed, client-safe message for a terminal `HealthOutcome` kind.
 ///
 /// Contains NO daemon-supplied free-form text, no paths, no env values.
-fn terminal_kind_message(kind: &TerminalKind) -> String {
-    match kind {
-        TerminalKind::VersionMismatch { expected, actual } => {
-            format!("daemon protocol version {actual} is incompatible (expected {expected})")
-        }
-        TerminalKind::MethodNotFound => "daemon does not implement the _health method".to_owned(),
-        TerminalKind::MissingResult => {
-            "daemon _health response omitted the result payload".to_owned()
-        }
-        TerminalKind::UndecodablePayload => "daemon _health result could not be decoded".to_owned(),
-    }
-}
-
 impl ServerHandler for ShimHandler {
     /// Return this shim's identity information.
     ///
