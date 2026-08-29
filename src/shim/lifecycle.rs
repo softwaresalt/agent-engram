@@ -218,6 +218,8 @@ pub(crate) async fn probe_health(endpoint: &str) -> HealthOutcome {
     if health.status != "ready" {
         debug!(
             status = %health.status,
+            protocol_version = health.protocol_version,
+            build_hash = %health.build_hash,
             "daemon not ready yet (transient)"
         );
         return HealthOutcome::Transient;

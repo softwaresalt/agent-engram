@@ -18,7 +18,7 @@ use interprocess::local_socket::{
     tokio::{Listener, Stream, prelude::*},
 };
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 use engram::shim::version::ENGRAM_PROTOCOL_VERSION;
 
@@ -47,6 +47,9 @@ pub enum HealthScript {
     /// Write a syntactically valid JSON response without its newline frame
     /// delimiter, then close the connection.
     ValidJsonWithoutNewlineThenClose,
+    /// Write more than the shim's response cap without a newline, then keep
+    /// the connection open until the client disconnects.
+    OversizedThenRemainOpen,
     /// Use `initial` for the first `switch_after` probes, then switch to `then`.
     Sequence {
         initial: Box<HealthScript>,
@@ -225,6 +228,13 @@ async fn handle_connection(
                 let _ = send.flush().await;
                 return;
             }
+            if let HealthScript::OversizedThenRemainOpen = effective {
+                let oversized = vec![b' '; 1024 * 1024 + 1];
+                let _ = send.write_all(&oversized).await;
+                let _ = send.flush().await;
+                let _ = reader.read_u8().await;
+                return;
+            }
 
             let response = build_response(&id, effective);
             let mut resp_line =
@@ -330,6 +340,10 @@ fn build_response(id: &Value, script: &HealthScript) -> Value {
             "id": id,
             "result": {}
         }),
+        HealthScript::OversizedThenRemainOpen => {
+            // Actual oversized response is handled in handle_connection.
+            Value::Null
+        }
         HealthScript::Sequence { .. } => {
             // Sequence is resolved before reaching build_response.
             unreachable!("Sequence should be resolved by resolve_script")

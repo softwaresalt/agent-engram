@@ -101,10 +101,14 @@ async fn do_send(endpoint: &str, request: &IpcRequest) -> Result<IpcResponse, En
         }));
     }
     if !response_line.ends_with('\n') {
+        let reason = if reader.get_ref().limit() == 0 {
+            "daemon response exhausted the 1 MiB response size limit before completing the \
+             newline-delimited response frame"
+        } else {
+            "daemon closed connection before completing the newline-delimited response frame"
+        };
         return Err(EngramError::Ipc(IpcError::ReceiveFailed {
-            reason:
-                "daemon closed connection before completing the newline-delimited response frame"
-                    .to_owned(),
+            reason: reason.to_owned(),
         }));
     }
 
