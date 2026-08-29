@@ -100,6 +100,13 @@ async fn do_send(endpoint: &str, request: &IpcRequest) -> Result<IpcResponse, En
                 .to_owned(),
         }));
     }
+    if !response_line.ends_with('\n') {
+        return Err(EngramError::Ipc(IpcError::ReceiveFailed {
+            reason:
+                "daemon closed connection before completing the newline-delimited response frame"
+                    .to_owned(),
+        }));
+    }
 
     serde_json::from_str(response_line.trim()).map_err(|e| {
         EngramError::Ipc(IpcError::ReceiveFailed {

@@ -795,7 +795,7 @@ async fn send_tools_call(
 #[tokio::test]
 async fn t1_wrong_protocol_version_is_terminal() {
     let workspace = workspace_with_valid_git_root();
-    // Sequence: first 5 probes return NotReady (startup uses ~3), then switch
+    // Sequence: first 8 probes return NotReady (startup uses ~5), then switch
     // to VersionMismatch for the recovery probe.
     let (mut child, fake, _ep) = spawn_shim_with_fake_health(
         workspace.path(),
@@ -1308,6 +1308,27 @@ async fn r5_truncated_response_is_transient() {
 
     let resp = send_tools_call(&mut stdin, &mut stdout, 10).await;
     assert_transient_recoverable(&resp, "R5");
+}
+
+/// R5(b) — valid JSON without its newline frame delimiter → transient.
+///
+/// EOF after nonempty bytes does not complete the newline-delimited IPC frame,
+/// even when those bytes happen to form syntactically valid JSON. The
+/// incomplete frame must fail inside `ipc_client::send_request`, preserving
+/// the conservative transient classification.
+#[tokio::test]
+async fn r5b_valid_json_without_newline_is_transient() {
+    let workspace = workspace_with_valid_git_root();
+    let (mut child, _fake, _ep) = spawn_shim_with_fake_health(
+        workspace.path(),
+        HealthScript::ValidJsonWithoutNewlineThenClose,
+        500,
+    )
+    .await;
+    let (mut stdin, mut stdout) = initialize_shim_mcp(&mut child).await;
+
+    let resp = send_tools_call(&mut stdin, &mut stdout, 10).await;
+    assert_transient_recoverable(&resp, "R5b");
 }
 
 // ── C4 Teardown Neutrality (138.011-T) ───────────────────────────────────────

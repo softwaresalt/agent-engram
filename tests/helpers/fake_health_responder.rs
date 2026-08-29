@@ -44,6 +44,9 @@ pub enum HealthScript {
     UndecodableResultWithPoisonedText(String),
     /// Write a truncated (non-JSON) line then close the connection.
     TruncatedThenClose,
+    /// Write a syntactically valid JSON response without its newline frame
+    /// delimiter, then close the connection.
+    ValidJsonWithoutNewlineThenClose,
     /// Use `initial` for the first `switch_after` probes, then switch to `then`.
     Sequence {
         initial: Box<HealthScript>,
@@ -226,7 +229,9 @@ async fn handle_connection(
             let response = build_response(&id, effective);
             let mut resp_line =
                 serde_json::to_string(&response).unwrap_or_else(|_| String::from("{}"));
-            resp_line.push('\n');
+            if !matches!(effective, HealthScript::ValidJsonWithoutNewlineThenClose) {
+                resp_line.push('\n');
+            }
             let _ = send.write_all(resp_line.as_bytes()).await;
             let _ = send.flush().await;
         }
@@ -320,6 +325,11 @@ fn build_response(id: &Value, script: &HealthScript) -> Value {
             // Actual truncation is handled in handle_connection
             Value::Null
         }
+        HealthScript::ValidJsonWithoutNewlineThenClose => json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": {}
+        }),
         HealthScript::Sequence { .. } => {
             // Sequence is resolved before reaching build_response.
             unreachable!("Sequence should be resolved by resolve_script")
