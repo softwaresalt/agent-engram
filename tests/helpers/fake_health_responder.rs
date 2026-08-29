@@ -22,6 +22,12 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 use engram::shim::version::ENGRAM_PROTOCOL_VERSION;
 
+/// How long the respawn-specific fake leaves its endpoint unbound after the
+/// first `_shutdown`. This is long enough for the lifecycle's reachability
+/// check to observe daemon exit, while remaining well inside its readiness
+/// and concurrent-winner budgets.
+const REBIND_RELEASE_WINDOW: std::time::Duration = std::time::Duration::from_millis(200);
+
 /// What the fake responder should reply to each `_health` request.
 #[derive(Clone, Debug)]
 pub enum HealthScript {
@@ -97,6 +103,40 @@ impl FakeHealthResponder {
         let listener = bind_listener(endpoint);
         let task = tokio::spawn(async move {
             accept_loop(listener, Arc::new(script), count, shutdown_clone).await;
+        });
+        Self {
+            probe_count,
+            task,
+            shutdown,
+        }
+    }
+
+    /// Bind the endpoint, release it after the first `_shutdown`, then rebind
+    /// once with the same script.
+    ///
+    /// This models an incompatible daemon being replaced by another
+    /// incompatible daemon, allowing contract tests to exercise the shim's
+    /// one permitted respawn without introducing a production-only seam.
+    pub fn spawn_rebinding_after_shutdown(endpoint: &str, script: HealthScript) -> Self {
+        let probe_count = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&probe_count);
+        let shutdown = Arc::new(tokio::sync::Notify::new());
+        let shutdown_clone = Arc::clone(&shutdown);
+        let listener = bind_listener(endpoint);
+        let rebound_endpoint = endpoint.to_owned();
+        let task = tokio::spawn(async move {
+            let script = Arc::new(script);
+            accept_loop(
+                listener,
+                Arc::clone(&script),
+                Arc::clone(&count),
+                Arc::clone(&shutdown_clone),
+            )
+            .await;
+
+            tokio::time::sleep(REBIND_RELEASE_WINDOW).await;
+            let listener = bind_listener(&rebound_endpoint);
+            accept_loop(listener, script, count, shutdown_clone).await;
         });
         Self {
             probe_count,

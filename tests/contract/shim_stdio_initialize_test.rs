@@ -121,16 +121,48 @@ async fn spawn_shim_with_fake_health(
     script: HealthScript,
     ready_timeout_ms: u64,
 ) -> (tokio::process::Child, FakeHealthResponder, String) {
+    spawn_shim_with_fake_health_using(
+        workspace,
+        script,
+        ready_timeout_ms,
+        FakeHealthResponder::spawn,
+    )
+    .await
+}
+
+/// Spawn a fake that releases and rebinds its endpoint after `_shutdown`, so
+/// an immediate startup mismatch remains observable across the shim's one
+/// permitted daemon respawn.
+async fn spawn_shim_with_rebinding_fake_health(
+    workspace: &Path,
+    script: HealthScript,
+    ready_timeout_ms: u64,
+) -> (tokio::process::Child, FakeHealthResponder, String) {
+    spawn_shim_with_fake_health_using(
+        workspace,
+        script,
+        ready_timeout_ms,
+        FakeHealthResponder::spawn_rebinding_after_shutdown,
+    )
+    .await
+}
+
+async fn spawn_shim_with_fake_health_using(
+    workspace: &Path,
+    script: HealthScript,
+    ready_timeout_ms: u64,
+    spawn_responder: fn(&str, HealthScript) -> FakeHealthResponder,
+) -> (tokio::process::Child, FakeHealthResponder, String) {
     let endpoint =
         engram::daemon::ipc_server::ipc_endpoint(workspace).expect("derive daemon endpoint");
-    let fake = FakeHealthResponder::spawn(&endpoint, script.clone());
+    let needs_pid_file = !matches!(&script, HealthScript::VersionMismatch { .. });
+    let fake = spawn_responder(&endpoint, script);
     // Brief pause to let the fake bind the listener.
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Plant a PID file for non-VersionMismatch scripts so
     // ensure_daemon_running skips spawn_daemon and enters
     // poll_until_ready(None) (no child-exit tracking).
-    let needs_pid_file = !matches!(script, HealthScript::VersionMismatch { .. });
     if needs_pid_file {
         let pid_dir = workspace.join(".engram").join("run");
         fs::create_dir_all(&pid_dir).expect("create .engram/run");
@@ -778,6 +810,89 @@ async fn send_tools_call(
         .expect("write tools/call");
     let line = read_bounded_mcp_line(stdout, Duration::from_secs(30), "tools/call response").await;
     serde_json::from_str(line.trim()).expect("parse tools/call response")
+}
+
+/// A version mismatch discovered by the initial startup probe must use the
+/// same terminal protocol-incompatibility contract as a mismatch found later.
+#[tokio::test]
+async fn immediate_startup_version_mismatch_is_protocol_incompatible() {
+    let workspace = workspace_with_valid_git_root();
+    let (mut child, fake, _endpoint) = spawn_shim_with_rebinding_fake_health(
+        workspace.path(),
+        HealthScript::VersionMismatch { version: 999 },
+        500,
+    )
+    .await;
+    let (mut stdin, mut stdout) = initialize_shim_mcp(&mut child).await;
+
+    let response = send_tools_call(&mut stdin, &mut stdout, 10).await;
+    assert_terminal_protocol_incompatible(&response, "immediate startup version mismatch");
+    assert_eq!(
+        fake.count(),
+        2,
+        "the shim must probe the incompatible daemon once before and once after its sole respawn"
+    );
+
+    stdin.shutdown().await.expect("disconnect MCP client");
+    drop(stdin);
+    let exit_status = tokio::time::timeout(Duration::from_secs(5), child.wait())
+        .await
+        .expect("shim must exit within 5s of client disconnect")
+        .expect("wait for shim");
+    assert_eq!(
+        exit_status.code(),
+        Some(14),
+        "startup version mismatch must exit with protocol_incompatible code 14"
+    );
+
+    let record_path = workspace
+        .path()
+        .join(".engram")
+        .join("diagnostics")
+        .join("shim-startup-failures.jsonl");
+    let record_contents = fs::read_to_string(&record_path).unwrap_or_else(|error| {
+        panic!("protocol-incompatibility record must exist at {record_path:?}: {error}")
+    });
+    let mut record_lines = record_contents
+        .lines()
+        .filter(|line| !line.trim().is_empty());
+    let record_line = record_lines
+        .next()
+        .expect("exactly one protocol-incompatibility record must be written");
+    assert!(
+        record_lines.next().is_none(),
+        "exactly one startup-failure record must be written: {record_contents}"
+    );
+
+    let record: Value =
+        serde_json::from_str(record_line).expect("startup-failure record must be valid JSON");
+    let object = record
+        .as_object()
+        .expect("startup-failure record must be a JSON object");
+    let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        vec!["binary_version", "failure_class", "message", "timestamp"],
+        "startup-failure record must have the exact durable schema: {record}"
+    );
+    assert_eq!(record["failure_class"], "protocol_incompatible");
+    assert_eq!(
+        record["message"],
+        "daemon protocol or _health contract is incompatible with this shim"
+    );
+    assert!(
+        record["binary_version"]
+            .as_str()
+            .is_some_and(|version| !version.is_empty()),
+        "startup-failure record must identify the shim build: {record}"
+    );
+    assert!(
+        record["timestamp"]
+            .as_str()
+            .is_some_and(|timestamp| !timestamp.is_empty()),
+        "startup-failure record must include a timestamp: {record}"
+    );
 }
 
 /// T1 — daemon replies with wrong `protocol_version` (138.008-T).
