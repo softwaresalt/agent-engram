@@ -101,8 +101,8 @@ and making tokio's `test-util` feature an explicit dev-dependency.
 ## Verdict
 
 **Ready for operator merge approval, pending one final external gate.** All
-quality gates pass, and the structured review gate found no P0 findings (P1s
-addressed across four Copilot review-fix cycles). This closure artifact is
+quality gates pass, and the structured review gate found no P0 findings, with
+all identified P1s addressed. This closure artifact is
 itself committed to the PR, which advances the PR's HEAD — a committed
 closure file cannot claim in advance that the current-HEAD Copilot review
 gate has passed for the commit that contains the claim. The outstanding,

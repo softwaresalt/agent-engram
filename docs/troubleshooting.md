@@ -205,13 +205,14 @@ and treat the call as non-retryable — do not infer retryability from
 
 ### Startup-failure record
 
-Every startup deadline or terminal startup failure writes one JSON line to:
+Best-effort startup-failure diagnostics, when written, are appended as JSON
+lines to:
 
 ```text
 <workspace>/.engram/diagnostics/shim-startup-failures.jsonl
 ```
 
-Each record contains exactly four fields — a `timestamp` (RFC 3339), the
+Each written record contains exactly four fields — a `timestamp` (RFC 3339), the
 `binary_version` (the build's `ENGRAM_BUILD_HASH`, falling back to the crate
 version), the `failure_class` (one of `admission_failure`, `readiness_timeout`,
 `endpoint_derivation_failure`, `transport_failure`, or `protocol_incompatible`),

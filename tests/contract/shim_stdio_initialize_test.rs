@@ -692,17 +692,10 @@ fn startup_failure_record_relative_path_is_documented() {
 
 // ── 138-F Terminal Classification Matrix (T1–T4) ─────────────────────────────
 //
-// NEW-RED: These tests scaffold the plan's terminal classification scenarios.
-// They assert `protocol_incompatible` / 15005 / recoverable==false which does
-// not exist yet (current code returns readiness_timeout / 15002). When behavior
-// tasks 138.001-T and 138.004-T land, the shim will classify protocol-level
-// incompatibility as terminal and these tests will turn GREEN.
-//
-// The setup currently uses `spawn_shim_with_failing_daemon` as the simplest
-// harness that gets the shim into a degraded state. When 138.004-T lands, the
-// setup will be updated to use the 138.002-T H1 `FakeHealthResponder` with
-// scenario-specific scripts (VersionMismatch, JsonRpcError -32601, etc.) so
-// the shim can exercise the terminal classification path end-to-end.
+// These tests cover the plan's terminal classification scenarios end-to-end
+// with `FakeHealthResponder` scripts for version mismatch, JSON-RPC method
+// absence, missing results, and undecodable results. Each scenario asserts
+// `protocol_incompatible` / 15005 / recoverable==false.
 
 /// Shared assertion for T1–T4 terminal classification contract tests.
 ///
