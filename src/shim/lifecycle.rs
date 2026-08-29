@@ -223,6 +223,12 @@ pub(crate) async fn probe_health(endpoint: &str) -> HealthOutcome {
         return HealthOutcome::Transient;
     }
 
+    debug!(
+        ready = true,
+        protocol_version = health.protocol_version,
+        build_hash = %health.build_hash,
+        "health check returned"
+    );
     HealthOutcome::Ready
 }
 

@@ -141,7 +141,7 @@ directly testable (scenario R5).
 ```rust
 /// What a terminal health outcome proved about the endpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TerminalKind {
+pub(crate) enum TerminalKind {
     /// `ensure_protocol_compatible` rejected the reported version.
     VersionMismatch { expected: u32, actual: u32 },
     /// Daemon answered `_health` with `-32601` Method Not Found.
@@ -154,7 +154,7 @@ pub enum TerminalKind {
 
 /// Why a health probe did not yield a ready daemon.
 #[derive(Debug, Clone)]
-pub enum HealthOutcome {
+pub(crate) enum HealthOutcome {
     /// `_health` answered with a compatible protocol and `status == "ready"`.
     Ready,
     /// Unreachable, timed out, reset, truncated, or a well-formed
@@ -165,7 +165,7 @@ pub enum HealthOutcome {
     Terminal(TerminalKind),
 }
 
-pub async fn probe_health(endpoint: &str) -> HealthOutcome;
+pub(crate) async fn probe_health(endpoint: &str) -> HealthOutcome;
 
 pub async fn check_health(endpoint: &str) -> bool {
     matches!(probe_health(endpoint).await, HealthOutcome::Ready)
@@ -173,7 +173,8 @@ pub async fn check_health(endpoint: &str) -> bool {
 ```
 
 `check_health` is retained as a thin `bool` adapter so non-recovery callers and
-their tests are untouched.
+their tests are untouched. The classification types and result-preserving probe
+remain crate-visible, so this design does not widen the public API.
 
 **Message-hygiene rule (revision 2).** `HealthOutcome::Terminal` carries a
 **closed enum**, never a free-form `reason` string. The daemon's arbitrary
@@ -603,13 +604,20 @@ Exact required outcomes for `tools/call` in a non-ready session:
 | Field | Transient | Terminal |
 |---|---|---|
 | MCP shape | `CallToolResult::structured_error` | `CallToolResult::structured_error` |
-| JSON-RPC envelope code | `-32603` | `-32603` |
+| JSON-RPC top-level `error` | **absent** | **absent** |
+| JSON-RPC `result.isError` | `true` | `true` |
 | `structuredContent.engram_code` | `15002` | `15005` |
 | `structuredContent.failure_class` | `readiness_timeout` | `protocol_incompatible` |
 | `structuredContent.recoverable` | `true` | `false` |
 | `structuredContent.retry_after_ms` | `250` | **key absent** |
 | `content` text | existing recoverable text | fixed `TerminalKind`-derived text; no path, no env value, no daemon-supplied message |
 | Process exit code (on eventual exit) | `11` | `14` |
+
+`CallToolResult::structured_error` is serialized as a normal JSON-RPC result
+whose MCP payload sets `isError: true`; it does not emit a top-level JSON-RPC
+`error` object or envelope error code. The `-32603` cases elsewhere in this
+plan describe daemon `_health` responses, not the shim's `tools/call` wire
+envelope.
 
 `retry_after_ms` must be **absent** — not `null`, not `0`. Agents branch on key
 presence; a present value is a fail-open signal. The existing implementation
