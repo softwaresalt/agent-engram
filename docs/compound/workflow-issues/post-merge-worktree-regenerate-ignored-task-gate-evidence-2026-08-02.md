@@ -16,6 +16,9 @@ evidence:
   - shipment: 124-S
   - pr: 359
   - merge_commit: 8f9904a0
+  - shipment: 131-S
+  - pr: 366
+  - merge_commit: dd0ba6116a39c54f8c25ff033c72211041b2a65f
 tags: [backlogit, ship-agent, post-merge, gate-evidence, worktree]
 ---
 
@@ -81,6 +84,11 @@ backlogit move <task-id> --status done --json
 The second command runs the configured pre-task-completion gate against the
 merged tree and records fresh passing evidence. After every member has passing
 evidence, run `backlogit shipment ship` with the verified merge SHA.
+
+A no-op `done -> done` command does **not** regenerate missing gate evidence.
+The item must pass through the real supported `done -> active -> done`
+transition so that the completion broker executes and appends a new passing
+event.
 
 Note the tradeoff: regeneration rewrites `updated_at` and records a `head_sha`
 from closure time rather than execution time, so the archived history no longer
