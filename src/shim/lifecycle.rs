@@ -11,14 +11,14 @@ use std::time::Duration;
 use std::{future::Future, process::ExitStatus};
 
 use serde_json::Value;
-use tracing::{debug, info, instrument};
+use tracing::{debug, info, instrument, warn};
 
 use crate::daemon::ipc_server::ipc_endpoint;
 use crate::daemon::protocol::{HealthCheckResult, IpcRequest};
 use crate::db::workspace::{canonicalize_workspace, normalize_canonical};
 use crate::errors::{DaemonError, EngramError, IpcError};
 use crate::shim::pidfile::PidFile;
-use crate::shim::version::ensure_protocol_compatible;
+use crate::shim::version::{ENGRAM_PROTOCOL_VERSION, ensure_protocol_compatible};
 
 // ── Backoff constants ─────────────────────────────────────────────────────────
 
@@ -66,22 +66,172 @@ fn ready_timeout_ms() -> u64 {
 /// unexpected payload.
 #[instrument(fields(endpoint = %endpoint))]
 pub async fn check_health(endpoint: &str) -> bool {
-    match fetch_health(endpoint).await {
-        Ok(health) => {
-            let is_ready = health.status == "ready";
-            debug!(
-                ready = is_ready,
-                protocol_version = health.protocol_version,
-                build_hash = %health.build_hash,
-                "health check returned"
-            );
-            is_ready
-        }
-        Err(e) => {
-            debug!(error = %e, "health check failed");
-            false
+    matches!(probe_health(endpoint).await, HealthOutcome::Ready)
+}
+
+// ── Result-preserving health probe ────────────────────────────────────────────
+
+/// Terminal classification kind for a daemon `_health` probe failure that is
+/// provably permanent (the daemon replied, but the reply demonstrates
+/// protocol or contract incompatibility).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TerminalKind {
+    /// Daemon reports a protocol version this shim does not support.
+    VersionMismatch { expected: u32, actual: u32 },
+    /// Daemon returned JSON-RPC error `-32601` (Method Not Found) for `_health`.
+    MethodNotFound,
+    /// Daemon response contained no `result` field.
+    MissingResult,
+    /// Daemon response `result` could not be decoded as `HealthCheckResult`.
+    UndecodablePayload,
+}
+
+impl TerminalKind {
+    /// Fixed, client-safe message for this terminal outcome.
+    ///
+    /// Used by both the request-triggered single-flight probe
+    /// (`transport::ShimHandler::forwarding_endpoint`) and the independent
+    /// late-readiness monitor (`spawn_late_readiness_monitor`) as their sole
+    /// source of terminal-outcome wording, so the two independent publishers
+    /// can never report divergent text for the same classified cause.
+    /// Contains no daemon-supplied free-form text, path, or environment
+    /// value — only fixed, variable-free strings with `VersionMismatch`'s
+    /// own typed `expected`/`actual` fields interpolated.
+    #[must_use]
+    pub(crate) fn client_message(&self) -> String {
+        match self {
+            TerminalKind::VersionMismatch { expected, actual } => {
+                format!("daemon protocol version {actual} is incompatible (expected {expected})")
+            }
+            TerminalKind::MethodNotFound => {
+                "daemon does not implement the _health method".to_owned()
+            }
+            TerminalKind::MissingResult => {
+                "daemon _health response omitted the result payload".to_owned()
+            }
+            TerminalKind::UndecodablePayload => {
+                "daemon _health result could not be decoded".to_owned()
+            }
         }
     }
+}
+
+/// Outcome of a single `_health` probe, preserving terminal vs transient
+/// classification at construction time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum HealthOutcome {
+    /// Daemon is reachable, protocol-compatible, and reports `status: "ready"`.
+    Ready,
+    /// Probe failed but the failure is transient (transport error, daemon not
+    /// ready yet, non-fatal JSON-RPC error codes).
+    Transient,
+    /// Probe succeeded at the transport layer but revealed a permanent
+    /// incompatibility.
+    Terminal(TerminalKind),
+}
+
+/// Result-preserving health probe that classifies the daemon response into
+/// [`HealthOutcome`] without collapsing failure modes.
+///
+/// # Classification rule (conservative — terminal only on proof)
+///
+/// * Any `Err` from `ipc_client::send_request` → [`HealthOutcome::Transient`]
+/// * JSON-RPC error `-32601` → [`HealthOutcome::Terminal(MethodNotFound)`]
+/// * Any other JSON-RPC error code → [`HealthOutcome::Transient`]
+/// * Missing `result` → [`HealthOutcome::Terminal(MissingResult)`]
+/// * Undecodable `result` → [`HealthOutcome::Terminal(UndecodablePayload)`]
+/// * Version mismatch → [`HealthOutcome::Terminal(VersionMismatch{..})`]
+/// * Version-compatible, status ≠ "ready" → [`HealthOutcome::Transient`]
+#[instrument(fields(endpoint = %endpoint))]
+pub(crate) async fn probe_health(endpoint: &str) -> HealthOutcome {
+    let request = IpcRequest {
+        jsonrpc: "2.0".to_owned(),
+        id: Some(Value::Number(serde_json::Number::from(0))),
+        method: "_health".to_owned(),
+        params: None,
+    };
+
+    let response =
+        match crate::shim::ipc_client::send_request(endpoint, &request, Duration::from_millis(500))
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                debug!(error = %e, "health probe transport error (transient)");
+                return HealthOutcome::Transient;
+            }
+        };
+
+    // JSON-RPC error classification.
+    if let Some(error) = response.error {
+        if error.code == -32601 {
+            warn!(
+                endpoint = %endpoint,
+                terminal_kind = "MethodNotFound",
+                "daemon does not recognize _health method"
+            );
+            return HealthOutcome::Terminal(TerminalKind::MethodNotFound);
+        }
+        debug!(
+            code = error.code,
+            "daemon returned non-fatal JSON-RPC error (transient)"
+        );
+        return HealthOutcome::Transient;
+    }
+
+    // Missing result.
+    let Some(result_value) = response.result else {
+        warn!(
+            endpoint = %endpoint,
+            terminal_kind = "MissingResult",
+            "daemon omitted _health result payload"
+        );
+        return HealthOutcome::Terminal(TerminalKind::MissingResult);
+    };
+
+    // Undecodable payload.
+    let Ok(health) = serde_json::from_value::<HealthCheckResult>(result_value) else {
+        warn!(
+            endpoint = %endpoint,
+            terminal_kind = "UndecodablePayload",
+            "daemon _health result cannot be decoded"
+        );
+        return HealthOutcome::Terminal(TerminalKind::UndecodablePayload);
+    };
+
+    // Version compatibility.
+    if health.protocol_version != ENGRAM_PROTOCOL_VERSION {
+        warn!(
+            endpoint = %endpoint,
+            terminal_kind = "VersionMismatch",
+            expected = ENGRAM_PROTOCOL_VERSION,
+            actual = health.protocol_version,
+            "daemon protocol version incompatible"
+        );
+        return HealthOutcome::Terminal(TerminalKind::VersionMismatch {
+            expected: ENGRAM_PROTOCOL_VERSION,
+            actual: health.protocol_version,
+        });
+    }
+
+    // Version-compatible but not ready.
+    if health.status != "ready" {
+        debug!(
+            status = %health.status,
+            protocol_version = health.protocol_version,
+            build_hash = %health.build_hash,
+            "daemon not ready yet (transient)"
+        );
+        return HealthOutcome::Transient;
+    }
+
+    debug!(
+        ready = true,
+        protocol_version = health.protocol_version,
+        build_hash = %health.build_hash,
+        "health check returned"
+    );
+    HealthOutcome::Ready
 }
 
 async fn fetch_health(endpoint: &str) -> Result<HealthCheckResult, EngramError> {

@@ -33,6 +33,7 @@ pub mod version;
 use std::io::Write as _;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use serde_json::json;
@@ -184,6 +185,22 @@ async fn compute_startup_outcome(
     };
 
     if let Err(err) = lifecycle::ensure_daemon_running(&workspace_path).await {
+        // Terminal protocol incompatibility detected at startup.
+        if matches!(
+            &err,
+            EngramError::Ipc(crate::errors::IpcError::VersionMismatch { .. })
+        ) {
+            let outcome = publish(StartupOutcome::degraded(
+                ShimFailureClass::ProtocolIncompatible,
+                &err,
+            ));
+            let handle = spawn_record_startup_failure(
+                Some(workspace_path.display().to_string()),
+                ShimFailureClass::ProtocolIncompatible,
+            );
+            return (outcome, handle);
+        }
+
         if !readiness_failure_is_recoverable(&err) {
             let outcome = publish(StartupOutcome::degraded(
                 ShimFailureClass::ReadinessTimeout,
@@ -214,7 +231,11 @@ async fn compute_startup_outcome(
             endpoint: endpoint.clone(),
             message: err.to_string(),
         });
-        spawn_late_readiness_monitor(outcome_tx.clone(), endpoint);
+        spawn_late_readiness_monitor(
+            outcome_tx.clone(),
+            endpoint,
+            workspace_path.display().to_string(),
+        );
         let handle = spawn_record_startup_failure(
             Some(workspace_path.display().to_string()),
             ShimFailureClass::ReadinessTimeout,
@@ -238,6 +259,25 @@ async fn compute_startup_outcome(
     }
 }
 
+/// Type alias for the monitor's health-probe function.
+///
+/// Defaults to [`lifecycle::probe_health`]. Tests can inject a custom
+/// implementation via the `probe` parameter to script outcomes and observe
+/// monitor probe cadence deterministically.
+type MonitorProbeFn = Arc<
+    dyn Fn(
+            String,
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = lifecycle::HealthOutcome> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// Build the default production monitor probe function.
+fn default_monitor_probe() -> MonitorProbeFn {
+    Arc::new(|endpoint: String| Box::pin(async move { lifecycle::probe_health(&endpoint).await }))
+}
+
 /// Continue probing a daemon after the initial readiness attribution deadline.
 ///
 /// Exactly one monitor is spawned per shim startup. It updates the shared
@@ -246,25 +286,134 @@ async fn compute_startup_outcome(
 fn spawn_late_readiness_monitor(
     outcome_tx: Arc<watch::Sender<Option<StartupOutcome>>>,
     endpoint: String,
+    workspace_hint: String,
+) {
+    spawn_late_readiness_monitor_with_probe(
+        outcome_tx,
+        endpoint,
+        default_monitor_probe(),
+        Arc::new(AtomicUsize::new(0)),
+        workspace_hint,
+    );
+}
+
+/// Inner monitor entry point with injectable probe function and observable
+/// counter. Production callers use [`spawn_late_readiness_monitor`] which
+/// supplies the defaults.
+fn spawn_late_readiness_monitor_with_probe(
+    outcome_tx: Arc<watch::Sender<Option<StartupOutcome>>>,
+    endpoint: String,
+    probe: MonitorProbeFn,
+    probe_count: Arc<AtomicUsize>,
+    workspace_hint: String,
 ) {
     tokio::spawn(async move {
         let mut delay_ms = RECOVERY_INITIAL_BACKOFF_MS;
         loop {
+            // Another path (the request-triggered probe) may have already
+            // latched Degraded. Exit early — but the monitor is the sole
+            // late-terminal record writer (see the doc comment on
+            // `spawn_record_startup_failure`), so if the externally-latched
+            // outcome is a terminal ProtocolIncompatible classification the
+            // monitor never itself probed, write the promised diagnostic
+            // record before returning rather than silently skipping it.
+            let externally_latched_class = outcome_tx.borrow().as_ref().and_then(|o| match o {
+                StartupOutcome::Degraded { class, .. } => Some(*class),
+                _ => None,
+            });
+            if let Some(class) = externally_latched_class {
+                if class == ShimFailureClass::ProtocolIncompatible {
+                    let wh = workspace_hint.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        write_startup_failure_record(&wh, class);
+                    })
+                    .await;
+                }
+                return;
+            }
+
             tokio::select! {
                 () = outcome_tx.closed() => return,
                 () = tokio::time::sleep(Duration::from_millis(delay_ms)) => {}
             }
 
-            if lifecycle::check_health(&endpoint).await {
-                tracing::info!(
-                    endpoint = %endpoint,
-                    "daemon became ready after the shim startup deadline"
-                );
-                let _ = outcome_tx.send(Some(StartupOutcome::Ready { endpoint }));
-                return;
+            probe_count.fetch_add(1, Ordering::Relaxed);
+            match (probe)(endpoint.clone()).await {
+                lifecycle::HealthOutcome::Ready => {
+                    // Monotonic: refuse to overwrite Degraded.
+                    let published = outcome_tx.send_if_modified(|current| {
+                        if matches!(current, Some(StartupOutcome::Degraded { .. })) {
+                            return false;
+                        }
+                        *current = Some(StartupOutcome::Ready {
+                            endpoint: endpoint.clone(),
+                        });
+                        true
+                    });
+                    if published {
+                        tracing::info!(
+                            endpoint = %endpoint,
+                            "daemon became ready after the shim startup deadline"
+                        );
+                    }
+                    if !published {
+                        // The request path latched Degraded{ProtocolIncompatible}
+                        // while this exact probe was in flight (the C5 race,
+                        // this time with the monitor's own probe resolving
+                        // Ready). The monitor is exiting immediately either
+                        // way — this is its only remaining chance to write
+                        // the promised late-terminal record; the top-of-loop
+                        // check on a future iteration will never run because
+                        // this branch always returns.
+                        let externally_latched_class =
+                            outcome_tx.borrow().as_ref().and_then(|o| match o {
+                                StartupOutcome::Degraded { class, .. } => Some(*class),
+                                _ => None,
+                            });
+                        if externally_latched_class == Some(ShimFailureClass::ProtocolIncompatible)
+                        {
+                            let wh = workspace_hint.clone();
+                            let _ = tokio::task::spawn_blocking(move || {
+                                write_startup_failure_record(
+                                    &wh,
+                                    ShimFailureClass::ProtocolIncompatible,
+                                );
+                            })
+                            .await;
+                        }
+                    }
+                    return;
+                }
+                lifecycle::HealthOutcome::Transient => {
+                    delay_ms = (delay_ms * 2).min(RECOVERY_MAX_BACKOFF_MS);
+                }
+                lifecycle::HealthOutcome::Terminal(kind) => {
+                    let message = kind.client_message();
+                    tracing::warn!(
+                        endpoint = %endpoint,
+                        terminal_kind = ?kind,
+                        "daemon protocol incompatible — monitor stopping"
+                    );
+                    // Monotonic: Degraded is absorbing.
+                    outcome_tx.send_if_modified(|current| {
+                        if matches!(current, Some(StartupOutcome::Degraded { .. })) {
+                            return false;
+                        }
+                        *current = Some(StartupOutcome::Degraded {
+                            class: ShimFailureClass::ProtocolIncompatible,
+                            message: message.clone(),
+                        });
+                        true
+                    });
+                    // Late-terminal durable record (best-effort, sole writer).
+                    let wh = workspace_hint.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        write_startup_failure_record(&wh, ShimFailureClass::ProtocolIncompatible);
+                    })
+                    .await;
+                    return;
+                }
             }
-
-            delay_ms = (delay_ms * 2).min(RECOVERY_MAX_BACKOFF_MS);
         }
     });
 }
@@ -429,12 +578,60 @@ pub async fn run(workspace_override: Option<&str>) -> Result<(), EngramError> {
     let (outcome_tx, outcome_rx) = watch::channel(None);
     let outcome_tx = Arc::new(outcome_tx);
     let outcome_observer = outcome_rx.clone();
-    let transport_outcome_tx = Arc::downgrade(&outcome_tx);
-    let mut startup_task =
-        tokio::spawn(async move { compute_startup_outcome(workspace_override, &outcome_tx).await });
+    let transport_outcome_tx = Arc::clone(&outcome_tx);
 
-    let session_result =
-        transport::run_shim(transport_outcome_tx, outcome_rx, IPC_REQUEST_TIMEOUT).await;
+    // `ShimHandler` holds a strong `Arc` clone of `outcome_tx` (see
+    // `transport::ShimHandler.startup_tx`'s doc comment), so the channel
+    // never closes on its own for the handler's lifetime — a panic inside
+    // `compute_startup_outcome` before its first publish would otherwise
+    // leave every `await_startup_outcome` call awaiting `changed()` forever
+    // (Copilot review finding on PR #366). Supervise the startup task
+    // explicitly instead of relying on channel-closure detection: a
+    // dedicated watchdog awaits its `JoinHandle` and, on `JoinError`
+    // (panic or cancellation), immediately publishes a degraded outcome
+    // itself using this same strong sender, so no in-flight or future
+    // `tools/call` can hang. `result_rx` carries the resolved outcome
+    // (from either path) to this function's own post-session
+    // classification below, replacing a second, separate join of the same
+    // task (a `JoinHandle` must not be polled from two independent
+    // call sites once it has already resolved).
+    let watchdog_outcome_tx = Arc::clone(&outcome_tx);
+    let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+    let startup_task =
+        tokio::spawn(async move { compute_startup_outcome(workspace_override, &outcome_tx).await });
+    tokio::spawn(async move {
+        match startup_task.await {
+            Ok((outcome, record_task)) => {
+                let _ = result_tx.send((outcome, record_task));
+            }
+            Err(join_err) => {
+                let message = format!("startup precondition task did not complete: {join_err}");
+                let degraded = StartupOutcome::Degraded {
+                    class: ShimFailureClass::TransportFailure,
+                    message: message.clone(),
+                };
+                watchdog_outcome_tx.send_if_modified(|current| {
+                    if current.is_some() {
+                        // Should be unreachable (compute_startup_outcome
+                        // always publishes before returning on every
+                        // non-panic path), but never regress an
+                        // already-published outcome.
+                        return false;
+                    }
+                    *current = Some(degraded.clone());
+                    true
+                });
+                let _ = result_tx.send((degraded, None));
+            }
+        }
+    });
+
+    let session_result = transport::run_shim_with_strong_publisher(
+        transport_outcome_tx,
+        outcome_rx,
+        IPC_REQUEST_TIMEOUT,
+    )
+    .await;
     let outcome_at_session_end = outcome_observer.borrow().clone();
     drop(outcome_observer);
 
@@ -443,33 +640,30 @@ pub async fn run(workspace_override: Option<&str>) -> Result<(), EngramError> {
     // to classify the final exit code/diagnostics — it must not block
     // process teardown for however long `ensure_daemon_running`'s internal
     // readiness budget (up to 30s+) takes if the client vanished before any
-    // `tools/call` ever needed the outcome. Bound the join with a short
-    // grace period; if the task is still pending, exit cleanly rather than
-    // linger (the background task is dropped/cancelled when the runtime
-    // shuts down at process exit).
-    let (outcome, record_task) =
-        match tokio::time::timeout(Duration::from_secs(2), &mut startup_task).await {
-            Ok(Ok((outcome, record_task))) => (outcome, record_task),
-            Ok(Err(join_err)) => (
-                StartupOutcome::Degraded {
-                    class: ShimFailureClass::TransportFailure,
-                    message: format!("startup precondition task did not complete: {join_err}"),
-                },
-                None,
-            ),
-            Err(_elapsed) => {
-                startup_task.abort();
-                let _ = startup_task.await;
-                (
-                    StartupOutcome::Degraded {
-                        class: ShimFailureClass::TransportFailure,
-                        message: "startup precondition task did not finish before session teardown"
-                            .to_owned(),
-                    },
-                    None,
-                )
-            }
-        };
+    // `tools/call` ever needed the outcome. Bound the wait with a short
+    // grace period; if the watchdog is still pending, classify as
+    // TransportFailure (exit code 13) since the session ended before
+    // preconditions resolved (the background tasks are dropped/cancelled
+    // when the runtime shuts down at process exit).
+    let (outcome, record_task) = match tokio::time::timeout(Duration::from_secs(2), result_rx).await
+    {
+        Ok(Ok((outcome, record_task))) => (outcome, record_task),
+        Ok(Err(_recv_err)) => (
+            StartupOutcome::Degraded {
+                class: ShimFailureClass::TransportFailure,
+                message: "startup precondition task did not complete: watchdog dropped".to_owned(),
+            },
+            None,
+        ),
+        Err(_elapsed) => (
+            StartupOutcome::Degraded {
+                class: ShimFailureClass::TransportFailure,
+                message: "startup precondition task did not finish before session teardown"
+                    .to_owned(),
+            },
+            None,
+        ),
+    };
 
     // Give the (already-published, non-critical-path) durable-record write
     // a short best-effort grace period to finish before the runtime shuts
@@ -508,6 +702,31 @@ pub async fn run(workspace_override: Option<&str>) -> Result<(), EngramError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Clone, Default)]
+    struct CapturedLogs(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for CapturedLogs {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .expect("capture lock")
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'writer> tracing_subscriber::fmt::MakeWriter<'writer> for CapturedLogs {
+        type Writer = Self;
+
+        fn make_writer(&'writer self) -> Self::Writer {
+            self.clone()
+        }
+    }
 
     /// A pre-existing `.engram` symlink/reparse point pointing outside the
     /// workspace MUST NOT be followed when resolving the diagnostics
@@ -573,5 +792,302 @@ mod tests {
             expected_marker.is_file(),
             "the returned handle must correspond to <workspace>/.engram/diagnostics"
         );
+    }
+
+    // ── 138-F Monitor Behavior (T6, R2b, C5) ─────────────────────────────
+
+    /// T6 — monitor stops on terminal (138.012-T).
+    ///
+    /// With no tools/call, a probe that returns false (simulating a terminal
+    /// protocol mismatch) should cause the monitor to publish `Degraded` and
+    /// exit. The probe count reaches a fixed value and stays constant for
+    /// >= 2s (> `RECOVERY_MAX_BACKOFF_MS`).
+    ///
+    /// NEW-RED: the monitor currently never publishes Degraded — it retries
+    /// indefinitely until `outcome_tx.closed()` or probe returns true.
+    #[tokio::test(start_paused = true)]
+    async fn t6_monitor_stops_on_terminal() {
+        for _ in 0..5 {
+            let probe_count = Arc::new(AtomicUsize::new(0));
+            let pc = Arc::clone(&probe_count);
+            let probe: MonitorProbeFn = Arc::new(move |_| {
+                let pc = Arc::clone(&pc);
+                Box::pin(async move {
+                    pc.fetch_add(1, Ordering::SeqCst);
+                    lifecycle::HealthOutcome::Terminal(lifecycle::TerminalKind::MethodNotFound)
+                })
+            });
+
+            let (tx, mut rx) = tokio::sync::watch::channel(None::<StartupOutcome>);
+            let tx = Arc::new(tx);
+            let count = Arc::clone(&probe_count);
+
+            spawn_late_readiness_monitor_with_probe(
+                Arc::clone(&tx),
+                "test-endpoint".to_owned(),
+                probe,
+                count,
+                "test-workspace".to_owned(),
+            );
+
+            // Advance time enough for the monitor to probe and (should) stop.
+            for _ in 0..300 {
+                tokio::time::advance(Duration::from_millis(10)).await;
+                tokio::task::yield_now().await;
+            }
+
+            // Assert the monitor published Degraded.
+            let current = rx.borrow_and_update().clone();
+            // RED: currently the monitor never publishes Degraded
+            assert!(
+                matches!(current, Some(StartupOutcome::Degraded { .. })),
+                "T6: monitor must publish Degraded on terminal; got {current:?}"
+            );
+
+            // Assert probe count is stable (monitor stopped).
+            let count_before = probe_count.load(Ordering::SeqCst);
+            for _ in 0..200 {
+                tokio::time::advance(Duration::from_millis(10)).await;
+                tokio::task::yield_now().await;
+            }
+            let count_after = probe_count.load(Ordering::SeqCst);
+            assert_eq!(
+                count_before, count_after,
+                "T6: probe count must be stable after terminal (monitor stopped)"
+            );
+        }
+    }
+
+    /// R2b — monitor keeps probing on transient (138.012-T).
+    ///
+    /// A bound counting probe returns false (version-compatible non-ready).
+    /// The monitor probe counter strictly increases across a 1s window and
+    /// NO `Degraded` is ever published (the session stays recoverable).
+    ///
+    /// GREEN PIN: this is the current monitor behavior (retries on false).
+    /// Guards against over-terminalization in the monitor path.
+    #[tokio::test(start_paused = true)]
+    async fn r2b_monitor_keeps_probing_on_transient() {
+        for _ in 0..5 {
+            let probe_count = Arc::new(AtomicUsize::new(0));
+            let pc = Arc::clone(&probe_count);
+            let probe: MonitorProbeFn = Arc::new(move |_| {
+                let pc = Arc::clone(&pc);
+                Box::pin(async move {
+                    pc.fetch_add(1, Ordering::SeqCst);
+                    lifecycle::HealthOutcome::Transient
+                })
+            });
+
+            let (tx, mut rx) = tokio::sync::watch::channel(None::<StartupOutcome>);
+            let tx = Arc::new(tx);
+            let count = Arc::clone(&probe_count);
+
+            spawn_late_readiness_monitor_with_probe(
+                Arc::clone(&tx),
+                "test-endpoint".to_owned(),
+                probe,
+                count,
+                "test-workspace".to_owned(),
+            );
+
+            // Advance 500ms in small steps.
+            for _ in 0..50 {
+                tokio::time::advance(Duration::from_millis(10)).await;
+                tokio::task::yield_now().await;
+            }
+            let mid_count = probe_count.load(Ordering::SeqCst);
+            assert!(
+                mid_count > 0,
+                "R2b: monitor must probe at least once in 500ms"
+            );
+
+            // Advance another 500ms.
+            for _ in 0..50 {
+                tokio::time::advance(Duration::from_millis(10)).await;
+                tokio::task::yield_now().await;
+            }
+            let final_count = probe_count.load(Ordering::SeqCst);
+            assert!(
+                final_count > mid_count,
+                "R2b: probe count must strictly increase over 1s; mid={mid_count}, final={final_count}"
+            );
+
+            // No Degraded published.
+            let current = rx.borrow_and_update().clone();
+            assert!(
+                !matches!(current, Some(StartupOutcome::Degraded { .. })),
+                "R2b: monitor must NOT publish Degraded on transient failures"
+            );
+
+            // Clean up: drop tx to allow monitor to exit
+            drop(tx);
+            tokio::task::yield_now().await;
+        }
+    }
+
+    /// C5 — request-terminal vs monitor race guard (138.012-T).
+    ///
+    /// The request path latches `Degraded` WHILE the monitor's second probe
+    /// is already in flight (genuinely concurrent with the probe call, not
+    /// merely before it starts), and that in-flight probe then resolves
+    /// `Ready`. The monitor's `Ready` branch MUST NOT publish `Ready` over
+    /// an externally-latched `Degraded` — the final published state must
+    /// remain `Degraded`.
+    ///
+    /// This is the BLOCKING guard for the revision-1 fail-open race: without
+    /// a monotonic latch (`send_if_modified`) in the `Ready` branch itself,
+    /// the monitor would unconditionally overwrite the watch channel value
+    /// including a `Degraded` published by the request path. The race is
+    /// deliberately forced to land *inside* the second probe call (via
+    /// `Notify` signals, not sleeps) so a regression that removed only the
+    /// top-of-loop early-return optimisation (leaving the unconditional
+    /// `send` in the `Ready` branch) would still be caught — the earlier
+    /// version of this test exited via the early-return before the second
+    /// probe ever ran, and so could not have caught that regression.
+    #[tokio::test(start_paused = true)]
+    async fn c5_request_terminal_vs_monitor_race() {
+        let captured_logs = CapturedLogs::default();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(captured_logs.clone())
+            .finish();
+        let _subscriber_guard = tracing::subscriber::set_default(subscriber);
+
+        for _ in 0..5 {
+            let workspace = tempfile::TempDir::new().expect("workspace tempdir");
+            let workspace_hint = workspace.path().display().to_string();
+            let probe_count = Arc::new(AtomicUsize::new(0));
+            let call_count = Arc::new(AtomicUsize::new(0));
+            let cc = Arc::clone(&call_count);
+            let probe_entered = Arc::new(tokio::sync::Notify::new());
+            let release_probe = Arc::new(tokio::sync::Notify::new());
+            let pe = Arc::clone(&probe_entered);
+            let rp = Arc::clone(&release_probe);
+
+            // Probe: Transient on the first call. On the second call, signal
+            // that it has genuinely entered, block on a test-controlled
+            // release, then resolve Ready — landing the race window inside
+            // the in-flight probe rather than before it starts.
+            let probe: MonitorProbeFn = Arc::new(move |_| {
+                let cc = Arc::clone(&cc);
+                let pe = Arc::clone(&pe);
+                let rp = Arc::clone(&rp);
+                Box::pin(async move {
+                    let n = cc.fetch_add(1, Ordering::SeqCst);
+                    if n >= 1 {
+                        pe.notify_one();
+                        rp.notified().await;
+                        lifecycle::HealthOutcome::Ready
+                    } else {
+                        lifecycle::HealthOutcome::Transient
+                    }
+                })
+            });
+
+            let (tx, mut rx) = tokio::sync::watch::channel(None::<StartupOutcome>);
+            let tx = Arc::new(tx);
+            let count = Arc::clone(&probe_count);
+
+            spawn_late_readiness_monitor_with_probe(
+                Arc::clone(&tx),
+                "test-endpoint".to_owned(),
+                probe,
+                count,
+                workspace_hint.clone(),
+            );
+
+            // Advance the paused clock past the first (Transient) probe and
+            // into the second backoff tick, entering the second probe call.
+            for _ in 0..30 {
+                tokio::time::advance(Duration::from_millis(10)).await;
+                tokio::task::yield_now().await;
+                if probe_count.load(Ordering::SeqCst) >= 2 {
+                    break;
+                }
+            }
+            probe_entered.notified().await;
+            assert_eq!(
+                probe_count.load(Ordering::SeqCst),
+                2,
+                "C5 setup: the second probe must have genuinely entered before the race is injected"
+            );
+
+            // Race: latch Degraded (simulating the request path) WHILE the
+            // second probe is still in flight, awaiting release.
+            let _ = tx.send(Some(StartupOutcome::Degraded {
+                class: ShimFailureClass::ProtocolIncompatible,
+                message: "terminal latch by request path".to_owned(),
+            }));
+            tokio::task::yield_now().await;
+
+            // Release the in-flight probe; it now resolves Ready.
+            release_probe.notify_one();
+
+            // Let the monitor process the Ready result and (incorrectly, if
+            // regressed) publish it.
+            for _ in 0..20 {
+                tokio::time::advance(Duration::from_millis(10)).await;
+                tokio::task::yield_now().await;
+            }
+
+            // Final state: must still be Degraded, not Ready — the race must
+            // not un-latch a proven-terminal session.
+            let current = rx.borrow_and_update().clone();
+            assert!(
+                matches!(current, Some(StartupOutcome::Degraded { .. })),
+                "C5: final state must be Degraded (not overwritten by a concurrent monitor Ready); got {current:?}"
+            );
+            assert_eq!(
+                probe_count.load(Ordering::SeqCst),
+                2,
+                "C5: exactly 2 probes (Transient, then the raced Ready) — no further probing after the race"
+            );
+            let logs = String::from_utf8(captured_logs.0.lock().expect("capture lock").clone())
+                .expect("captured logs are UTF-8");
+            assert!(
+                !logs.contains("daemon became ready after the shim startup deadline"),
+                "C5: the monitor must not report readiness when its monotonic Ready publication \
+                 loses to an externally-latched Degraded outcome; captured logs: {logs}"
+            );
+
+            // The monitor's Ready branch lost the race (its publish was
+            // rejected because Degraded was already latched); it must still
+            // have written the promised late-terminal record before
+            // exiting, since this is its only remaining chance to do so —
+            // the top-of-loop early-return check never runs again after
+            // this branch returns (Copilot review finding on PR #366).
+            //
+            // The write happens on tokio's real (non-virtual) blocking
+            // thread pool, which `tokio::time::advance` does not drive —
+            // give it a short real-wall-clock allowance to complete and
+            // retry a few times rather than asserting immediately.
+            let mut content = String::new();
+            let record_path = workspace
+                .path()
+                .join(".engram")
+                .join("diagnostics")
+                .join("shim-startup-failures.jsonl");
+            for attempt in 0..20 {
+                content = std::fs::read_to_string(&record_path).unwrap_or_default();
+                if content.contains("protocol_incompatible") {
+                    break;
+                }
+                let _ = attempt;
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            let protocol_records = content
+                .lines()
+                .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+                .filter(|r| r["failure_class"] == "protocol_incompatible")
+                .count();
+            assert_eq!(
+                protocol_records, 1,
+                "C5: the monitor must write exactly one protocol_incompatible record even when \
+                 its own Ready publish loses the race to an externally-latched Degraded; \
+                 record file contents: {content}"
+            );
+        }
     }
 }

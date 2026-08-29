@@ -100,6 +100,17 @@ async fn do_send(endpoint: &str, request: &IpcRequest) -> Result<IpcResponse, En
                 .to_owned(),
         }));
     }
+    if !response_line.ends_with('\n') {
+        let reason = if reader.get_ref().limit() == 0 {
+            "daemon response exhausted the 1 MiB response size limit before completing the \
+             newline-delimited response frame"
+        } else {
+            "daemon closed connection before completing the newline-delimited response frame"
+        };
+        return Err(EngramError::Ipc(IpcError::ReceiveFailed {
+            reason: reason.to_owned(),
+        }));
+    }
 
     serde_json::from_str(response_line.trim()).map_err(|e| {
         EngramError::Ipc(IpcError::ReceiveFailed {

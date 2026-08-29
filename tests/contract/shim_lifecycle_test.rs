@@ -22,10 +22,139 @@ use serde_json::json;
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
 
+#[path = "../helpers/fake_health_responder.rs"]
+#[allow(dead_code)]
+mod fake_health_responder;
 #[path = "../helpers/mod.rs"]
 mod helpers;
 
+use fake_health_responder::{FakeHealthResponder, HealthScript};
 use helpers::DaemonHarness;
+
+#[derive(Clone, Default)]
+struct CapturedTrace(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for CapturedTrace {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .expect("lock trace capture")
+            .extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'writer> tracing_subscriber::fmt::MakeWriter<'writer> for CapturedTrace {
+    type Writer = Self;
+
+    fn make_writer(&'writer self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ready_health_probe_emits_diagnostic_version_fields() {
+    let workspace = TempDir::new().expect("workspace tempdir");
+    fs::create_dir(workspace.path().join(".git")).expect("create git metadata");
+    let endpoint =
+        engram::daemon::ipc_server::ipc_endpoint(workspace.path()).expect("derive IPC endpoint");
+    let _fake = FakeHealthResponder::spawn(&endpoint, HealthScript::Ready);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let captured = CapturedTrace::default();
+    let subscriber = tracing_subscriber::fmt()
+        .json()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_writer(captured.clone())
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    assert!(check_health(&endpoint).await);
+
+    let bytes = captured.0.lock().expect("lock trace capture").clone();
+    let ready_event = String::from_utf8(bytes)
+        .expect("trace capture is UTF-8")
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("trace line is JSON"))
+        .find(|record| record["fields"]["message"] == "health check returned")
+        .expect("ready health probe must emit its diagnostic event");
+
+    assert_eq!(ready_event["fields"]["ready"], true);
+    assert_eq!(
+        ready_event["fields"]["protocol_version"],
+        engram::shim::version::ENGRAM_PROTOCOL_VERSION
+    );
+    assert_eq!(ready_event["fields"]["build_hash"], "test-fake");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn non_ready_health_probe_preserves_diagnostic_version_fields() {
+    let workspace = TempDir::new().expect("workspace tempdir");
+    fs::create_dir(workspace.path().join(".git")).expect("create git metadata");
+    let endpoint =
+        engram::daemon::ipc_server::ipc_endpoint(workspace.path()).expect("derive IPC endpoint");
+    let _fake = FakeHealthResponder::spawn(
+        &endpoint,
+        HealthScript::NotReady {
+            status: "starting".to_owned(),
+        },
+    );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let captured = CapturedTrace::default();
+    let subscriber = tracing_subscriber::fmt()
+        .json()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_writer(captured.clone())
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    assert!(!check_health(&endpoint).await);
+
+    let bytes = captured.0.lock().expect("lock trace capture").clone();
+    let non_ready_event = String::from_utf8(bytes)
+        .expect("trace capture is UTF-8")
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("trace line is JSON"))
+        .find(|record| record["fields"]["message"] == "daemon not ready yet (transient)")
+        .expect("non-ready health probe must emit its diagnostic event");
+
+    assert_eq!(non_ready_event["fields"]["status"], "starting");
+    assert_eq!(
+        non_ready_event["fields"]["protocol_version"],
+        engram::shim::version::ENGRAM_PROTOCOL_VERSION
+    );
+    assert_eq!(non_ready_event["fields"]["build_hash"], "test-fake");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn oversized_response_reports_size_limit_while_daemon_remains_open() {
+    let workspace = TempDir::new().expect("workspace tempdir");
+    fs::create_dir(workspace.path().join(".git")).expect("create git metadata");
+    let endpoint =
+        engram::daemon::ipc_server::ipc_endpoint(workspace.path()).expect("derive IPC endpoint");
+    let _fake = FakeHealthResponder::spawn(&endpoint, HealthScript::OversizedThenRemainOpen);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let request = IpcRequest {
+        jsonrpc: "2.0".to_owned(),
+        id: Some(json!(1)),
+        method: "_health".to_owned(),
+        params: None,
+    };
+    let error = send_request(&endpoint, &request, Duration::from_secs(2))
+        .await
+        .expect_err("oversized response must be rejected");
+
+    assert!(
+        error.to_string().contains("1 MiB response size limit"),
+        "oversized response error must identify the exhausted cap: {error}"
+    );
+}
 
 fn run_git(repo: &Path, args: &[&str]) {
     let output = Command::new("git")

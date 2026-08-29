@@ -110,17 +110,32 @@ restores symmetry rather than inventing semantics.
 
 1. Commit and push the Stage artifacts on `chore/130-s-post-merge-closure`.
 2. Complete `137-F` and close `130-S` — no force override required.
-3. **Do not claim `131-S` / `138.002-T` yet.** PR #365's Copilot review
-   surfaced 12+ plan/task-feasibility defects against the `138-F` plan and
-   its harvested tasks (harness/seam compile-ordering, a concurrency-test
-   barrier deadlock, a `std::time::Instant` vs. `tokio::time` clock-seam
-   gap, an unverifiable compatibility-veto consumer, a missing
-   terminal-record write path, over-broad JSON-RPC-error classification,
-   `138.002-T`'s task-granularity/scope violation, IPC-framing assumptions
-   in the hardening doc, and `expected`/`actual` fields required on
-   terminal outcomes that cannot supply them). See the consolidated list in
-   `docs/memory/2026-08-27/130-s-ship-session-post-merge-closure-memory.md`
-   (Session 2, PR #365 review-fix cycles section). Stage must revise the
-   plan/hardening and re-run `138.001-R` (or record a formal addendum)
-   before `138.002-T` is claimed — otherwise an agent following only this
-   memory could start a known-unexecutable plan.
+3. **`131-S` / `138.002-T` are now CLAIM-READY.** The claim prohibition
+   recorded here on 2026-08-27 has been **lifted** by the Stage re-entry
+   session of the same date — see
+   `docs/memory/2026-08-27-stage-138-revision-2-replan-session.md`.
+
+   *Historical context (retained):* PR #365's Copilot review surfaced 12+
+   plan/task-feasibility defects against **plan revision 1** (harness/seam
+   compile-ordering, a concurrency-test barrier deadlock, a
+   `std::time::Instant` vs. `tokio::time` clock-seam gap, an unverifiable
+   compatibility-veto consumer, a missing terminal-record write path,
+   over-broad JSON-RPC-error classification, `138.002-T`'s
+   task-granularity/scope violation, IPC-framing assumptions, and
+   `expected`/`actual` fields required on terminal outcomes that cannot
+   supply them). Ship correctly declined to redesign Stage-owned content,
+   exceeded the 3-cycle review-fix circuit breaker, and converted the
+   findings to this backlog handoff.
+
+   *Resolution:* Stage re-entered and produced **plan revision 2** — a
+   re-grounded redesign, not an addendum. All 12+ findings are resolved,
+   plus a previously-unnoticed **fail-open race** (the late-readiness
+   monitor could overwrite a request-path `Degraded` with `Ready`). A fresh
+   multi-persona review gate `138.002-R` **approved** it and **supersedes
+   `138.001-R`**, which must no longer be cited as the active gate.
+   `138-F` was re-decomposed from 7 to 14 tasks under a three-phase,
+   mechanically-enforced TDD DAG, and `131-S` now carries all 15 members.
+
+   `131-S` remains **queued and unclaimed** — Stage does not claim
+   shipments. Ship may claim it.
+
