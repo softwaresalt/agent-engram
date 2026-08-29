@@ -340,10 +340,6 @@ fn spawn_late_readiness_monitor_with_probe(
             probe_count.fetch_add(1, Ordering::Relaxed);
             match (probe)(endpoint.clone()).await {
                 lifecycle::HealthOutcome::Ready => {
-                    tracing::info!(
-                        endpoint = %endpoint,
-                        "daemon became ready after the shim startup deadline"
-                    );
                     // Monotonic: refuse to overwrite Degraded.
                     let published = outcome_tx.send_if_modified(|current| {
                         if matches!(current, Some(StartupOutcome::Degraded { .. })) {
@@ -354,6 +350,12 @@ fn spawn_late_readiness_monitor_with_probe(
                         });
                         true
                     });
+                    if published {
+                        tracing::info!(
+                            endpoint = %endpoint,
+                            "daemon became ready after the shim startup deadline"
+                        );
+                    }
                     if !published {
                         // The request path latched Degraded{ProtocolIncompatible}
                         // while this exact probe was in flight (the C5 race,
@@ -701,6 +703,31 @@ pub async fn run(workspace_override: Option<&str>) -> Result<(), EngramError> {
 mod tests {
     use super::*;
 
+    #[derive(Clone, Default)]
+    struct CapturedLogs(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for CapturedLogs {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .expect("capture lock")
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'writer> tracing_subscriber::fmt::MakeWriter<'writer> for CapturedLogs {
+        type Writer = Self;
+
+        fn make_writer(&'writer self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
     /// A pre-existing `.engram` symlink/reparse point pointing outside the
     /// workspace MUST NOT be followed when resolving the diagnostics
     /// directory (workspace containment; Copilot review finding on PR #349).
@@ -920,6 +947,14 @@ mod tests {
     /// probe ever ran, and so could not have caught that regression.
     #[tokio::test(start_paused = true)]
     async fn c5_request_terminal_vs_monitor_race() {
+        let captured_logs = CapturedLogs::default();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(captured_logs.clone())
+            .finish();
+        let _subscriber_guard = tracing::subscriber::set_default(subscriber);
+
         for _ in 0..5 {
             let workspace = tempfile::TempDir::new().expect("workspace tempdir");
             let workspace_hint = workspace.path().display().to_string();
@@ -1008,6 +1043,13 @@ mod tests {
                 probe_count.load(Ordering::SeqCst),
                 2,
                 "C5: exactly 2 probes (Transient, then the raced Ready) — no further probing after the race"
+            );
+            let logs = String::from_utf8(captured_logs.0.lock().expect("capture lock").clone())
+                .expect("captured logs are UTF-8");
+            assert!(
+                !logs.contains("daemon became ready after the shim startup deadline"),
+                "C5: the monitor must not report readiness when its monotonic Ready publication \
+                 loses to an externally-latched Degraded outcome; captured logs: {logs}"
             );
 
             // The monitor's Ready branch lost the race (its publish was
