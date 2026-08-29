@@ -624,8 +624,12 @@ pub async fn run(workspace_override: Option<&str>) -> Result<(), EngramError> {
         }
     });
 
-    let session_result =
-        transport::run_shim(transport_outcome_tx, outcome_rx, IPC_REQUEST_TIMEOUT).await;
+    let session_result = transport::run_shim_with_strong_publisher(
+        transport_outcome_tx,
+        outcome_rx,
+        IPC_REQUEST_TIMEOUT,
+    )
+    .await;
     let outcome_at_session_end = outcome_observer.borrow().clone();
     drop(outcome_observer);
 

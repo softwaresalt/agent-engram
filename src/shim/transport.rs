@@ -6,8 +6,8 @@
 //! text items are extracted and returned as MCP content; otherwise the full
 //! result is serialised as a single text block.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use rmcp::model::{
@@ -61,6 +61,21 @@ enum EndpointResolutionError {
     },
 }
 
+#[derive(Clone)]
+enum StartupPublisher {
+    Legacy(Weak<watch::Sender<Option<StartupOutcome>>>),
+    Strong(Arc<watch::Sender<Option<StartupOutcome>>>),
+}
+
+impl StartupPublisher {
+    fn upgrade(&self) -> Option<Arc<watch::Sender<Option<StartupOutcome>>>> {
+        match self {
+            Self::Legacy(publisher) => publisher.upgrade(),
+            Self::Strong(publisher) => Some(Arc::clone(publisher)),
+        }
+    }
+}
+
 // ── Handler ───────────────────────────────────────────────────────────────────
 
 /// MCP `ServerHandler` for the shim.
@@ -77,22 +92,13 @@ enum EndpointResolutionError {
 /// catalog regardless of startup outcome.
 #[derive(Clone)]
 pub struct ShimHandler {
-    /// Strong publisher, live for the handler's entire lifetime.
+    /// Startup publisher used by request-triggered recovery probes.
     ///
-    /// MUST be a strong `Arc`, not `Weak`: the request-triggered probe below
-    /// publishes a terminal `Degraded` latch as safety-critical proof that a
-    /// daemon is incompatible, and that publish must never silently no-op.
-    /// A `Weak` reference here raced against the independently-spawned
-    /// late-readiness monitor exiting and dropping its own strong sender:
-    /// if the monitor published `Ready` and returned (dropping the last
-    /// other strong sender) marginally before this handler's own Terminal
-    /// branch reached `upgrade()`, the upgrade would fail, the publish
-    /// would be silently skipped, and the shared channel would stay stuck
-    /// at `Ready` even though this call just proved the daemon incompatible
-    /// — a fail-open gap (Copilot review finding on PR #366). Holding a
-    /// strong `Arc` here for the handler's lifetime makes the publish
-    /// unconditional and removes the race entirely.
-    startup_tx: Arc<watch::Sender<Option<StartupOutcome>>>,
+    /// Production construction retains a strong publisher for the handler's
+    /// lifetime, closing the terminal-latch race described in
+    /// [`ShimHandler::with_strong_publisher`]. The legacy public constructor
+    /// retains its source-compatible weak parameter.
+    startup_tx: StartupPublisher,
     /// Deferred startup outcome, published once workspace admission, daemon
     /// readiness, and IPC endpoint derivation resolve. `None` until resolved.
     startup: watch::Receiver<Option<StartupOutcome>>,
@@ -110,8 +116,29 @@ pub struct ShimHandler {
 impl ShimHandler {
     /// Create a new `ShimHandler` that awaits the deferred startup outcome
     /// on `startup` before forwarding requests.
+    ///
+    /// This source-compatible entry point accepts the weak publisher exposed
+    /// by the target branch. Production code uses the internal strong
+    /// publisher constructor so terminal health proofs cannot be lost.
     pub fn new(
+        startup_tx: Weak<watch::Sender<Option<StartupOutcome>>>,
+        startup: watch::Receiver<Option<StartupOutcome>>,
+        timeout: Duration,
+    ) -> Self {
+        Self::from_publisher(StartupPublisher::Legacy(startup_tx), startup, timeout)
+    }
+
+    /// Construct a handler that retains the startup publisher strongly.
+    fn with_strong_publisher(
         startup_tx: Arc<watch::Sender<Option<StartupOutcome>>>,
+        startup: watch::Receiver<Option<StartupOutcome>>,
+        timeout: Duration,
+    ) -> Self {
+        Self::from_publisher(StartupPublisher::Strong(startup_tx), startup, timeout)
+    }
+
+    fn from_publisher(
+        startup_tx: StartupPublisher,
         startup: watch::Receiver<Option<StartupOutcome>>,
         timeout: Duration,
     ) -> Self {
@@ -134,7 +161,7 @@ impl ShimHandler {
         probe: ProbeFn,
     ) -> Self {
         Self {
-            startup_tx,
+            startup_tx: StartupPublisher::Strong(startup_tx),
             startup,
             recovery_lock: Arc::new(Mutex::new(RecoveryProbeState::default())),
             timeout,
@@ -196,10 +223,19 @@ impl ShimHandler {
                             return Err(EndpointResolutionError::Recoverable { message });
                         }
 
+                        let Some(startup_tx) = self.startup_tx.upgrade() else {
+                            return Err(EndpointResolutionError::Permanent {
+                                class: ShimFailureClass::TransportFailure,
+                                message: "startup outcome publisher dropped during late-readiness \
+                                          recovery"
+                                    .to_owned(),
+                            });
+                        };
+
                         match (self.probe)(endpoint.clone()).await {
                             HealthOutcome::Ready => {
                                 recovery.last_failure = None;
-                                let published = self.startup_tx.send_if_modified(|current| {
+                                let published = startup_tx.send_if_modified(|current| {
                                     if matches!(current, Some(StartupOutcome::Degraded { .. })) {
                                         return false; // Degraded is absorbing
                                     }
@@ -222,7 +258,7 @@ impl ShimHandler {
                                     // classification that actually won
                                     // instead of the stale Ready this probe
                                     // observed.
-                                    match self.startup_tx.borrow().clone() {
+                                    match startup_tx.borrow().clone() {
                                         Some(StartupOutcome::Degraded { class, message }) => {
                                             Err(EndpointResolutionError::Permanent {
                                                 class,
@@ -241,7 +277,7 @@ impl ShimHandler {
                                 // Transient — report the terminal
                                 // classification that actually won instead of
                                 // a stale Recoverable.
-                                match self.startup_tx.borrow().clone() {
+                                match startup_tx.borrow().clone() {
                                     Some(StartupOutcome::Degraded { class, message }) => {
                                         Err(EndpointResolutionError::Permanent { class, message })
                                     }
@@ -250,7 +286,7 @@ impl ShimHandler {
                             }
                             HealthOutcome::Terminal(kind) => {
                                 let terminal_message = kind.client_message();
-                                self.startup_tx.send_if_modified(|current| {
+                                startup_tx.send_if_modified(|current| {
                                     if matches!(current, Some(StartupOutcome::Degraded { .. })) {
                                         return false; // Already terminal
                                     }
@@ -467,14 +503,34 @@ fn stdio_transport() -> StdioTransportPair {
 /// # Errors
 ///
 /// Returns [`EngramError::ShimStartup`] with [`ShimFailureClass::TransportFailure`]
-/// if the rmcp server fails to bind or the MCP session ends with a protocol
-/// error.
+/// if the weak startup publisher can no longer be upgraded, the rmcp server
+/// fails to bind, or the MCP session ends with a protocol error.
 pub async fn run_shim(
+    startup_tx: Weak<watch::Sender<Option<StartupOutcome>>>,
+    startup: watch::Receiver<Option<StartupOutcome>>,
+    timeout: Duration,
+) -> Result<(), EngramError> {
+    let startup_tx = startup_tx.upgrade().ok_or_else(|| {
+        EngramError::ShimStartup(ShimStartupError {
+            class: ShimFailureClass::TransportFailure,
+            message: "startup outcome publisher dropped before shim transport initialization"
+                .to_owned(),
+        })
+    })?;
+    run_shim_with_strong_publisher(startup_tx, startup, timeout).await
+}
+
+/// Start the shim MCP server while retaining the startup publisher strongly.
+///
+/// This is the production path: keeping the publisher alive for the handler's
+/// full lifetime prevents a request-triggered terminal health proof from being
+/// lost when the independent readiness monitor exits.
+pub(crate) async fn run_shim_with_strong_publisher(
     startup_tx: Arc<watch::Sender<Option<StartupOutcome>>>,
     startup: watch::Receiver<Option<StartupOutcome>>,
     timeout: Duration,
 ) -> Result<(), EngramError> {
-    let handler = ShimHandler::new(startup_tx, startup, timeout);
+    let handler = ShimHandler::with_strong_publisher(startup_tx, startup, timeout);
     let transport = stdio_transport();
 
     let running = rmcp::serve_server(handler, transport).await.map_err(|e| {
@@ -513,11 +569,43 @@ mod tests {
     fn get_info_advertises_tools_capability() {
         let (tx, rx) = watch::channel(None);
         let tx = Arc::new(tx);
-        let handler = ShimHandler::new(Arc::clone(&tx), rx, Duration::from_secs(1));
+        let handler = ShimHandler::new(Arc::downgrade(&tx), rx, Duration::from_secs(1));
         let info = handler.get_info();
         assert!(
             info.capabilities.tools.is_some(),
             "shim get_info() must advertise the MCP tools capability so clients discover engram tools"
+        );
+    }
+
+    /// Source-compatibility contract: the public constructor continues to
+    /// accept the weak startup publisher exposed by the target branch.
+    #[test]
+    fn public_constructor_accepts_weak_startup_publisher() {
+        let (tx, rx) = watch::channel(None);
+        let tx = Arc::new(tx);
+
+        let _handler = ShimHandler::new(Arc::downgrade(&tx), rx, Duration::from_secs(1));
+    }
+
+    /// Source-compatibility and failure contract for the public transport
+    /// entry point: an expired legacy weak publisher is rejected explicitly
+    /// before stdio is bound.
+    #[tokio::test]
+    async fn public_run_shim_accepts_weak_and_rejects_expired_publisher() {
+        let (tx, rx) = watch::channel(None);
+        let tx = Arc::new(tx);
+        let weak_tx = Arc::downgrade(&tx);
+        drop(tx);
+
+        let result = run_shim(weak_tx, rx, Duration::from_secs(1)).await;
+        let Err(EngramError::ShimStartup(error)) = result else {
+            panic!("expired startup publisher must return a classified shim error");
+        };
+        assert_eq!(error.class, ShimFailureClass::TransportFailure);
+        assert!(
+            error.message.contains("publisher"),
+            "upgrade failure should identify the dropped publisher: {}",
+            error.message
         );
     }
 
