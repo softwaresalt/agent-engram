@@ -272,12 +272,15 @@ impl ShimHandler {
                             HealthOutcome::Transient => {
                                 recovery.last_failure = Some(Instant::now());
                                 // Reconcile with the channel: a concurrent
-                                // publisher may have latched Degraded while
+                                // publisher may have resolved startup while
                                 // this probe was in flight and resolved
-                                // Transient — report the terminal
-                                // classification that actually won instead of
-                                // a stale Recoverable.
+                                // Transient — honor the authoritative shared
+                                // state instead of a stale Recoverable.
                                 match startup_tx.borrow().clone() {
+                                    Some(StartupOutcome::Ready { endpoint }) => {
+                                        recovery.last_failure = None;
+                                        Ok(endpoint)
+                                    }
                                     Some(StartupOutcome::Degraded { class, message }) => {
                                         Err(EndpointResolutionError::Permanent { class, message })
                                     }
@@ -1007,6 +1010,60 @@ mod tests {
         assert!(
             matches!(final_state, Some(StartupOutcome::Degraded { .. })),
             "C7: final state must remain Degraded; got {final_state:?}"
+        );
+    }
+
+    /// C8 — an independent publisher latches `Ready` while the
+    /// request-triggered probe is in flight and later resolves `Transient`.
+    /// The shared channel is authoritative, so this call must use the
+    /// published endpoint instead of reporting a stale recoverable timeout.
+    /// The stale transient result must not leave a recovery cooldown behind.
+    #[tokio::test]
+    async fn c8_request_transient_reconciles_with_concurrent_ready_and_clears_cooldown() {
+        let probe_entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let pe = Arc::clone(&probe_entered);
+        let rel = Arc::clone(&release);
+
+        let probe: ProbeFn = Arc::new(move |_| {
+            let pe = Arc::clone(&pe);
+            let rel = Arc::clone(&rel);
+            Box::pin(async move {
+                pe.notify_one();
+                rel.notified().await;
+                HealthOutcome::Transient
+            })
+        });
+
+        let (tx, handler) = handler_in_waiting(probe);
+        let call = tokio::spawn({
+            let handler = handler.clone();
+            async move { handler.forwarding_endpoint().await }
+        });
+
+        probe_entered.notified().await;
+
+        tx.send_if_modified(|current| {
+            if matches!(current, Some(StartupOutcome::Degraded { .. })) {
+                return false;
+            }
+            *current = Some(StartupOutcome::Ready {
+                endpoint: "monitor-ready-endpoint".to_owned(),
+            });
+            true
+        });
+
+        release.notify_one();
+        let result = call.await.expect("task should not panic");
+        let cooldown_cleared = handler.recovery_lock.lock().await.last_failure.is_none();
+
+        assert!(
+            matches!(&result, Ok(endpoint) if endpoint == "monitor-ready-endpoint"),
+            "C8: the concurrent Ready state must override the stale Transient result"
+        );
+        assert!(
+            cooldown_cleared,
+            "C8: a stale Transient result must not leave a recovery cooldown after Ready wins"
         );
     }
 
