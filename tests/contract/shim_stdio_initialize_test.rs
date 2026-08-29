@@ -1258,9 +1258,11 @@ async fn r2_connect_refused_is_transient() {
         .await
         .expect("request fake responder shutdown");
     drop(fake);
-    // Give the accept loop a moment to actually return and drop the
-    // listener, unbinding the platform endpoint.
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Wait beyond the 250 ms request-path recovery cooldown as well as giving
+    // the accept loop time to return and unbind the platform endpoint. The
+    // next call must execute a real connection-refused probe rather than
+    // reuse the warmup call's cached transient result.
+    tokio::time::sleep(Duration::from_millis(300)).await;
 
     let resp = send_tools_call(&mut stdin, &mut stdout, 10).await;
     assert_transient_recoverable(&resp, "R2");

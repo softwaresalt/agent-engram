@@ -222,7 +222,7 @@ omitted this register entirely (PR #365 finding F-10).
 | # | ProposedAction | ActionRisk | Approval | Rollback | Expected ActionResult |
 |---|---|---|---|---|---|
 | A1 | Add `ShimFailureClass::ProtocolIncompatible` (exit 14, wire 15005) | **Medium** — documented exit-code and diagnostics-schema surface | Operator approval at plan gate (this document) | Delete variant; exhaustive matches revert | Additive only; golden-record key set and existing values byte-identical |
-| A2 | Introduce `HealthOutcome`/`TerminalKind`/`probe_health` in `lifecycle` | **Medium** — `pub` shim API expansion | Plan gate | `check_health` bool adapter retained, so revert touches no caller | No non-recovery caller changes; existing suite green |
+| A2 | Introduce `HealthOutcome`/`TerminalKind`/`probe_health` in `lifecycle` | **Low** — crate-visible shim-internal classification change | Plan gate | `check_health` bool adapter retained, so revert touches no caller | No public API widening; no non-recovery caller changes; existing suite green |
 | A3 | Switch `RecoveryProbeState.last_failure` to `tokio::time::Instant` | **Medium** — production clock semantics | Plan gate + explicit neutrality gate on `138.013-T` | One-line type revert | Behavior-identical unpaused; no new assertion turns green |
 | A4 | Default-installed probe indirections in `transport` and `mod` | **Low** — behavior-neutral by construction | Plan gate | Remove field + constructor | Full pre-existing suite green before and after |
 | A5 | Make `Degraded` absorbing via `send_if_modified` | **High** — session state machine; a defect here is fail-open | Plan gate; `C5` is a mandatory blocking guard | Replace with plain `send` | Monitor can never overwrite `Degraded`; C5 green |
