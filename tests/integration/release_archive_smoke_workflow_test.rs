@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 
 fn repository_file(relative_path: &str) -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative_path);
@@ -47,6 +48,20 @@ fn release_workflow_publishes_a_version_generic_changelog_section() {
         !changelog.contains("0.3.0-rc.1"),
         "the changelog job must remain safe for later stable releases"
     );
+    for required in [
+        "import secrets",
+        "secrets.token_hex(32)",
+        "if delimiter not in body.splitlines()",
+    ] {
+        assert!(
+            changelog.contains(required),
+            "the changelog job is missing collision-safe output marker: {required}"
+        );
+    }
+    assert!(
+        !changelog.contains("content<<CHANGELOG_EOF"),
+        "the changelog job must not use a fixed multiline output delimiter"
+    );
 }
 
 #[test]
@@ -80,6 +95,91 @@ fn archive_verifier_is_version_generic_and_never_uses_cargo_run() {
     assert!(
         !verifier.contains("cargo run"),
         "version evidence must come from the unpacked archive binary"
+    );
+}
+
+#[test]
+fn archive_verifier_requires_exact_basename_and_semver_release_identity() {
+    let verifier = repository_file("scripts/verify-release-archive.py");
+
+    for required in [
+        "expected_archive_name",
+        "args.archive.name != expected_archive_name",
+        "SEMVER_PATTERN.fullmatch",
+        "reported_version = parse_semver",
+        "expected_version = parse_semver",
+        "release_identity(reported_version) != release_identity(expected_version)",
+        "Build metadata is valid but does not change release identity.",
+    ] {
+        assert!(
+            verifier.contains(required),
+            "archive verifier is missing strict release identity marker: {required}"
+        );
+    }
+    assert!(
+        !verifier.contains("args.target not in args.archive.name")
+            && !verifier.contains("expected_version not in version_output"),
+        "archive verification must not accept substring matches"
+    );
+}
+
+#[test]
+fn archive_verifier_rejects_a_filename_that_only_contains_the_expected_name() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let verifier = root.join("scripts/verify-release-archive.py");
+    let archive = root.join("engram-v0.3.0-rc.1-x86_64-unknown-linux-gnu.tar.gz.unexpected");
+    let output = Command::new("python")
+        .arg(verifier)
+        .args(["--archive"])
+        .arg(archive)
+        .args([
+            "--tag",
+            "v0.3.0-rc.1",
+            "--target",
+            "x86_64-unknown-linux-gnu",
+            "--work-dir",
+        ])
+        .arg(root.join("archive-name-contract-work"))
+        .output()
+        .unwrap_or_else(|error| panic!("failed to run archive verifier: {error}"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(output.status.code(), Some(2), "unexpected stderr: {stderr}");
+    assert!(
+        stderr.contains("archive filename must be"),
+        "substring-only archive name was not rejected first: {stderr}"
+    );
+}
+
+#[test]
+fn archive_verifier_distinguishes_prereleases_but_allows_reported_build_metadata() {
+    let verifier = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/verify-release-archive.py");
+    let assertion = r#"
+import runpy
+import sys
+
+module = runpy.run_path(sys.argv[1])
+parse_semver = module["parse_semver"]
+release_identity = module["release_identity"]
+stable = release_identity(parse_semver("0.3.0", "stable"))
+prerelease = release_identity(parse_semver("0.3.0-rc.1", "prerelease"))
+reported = release_identity(
+    parse_semver("0.3.0-rc.1+g0123456789-dirty", "reported")
+)
+assert stable != prerelease
+assert prerelease == reported
+"#;
+    let output = Command::new("python")
+        .args(["-c", assertion])
+        .arg(verifier)
+        .output()
+        .unwrap_or_else(|error| panic!("failed to run SemVer contract: {error}"));
+
+    assert!(
+        output.status.success(),
+        "SemVer contract failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 

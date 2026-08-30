@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 from pathlib import Path, PurePosixPath
+import re
 import shutil
 import stat
 import subprocess
@@ -20,10 +21,38 @@ SUPPORTED_TARGETS = {
     "x86_64-pc-windows-msvc": "engram.exe",
     "aarch64-apple-darwin": "engram",
 }
+ARCHIVE_SUFFIXES = {
+    "x86_64-unknown-linux-gnu": ".tar.gz",
+    "x86_64-pc-windows-msvc": ".zip",
+    "aarch64-apple-darwin": ".tar.gz",
+}
+SEMVER_IDENTIFIER = r"(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
+SEMVER_PATTERN = re.compile(
+    rf"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+    rf"(?:-({SEMVER_IDENTIFIER}(?:\.{SEMVER_IDENTIFIER})*))?"
+    r"(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$"
+)
 
 
 class SmokeFailure(RuntimeError):
     """A release archive failed a required smoke assertion."""
+
+
+def parse_semver(value: str, source: str) -> tuple[int, int, int, str | None, str | None]:
+    """Parse a complete SemVer value or fail with its source."""
+    match = SEMVER_PATTERN.fullmatch(value)
+    if match is None:
+        raise SmokeFailure(f"{source} is not valid SemVer: {value!r}")
+    major, minor, patch, prerelease, build = match.groups()
+    return int(major), int(minor), int(patch), prerelease, build
+
+
+def release_identity(
+    version: tuple[int, int, int, str | None, str | None],
+) -> tuple[int, int, int, str | None]:
+    """Return fields that must identify the tagged release exactly."""
+    # Build metadata is valid but does not change release identity.
+    return version[:4]
 
 
 def parse_args() -> argparse.Namespace:
@@ -231,9 +260,14 @@ def main() -> int:
     tag = args.tag
     if not tag.startswith("v") or len(tag) == 1:
         raise SmokeFailure(f"tag must begin with v: {tag}")
-    expected_version = tag[1:]
-    if args.target not in args.archive.name or tag not in args.archive.name:
-        raise SmokeFailure("archive filename does not contain the tag and target")
+    expected_version = parse_semver(tag[1:], "release tag")
+    archive_suffix = ARCHIVE_SUFFIXES[args.target]
+    expected_archive_name = f"engram-{tag}-{args.target}{archive_suffix}"
+    if args.archive.name != expected_archive_name:
+        raise SmokeFailure(
+            f"archive filename must be {expected_archive_name!r}, "
+            f"got {args.archive.name!r}"
+        )
 
     extract_archive(args.archive.resolve(), args.work_dir.resolve())
     binary_name = SUPPORTED_TARGETS[args.target]
@@ -251,9 +285,15 @@ def main() -> int:
         binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
 
     version_output = run_cli(binary, "--version")
-    if expected_version not in version_output:
+    version_parts = version_output.split()
+    if len(version_parts) != 2 or version_parts[0] != "engram":
         raise SmokeFailure(
-            f"archive binary version {version_output!r} lacks {expected_version!r}"
+            f"archive binary version output has unexpected format: {version_output!r}"
+        )
+    reported_version = parse_semver(version_parts[1], "archive binary version")
+    if release_identity(reported_version) != release_identity(expected_version):
+        raise SmokeFailure(
+            f"archive binary version {version_parts[1]!r} does not match tag {tag!r}"
         )
     run_cli(binary, "--help")
 

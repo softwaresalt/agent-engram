@@ -93,10 +93,23 @@ jobs:
           BODY="$(python scripts/extract-changelog-section.py \
             --changelog CHANGELOG.md \
             --tag "${GITHUB_REF_NAME}")"
+          DELIMITER="$(
+            python -c '
+          import secrets
+          import sys
+
+          body = sys.stdin.read()
+          while True:
+              delimiter = f"CHANGELOG_{secrets.token_hex(32)}"
+              if delimiter not in body.splitlines():
+                  print(delimiter)
+                  break
+          ' <<< "$BODY"
+          )"
           {
-            printf '%s\n' "content<<CHANGELOG_EOF"
+            printf '%s\n' "content<<${DELIMITER}"
             printf '%s\n' "$BODY"
-            printf '%s\n' "CHANGELOG_EOF"
+            printf '%s\n' "${DELIMITER}"
           } >> "$GITHUB_OUTPUT"
 
   # ── Cross-platform release builds ────────────────────────────────────────────
