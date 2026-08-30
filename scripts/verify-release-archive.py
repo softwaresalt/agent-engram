@@ -26,6 +26,10 @@ ARCHIVE_SUFFIXES = {
     "x86_64-pc-windows-msvc": ".zip",
     "aarch64-apple-darwin": ".tar.gz",
 }
+EXECUTABLE_TARGETS = {
+    "x86_64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+}
 SEMVER_IDENTIFIER = r"(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
 SEMVER_PATTERN = re.compile(
     rf"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
@@ -289,7 +293,7 @@ def main() -> int:
         raise SmokeFailure(f"archive is missing required files: {', '.join(missing)}")
 
     binary = required_paths[0]
-    if os.name != "nt" and binary.stat().st_mode & (
+    if args.target in EXECUTABLE_TARGETS and binary.stat().st_mode & (
         stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
     ) == 0:
         raise SmokeFailure(f"packaged binary is not executable: {binary.name}")
