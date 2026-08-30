@@ -11,7 +11,7 @@ swapvec = { git = "https://github.com/softwaresalt/swapvec", rev = "72b99cef424a
 
 [package]
 name = "engram"
-version = "0.2.0"
+version = "0.3.0-rc.1"
 edition = "2024"
 rust-version = "1.85"
 description = "Agent Engram MCP daemon"
