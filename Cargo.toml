@@ -169,6 +169,10 @@ name = "integration_shim_copilot_compat"
 path = "tests/integration/shim_copilot_compat_test.rs"
 
 [[test]]
+name = "integration_release_archive_smoke_workflow"
+path = "tests/integration/release_archive_smoke_workflow_test.rs"
+
+[[test]]
 name = "contract_doctor_health"
 path = "tests/contract/doctor_health_test.rs"
 
