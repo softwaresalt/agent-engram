@@ -476,6 +476,71 @@ fn archive_verifier_rejects_traversal_links_and_unsupported_members() {
 }
 
 #[test]
+fn archive_verifier_resolves_a_relative_work_dir_once_for_all_checks() {
+    let temporary = TempDir::new().expect("create temporary archive directory");
+    let verifier = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/verify-release-archive.py");
+    let assertion = r#"
+    import os
+    from pathlib import Path
+    import runpy
+    import sys
+
+    module = runpy.run_path(sys.argv[1])
+    main = module["main"]
+    base = Path(sys.argv[2]).resolve()
+    invocation_cwd = base / "invocation-cwd"
+    invocation_cwd.mkdir()
+    archive = base / "engram-v1.2.3-x86_64-pc-windows-msvc.zip"
+    relative_work_dir = Path("relative-work") / "unpacked"
+    expected_work_dir = (invocation_cwd / relative_work_dir).resolve()
+    mcp_checks = []
+
+    def extract_archive(archive_path, work_dir):
+        assert archive_path.is_absolute(), archive_path
+        assert work_dir == expected_work_dir, work_dir
+        work_dir.mkdir(parents=True)
+        (work_dir / "engram.exe").write_bytes(b"binary")
+        (work_dir / "README.md").write_text("readme", encoding="utf-8")
+        (work_dir / "LICENSE").write_text("license", encoding="utf-8")
+
+    def run_cli(binary, argument):
+        assert binary.is_absolute(), binary
+        assert binary.parent == expected_work_dir, binary
+        return "engram 1.2.3" if argument == "--version" else ""
+
+    def verify_mcp_stdio(binary, work_dir):
+        assert binary.is_absolute(), binary
+        assert binary.parent == expected_work_dir, binary
+        assert work_dir == expected_work_dir, work_dir
+        mcp_checks.append((binary, work_dir))
+
+    main.__globals__["extract_archive"] = extract_archive
+    main.__globals__["run_cli"] = run_cli
+    main.__globals__["verify_mcp_stdio"] = verify_mcp_stdio
+    os.chdir(invocation_cwd)
+    sys.argv = [
+        sys.argv[1],
+        "--archive", str(archive),
+        "--tag", "v1.2.3",
+        "--target", "x86_64-pc-windows-msvc",
+        "--work-dir", str(relative_work_dir),
+        "--mcp",
+    ]
+    assert main() == 0
+    assert len(mcp_checks) == 1
+    "#;
+    let output = Command::new("python")
+        .arg("-c")
+        .arg(dedent(assertion))
+        .arg(verifier)
+        .arg(temporary.path())
+        .output()
+        .unwrap_or_else(|error| panic!("failed to exercise relative work directory: {error}"));
+
+    assert_python_success(&output, "relative work directory verification");
+}
+
+#[test]
 fn archive_verifier_runs_the_unpacked_native_binary() {
     let Some((target, binary_name, suffix)) = native_release_target() else {
         eprintln!("native archive smoke is not supported on this build host");
@@ -485,6 +550,8 @@ fn archive_verifier_runs_the_unpacked_native_binary() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let verifier = root.join("scripts/verify-release-archive.py");
     let tag = format!("v{}", env!("CARGO_PKG_VERSION"));
+    let invocation_cwd = temporary.path().join("invocation-cwd");
+    fs::create_dir(&invocation_cwd).expect("create verifier invocation directory");
     let archive = temporary
         .path()
         .join(format!("engram-{tag}-{target}{suffix}"));
@@ -527,7 +594,8 @@ fn archive_verifier_runs_the_unpacked_native_binary() {
         .args(["--archive"])
         .arg(&archive)
         .args(["--tag", &tag, "--target", target, "--work-dir"])
-        .arg(temporary.path().join("unpacked"))
+        .arg(Path::new("relative-work").join("unpacked"))
+        .current_dir(&invocation_cwd)
         .output()
         .unwrap_or_else(|error| panic!("failed to run native archive verifier: {error}"));
 
@@ -539,6 +607,78 @@ fn archive_verifier_runs_the_unpacked_native_binary() {
         env!("CARGO_PKG_VERSION")
     )));
     assert!(stdout.contains("ARCHIVE_SMOKE=PASS"));
+}
+
+#[cfg(unix)]
+#[test]
+fn archive_verifier_rejects_a_non_executable_packaged_binary_before_invocation() {
+    let temporary = TempDir::new().expect("create temporary archive directory");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let verifier = root.join("scripts/verify-release-archive.py");
+    let archive = temporary
+        .path()
+        .join("engram-v1.2.3-x86_64-unknown-linux-gnu.tar.gz");
+    let marker = temporary.path().join("binary-was-invoked");
+    let fixture_builder = r#"
+    import io
+    from pathlib import Path
+    import sys
+    import tarfile
+
+    archive_path = Path(sys.argv[1])
+    binary = b'''#!/bin/sh
+    printf 'invoked\n' >> "$ENGRAM_NONEXEC_MARKER"
+    if [ "$1" = "--version" ]; then
+        printf 'engram 1.2.3\n'
+    fi
+    exit 0
+    '''
+    files = {
+        "engram": (binary, 0o644),
+        "README.md": (b"readme", 0o644),
+        "LICENSE": (b"license", 0o644),
+    }
+    with tarfile.open(archive_path, "w:gz") as archive:
+        for name, (content, mode) in files.items():
+            member = tarfile.TarInfo(name)
+            member.size = len(content)
+            member.mode = mode
+            archive.addfile(member, io.BytesIO(content))
+    "#;
+    let fixture_output = Command::new("python")
+        .arg("-c")
+        .arg(dedent(fixture_builder))
+        .arg(&archive)
+        .output()
+        .unwrap_or_else(|error| panic!("failed to build non-executable archive fixture: {error}"));
+    assert_python_success(&fixture_output, "non-executable archive fixture creation");
+
+    let output = Command::new("python")
+        .arg(verifier)
+        .args(["--archive"])
+        .arg(&archive)
+        .args([
+            "--tag",
+            "v1.2.3",
+            "--target",
+            "x86_64-unknown-linux-gnu",
+            "--work-dir",
+        ])
+        .arg(temporary.path().join("unpacked"))
+        .env("ENGRAM_NONEXEC_MARKER", &marker)
+        .output()
+        .unwrap_or_else(|error| panic!("failed to run archive verifier: {error}"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(output.status.code(), Some(2), "unexpected stderr: {stderr}");
+    assert!(
+        stderr.contains("packaged binary is not executable"),
+        "non-executable packaged binary was not rejected: {stderr}"
+    );
+    assert!(
+        !marker.exists(),
+        "non-executable packaged binary was invoked before rejection"
+    );
 }
 
 #[test]

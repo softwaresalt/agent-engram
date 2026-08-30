@@ -264,6 +264,7 @@ def verify_mcp_stdio(binary: Path, work_dir: Path) -> None:
 def main() -> int:
     """Run archive structure, CLI, and optional MCP stdio checks."""
     args = parse_args()
+    work_dir = args.work_dir.resolve()
     tag = args.tag
     if not tag.startswith("v") or len(tag) == 1:
         raise SmokeFailure(f"tag must begin with v: {tag}")
@@ -276,20 +277,22 @@ def main() -> int:
             f"got {args.archive.name!r}"
         )
 
-    extract_archive(args.archive.resolve(), args.work_dir.resolve())
+    extract_archive(args.archive.resolve(), work_dir)
     binary_name = SUPPORTED_TARGETS[args.target]
     required_paths = [
-        args.work_dir / binary_name,
-        args.work_dir / "README.md",
-        args.work_dir / "LICENSE",
+        work_dir / binary_name,
+        work_dir / "README.md",
+        work_dir / "LICENSE",
     ]
     missing = [str(path) for path in required_paths if not path.is_file()]
     if missing:
         raise SmokeFailure(f"archive is missing required files: {', '.join(missing)}")
 
     binary = required_paths[0]
-    if os.name != "nt":
-        binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
+    if os.name != "nt" and binary.stat().st_mode & (
+        stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+    ) == 0:
+        raise SmokeFailure(f"packaged binary is not executable: {binary.name}")
 
     version_output = run_cli(binary, "--version")
     version_parts = version_output.split()
@@ -307,7 +310,7 @@ def main() -> int:
     print(f"ARCHIVE_TARGET={args.target}")
     print(f"ARCHIVE_VERSION_OUTPUT={version_output}")
     if args.mcp:
-        verify_mcp_stdio(binary, args.work_dir)
+        verify_mcp_stdio(binary, work_dir)
     print("ARCHIVE_SMOKE=PASS")
     return 0
 
