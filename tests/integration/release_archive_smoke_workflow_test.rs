@@ -31,6 +31,14 @@ fn assert_python_success(output: &Output, context: &str) {
     );
 }
 
+fn assert_marker_count(content: &str, marker: &str, expected: usize) {
+    assert_eq!(
+        content.matches(marker).count(),
+        expected,
+        "unexpected count for marker: {marker}"
+    );
+}
+
 fn dedent(source: &str) -> String {
     let source = source.trim_matches('\n');
     let indentation = source
@@ -548,7 +556,7 @@ fn archive_verifier_runs_the_unpacked_native_binary() {
     };
     let verify_mcp = matches!(
         target,
-        "x86_64-unknown-linux-gnu" | "x86_64-pc-windows-msvc"
+        "x86_64-unknown-linux-gnu" | "x86_64-pc-windows-msvc" | "aarch64-apple-darwin"
     );
     let temporary = TempDir::new().expect("create temporary archive directory");
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -723,6 +731,99 @@ fn verification_record_separates_g1_evidence_from_g3_artifact_proof() {
         assert!(
             record.contains(required),
             "verification record is missing required boundary marker: {required}"
+        );
+    }
+}
+
+#[test]
+fn published_release_verification_workflow_is_native_read_only_and_fail_closed() {
+    let workflow =
+        repository_file(".github/workflows/verify-release-assets.yml").replace("\r\n", "\n");
+
+    for required in [
+        "workflow_dispatch:",
+        "tag:",
+        "expected_commit:",
+        "required: true",
+        "permissions:\n  contents: read",
+        "concurrency:",
+        "timeout-minutes:",
+        "fail-fast: false",
+        "outputs:",
+        "release_id:",
+        "tag must be a complete SemVer value beginning with v",
+        "expected_commit must be exactly 40 hexadecimal characters",
+        "refs/tags/$($env:TAG)^{commit}",
+        "$tagCommit -cne $expectedCommit",
+        "$headCommit -cne $expectedCommit",
+        "/releases/tags/$encodedTag",
+        "$release.draft -ne $false",
+        "persist-credentials: false",
+        "fetch-depth: 0",
+        "actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5",
+        "RUNNER_ARCH",
+        "$matchingAssets.Count -ne 1",
+        "$asset = Invoke-RestMethod -Uri $assetUri -Headers $headers",
+        "^sha256:[0-9a-f]{64}$",
+        "$actualSize -ne $expectedSize",
+        "$actualDigest -cne $apiDigest.Substring(7)",
+        "Get-FileHash",
+        "Get-Item",
+        "scripts/verify-release-archive.py",
+        "--work-dir",
+        "--mcp",
+    ] {
+        assert!(
+            workflow.contains(required),
+            "published-release workflow is missing required marker: {required}"
+        );
+    }
+    assert_marker_count(&workflow, "timeout-minutes:", 2);
+    assert_marker_count(
+        &workflow,
+        "actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5",
+        2,
+    );
+    assert_marker_count(&workflow, "persist-credentials: false", 2);
+    assert_marker_count(&workflow, "Authorization = \"Bearer $env:GH_TOKEN\"", 2);
+
+    for native_leg in [
+        "runner: ubuntu-latest\n            target: x86_64-unknown-linux-gnu\n            runner_arch: X64",
+        "runner: windows-latest\n            target: x86_64-pc-windows-msvc\n            runner_arch: X64",
+        "runner: macos-latest\n            target: aarch64-apple-darwin\n            runner_arch: ARM64",
+    ] {
+        assert!(
+            workflow.contains(native_leg),
+            "published-release workflow is missing native matrix leg: {native_leg}"
+        );
+    }
+
+    let lowercase = workflow.to_ascii_lowercase();
+    for forbidden in [
+        "v0.3.0-rc.1",
+        "contents: write",
+        "releases: write",
+        "actions/upload-artifact",
+        "softprops/action-gh-release",
+        "gh release create",
+        "gh release upload",
+        "gh release delete",
+        "git push",
+        "git tag ",
+        "delete release",
+        "upload release",
+        "-method post",
+        "-method put",
+        "-method patch",
+        "-method delete",
+        "\npush:",
+        "\npull_request:",
+        "\nschedule:",
+        "\nworkflow_run:",
+    ] {
+        assert!(
+            !lowercase.contains(forbidden),
+            "published-release workflow contains forbidden mutation marker: {forbidden}"
         );
     }
 }
