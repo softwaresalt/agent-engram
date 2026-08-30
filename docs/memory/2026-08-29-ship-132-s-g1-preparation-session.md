@@ -14,10 +14,12 @@ status: active
 
 ## Scope and release state
 
-This session prepared truthful G1 evidence without opening or mutating a pull
-request. The committed head during evidence collection was
-`c22efa0d2485856c7a1e849f1fdfe9e7af14fe33`. Hosted CI and Copilot review for
-the eventual exact PR head remain pending because the PR is not open.
+This session prepared truthful G1 evidence that now supports open PR #368. The
+live PR head is the authoritative exact head; this memory does not embed that
+value because a document cannot self-reference its own commit. Hosted CI and
+exact-head Copilot review remain pending until verified externally. Their
+results will be recorded in the PR description and check rollup without
+another source commit.
 
 No local or remote `v0.3.0-rc.1` tag or release was created. `v0.2.0` remains
 **Latest**. G2 merge and G3 tag/publication remain separately approval-gated.
@@ -83,9 +85,8 @@ The `git-cliff` executable was unavailable locally, and the operator forbids
 creating the local RC tag during G1. No output was fabricated. The PR will
 disclose the intended changelog and `git-cliff --latest-tag` range from tag
 `v0.2.0`, commit `fd46a9eac7b9a1b68a8e6b405573b8a5a0d0b603`, through its eventual
-final head. Before this documentation change, `v0.2.0..c22efa0d` contained
-1,412 commits; the final PR count will be recorded after the documentation
-commit. The branch base remains
+final head. The PR #368 description will record the authoritative range and
+check rollup without requiring another source commit. The branch base remains
 `bdda5aac8e6326d646e3b30d3144e4349db770a9`.
 
 ## Work-item boundary and next steps
@@ -93,9 +94,11 @@ commit. The branch base remains
 Shipment `132-S`, feature `139-F`, and task `139.005-T` remain active.
 Completed release-preparation tasks do not close the shipment.
 
-1. Open the release PR and disclose the selected range and local `git-cliff`
-   limitation.
-2. Require hosted CI and Copilot review on the exact final PR head.
+1. Complete hosted CI and exact-head Copilot review for PR #368, then record
+   the results in its description and check rollup without another source
+   commit.
+2. Disclose the authoritative selected range and local `git-cliff` limitation
+   in PR #368.
 3. Keep G2 merge separately approval-gated.
 4. Keep G3 tag and publication separately approval-gated.
 
