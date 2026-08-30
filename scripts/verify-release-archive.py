@@ -112,11 +112,18 @@ def extract_zip(archive: Path, root: Path) -> None:
         for member in source.infolist():
             destination = checked_destination(root, member.filename)
             unix_mode = member.external_attr >> 16
-            if stat.S_IFMT(unix_mode) == stat.S_IFLNK:
-                raise SmokeFailure(f"symbolic links are not allowed: {member.filename}")
+            member_type = stat.S_IFMT(unix_mode)
             if member.is_dir():
+                if member_type not in (0, stat.S_IFDIR):
+                    raise SmokeFailure(
+                        f"unsupported zip member type: {member.filename}"
+                    )
                 destination.mkdir(parents=True, exist_ok=True)
                 continue
+            if member_type == stat.S_IFLNK:
+                raise SmokeFailure(f"symbolic links are not allowed: {member.filename}")
+            if member_type not in (0, stat.S_IFREG):
+                raise SmokeFailure(f"unsupported zip member type: {member.filename}")
 
             destination.parent.mkdir(parents=True, exist_ok=True)
             with source.open(member) as extracted, destination.open("wb") as output:
