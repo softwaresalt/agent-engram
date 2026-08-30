@@ -546,6 +546,10 @@ fn archive_verifier_runs_the_unpacked_native_binary() {
         eprintln!("native archive smoke is not supported on this build host");
         return;
     };
+    let verify_mcp = matches!(
+        target,
+        "x86_64-unknown-linux-gnu" | "x86_64-pc-windows-msvc"
+    );
     let temporary = TempDir::new().expect("create temporary archive directory");
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let verifier = root.join("scripts/verify-release-archive.py");
@@ -589,13 +593,18 @@ fn archive_verifier_runs_the_unpacked_native_binary() {
         .unwrap_or_else(|error| panic!("failed to build native archive fixture: {error}"));
     assert_python_success(&fixture_output, "native archive fixture creation");
 
-    let output = Command::new("python")
+    let mut verifier_command = Command::new("python");
+    verifier_command
         .arg(verifier)
         .args(["--archive"])
         .arg(&archive)
         .args(["--tag", &tag, "--target", target, "--work-dir"])
         .arg(Path::new("relative-work").join("unpacked"))
-        .current_dir(&invocation_cwd)
+        .current_dir(&invocation_cwd);
+    if verify_mcp {
+        verifier_command.arg("--mcp");
+    }
+    let output = verifier_command
         .output()
         .unwrap_or_else(|error| panic!("failed to run native archive verifier: {error}"));
 
@@ -606,6 +615,22 @@ fn archive_verifier_runs_the_unpacked_native_binary() {
         "ARCHIVE_VERSION_OUTPUT=engram {}",
         env!("CARGO_PKG_VERSION")
     )));
+    if verify_mcp {
+        assert!(stdout.contains("MCP_PROTOCOL_VERSION="));
+        let tool_count = stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("MCP_TOOL_COUNT="))
+            .and_then(|count| count.parse::<usize>().ok());
+        assert!(
+            tool_count.is_some_and(|count| count > 0),
+            "MCP tool count evidence is missing or zero: {stdout}"
+        );
+        assert!(stdout.contains("MCP_STDIN_CLOSE_EXIT=10"));
+    } else {
+        assert!(!stdout.contains("MCP_PROTOCOL_VERSION="));
+        assert!(!stdout.contains("MCP_TOOL_COUNT="));
+        assert!(!stdout.contains("MCP_STDIN_CLOSE_EXIT="));
+    }
     assert!(stdout.contains("ARCHIVE_SMOKE=PASS"));
 }
 
