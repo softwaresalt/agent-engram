@@ -11,7 +11,7 @@ swapvec = { git = "https://github.com/softwaresalt/swapvec", rev = "72b99cef424a
 
 [package]
 name = "engram"
-version = "0.2.0"
+version = "0.3.0-rc.1"
 edition = "2024"
 rust-version = "1.85"
 description = "Agent Engram MCP daemon"
@@ -167,6 +167,10 @@ path = "tests/contract/shim_pre_initialize_probe_test.rs"
 [[test]]
 name = "integration_shim_copilot_compat"
 path = "tests/integration/shim_copilot_compat_test.rs"
+
+[[test]]
+name = "integration_release_archive_smoke_workflow"
+path = "tests/integration/release_archive_smoke_workflow_test.rs"
 
 [[test]]
 name = "contract_doctor_health"
