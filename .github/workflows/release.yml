@@ -71,43 +71,32 @@ jobs:
         run: cargo test --locked --no-default-features --features cozo-backend,embeddings --all-targets
 
   # ── Changelog generation ─────────────────────────────────────────────────────
-  # Runs in parallel with `test`. The generated changelog body is passed to
-  # the publish job via job outputs. Requires git-cliff (T088).
+  # Runs in parallel with `test`. The curated, tag-matched CHANGELOG section is
+  # passed to the publish job via job outputs.
   changelog:
     name: Generate Changelog
     needs: validate-tag
     runs-on: ubuntu-latest
     outputs:
-      body: ${{ steps.cliff.outputs.content }}
+      body: ${{ steps.changelog.outputs.content }}
     steps:
-      - name: Checkout (full history for cliff)
+      - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
           persist-credentials: false
 
-      # Install git-cliff as a pre-built binary instead of using the Docker-based
-      # action, which broke when Debian Buster (the action's base image) went EOL.
-      - name: Install git-cliff
-        uses: taiki-e/install-action@3235f8901fd37ffed0052b276cec25a362fb82e9 # v2
-        with:
-          tool: git-cliff
-
-      - name: Generate changelog with git-cliff
-        id: cliff
+      - name: Extract curated changelog section
+        id: changelog
         shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPO: ${{ github.repository }}
         run: |
-          BODY="$(git-cliff --latest --strip header 2>/dev/null || true)"
-          if [ -z "$BODY" ]; then
-            BODY="No changelog entries for this release."
-          fi
+          BODY="$(python scripts/extract-changelog-section.py \
+            --changelog CHANGELOG.md \
+            --tag "${GITHUB_REF_NAME}")"
           {
-            printf '%s\n' "content<<CLIFF_EOF"
+            printf '%s\n' "content<<CHANGELOG_EOF"
             printf '%s\n' "$BODY"
-            printf '%s\n' "CLIFF_EOF"
+            printf '%s\n' "CHANGELOG_EOF"
           } >> "$GITHUB_OUTPUT"
 
   # ── Cross-platform release builds ────────────────────────────────────────────

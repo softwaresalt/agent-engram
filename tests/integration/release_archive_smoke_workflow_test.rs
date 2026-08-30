@@ -24,6 +24,32 @@ fn release_workflow_retains_the_cross_platform_packaging_contract() {
 }
 
 #[test]
+fn release_workflow_publishes_a_version_generic_changelog_section() {
+    let workflow = repository_file(".github/workflows/release.yml");
+    let changelog_job = workflow
+        .find("  changelog:")
+        .expect("Release workflow must retain the changelog job");
+    let build_job = workflow
+        .find("  build:")
+        .expect("Release workflow must retain the build job");
+    let changelog = &workflow[changelog_job..build_job];
+
+    assert!(
+        changelog.contains("scripts/extract-changelog-section.py")
+            && changelog.contains("--tag \"${GITHUB_REF_NAME}\""),
+        "the changelog job must select the curated section by generic tag"
+    );
+    assert!(
+        !changelog.contains("git-cliff --latest"),
+        "the published body must not come from the unconfigured raw git-cliff output"
+    );
+    assert!(
+        !changelog.contains("0.3.0-rc.1"),
+        "the changelog job must remain safe for later stable releases"
+    );
+}
+
+#[test]
 fn archive_verifier_is_version_generic_and_never_uses_cargo_run() {
     let verifier = repository_file("scripts/verify-release-archive.py");
 
@@ -54,6 +80,28 @@ fn archive_verifier_is_version_generic_and_never_uses_cargo_run() {
     assert!(
         !verifier.contains("cargo run"),
         "version evidence must come from the unpacked archive binary"
+    );
+}
+
+#[test]
+fn changelog_extractor_is_version_generic_and_fail_closed() {
+    let extractor = repository_file("scripts/extract-changelog-section.py");
+
+    for required in [
+        "--changelog",
+        "--tag",
+        "section not found",
+        "section is empty",
+        "must begin with v",
+    ] {
+        assert!(
+            extractor.contains(required),
+            "changelog extractor is missing contract marker: {required}"
+        );
+    }
+    assert!(
+        !extractor.contains("0.3.0-rc.1"),
+        "changelog extraction must remain generic for stable releases"
     );
 }
 
