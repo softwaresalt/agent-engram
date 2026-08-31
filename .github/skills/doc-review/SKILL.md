@@ -90,6 +90,15 @@ Scan all Markdown and YAML files in scope for unresolved template variable
 patterns matching `\{\{[A-Z_][A-Z0-9_]*\}\}`. Any match in installed output
 files (not `.tmpl` source files) is a P0 finding.
 
+Exclude explanatory literals, not just fenced blocks. A match is **not** a
+finding when it is wrapped in inline code (`` `{{VARIABLE}}` ``), appears
+inside a fenced code block, or is otherwise quoted as an example of the
+template syntax itself — for example the retained prose reference in
+`.github/agents/_ship.agent.md`. Only bare, unquoted occurrences in rendered
+prose indicate a genuinely unresolved install variable. Cross-check against
+`autoharness verify-workspace`, which reports its own unresolved-placeholder
+count; a file that verify considers valid must not be blocked by this check.
+
 ```text
 Pattern: \{\{[A-Z_][A-Z0-9_]*\}\}
 Scope:    installed harness files (exclude *.tmpl, exclude .backlogit/)
@@ -105,7 +114,9 @@ For each file with a `---` frontmatter block:
 2. Parse the YAML. Any parse error is a P1 finding.
 3. Verify required keys are present per file type:
    * Agent files: `name`, `description`
-   * Skill files: `name`, `description`
+   * Skill files: `description` (a `name` key is optional; the workspace
+     prompt-builder contract requires only `description`, and managed skills
+     such as `operational-closure/SKILL.md` omit `name`)
    * Instruction files: `description`
    * Template files: at minimum `description` or `name`
 
@@ -194,7 +205,7 @@ verification pass
 
 1. If arguments specify a path or glob, resolve it to a list of files.
 2. Otherwise, default scope:
-   * `.github/agents/*.md`
+   * `.github/agents/**/*.md` (includes `.github/agents/subagents/`)
    * `.github/skills/**/SKILL.md`
    * `.github/instructions/*.md`
    * `AGENTS.md`

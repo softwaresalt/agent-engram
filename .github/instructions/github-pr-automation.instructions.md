@@ -304,8 +304,13 @@ gh api graphql -f query='
       }
     }
   }
-' -f owner="softwaresalt" -f repo="agent-engram" -F pr=<pr_number> -f threadCursor=""
+' -f owner="softwaresalt" -f repo="agent-engram" -F pr=<pr_number>
 ```
+
+Omit `threadCursor` entirely on the first request — passing an empty string
+supplies an invalid Relay cursor and the query can fail before pagination
+starts. Declare it as `$threadCursor: String` (nullable, no default) so the
+initial call resolves it to `null`.
 
 If `pageInfo.hasNextPage` is true, re-run the query with
 `-f threadCursor="{endCursor}"` and merge the `reviewThreads.nodes`

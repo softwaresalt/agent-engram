@@ -134,7 +134,10 @@ All 8 dark-factory contract checks pass: `dark_factory_policy_contract`,
 `dark_factory_prompt_contract`, `dark_factory_github_pr_automation_contract`,
 `dark_factory_foundation_contract`.
 
-Surfaces carrying the contract:
+Surfaces carrying the contract (snapshot taken **before** the `agent-intercom`
+capability pack was removed later in this session — see "agent-intercom
+capability pack removed" below; `.github/instructions/agent-intercom.instructions.md`
+no longer exists in the workspace):
 
 | Surface | Content |
 |---|---|
@@ -143,7 +146,7 @@ Surfaces carrying the contract:
 | `.github/agents/_ship.agent.md` | dark-mode-aware execution and closure |
 | `.github/skills/pr-lifecycle/SKILL.md` | `DARK_MODE_ACTIVE` handling in the merge path |
 | `.github/instructions/github-pr-automation.instructions.md` | §1.9.6 Dark-Mode Merge Authorization and Admin Fallback — merge-state classification table, `COPILOT_REVIEW_BLOCK` non-bypass |
-| `.github/instructions/agent-intercom.instructions.md` | dark-mode visibility events |
+| `.github/instructions/agent-intercom.instructions.md` | dark-mode visibility events — **removed later in this session with the `agent-intercom` pack** |
 | `AGENTS.md` | Development Workflow item 4 (P-017) |
 | `.github/prompts/feature-flow-dark.prompt.md` | `/feature-flow-dark` shim for the exact trigger |
 

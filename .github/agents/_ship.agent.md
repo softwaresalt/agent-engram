@@ -274,20 +274,16 @@ When `shipment_id` is not provided (Ship invoked directly by the operator):
 1. List existing shipments in `queued` status using `backlogit_list_shipments` to
    check for one that already covers the intended feature scope. If found, record its ID and
    proceed as primary path.
-2. If no suitable shipment exists, **recommend running Stage first** to assemble a shipment
-   through the full triage → deliberate → plan → review → harvest → shipment pipeline. Only
-   proceed with direct assembly if the operator explicitly confirms they want to bypass Stage.
-3. If the operator confirms direct assembly, create the shipment:
-   a. Identify the covering feature: the highest-priority queued feature without an existing
-      shipment. If the work is bare tasks without a covering feature, halt and request that
-      Stage be run first to synthesize a covering feature and assemble the shipment.
-   b. Run the Branch Creation Gate + Worktree Topology Gate from primary-path step 3a before creating the fallback shipment.
-   c. Create the shipment using `backlogit_create_shipment` with a title from the feature
-      and an initial `items` list containing the covering feature ID (e.g., `[feature_id]`).
-   d. Add each task in dependency order. Add each subtask after its parent task.
-   e. Broadcast `[SHIP] Shipment assembled (fallback): {shipment_id} — {feature_id} +
-      {task_count} tasks`.
-4. Claim and record `shipment_id` as the session scope.
+2. If no suitable shipment exists, **halt and route back to Stage**. Assembling a shipment is
+   forbidden for Ship by the NON-NEGOTIABLE Role Boundary (Backlog row: "Create backlog items,
+   create shipments"), and `role-enforcement.instructions.md` requires holding that boundary
+   **even under operator pressure**. Report a P-010 violation rather than assembling directly.
+3. Emit the redirect and stop:
+   a. Tell the operator that no `queued` shipment covers the intended scope and that Stage must
+      run the triage → deliberate → plan → review → harvest → shipment pipeline first.
+   b. Do not call `backlogit_create_shipment`, and do not create a covering feature.
+   c. Broadcast `[SHIP] Halted — no prepared shipment; routing to Stage`.
+4. Once Stage has produced a shipment, claim and record `shipment_id` as the session scope.
 
 When the `agent-intercom` capability pack is also installed, broadcast each sub-step with
 its outcome.
@@ -305,7 +301,7 @@ it halts and requests that Stage be run first.
 
 ### Step 1: Pre-Flight Checks
 
-1. **P-001 Gate**: Sequential single-PR-at-a-time is the default — at most one top-level release unit may be in flight. Check that no other top-level release units (features or chores) are `Active` in the backlog, and treat any previously merged shipment with incomplete required post-merge release closure (for example, an open post-merge closure PR/branch, a missing tag, or a pending publish step when `true` is true) as still active for P-001 purposes
+1. **P-001 Gate**: Sequential single-PR-at-a-time is the default — at most one top-level release unit may be in flight. Check that no other top-level release units (features or chores) are `Active` in the backlog, and treat any previously merged shipment with incomplete required post-merge release closure (for example, an open post-merge closure PR/branch, a missing tag, or a pending publish step) as still active for P-001 purposes
 2. **Verify compilation**: Run `cargo check --all-targets` to confirm the project builds
 3. **Re-read constitution**: Load `.github/instructions/constitution.instructions.md` Principles I, II, IV
 4. If the task has elevated blast radius, uncertain root cause, or destructive potential, invoke **safety-modes** in the appropriate mode before modifying code
@@ -613,7 +609,7 @@ After all tasks in the queue are complete:
 7. If the changed work touches runtime surfaces, load `.autoharness/workspace-profile.yaml` and invoke **runtime-verification** with `runtime_validation.validator_manifest` plus `runtime_validation.validation_expectations` so the skill produces validator evidence for surface adapters, probe outcomes, manual checkpoint evidence, and blocked prerequisites. Do not fake unsupported automation.
 8. Invoke **operational-closure** with the validator evidence plus `runtime_validation.releasability` so closure produces explicit releasability evidence (`READY`, `READY_WITH_CONDITIONS`, or `BLOCKED`) covering monitoring, rollback, owner, validation-window, and follow-up requirements.
 9. **Stash follow-up items**: If the closure artifact, runtime-verification report, or local review readiness result identified follow-up tasks, stash every follow-up so it is visible to the Stage agent:
-   * When `backlogit` is the installed backlog tool, create a stash entry per follow-up using `backlogit_create_item` with `artifact_type: "stash"`, `title` from the follow-up summary, `description` linking to the closure artifact, and `status: "queued"`. After creation, re-read each entry to confirm it persisted correctly.
+   * When `backlogit` is the installed backlog tool, create a stash entry per follow-up using the `backlogit_stash` operation (stash entries are a separate store from WIT items, so `backlogit_create_item` cannot create them). Supply `text` from the follow-up summary plus a link to the closure artifact, and set the required `kind` and `priority`. After creation, re-read each entry with `backlogit_stash_get` to confirm it persisted correctly.
    * When `backlog-md` is the installed backlog tool, create a follow-up item using `backlogit_create_item` with `title` from the follow-up summary, `description` linking to the closure artifact, `status: "queued"`, and `labels: ["stash", "follow-up"]`.
    * When no backlog tool is installed, append each follow-up to `.backlogit/queue/.stash.md` using the format: `- [{YYYY-MM-DD}] **Follow-up**: {summary} — Source: {closure_artifact_path}`.
    * When the `agent-intercom` capability pack is installed, broadcast `[SHIP] Stashed {count} follow-up item(s): {summary_list}` listing each item's title.
@@ -763,7 +759,7 @@ updated the safe-close algorithm. Backlogit 1.8.0 supports only
 lifecycle to transition out of. See
 `docs/compound/2026-05-07-backlogit-shipment-status-constraints.md`.
 
-1. **Close the shipment** (when `true` is true):
+1. **Close the shipment**:
    a0. **TOPOLOGY_GATE: lifecycle (before closure/safe-close)** — if the `pipeline-topology` gate is installed for this
        workspace, before the pre-archive reconciliation gate below, run
        `autoharness gate pipeline-topology --mode agent --shipment {shipment_id} --phase lifecycle --json`. Exit 0
@@ -849,13 +845,13 @@ lifecycle to transition out of. See
 4. Apply documentation updates directly (knowledge graduation).
 5. If the shipped work superseded, duplicated, or invalidated existing learnings in `docs/compound/`, invoke **compound-refresh** so stale entries are classified as keep / update / consolidate / replace / delete using evidence from the shipped work and closure artifacts. When evidence is incomplete, mark entries stale rather than rewriting them blindly.
 6. **Stash follow-up items**: If the post-merge closure artifact identified follow-up tasks (monitoring gaps, deferred scope, documentation debt, or any action not covered by the shipped work), stash every follow-up:
-   * When `backlogit` is the installed backlog tool, create a stash entry per follow-up using `backlogit_create_item` with `artifact_type: "stash"`, `title` from the follow-up summary, `description` linking to the closure artifact, and `status: "queued"`. After creation, re-read each entry to confirm it persisted correctly.
+   * When `backlogit` is the installed backlog tool, create a stash entry per follow-up using the `backlogit_stash` operation (stash entries are a separate store from WIT items, so `backlogit_create_item` cannot create them). Supply `text` from the follow-up summary plus a link to the closure artifact, and set the required `kind` and `priority`. After creation, re-read each entry with `backlogit_stash_get` to confirm it persisted correctly.
    * When `backlog-md` is the installed backlog tool, create a follow-up item using `backlogit_create_item` with `title` from the follow-up summary, `description` linking to the closure artifact, `status: "queued"`, and `labels: ["stash", "follow-up"]`.
    * When no backlog tool is installed, append each follow-up to `.backlogit/queue/.stash.md` using the format: `- [{YYYY-MM-DD}] **Follow-up**: {summary} — Source: {closure_artifact_path}`.
    * When the `agent-intercom` capability pack is installed, broadcast `[SHIP] Stashed {count} follow-up item(s) from post-merge closure: {summary_list}` listing each item's title.
 7. **Source artifact cleanup** (backlogit only): When the `backlogit` capability pack is installed, retire the source artifacts that directly fed the shipped scope instead of heuristically searching for "stale" backlog items.
    * For each shipped top-level item in scope (feature or chore), read `custom_fields.source_stash_id`. If present, call `backlogit_stash_archive` with the stash ID only. If the stash entry is already archived, skip and log it.
-   * For each shipped top-level item in scope (feature or chore), read `custom_fields.source_deliberation_id`. If present, verify the deliberation artifact exists via `backlogit_get_item`. If it exists and is not already archived, call `backlogit_archive_item`. If it is already archived or not found, skip and log it.
+   * For each shipped top-level item in scope (feature or chore), read `custom_fields.source_deliberation_id`. If present, verify the deliberation artifact exists via `backlogit_get_item`. If it exists and is not already archived, call `backlogit_archive_item` (CLI fallback `backlogit archive {id}`; this operation is not listed in `.autoharness/backlog-registry.yaml`, so if the MCP tool is not found, use the CLI and record the fallback). If it is already archived or not found, skip and log it. If neither path is available, append a `backlogit_append_comment` traceability note recording the intended archival instead of failing closure.
    * After processing the full shipped scope, record the archived and skipped source artifact IDs in the closure artifact's `Source artifact cleanup` section so the closure report remains the traceable system of record.
    * When the `agent-intercom` capability pack is installed, broadcast `[SHIP] Source artifacts archived: {stash_count} stash, {delib_count} deliberations`.
 8. **Mandatory (P-020)**: Invoke **compact-context** with `target: all` to consolidate memory checkpoints, finalize any decided-plans, and compact closure artifacts, then record the outcome as the compaction status of the step-2 operational-closure artifact. This is required because built-in AI assistant memory features do not write to the repository's `docs/` directory — compact-context is the mechanism that ensures durable persistence. **Invocation is mandatory per merge; candidate selection stays threshold-gated** — the just-closed release unit's memory is the one intended candidate (eligible under the completed-work rule), so the guaranteed call is a bounded, cheap Tier-1 consolidation of that fresh memory and degrades to a scan-only no-op only when nothing else qualifies. **Failure semantics (P-020)**: SKIPPING this invocation is a P-020 violation recorded via P-005 telemetry. Because backlog/shipment archival ran in step 1, completeness is tracked by the operational-closure artifact's compaction status, not shipment active-state: skipping leaves that status unset so post-merge closure is **incomplete** and the Orchestrator's closure-gated routing (P-001 + P-020) holds the next shipment until compaction is completed — it does not strand the merged PR. A compact-context run that **FAILS** is **NON-BLOCKING**: record `compaction: degraded` in the closure artifact, log a warning, and continue closure (the merge already landed and the skill is non-destructive).

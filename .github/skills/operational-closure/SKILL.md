@@ -55,7 +55,7 @@ Collect:
 
 * Summary of the change
 * CI status and unresolved review items
-* Runtime verification report or validator evidence (required when runtime surfaces were changed) — including verdict (`PASS`, `PASS_WITH_FOLLOW_UP`, `FAIL`, or `BLOCKED`), evidence, manual checkpoint evidence, and follow-up recommendations. If verification was BLOCKED, record the blocked status and the missing prerequisite as a closure condition.
+* Runtime verification report or validator evidence (required when runtime surfaces were changed) — including verdict (`PASS`, `PASS WITH FOLLOW-UP`, `FAIL`, or `BLOCKED`), evidence, manual checkpoint evidence, and follow-up recommendations. The `runtime-verification` skill emits the spaced form `PASS WITH FOLLOW-UP`; where a machine-readable token is required, normalize it to `PASS_WITH_FOLLOW_UP`. The two spellings denote the same verdict. If verification was BLOCKED, record the blocked status and the missing prerequisite as a closure condition.
 * Any risky actions that required approval, rollback planning, or explicit containment
 * Affected runtime surfaces
 * Deployment or release path, if applicable

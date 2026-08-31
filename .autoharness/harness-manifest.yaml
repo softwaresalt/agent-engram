@@ -5,10 +5,10 @@
 
 schema_version: "1.0.0"
 installed_at: "2026-05-11T00:00:00Z"
-tuned_at: "2026-08-31T21:00:56Z"
+tuned_at: "2026-08-31T21:41:19Z"
 autoharness_version: "1.5.0"
 autoharness_home: "C:\\Python\\Python314\\Lib\\site-packages\\autoharness\\data"
-profile_hash: "5ad21bf09a0ab785e4f4f2d3f6b1abdd075060c8db233aee246626184e15d30f"
+profile_hash: "c2c664688e4c4b5f16aa0e4957e4b2fbf3ad213fa554f902ef84fbd36859f42d"
 config_hash: "4fbd2f4c9a4108c1d2fd864ea06332c5c1e31f8c852747847d13d4f95623f9d1"
 install_preset: "full"
 primary_stack_pack: "rust-mcp-daemon"
@@ -118,7 +118,7 @@ capability_pack_overlays:
 
 vscode_settings:
   applied: true
-  user_settings_path: "C:\\Users\\dewilliams\\AppData\\Roaming\\Code\\User\\settings.json"
+  user_settings_path: "<redacted: per-user editor settings path>"
   entries_added: []
   skipped_because: "already_present"
 
@@ -357,7 +357,7 @@ artifacts:
     artifact_type: "agent"
     primitive: 3
     template: "templates/agents/_ship.agent.md.tmpl"
-    checksum: "42f31ae2f8e6330ae363325ddefc16e5547b811b80678e0c3f0b870db7838dd1"
+    checksum: "0aa88bfd4209db631b2c2ccdefb5c0fd1a54ef43c632166cb821f5ab4bf08084"
   - path: ".github/agents/_stage.agent.md"
     artifact_type: "agent"
     primitive: 3
@@ -552,7 +552,7 @@ artifacts:
     artifact_type: "instruction"
     primitive: 8
     template: "templates/instructions/github-pr-automation.instructions.md.tmpl"
-    checksum: "7d4f3f09a631b27021aae1c8041ed4de3a4937894e7c4e3959af3cc1ee976da4"
+    checksum: "fbcd055e34e2f0da5f18a6c7c1dc16b3131811970ffa3852e9efebd0e4cd0003"
   - path: ".github/instructions/markdown.instructions.md"
     artifact_type: "instruction"
     primitive: 8
@@ -617,7 +617,7 @@ artifacts:
     artifact_type: "policy"
     primitive: 8
     template: "templates/policies/workflow-policies.md.tmpl"
-    checksum: "df2a7bc5d3922f6d8c3fb5989ac4b8b4e2070f8cf0b5d4641643c1b49f49e09e"
+    checksum: "61c8343a50d56ffce8e6d9332b711cacde084d305985fe839f062e3b80eee95d"
   - path: ".github/prompts/feature-flow-dark.prompt.md"
     artifact_type: "prompt"
     primitive: 6
@@ -637,7 +637,7 @@ artifacts:
     artifact_type: "prompt"
     primitive: 6
     template: "templates/prompts/stage-grouping-analysis.prompt.md.tmpl"
-    checksum: "60c7e9f59607d07c7a7715e64753a4146d00a922b3d736beda50078982dfa41c"
+    checksum: "6941e525b4c22ab32d061af6b11e7b9bcf3c7f021653db0443e7ededcfbd33df"
   - path: ".github/skills/brainstorm/SKILL.md"
     artifact_type: "skill"
     primitive: 6
@@ -672,7 +672,7 @@ artifacts:
     artifact_type: "skill"
     primitive: 8
     template: "templates/skills/doc-review/SKILL.md.tmpl"
-    checksum: "3bc5a1e081692019f23e4c3cab71ec7e9304dd02c6e2fa87d220aa094a644823"
+    checksum: "6c05e96b82f068343f7d3d039eb8acc49cfb4c7f78746523f374f5b466144234"
   - path: ".github/skills/evolve/SKILL.md"
     artifact_type: "skill"
     primitive: 7
@@ -727,7 +727,7 @@ artifacts:
     artifact_type: "skill"
     primitive: 10
     template: "templates/skills/operational-closure/SKILL.md.tmpl"
-    checksum: "32f43ae72d11390a4fb86edacbbaba5cc6da900f22a7bf3663f2faca8a783dbf"
+    checksum: "7b23c18ce6e4027d3bfbb6e58d5dc4390e091eb92a3c6c222923c351280fecd7"
   - path: ".github/skills/plan-harden/SKILL.md"
     artifact_type: "skill"
     primitive: 8
@@ -802,7 +802,7 @@ artifacts:
     artifact_type: "script"
     primitive: 5
     template: "templates/ci/ci-topology-check.sh.tmpl"
-    checksum: "6d3f8b970cd8bee66f3d75e9bd4f33a5327b5c4831ee7ef67d756199634a7a5f"
+    checksum: "0db719be071aa18b75b4bad7bf46040e7cf8a20c80f2e157796075770fe2d803"
   - path: "scripts/pre-commit-markdownlint.ps1"
     artifact_type: "script"
     primitive: 5
@@ -878,9 +878,9 @@ tuning_history:
   - date: "2026-05-11T00:00:00Z"
     proposals_applied: 0
     profile_hash: ""
-  - date: "2026-08-31T21:00:56Z"
+  - date: "2026-08-31T21:41:19Z"
     proposals_applied: 31
-    profile_hash: "5ad21bf09a0ab785e4f4f2d3f6b1abdd075060c8db233aee246626184e15d30f"
+    profile_hash: "c2c664688e4c4b5f16aa0e4957e4b2fbf3ad213fa554f902ef84fbd36859f42d"
 
 upgrade_notes:
   from_version: "1.4.0"

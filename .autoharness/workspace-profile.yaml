@@ -411,7 +411,7 @@ backlog_tool:
 
 vscode:
   detected: true
-  user_settings_path: "C:\\Users\\dewilliams\\AppData\\Roaming\\Code\\User\\settings.json"
+  user_settings_path: "<redacted: per-user editor settings path>"
   has_agent_settings: true
 
 ai_environments:
