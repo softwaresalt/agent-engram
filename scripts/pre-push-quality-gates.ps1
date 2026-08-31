@@ -99,23 +99,26 @@ Invoke-Gate "Build" "cargo" "cargo check --all-targets"
 # runs `--phase ambient` here (at-most-one-active, validating the
 # resolved target when one exists). No resolvable claimed shipment / zero
 # active shipments -> PASSES (existence-guarded, non-blocking); a
-# mismatched single active or two-or-more-active shipments still blocks
-# fail-closed regardless of the advisory toggle below.
+# mismatched single active or two-or-more-active shipments is a
+# P-001/P-016 violation and blocks fail-closed.
 #
-# Advisory-first by default (staged rollout): a gate failure warns but
-# does NOT block the push unless $env:AUTOHARNESS_TOPOLOGY_GATE_BLOCKING
-# is 'true'. Single deterministic pass — no retry loop (circuit-breaker
-# compatible). Absent 'autoharness' -> warn+skip, never a hard failure.
+# Fail-closed by default: any nonzero gate result blocks the push. The gate
+# does not expose distinct failure classes, so every nonzero result is
+# treated as a potential P-001/P-016 violation. Set
+# $env:AUTOHARNESS_TOPOLOGY_GATE_BLOCKING = 'false' to explicitly downgrade
+# to advisory (staged rollout only). Single deterministic pass — no retry
+# loop (circuit-breaker compatible).
+# Absent 'autoharness' -> warn+skip, never a hard failure.
 if (Get-Command autoharness -ErrorAction SilentlyContinue) {
     Write-Host "[Pipeline-Topology] autoharness gate pipeline-topology --mode manual --phase ambient"
     autoharness gate pipeline-topology --mode manual --phase ambient
     if ($LASTEXITCODE -ne 0) {
-        if ($env:AUTOHARNESS_TOPOLOGY_GATE_BLOCKING -eq 'true') {
+        if ($env:AUTOHARNESS_TOPOLOGY_GATE_BLOCKING -ne 'false') {
             Write-Error "pipeline-topology gate failed — push blocked (P-001/P-016)."
             $script:Failed = $true
         } else {
-            Write-Warning "pipeline-topology gate failed (advisory) — push not blocked."
-            Write-Warning "  Set `$env:AUTOHARNESS_TOPOLOGY_GATE_BLOCKING = 'true' to enforce, or push --no-verify to bypass entirely."
+            Write-Warning "pipeline-topology gate failed (advisory override active) — push not blocked."
+            Write-Warning "  Clear `$env:AUTOHARNESS_TOPOLOGY_GATE_BLOCKING to restore fail-closed enforcement."
         }
     }
 } else {

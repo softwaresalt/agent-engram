@@ -15,13 +15,15 @@
 # when one exists). No resolvable claimed shipment / zero active shipments ->
 # PASSES (existence-guarded, non-blocking for ordinary commits with no
 # claimed shipment); a mismatched single active or two-or-more-active
-# shipments still blocks fail-closed regardless of the advisory toggle below.
+# shipments is a P-001/P-016 violation and blocks fail-closed.
 #
 # Behavior:
 #   * Absent 'autoharness' -> warn+skip, never a hard failure.
-#   * Advisory-first by default (staged rollout): a gate failure warns but
-#     does NOT block the commit unless AUTOHARNESS_TOPOLOGY_GATE_BLOCKING=true
-#     is set in the environment.
+#   * Fail-closed by default: any nonzero gate result blocks the commit. The
+#     gate does not expose distinct failure classes, so every nonzero result
+#     is treated as a potential P-001/P-016 violation. Set
+#     AUTOHARNESS_TOPOLOGY_GATE_BLOCKING=false to explicitly downgrade to
+#     advisory (staged rollout only).
 #   * Single deterministic pass — no retry loop.
 #
 # Install (opt-in — the harness never silently overwrites your .git/hooks):
@@ -50,12 +52,12 @@ fi
 
 echo "[Pipeline-Topology] autoharness gate pipeline-topology --mode manual --phase ambient"
 if ! autoharness gate pipeline-topology --mode manual --phase ambient; then
-  if [ "${AUTOHARNESS_TOPOLOGY_GATE_BLOCKING:-false}" = "true" ]; then
+  if [ "${AUTOHARNESS_TOPOLOGY_GATE_BLOCKING:-true}" != "false" ]; then
     echo "ERROR: pipeline-topology gate failed — commit blocked (P-001/P-016)." >&2
     exit 1
   fi
-  echo "WARNING: pipeline-topology gate failed (advisory) — commit not blocked." >&2
-  echo "  Set AUTOHARNESS_TOPOLOGY_GATE_BLOCKING=true to enforce, or commit --no-verify to bypass entirely." >&2
+  echo "WARNING: pipeline-topology gate failed (advisory override active) — commit not blocked." >&2
+  echo "  Unset AUTOHARNESS_TOPOLOGY_GATE_BLOCKING to restore fail-closed enforcement." >&2
 fi
 
 exit 0

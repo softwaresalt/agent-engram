@@ -95,23 +95,25 @@ run_gate "Build" "cargo" "cargo check --all-targets"
 # runs `--phase ambient` here (at-most-one-active, validating the
 # resolved target when one exists). No resolvable claimed shipment / zero
 # active shipments -> PASSES (existence-guarded, non-blocking); a
-# mismatched single active or two-or-more-active shipments still blocks
-# fail-closed regardless of the advisory toggle below.
+# mismatched single active or two-or-more-active shipments is a
+# P-001/P-016 violation and blocks fail-closed.
 #
-# Advisory-first by default (staged rollout): a gate failure warns but
-# does NOT block the push unless AUTOHARNESS_TOPOLOGY_GATE_BLOCKING=true
-# is set in the environment. This is a single deterministic pass — no
+# Fail-closed by default: any nonzero gate result blocks the push. The gate
+# does not expose distinct failure classes, so every nonzero result is
+# treated as a potential P-001/P-016 violation. Set
+# AUTOHARNESS_TOPOLOGY_GATE_BLOCKING=false to explicitly downgrade to
+# advisory (staged rollout only). This is a single deterministic pass — no
 # retry loop — so the hook cannot spin (circuit-breaker compatible).
 # Absent 'autoharness' -> warn+skip, never a hard failure.
 if command -v autoharness >/dev/null 2>&1; then
   echo "[Pipeline-Topology] autoharness gate pipeline-topology --mode manual --phase ambient"
   if ! autoharness gate pipeline-topology --mode manual --phase ambient; then
-    if [ "${AUTOHARNESS_TOPOLOGY_GATE_BLOCKING:-false}" = "true" ]; then
+    if [ "${AUTOHARNESS_TOPOLOGY_GATE_BLOCKING:-true}" != "false" ]; then
       echo "ERROR: pipeline-topology gate failed — push blocked (P-001/P-016)." >&2
       FAILED=1
     else
-      echo "WARNING: pipeline-topology gate failed (advisory) — push not blocked." >&2
-      echo "  Set AUTOHARNESS_TOPOLOGY_GATE_BLOCKING=true to enforce, or push --no-verify to bypass entirely." >&2
+      echo "WARNING: pipeline-topology gate failed (advisory override active) — push not blocked." >&2
+      echo "  Unset AUTOHARNESS_TOPOLOGY_GATE_BLOCKING to restore fail-closed enforcement." >&2
     fi
   fi
 else

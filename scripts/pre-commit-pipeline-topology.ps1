@@ -14,13 +14,15 @@
 # when one exists). No resolvable claimed shipment / zero active shipments ->
 # PASSES (existence-guarded, non-blocking for ordinary commits with no
 # claimed shipment); a mismatched single active or two-or-more-active
-# shipments still blocks fail-closed regardless of the advisory toggle below.
+# shipments is a P-001/P-016 violation and blocks fail-closed.
 #
 # Behavior:
 #   * Absent 'autoharness' -> warn+skip, never a hard failure.
-#   * Advisory-first by default (staged rollout): a gate failure warns but
-#     does NOT block the commit unless $env:AUTOHARNESS_TOPOLOGY_GATE_BLOCKING
-#     is 'true'.
+#   * Fail-closed by default: any nonzero gate result blocks the commit. The
+#     gate does not expose distinct failure classes, so every nonzero result
+#     is treated as a potential P-001/P-016 violation. Set
+#     $env:AUTOHARNESS_TOPOLOGY_GATE_BLOCKING = 'false' to explicitly
+#     downgrade to advisory (staged rollout only).
 #   * Single deterministic pass — no retry loop.
 #
 # Install (opt-in — the harness never silently overwrites your .git/hooks):
@@ -51,12 +53,12 @@ if (-not (Get-Command autoharness -ErrorAction SilentlyContinue)) {
 Write-Host "[Pipeline-Topology] autoharness gate pipeline-topology --mode manual --phase ambient"
 autoharness gate pipeline-topology --mode manual --phase ambient
 if ($LASTEXITCODE -ne 0) {
-    if ($env:AUTOHARNESS_TOPOLOGY_GATE_BLOCKING -eq 'true') {
+    if ($env:AUTOHARNESS_TOPOLOGY_GATE_BLOCKING -ne 'false') {
         Write-Error "pipeline-topology gate failed — commit blocked (P-001/P-016)."
         exit 1
     }
-    Write-Warning "pipeline-topology gate failed (advisory) — commit not blocked."
-    Write-Warning "  Set `$env:AUTOHARNESS_TOPOLOGY_GATE_BLOCKING = 'true' to enforce, or commit --no-verify to bypass entirely."
+    Write-Warning "pipeline-topology gate failed (advisory override active) — commit not blocked."
+    Write-Warning "  Clear `$env:AUTOHARNESS_TOPOLOGY_GATE_BLOCKING to restore fail-closed enforcement."
 }
 
 exit 0

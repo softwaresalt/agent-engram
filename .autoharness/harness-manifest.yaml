@@ -5,7 +5,7 @@
 
 schema_version: "1.0.0"
 installed_at: "2026-05-11T00:00:00Z"
-tuned_at: "2026-08-31T21:44:56Z"
+tuned_at: "2026-08-31T21:58:43Z"
 autoharness_version: "1.5.0"
 autoharness_home: "C:\\Python\\Python314\\Lib\\site-packages\\autoharness\\data"
 profile_hash: "c2c664688e4c4b5f16aa0e4957e4b2fbf3ad213fa554f902ef84fbd36859f42d"
@@ -817,22 +817,22 @@ artifacts:
     artifact_type: "script"
     primitive: 5
     template: "templates/scripts/pre-commit-pipeline-topology.ps1.tmpl"
-    checksum: "16e41f54e1dbfc0b9e2cfcde8aba982e9b3ed558affe849953d36d43339898cd"
+    checksum: "dcd625c9dd902134e6e57d0c038eb5c259196d021f5b1e01c7a21d9a237b2d86"
   - path: "scripts/pre-commit-pipeline-topology.sh"
     artifact_type: "script"
     primitive: 5
     template: "templates/scripts/pre-commit-pipeline-topology.sh.tmpl"
-    checksum: "2f22d605a6af193d82c3498d5018af45026893e7f6d9dc66aaf5b5ad1af51fa5"
+    checksum: "ba3db0e5faf7553ee56f73b541b8619dd4a499d7325eb84ee454d5dcb4997930"
   - path: "scripts/pre-push-quality-gates.ps1"
     artifact_type: "script"
     primitive: 5
     template: "templates/scripts/pre-push-quality-gates.ps1.tmpl"
-    checksum: "33f0ff1bd70af1345edf6e5057532d59d260caa5618b81a8caba23dbc18ce944"
+    checksum: "e5a1bb9daf82ecd6973fb607b06a975c14cf3b53163e2e28b50caf8fa0cf3cab"
   - path: "scripts/pre-push-quality-gates.sh"
     artifact_type: "script"
     primitive: 5
     template: "templates/scripts/pre-push-quality-gates.sh.tmpl"
-    checksum: "83b187ee6b1a3e83547ccca861ce9d1b03b0d995fcab4bf84efc39d3d9643630"
+    checksum: "905c1f1786ce1825c2650b91032af77ddd571b6a5673b8a58edc07e66836c25f"
   - path: "scripts/release_lock.ps1"
     artifact_type: "script"
     primitive: 5
@@ -878,7 +878,7 @@ tuning_history:
   - date: "2026-05-11T00:00:00Z"
     proposals_applied: 0
     profile_hash: ""
-  - date: "2026-08-31T21:44:56Z"
+  - date: "2026-08-31T21:58:43Z"
     proposals_applied: 31
     profile_hash: "c2c664688e4c4b5f16aa0e4957e4b2fbf3ad213fa554f902ef84fbd36859f42d"
 
