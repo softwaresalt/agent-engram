@@ -243,8 +243,8 @@ script contracts `current`, **68/68 targeted checks pass**.
   Once upstream ships the fix, drop the local guards in `review`/`doc-review` SKILLs and
   remove the retained `### agent-intercom` section from `copilot-instructions.md`.
 
-* **Not pushed and no PR opened.** Branch `chore/autoharness-merge-install-20260831`
-  holds commit `e2b35180`. Open a PR rather than merging to `main` directly.
+* **Not pushed and no PR opened.** ~~Branch `chore/autoharness-merge-install-20260831`
+  holds commit `e2b35180`.~~ **Superseded** — see "PR #371, CI, and review-fix cycle" below.
 * The new `scripts/pre-commit-pipeline-topology.*` and `scripts/pre-push-quality-gates.*`
   are installed but **not wired into git hooks**. Wiring them is an operator decision.
 * `graphtor-docs`, `browser-verification`, and now `agent-intercom` packs remain
@@ -256,3 +256,76 @@ script contracts `current`, **68/68 targeted checks pass**.
   manifest checksums stay accurate.
 * Backups of every overwritten file are in `.autoharness/backups/2026-08-31-merge-install/`
   (gitignored; path separators encoded as `__`).
+
+## PR #371, CI, and review-fix cycle
+
+Branch `chore/autoharness-merge-install-20260831` → PR
+[#371](https://github.com/softwaresalt/agent-engram/pull/371).
+
+### Requesting a Copilot review (the identifier that actually works)
+
+`gh pr edit --add-reviewer copilot` fails, and so do the REST identifiers
+`copilot`, `copilot-pull-request-reviewer`, and `copilot-pull-request-reviewer[bot]`.
+The literal login that works is **`Copilot`** (capital C, no bot suffix):
+
+```powershell
+'{"reviewers":["Copilot"]}' |
+  gh api repos/softwaresalt/agent-engram/pulls/371/requested_reviewers -X POST --input -
+```
+
+`requested_reviewers` stays `[]` afterwards, but the timeline records
+`review_requested → Copilot`. Reviews land authored as
+`copilot-pull-request-reviewer[bot]`, so match with
+`startswith("copilot-pull-request-reviewer")` and pass `--paginate` to
+`/reviews` (default page size 30, oldest-first — the HEAD review is last).
+Review latency is roughly 7–8 minutes.
+
+### CI `paths-ignore` blind spot (root cause of two "surprise" failures)
+
+`.github/workflows/ci.yml` uses `paths-ignore` covering `.backlogit/**`,
+`docs/**`, `.autoharness/**`, `*.md`, `.github/**/*.md`, and `scripts/**/*.md`.
+`build` is **not** a required status check on `main`. Doc-only PRs therefore skip
+`build` entirely, so code-affecting regressions merge undetected until an
+unrelated PR re-arms CI. This PR added non-markdown files under `scripts/` and
+touched the launchers, which re-armed full CI and surfaced two latent failures:
+
+1. **`start-launcher-windows` — caused by this install.** The autoharness v1.5.0
+   template overwrote engram's hand-hardened, contract-tested `start.ps1`/`start.sh`
+   with the generic v1.1.0 thin-shim, breaking `tests/contract/start_launcher_test.rs`
+   (prewarm elapsed 34.4s against an 8s ceiling). Both launchers were reverted to
+   `main` in `166baadc`. `autoharness verify-workspace` independently classifies
+   `start.ps1` as `manual_review: true` / "Do not auto-apply", which corroborates
+   the revert. Reconciliation deferred to `140.001-T`.
+2. **`build` — pre-existing, from PR #370.** Commit `2ee9ceac` (doc-only, so CI was
+   skipped) renamed the contract-required heading `## G3 post-publish verification`
+   to `## Final post-publish and native verification` in
+   `docs/closure/2026-08-29-v0.3.0-rc.1-verification.md`. That heading is asserted
+   literally by `verification_record_separates_g1_evidence_from_g3_artifact_proof`.
+   Restored the canonical heading in `865e5931` (one line; no fabricated evidence).
+
+Also filed `141-F` for the Windows-only
+`archive_verifier_runs_the_unpacked_native_binary` failure (passes on
+`ubuntu-latest`; the verifier appears to assume a bounded/single-line read and
+engram's full tool catalogue payload exceeds it) plus the `paths-ignore` blind
+spot itself.
+
+### Review-fix cycle 1
+
+Copilot posted 23 threads at HEAD `865e5931`; 21 were unresolved. All were
+answered and resolved across two commits:
+
+| Commit | Scope |
+|---|---|
+| `2c13e65b` | Redacted the operator username from `.autoharness/harness-manifest.yaml` and `workspace-profile.yaml` (and from `emit_manifest.py` so the redaction survives regeneration); held the Ship role boundary by routing to Stage instead of assembling shipments; switched stash creation to `backlogit_stash`/`backlogit_stash_get`; added a CLI fallback note for the unregistered `archive_item` op; stripped rendered-boolean tautologies; repointed dead topology-gate doc refs; aligned `doc-review` scope and placeholder exclusions. |
+| `5bb6f4ea` | Preserved P-018 fail-closed semantics: added the missing §1.9.4 **Check 5** to the `pr-lifecycle` pre-merge gate and clarified across `pr-lifecycle`, `_ship.agent.md`, `feature-flow-dark.prompt.md`, and P-014/P-017 in `workflow-policies.md` that **engagement** — not operator elevation — arms the gate. |
+
+**Declined (contract-required):** the three `feature-flow*.prompt.md` threads
+flagging `agent: Orchestrator` vs `name: _Orchestrator`. The verifier's
+`dark_factory_prompt_contract` asserts the literal string `agent: Orchestrator`,
+and the same pairing exists in autoharness' own dogfooded workspace. Workaround:
+invoke `_Orchestrator` directly. Upstream fix tracked in `140-F`.
+
+`autoharness verify-workspace --workspace .` holds at **0 strict schema blockers,
+0 blockers, 0 warnings, 68-of-68 targeted checks** after every commit above. The
+CLI still exits 1 solely because of 12 benign unresolved placeholders (documented
+`{{VAR}}` literals inside code spans).
