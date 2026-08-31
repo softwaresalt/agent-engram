@@ -5,7 +5,7 @@
 
 schema_version: "1.0.0"
 installed_at: "2026-05-11T00:00:00Z"
-tuned_at: "2026-08-31T18:50:23Z"
+tuned_at: "2026-08-31T21:00:56Z"
 autoharness_version: "1.5.0"
 autoharness_home: "C:\\Python\\Python314\\Lib\\site-packages\\autoharness\\data"
 profile_hash: "5ad21bf09a0ab785e4f4f2d3f6b1abdd075060c8db233aee246626184e15d30f"
@@ -857,12 +857,12 @@ artifacts:
     artifact_type: "script"
     primitive: 6
     template: "templates/scripts/start.ps1.tmpl"
-    checksum: "6984fc8167e9a7fc1124091e891767d5abdd6495ddce13df02532fed25ea8ffd"
+    checksum: "7fe6639a0e2aa931e75a77e896e310ba5090ec826521b4d9180beb66a31691b8"
   - path: "start.sh"
     artifact_type: "script"
     primitive: 6
     template: "templates/scripts/start.sh.tmpl"
-    checksum: "15d6a52176c763c7c931271f1573173b130ea5d28f068e762a8c4318c35d60b5"
+    checksum: "892de3767a8a1244a2cbfc1e69be541f9e077463a18c4f452ed9fa4b3140892c"
 
 # Workspace-authored artifacts preserved by merge-install and NOT managed by autoharness.
 preserved_artifacts:
@@ -878,7 +878,7 @@ tuning_history:
   - date: "2026-05-11T00:00:00Z"
     proposals_applied: 0
     profile_hash: ""
-  - date: "2026-08-31T18:50:23Z"
+  - date: "2026-08-31T21:00:56Z"
     proposals_applied: 31
     profile_hash: "5ad21bf09a0ab785e4f4f2d3f6b1abdd075060c8db233aee246626184e15d30f"
 
