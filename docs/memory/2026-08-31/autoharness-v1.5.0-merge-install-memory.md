@@ -126,6 +126,49 @@ reported by `autoharness home`".
 * `{{FEATURE_SHIPMENTS}}` is used in `_ship.agent.md.tmpl` as if it were a conditional,
   rendering the nonsense line "When `true` is `true`". Reworded locally.
 
+## Dark factory mode (P-017) — installed and verified
+
+All 8 dark-factory contract checks pass: `dark_factory_policy_contract`,
+`dark_factory_orchestrator_contract`, `dark_factory_ship_contract`,
+`dark_factory_pr_lifecycle_contract`, `dark_factory_intercom_contract`,
+`dark_factory_prompt_contract`, `dark_factory_github_pr_automation_contract`,
+`dark_factory_foundation_contract`.
+
+Surfaces carrying the contract:
+
+| Surface | Content |
+|---|---|
+| `.github/policies/workflow-policies.md` | `## P-017: Dark Factory Autonomy Contract` — trigger phrases, activation contract, scope rule, `DARK_MODE_SCOPE` resume/audit evidence, violation action |
+| `.github/agents/_orchestrator.agent.md` | `### Dark Factory Mode Trigger Semantics (P-017)` — activation record fields (`scope`, `merge_approval_pre_authorized`, `admin_fallback_pre_authorized`, `stop_conditions`, `visibility_mode`), `DARK_MODE_START` / `DARK_MODE_SCOPE` events, multi-shipment ordered sequence + restart cursor |
+| `.github/agents/_ship.agent.md` | dark-mode-aware execution and closure |
+| `.github/skills/pr-lifecycle/SKILL.md` | `DARK_MODE_ACTIVE` handling in the merge path |
+| `.github/instructions/github-pr-automation.instructions.md` | §1.9.6 Dark-Mode Merge Authorization and Admin Fallback — merge-state classification table, `COPILOT_REVIEW_BLOCK` non-bypass |
+| `.github/instructions/agent-intercom.instructions.md` | dark-mode visibility events |
+| `AGENTS.md` | Development Workflow item 4 (P-017) |
+| `.github/prompts/feature-flow-dark.prompt.md` | `/feature-flow-dark` shim for the exact trigger |
+
+Activation is **only** via the exact phrases `Run pipeline in dark mode` or
+`Run pipeline in dark factory mode`, or the `/feature-flow-dark` prompt. Vague
+autonomy language ("go autonomous", "run everything") must not be inferred as dark mode.
+
+### Open question — prompt/agent name mismatch (upstream)
+
+The three feature-flow prompt shims declare `agent: Orchestrator` in frontmatter,
+but the installed agent declares `name: _Orchestrator`. Likewise
+`stage-grouping-analysis.prompt.md` says `agent: Stage` against `name: _Stage`.
+
+This is **not** a local mistake — autoharness v1.5.0's own dogfooded workspace
+(`{autoharness_home}/.github/`) has the identical pairing, and the
+`dark_factory_prompt_contract` check *requires* the literal string
+`agent: Orchestrator`. Changing it locally to `_Orchestrator` would fail that
+guardrail and diverge from upstream.
+
+Left as-is deliberately. **Verify at runtime**: if `/feature-flow-dark` fails to
+bind to the `_Orchestrator` agent in your client, the leading `_` is not being
+stripped during resolution and this needs an upstream fix in autoharness rather
+than a local edit. Invoking `_Orchestrator` directly with the trigger phrase is
+the workaround and is fully equivalent — the prompt is only a shim.
+
 ## Not done / next steps
 
 * **Not pushed and no PR opened.** Branch `chore/autoharness-merge-install-20260831`
