@@ -6,7 +6,7 @@
 #
 # Schema: schemas/harness-config.schema.json
 
-schema_version: "1.0.0"
+schema_version: "1.1.0"
 
 # Installation preset: starter | standard | full
 preset: full
@@ -64,32 +64,76 @@ strict_safety:
 # Model routing preferences (map tiers to model identifiers and per-tier config)
 model_routing:
   tier1:
-    model: claude-haiku-4.5              # Fast/cheap: memory, docs, compaction (e.g., gpt-5.4-mini)
-    reasoning_effort: ""  # Leave empty to use model default
-    model_provider: "anthropic"       # e.g., openai, anthropic — leave empty for default
-    model_family: "claude-haiku-4.5"           # Resolved into Tier 1 agent frontmatter
+    model: claude-haiku-4.5             # Fast/cheap: memory, docs, compaction
+    reasoning_effort: ""                # Leave empty to use model default
+    model_provider: "anthropic"         # e.g., openai, anthropic — leave empty for default
+    model_family: "claude-haiku-4.5"    # Resolved into Tier 1 agent frontmatter
   tier2:
-    model: claude-sonnet-5              # Standard: orchestration, code, review (e.g., claude-sonnet-4.6)
+    model: claude-sonnet-5              # Standard: orchestration, code, review
     reasoning_effort: "high"
     model_provider: "anthropic"
     model_family: "claude-sonnet-5"
   tier3:
-    model: claude-opus-5                # Frontier: planning, architecture, analysis (e.g., claude-opus-4.6)
+    model: claude-opus-5                # Frontier: planning, architecture, analysis
     reasoning_effort: "high"
     model_provider: "anthropic"
     model_family: "claude-opus-5"
   orchestrator:
-    model_family: "gpt-5.6-sol"     # Orchestrator model override (default: claude-opus-4.8)
+    model_family: "gpt-5.6-sol"         # Orchestrator model override
     reasoning_effort: "xhigh"
     model_provider: "openai"
+  # P-013.5: optional role routes for Stage/Ship invocation-time model routing.
+  # Absent/empty sub-fields fall back to tier3 (stage) / tier2 (ship) — do not
+  # remove this block to "disable" routing; leave sub-fields empty instead.
+  stage:
+    model_family: "claude-opus-5"        # Stage role route (frontier planning/analysis)
+    model_provider: "anthropic"
+    reasoning_effort: "high"
+    # F02FD596: nested per-role escalation override for Stage. Declared with a
+    # DISTINCT family from the Stage role route above so escalation is a real
+    # cross-provider second opinion rather than a same-route no-op
+    # (ESCALATION_DEGRADED). Takes precedence over the legacy flat
+    # model_routing.escalation below, which is therefore left empty (H2).
+    escalation:
+      model_family: "gpt-5.6-sol"
+      model_provider: "openai"
+      reasoning_effort: "xhigh"
+  ship:
+    model_family: "claude-sonnet-5"      # Ship role route (standard build/review)
+    model_provider: "anthropic"
+    reasoning_effort: "high"
+    # F02FD596: nested per-role escalation override for Ship. Escalates from the
+    # tier2 role route above to the tier3 frontier model.
+    escalation:
+      model_family: "claude-opus-5"
+      model_provider: "anthropic"
+      reasoning_effort: "high"
+  # P-013.6: legacy flat escalation route.
+  # F02FD596 -- DEPRECATED-LEGACY: superseded by the nested per-role escalation
+  # blocks above. MUST remain empty while any nested <role>.escalation override
+  # is declared -- both-present is AMBIGUOUS and fails closed (H2).
+  escalation:
+    model_family: ""
+    model_provider: ""
+    reasoning_effort: ""
+  anchor_review:
+    model_provider: "openai"             # Anchor reviewer provider
+    model_family: "gpt-5.6-sol"          # Anchor reviewer family
+    reasoning_effort: "xhigh"            # Leave empty to use model default
 
 # AI CLI tool startup configuration
-# Resolves copilot in the generated start.ps1 and start.sh scripts.
-# Set exe_path to the full path if copilot is not on PATH.
+# Resolves the copilot executable in the generated start.ps1 and start.sh scripts,
+# and is read directly by `autoharness run`. Set exe_path to the full path if
+# copilot is not on PATH. Use args for flags that should always be passed.
 ai_tools:
   copilot_cli:
     exe_path: "copilot"  # Default: "copilot" (expects it on PATH)
                                       # Example: "C:\\Tools\\ghcpcli\\copilot.exe"
+    args: []             # Default: []
+
+# Sidecar syncs `autoharness run` performs before launching the AI CLI tool.
+# Derived from the capability packs enabled for this workspace.
+sidecars: ["backlogit", "engram"]
 
 # Optional browser-automation capability configuration (used when browser-verification is enabled)
 browser:
@@ -104,3 +148,51 @@ experiments:
 # Explicit template variable overrides applied during install/tune (use sparingly —
 # prefer fixing the workspace setup over overriding discovery results)
 overrides: {}
+
+# ---------------------------------------------------------------------------
+# Optional: Deterministic validation gates (lifecycle_hooks + telemetry)
+# ---------------------------------------------------------------------------
+# The ENTIRE lifecycle_hooks block is OPTIONAL and disabled by default.
+# When absent, no gates run and behavior is identical to an install without
+# gates (fail-open-to-current). Validated against
+# schemas/validation-gates/1.0.0.schema.json. See docs/gates-reference.md.
+#
+# KILL-SWITCH: remove or empty this block to disable all gating with zero code
+# change.
+#
+# Uncomment and adapt to enable. Only the closed placeholder vocabulary
+# {file_path}, {task_id}, {result} is permitted in command/write_back strings.
+#
+# lifecycle_hooks:
+#   pre_execution:
+#     - name: "estimate_complexity"
+#       condition: "task.size == null"
+#       action: "internal:estimate_tshirt_size"
+#       write_back: "backlogit update {task_id} --size {result}"
+#   pre_task_completion:
+#     enforcement: "absolute"          # absolute | advisory (default absolute)
+#     on_repeated_failure: "block"     # block | escalate  (default block)
+#     max_gate_failures: 3             # aligns circuit-breaker threshold
+#     validation_gates:
+#       - pattern: "docs/**/*.md"
+#         command: "engram verify {file_path}"
+#         timeout_seconds: 15
+#       - pattern: ".backlogit/queue/*.md"
+#         command: "backlogit doctor --target {file_path}"
+#         timeout_seconds: 5
+#       - pattern: "src/**/*.rs"
+#         command: "cargo dev-test"
+#         timeout_seconds: 900
+#
+# telemetry:                           # Phase 2 sink — repo-local Execution Epochs
+#   mode: "sqlite"                     # sqlite | none (default none = kill-switch)
+#   database_path: ".autoharness/metrics/execution_epochs.db"
+#   emit_jsonl: true                   # append one JSON epoch per line (emit-only)
+#
+# ACTIVATION: set mode: "sqlite" to record execution epochs to the repo-local
+# SQLite aggregator at database_path (parent dirs auto-created, WAL journaling).
+# Set emit_jsonl: true to also append a JSONL stream alongside the DB for the
+# external agent-engram ingestion boundary. The runtime artifacts under
+# .autoharness/metrics/ are gitignored so emission never dirties the tree.
+# KILL-SWITCH: mode: "none" (or removing this block) disables all telemetry with
+# zero code change (fail-open-to-current). See docs/telemetry-reference.md.

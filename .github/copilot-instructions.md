@@ -11,7 +11,7 @@ agent-engram is a local-first Model Context Protocol daemon providing code graph
 | Language        | Rust 2024 | (Rust 2024 edition)          |
 | Build           | cargo            | `cargo build`                   |
 | Test            | cargo           | `cargo dev-test`                    |
-| Lint            | clippy                | `cargo clippy -- -D warnings -D clippy::pedantic`                    |
+| Lint            | clippy                | `cargo clippy --all-targets -- -D warnings -D clippy::pedantic`                    |
 | Format          | rustfmt             | `cargo fmt --all`                  |
 | CI              | GitHub Actions           | CI runs on ubuntu-latest; release builds are cross-platform (Linux, Windows, macOS). Actions use @v4 tags (not SHA-pinned). cargo-audit runs with continue-on-error: true.                          |
 | SurrealDB (embedded) | `2` | Embedded graph database via kv-surrealkv feature |
@@ -33,7 +33,7 @@ src/ (101 .rs files across 12 modules: bin, cli, config, daemon, db, errors, ins
 ```bash
 cargo build              # Build
 cargo dev-test               # Run all tests
-cargo clippy -- -D warnings -D clippy::pedantic               # Lint
+cargo clippy --all-targets -- -D warnings -D clippy::pedantic               # Lint
 cargo fmt --all             # Format check
 | `cargo dev-test` | Run default test suite (dev workflow) |
 | `cargo ci` | Run all tests with all features (CI equivalent) |

@@ -242,6 +242,260 @@ After all addressable comments are handled:
 | Review-fix-push cycles | 3 | Accept remaining comments as backlog follow-ups |
 | Same comment re-raised after fix | 2 | Escalate to operator — likely a fundamental disagreement |
 
+### 1.9 Pre-Merge Review Readiness Verification (Defense in Depth)
+
+This gate is a **NON-NEGOTIABLE** pre-merge verification that runs
+independently of shadow review. Even if the local review gate in the ship
+workflow reported success earlier, this step re-checks from scratch that the PR
+still reflects a current-HEAD local review result before any merge is presented
+as ready or executed.
+
+This gate applies to **all pull requests** created or merged by the Ship agent:
+feature PRs, chore PRs, and post-merge closure PRs. There is no exception for
+"small" or "hygiene" PRs. Every merge requires a fresh local review readiness
+record covering the current HEAD. Shadow review is optional and advisory by default.
+
+In dark mode, this gate is still local-review-first: unresolved local P0/P1
+findings block merge, `READY_WITH_FOLLOWUPS` is allowed only when follow-up item
+IDs or explicit residual-risk notes are recorded, and advisory shadow-review
+comments are surfaced as follow-ups unless elevated by policy or operator.
+
+#### 1.9.1 Readiness Query
+
+Run a single GraphQL query to fetch PR head SHA, PR body, review decision,
+shadow-review requests/reviews, and review threads:
+
+```bash
+gh api graphql -f query='
+  query PRReviewReadiness($owner: String!, $repo: String!, $pr: Int!, $threadCursor: String) {
+    repository(owner: $owner, name: $repo) {
+      pullRequest(number: $pr) {
+        headRefOid
+        body
+        reviewDecision
+        reviewRequests(first: 100) {
+          nodes {
+            requestedReviewer {
+              __typename
+              ... on Bot  { login }
+              ... on User { login }
+              ... on Team { name  }
+            }
+          }
+        }
+        reviews(last: 50) {
+          nodes {
+            author { login }
+            state
+            submittedAt
+            commit { oid }
+          }
+        }
+        reviewThreads(first: 100, after: $threadCursor) {
+          nodes {
+            id
+            isResolved
+            comments(first: 1) {
+              nodes { author { login } body path line }
+            }
+          }
+          pageInfo { hasNextPage endCursor }
+        }
+      }
+    }
+  }
+' -f owner="softwaresalt" -f repo="agent-engram" -F pr=<pr_number> -f threadCursor=""
+```
+
+If `pageInfo.hasNextPage` is true, re-run the query with
+`-f threadCursor="{endCursor}"` and merge the `reviewThreads.nodes`
+results. Repeat until `hasNextPage` is false. **Do not skip
+pagination** — a hard gate that misses operator-visible review data is unsafe. If
+pagination cannot complete (API error, rate limit), fail closed and
+halt rather than declaring readiness.
+
+#### 1.9.2 Local Readiness Record
+
+The PR description or other operator-visible readiness summary MUST contain a
+local review block for the current HEAD. Use this format or an equivalent
+machine-readable variant:
+
+```markdown
+## Local Review Readiness
+
+- Reviewed HEAD: `<sha>`
+- Outcome: `READY` | `READY_WITH_FOLLOWUPS` | `BLOCKED`
+- Blocking findings: `P0=0, P1=0`
+- Full local build: `<command and successful result>` | `not applicable — <docs/backlog-only rationale>`
+- Follow-ups: `none` | `<item ids or residual-risk notes>`
+- Shadow review: `not requested` | `requested` | `clean` | `comments pending`
+```
+
+If the workspace uses a different readiness artifact, the PR body must still
+contain the reviewed HEAD SHA, the outcome, successful full local build evidence
+(or explicit non-applicability), and the follow-up handling summary so the merge
+gate can confirm the current PR state without relying on hidden local state.
+
+#### 1.9.3 Advisory Bot Identity
+
+The Copilot review bot appears under different login strings depending
+on the API surface:
+
+| API context | Login string |
+|-------------|-------------|
+| GraphQL `Bot.login` (reviews, reviewRequests) | `copilot-pull-request-reviewer` (no `[bot]` suffix) |
+| REST `review.user.login` | `copilot-pull-request-reviewer[bot]` |
+| REST timeline `requested_reviewer.login` | `Copilot` (display form) |
+
+When matching in GraphQL responses, use `copilot-pull-request-reviewer`
+(without `[bot]`). When matching in REST responses, use
+`copilot-pull-request-reviewer[bot]`. For review thread comments
+returned via GraphQL, the `author.login` field uses the no-suffix form.
+
+#### 1.9.4 Gate Checks
+
+Evaluate five checks in order. All five must pass for merge readiness.
+
+**Check 1 — Local review coverage (record covers current HEAD)**:
+
+1. Record `headRefOid` from the query response.
+2. Parse the PR `body` for the `## Local Review Readiness` block (or the
+   equivalent repository-approved marker).
+3. Extract `Reviewed HEAD`.
+4. If the block is missing or `Reviewed HEAD` does not match `headRefOid`, the
+   local review is stale or absent. Halt and require the caller to rerun local review
+   for the current HEAD.
+
+**Check 2 — Local readiness outcome (no unresolved blocking findings)**:
+
+1. Extract `Outcome` and `Blocking findings` from the local readiness block.
+2. If `Outcome` is `BLOCKED`, **GATE FAILS**. Halt and report the blocking local review.
+3. If `Blocking findings` reports any unresolved P0 or P1 findings, **GATE FAILS** even
+   if the outcome string is malformed or overly optimistic.
+4. If `Outcome` is `READY` or `READY_WITH_FOLLOWUPS` and blocking findings are clear,
+   proceed to Check 3.
+
+**Check 3 — Follow-up handling is explicit**:
+
+1. If `Outcome` is `READY`, the `Follow-ups` field may be `none`.
+2. If `Outcome` is `READY_WITH_FOLLOWUPS`, the `Follow-ups` field must list
+   follow-up item IDs, queued backlog work, or explicit residual-risk notes.
+3. If the field is missing or empty for `READY_WITH_FOLLOWUPS`, **GATE FAILS**.
+4. Otherwise, proceed to Check 4.
+
+**Check 4 — Full local build evidence for code-changing PRs**:
+
+1. If the PR adds, removes, or changes source code, the readiness block must list
+   the full local build command and a successful result.
+2. If the PR is documentation-only or backlog-only, the readiness block may state
+   `Full local build: not applicable` with a short rationale.
+3. If build applicability is ambiguous, required evidence is missing, or the
+   recorded full local build result failed, **GATE FAILS**.
+4. Otherwise, proceed to Check 5.
+
+**Check 5 — Copilot-review completion & thread resolution (P-018, fail-closed)**:
+
+1. Determine `copilot_review.enforcement` from `.autoharness/workspace-profile.yaml`
+   (`auto` | `required` | `disabled`, default `auto`) and `copilot_review.max_wait_seconds`
+   (integer ≥ 0, default `0`).
+2. Run the deterministic gate:
+   `autoharness gate copilot-review <pr_number> --repo softwaresalt/agent-engram --enforcement <mode> [--max-wait <max_wait_seconds>]`.
+3. Interpret the verdict / exit code:
+   * `SATISFIED` or `NOT_APPLICABLE` (exit 0) — Copilot review is complete for the
+     current HEAD with no open Copilot threads, or Copilot is not in play. Proceed.
+   * `WAITING_FOR_REVIEW`, `UNRESOLVED_THREADS`, `REVIEW_TIMEOUT`,
+     `DETECTION_AMBIGUOUS`, or `VERIFY_FAILED` (non-zero) — **GATE FAILS.** Halt.
+     `--admin` does not bypass this. Wait for review completion, resolve every
+     Copilot thread, then re-run. `REVIEW_TIMEOUT` still blocks; only an explicit,
+     audited `autoharness gate copilot-review ... --force` (logged under
+     `.autoharness/gates/`) may override, and only with operator authority.
+4. Only when the gate returns a PASS verdict (or an audited `--force` is recorded)
+   does the readiness gate reach **GATE PASSES**. The PR is ready for merge presentation.
+
+**Human review threads (Check 5 precedence)**: Human review threads are surfaced
+in the merge-readiness summary but do not block this local-readiness gate by
+default. **Copilot-authored threads are not advisory here**: an existing
+Copilot review is itself an engagement signal, so Check 5 (P-018) takes precedence
+and every unresolved Copilot-authored thread BLOCKS the merge — the legacy
+"advisory shadow-review does not block" rule never applies once Copilot is engaged.
+However, if the repository has branch
+protection rules requiring conversation resolution, approved reviews,
+or if a human reviewer submitted a `CHANGES_REQUESTED` review, those
+constraints may independently block the merge at the GitHub level. The
+`reviewDecision` field from the query reflects the overall PR review
+decision (`APPROVED`, `CHANGES_REQUESTED`, `REVIEW_REQUIRED`, or null)
+and should be reported in the merge-readiness summary.
+
+#### 1.9.5 Terminal States
+
+| Condition | Action |
+|-----------|--------|
+| Local review block missing from PR body | **Halt.** Report that readiness evidence is absent. |
+| Local review block references the wrong HEAD SHA | **Halt.** Report stale review and current HEAD SHA to operator. |
+| Local readiness outcome is `BLOCKED` or blocking findings remain | **Halt.** List blocking findings. Do not proceed to merge. |
+| `READY_WITH_FOLLOWUPS` omits follow-up handling | **Halt.** Report missing follow-up IDs or residual-risk notes. |
+| Code-changing PR omits successful full local build evidence | **Halt.** Run the full local build successfully or explain non-applicability only for documentation-only/backlog-only work. |
+| Copilot review enabled but incomplete for HEAD, or Copilot threads unresolved (`autoharness gate copilot-review` returns non-zero) | **Halt (P-018).** Wait for Copilot review completion and resolve every Copilot thread. `--admin` does not bypass. `REVIEW_TIMEOUT` blocks; only an audited `--force` overrides. |
+| Shadow review unavailable or still pending, Copilot not engaged (gate returns `NOT_APPLICABLE`) | **Warning.** Note in PR summary. Shadow review remains advisory when Copilot is not in play. |
+| All 5 checks pass | **Ready.** Present PR for merge approval. |
+
+Shadow-review timeout does not fail this gate when Copilot is not engaged; the
+required dependency is local review coverage for the current HEAD. If the operator
+wants shadow review to become merge-blocking for a specific PR, that escalation
+must be explicit. When Copilot review IS engaged, the §1.9.4 Check 5 copilot-review
+gate is an additional fail-closed dependency (P-018).
+
+#### 1.9.6 Dark-Mode Merge Authorization and Admin Fallback
+
+When `DARK_MODE_ACTIVE` is present under P-017, the activation record may satisfy
+the P-014 operator approval signal only when all of these are true:
+
+1. The PR is inside the recorded dark-mode `scope`.
+2. `merge_approval_pre_authorized` is `true`.
+3. The §1.9 local readiness gate passed for the current `headRefOid`.
+4. Required CI/checks are green or explicitly marked non-applicable.
+5. P-009 merge-commit-only and P-016 worktree topology checks passed.
+6. The §1.9.4 Check 5 copilot-review gate returned a PASS verdict for the current
+   `headRefOid` (or an audited `--force` override is recorded). A
+   `COPILOT_REVIEW_BLOCK` is never satisfied by the activation record.
+
+If any condition is false or ambiguous, fail closed and wait for an explicit
+operator approval signal.
+
+Before any admin fallback, attempt the normal merge path first and classify the
+result:
+
+| State | Meaning | Dark-mode action |
+|---|---|---|
+| `NORMAL_MERGE_READY` | Normal merge can proceed with merge commit strategy | Merge normally; record `DARK_MODE_MERGE_AUTHORIZED` when approval came from the activation record |
+| `REVIEW_REQUIRED_BLOCK` | Branch protection rejected merge for required review approval | Admin fallback may be attempted only if `admin_fallback_pre_authorized` is `true` |
+| `CONVERSATION_RESOLUTION_BLOCK` | Branch protection requires unresolved conversations to be resolved | Admin fallback may be attempted only if explicitly covered by `admin_fallback_pre_authorized`; otherwise halt |
+| `CHECKS_BLOCK` | Required checks are failed, pending, missing, or not explicitly non-applicable | Halt; admin fallback is forbidden |
+| `MERGE_STRATEGY_BLOCK` | Merge commit strategy is unavailable or squash/rebase is selected | Halt under P-009; admin fallback is forbidden |
+| `MISSING_ADMIN_RIGHTS` | Admin fallback was authorized but credentials lack bypass rights | Halt with an operator-visible reason |
+| `UNKNOWN_MERGE_BLOCK` | The merge rejection cannot be classified confidently | Halt; do not guess or bypass |
+| `COPILOT_REVIEW_BLOCK` | The P-018 copilot-review gate returned a BLOCK verdict (review incomplete for HEAD, unresolved Copilot threads, timeout, or unverifiable) | Halt; admin fallback may **never** bypass this. Resolve via review completion + thread resolution, not `--admin`. |
+
+Admin fallback cannot bypass stale local readiness, unresolved local P0/P1
+findings, failed required CI/checks, a P-018 `COPILOT_REVIEW_BLOCK`, P-009, P-016,
+secrets-safety concerns, or scope mismatch. Every normal merge attempt and admin
+fallback attempt must be recorded in the PR readiness/merge summary with the state,
+decision, command/API used, and result.
+
+### 1.10 Post-Merge Closure PR Shadow Review Surveillance
+
+When the Ship agent creates a dedicated post-merge closure branch and PR:
+
+1. Optionally request Copilot shadow review per §1.1 immediately after PR creation.
+2. Poll per §1.2 back-off cadence.
+3. Apply the full §1.3–§1.7 fix cycle for any comments raised.
+4. Run §1.9 local readiness gate before presenting the post-merge closure PR for merge.
+5. Obtain explicit operator approval before merging the post-merge closure PR.
+
+Post-merge closure PRs are not exempt from the P-014 gate. The operator must
+approve each merge individually — approval for the main PR does not carry over
+to the post-merge closure PR.
+
 ---
 
 ## Part 2: CI Check Monitoring
