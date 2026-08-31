@@ -231,6 +231,15 @@ script contracts `current`, **68/68 targeted checks pass**.
 
 ## Not done / next steps
 
+* **Upstream autoharness gaps — tracked as `140-F`.** The two judgment calls above are
+  upstream defects, not engram problems. Full analysis with exact upstream file/line
+  references and proposed fixes:
+  `docs/compound/autoharness-optional-pack-content-not-gated-in-templates-2026-08-31.md`.
+  They cannot be fixed from here — Constitution IV forbids writing outside the workspace
+  tree, and the autoharness source lives at `C:\Source\GitHub\autoharness`.
+  Once upstream ships the fix, drop the local guards in `review`/`doc-review` SKILLs and
+  remove the retained `### agent-intercom` section from `copilot-instructions.md`.
+
 * **Not pushed and no PR opened.** Branch `chore/autoharness-merge-install-20260831`
   holds commit `e2b35180`. Open a PR rather than merging to `main` directly.
 * The new `scripts/pre-commit-pipeline-topology.*` and `scripts/pre-push-quality-gates.*`
