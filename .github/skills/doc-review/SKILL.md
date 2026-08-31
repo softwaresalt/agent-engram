@@ -35,8 +35,9 @@ the skill falls back to Tier 2 defaults.
 
 ## Agent-Intercom Communication
 
-Call `ping` at session start. If agent-intercom is reachable, broadcast at
-every step. If unreachable, warn that operator visibility is degraded.
+When the `agent-intercom` capability pack is installed, call `ping` at session start. If
+agent-intercom is reachable, broadcast at every step. If unreachable, warn that operator
+visibility is degraded. When the pack is not installed, report progress locally instead.
 
 | Event | Level | Message prefix |
 |---|---|---|
@@ -77,7 +78,7 @@ Check arguments for `mode:autofix` or `mode:report-only`.
 | Class | Default owner | Meaning |
 |---|---|---|
 | `safe_auto` | Doc-review skill (autofix mode) | Deterministic local fix |
-| `gated_auto` | agent-intercom approval | Fix changes meaning or structure |
+| `gated_auto` | Operator approval | Fix changes meaning or structure |
 | `manual` | Backlog follow-up item | Requires human judgment |
 | `advisory` | Informational | Suggestion; no defect |
 

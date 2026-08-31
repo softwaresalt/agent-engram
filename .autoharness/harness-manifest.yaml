@@ -5,11 +5,11 @@
 
 schema_version: "1.0.0"
 installed_at: "2026-05-11T00:00:00Z"
-tuned_at: "2026-08-31T17:10:44Z"
+tuned_at: "2026-08-31T18:50:23Z"
 autoharness_version: "1.5.0"
 autoharness_home: "C:\\Python\\Python314\\Lib\\site-packages\\autoharness\\data"
-profile_hash: "1184d7e406101af3fc151b6a5822fb9d487c5dd0931ca8719b14be339f347a3e"
-config_hash: "ad5c4cddf77882f2a858cca11c0cf388ea44058c79c98e4323ddf47582f860fd"
+profile_hash: "5ad21bf09a0ab785e4f4f2d3f6b1abdd075060c8db233aee246626184e15d30f"
+config_hash: "4fbd2f4c9a4108c1d2fd864ea06332c5c1e31f8c852747847d13d4f95623f9d1"
 install_preset: "full"
 primary_stack_pack: "rust-mcp-daemon"
 
@@ -30,7 +30,6 @@ install_layers:
   - "overlays"
 
 capability_packs:
-  - "agent-intercom"
   - "agent-engram"
   - "backlogit"
   - "strict-safety"
@@ -51,18 +50,6 @@ primitives_installed:
   - 10
 
 capability_pack_overlays:
-  - pack: "agent-intercom"
-    overlay_targets:
-      - ".github/instructions/agent-intercom.instructions.md"
-      - ".github/instructions/constitution.instructions.md"
-      - ".github/agents/_stage.agent.md"
-      - ".github/agents/_ship.agent.md"
-      - ".github/prompts/ping-loop.prompt.md"
-      - "AGENTS.md"
-    verification_checks:
-      - "intercom_instruction_present"
-      - "intercom_overlay_in_constitution"
-      - "intercom_startup_protocol_documented"
   - pack: "agent-engram"
     overlay_targets:
       - ".github/instructions/agent-engram.instructions.md"
@@ -159,7 +146,7 @@ variables_used:
   BUILD_CHECK_COMMAND: "cargo check --all-targets"
   BUILD_COMMAND: "cargo build"
   BUILD_TOOL: "cargo"
-  CAPABILITY_PACKS_YAML: "[\"agent-intercom\", \"agent-engram\", \"backlogit\", \"strict-safety\", \"release-observability\", \"continuous-learning\", \"adversarial-review\"]"
+  CAPABILITY_PACKS_YAML: "[\"agent-engram\", \"backlogit\", \"strict-safety\", \"release-observability\", \"continuous-learning\", \"adversarial-review\"]"
   CIRCUIT_BREAKER_COOLDOWN: "5 minutes"
   CI_DEFAULT_BRANCH: "main"
   CI_PLATFORM: "GitHub Actions"
@@ -355,7 +342,7 @@ artifacts:
     artifact_type: "config"
     primitive: 3
     template: "templates/harness-config.yaml.tmpl"
-    checksum: "ad5c4cddf77882f2a858cca11c0cf388ea44058c79c98e4323ddf47582f860fd"
+    checksum: "4fbd2f4c9a4108c1d2fd864ea06332c5c1e31f8c852747847d13d4f95623f9d1"
   - path: ".backlogit/.stash.md"
     artifact_type: "config"
     primitive: 1
@@ -465,7 +452,7 @@ artifacts:
     artifact_type: "foundation"
     primitive: 9
     template: "templates/foundation/copilot-instructions.md.tmpl"
-    checksum: "30c5e880775ae564b1481b08e5f9fae795276452091babdbf794f208afd4eb5a"
+    checksum: "66659cb1768a20622fd8170d749a1320ae28d7d7304e601515e38985986d4463"
   - path: ".github/instructions/adversarial-review.instructions.md"
     artifact_type: "instruction"
     primitive: 7
@@ -476,11 +463,6 @@ artifacts:
     primitive: 1
     template: "templates/instructions/agent-engram.instructions.md.tmpl"
     checksum: "4e77366ee9f33650b4f9c0ebecda70f0be2f917023053d7ca4a3981ff78459f2"
-  - path: ".github/instructions/agent-intercom.instructions.md"
-    artifact_type: "instruction"
-    primitive: 7
-    template: "templates/instructions/agent-intercom.instructions.md.tmpl"
-    checksum: "376751f7011b16cff2771fe33b301b3c62ba4a9d54961af5391a577fff2b94b5"
   - path: ".github/instructions/architecture-doc.instructions.md"
     artifact_type: "instruction"
     primitive: 9
@@ -540,7 +522,7 @@ artifacts:
     artifact_type: "instruction"
     primitive: 8
     template: "templates/foundation/constitution.instructions.md.tmpl"
-    checksum: "ebab21eef3bb3af0bd5bee49577b4396b2212e3c02a0c19d7b25188d5ed9e7bc"
+    checksum: "2c03726bd173baeec8358a759ad20a7c8dde259b4a7062a3474000f26af6735f"
   - path: ".github/instructions/context-efficiency.instructions.md"
     artifact_type: "instruction"
     primitive: 1
@@ -690,7 +672,7 @@ artifacts:
     artifact_type: "skill"
     primitive: 8
     template: "templates/skills/doc-review/SKILL.md.tmpl"
-    checksum: "58cbdf56a71bdfdcaf1e3b3ad8276a58ea0bd6bccab2581775f7d1cac5871ca4"
+    checksum: "3bc5a1e081692019f23e4c3cab71ec7e9304dd02c6e2fa87d220aa094a644823"
   - path: ".github/skills/evolve/SKILL.md"
     artifact_type: "skill"
     primitive: 7
@@ -765,7 +747,7 @@ artifacts:
     artifact_type: "skill"
     primitive: 8
     template: "templates/skills/review/SKILL.md.tmpl"
-    checksum: "1f963709bba60324962b5f4d732628f4b2f94dfe5767bc96fa3864394bd37d8b"
+    checksum: "6e55fc2c79b879b6af68580db09e3096de1ac8e28ab7839d23d73cb204b6368b"
   - path: ".github/skills/runtime-verification/SKILL.md"
     artifact_type: "skill"
     primitive: 10
@@ -805,7 +787,7 @@ artifacts:
     artifact_type: "foundation"
     primitive: 9
     template: "templates/foundation/AGENTS.md.tmpl"
-    checksum: "e7a355fd2e4e72c710f06f3234eb270b1322b0ff6974b537f8ba259a53adcd74"
+    checksum: "eff1353f4772608c5b12f1b08fdbd2f7b306945a9a6e77a9ca1a2575e0a4c96a"
   - path: "scripts/acquire_lock.ps1"
     artifact_type: "script"
     primitive: 5
@@ -891,15 +873,14 @@ preserved_artifacts:
   - ".github/instructions/rust-mcp-server.instructions.md"
   - ".github/instructions/file-first-content.instructions.md"
   - ".github/prompts/cp-review-fix.prompt.md"
-  - ".github/prompts/ping-loop.prompt.md"
 
 tuning_history:
   - date: "2026-05-11T00:00:00Z"
     proposals_applied: 0
     profile_hash: ""
-  - date: "2026-08-31T17:10:44Z"
+  - date: "2026-08-31T18:50:23Z"
     proposals_applied: 31
-    profile_hash: "1184d7e406101af3fc151b6a5822fb9d487c5dd0931ca8719b14be339f347a3e"
+    profile_hash: "5ad21bf09a0ab785e4f4f2d3f6b1abdd075060c8db233aee246626184e15d30f"
 
 upgrade_notes:
   from_version: "1.4.0"

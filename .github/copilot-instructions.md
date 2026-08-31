@@ -107,17 +107,6 @@ tokens proportional to file size.
 
 ## Optional Capability Packs
 
-### agent-intercom
-
-When the workspace enabled the `agent-intercom` capability pack:
-
-* verify the intercom server / tool surface is reachable before depending on remote approval or operator steering
-* call heartbeat / ping at session start and keep it alive during long-running work
-* broadcast major workflow transitions so the operator can observe planning, build, review, verification, and closure progress
-* route destructive terminal commands and destructive file operations through the intercom approval workflow
-* use transmit / standby flows when blocked on operator clarification or when intentionally pausing for instructions
-* if the intercom service is unreachable, warn that remote visibility is degraded and avoid pretending approval or operator awareness exists
-
 ### agent-engram
 
 When the workspace enabled the `agent-engram` capability pack:
@@ -202,7 +191,10 @@ When `agent-intercom` is available:
 * Route approval for destructive actions through the intercom approval workflow before executing.
 * If intercom becomes unreachable mid-task, warn that operator visibility is degraded and continue only with safe, non-destructive work.
 
-The `ping-loop.prompt.md` prompt is available in `.github/prompts/` for sustained heartbeat sessions when the pack is installed.
+The `agent-intercom` capability pack is **not enabled** in this workspace, so no intercom tool
+surface, heartbeat prompt, or remote approval path is installed. Treat the guidance above as
+inert unless the pack is explicitly re-enabled; route destructive-action approval through local
+operator confirmation instead.
 
 ### agent-engram
 

@@ -10,7 +10,9 @@ Reviews code changes using dynamically selected reviewer personas. Spawns person
 
 ## Agent-Intercom Communication (NON-NEGOTIABLE)
 
-Call `ping` at session start. If agent-intercom is reachable, broadcast at every step. If unreachable, warn the user that operator visibility is degraded.
+When the `agent-intercom` capability pack is installed, call `ping` at session start. If
+agent-intercom is reachable, broadcast at every step. If unreachable, warn the user that operator
+visibility is degraded. When the pack is not installed, report progress locally instead.
 
 When the `strict-safety` capability pack is installed, also follow
 `.github/instructions/strict-safety.instructions.md`: for high-risk diffs, call
@@ -77,7 +79,7 @@ Check arguments for `mode:autofix` or `mode:report-only`. Strip the mode token b
 | Class | Default owner | Meaning |
 |---|---|---|
 | `safe_auto` | Review skill (autofix mode) | Deterministic local fix |
-| `gated_auto` | agent-intercom approval | Fix exists but changes behavior/contracts |
+| `gated_auto` | Operator approval | Fix exists but changes behavior/contracts |
 | `manual` | Backlog follow-up item | Actionable work requiring human judgment |
 | `advisory` | Informational | Learnings, rollout notes, residual risk |
 

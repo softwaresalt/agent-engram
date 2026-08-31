@@ -257,7 +257,6 @@ conventions:
 harness_recommendations:
   preset: "full"
   capability_packs:
-    - "agent-intercom"
     - "agent-engram"
     - "backlogit"
     - "strict-safety"
@@ -289,10 +288,6 @@ harness_recommendations:
         signals:
           - ".backlogit/ directory present"
           - "backlogit MCP tools registered"
-      - item: "agent-intercom"
-        because: "Operator visibility and approval routing for long unattended sessions"
-        signals:
-          - "agent-intercom instruction markers present in .github/instructions/"
       - item: "strict-safety"
         because: "Daemon lifecycle, on-disk index state, and installer paths create destructive-action risk"
         signals:
@@ -318,14 +313,13 @@ harness_recommendations:
       - item: "review"
         because: "Protocol, safety, and concurrency review personas are needed for daemon and MCP changes"
       - item: "overlays"
-        because: "Seven capability packs are enabled and must be woven into the workflow artifacts"
+        because: "Six capability packs are enabled and must be woven into the workflow artifacts"
 
 agent_intercom:
-  detected: true
+  detected: false
   config_paths: []
-  instruction_markers:
-    - ".github/instructions/agent-intercom.instructions.md"
-  recommended: true
+  instruction_markers: []
+  recommended: false
 
 agent_engram:
   detected: true

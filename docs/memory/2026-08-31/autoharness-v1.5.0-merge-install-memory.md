@@ -22,7 +22,7 @@ autoharness home: `C:\Python\Python314\Lib\site-packages\autoharness\data`.
 | Warnings | 0 |
 | Migration proposals | 0 |
 | New artifacts (uninstalled templates) | 0 |
-| Targeted guardrail checks | 71 / 71 pass |
+| Targeted guardrail checks | 68 / 68 pass |
 | Portability findings | 0 |
 | Unresolved placeholders | 12 (benign — see below) |
 
@@ -169,14 +169,75 @@ stripped during resolution and this needs an upstream fix in autoharness rather
 than a local edit. Invoking `_Orchestrator` directly with the trigger phrase is
 the workaround and is fully equivalent — the prompt is only a shim.
 
+## agent-intercom capability pack removed
+
+Follow-up operator request: drop `agent-intercom` from this workspace's enabled
+capability packs. The pack is an opt-in extra in the v1.5.0 registry
+(`default_in_preset: []`, `mcp_requirements: []`) and ships no MCP server, so removal
+has no runtime dependency impact.
+
+### What was removed
+
+| Surface | Change |
+|---|---|
+| `.autoharness/config.yaml` | dropped from `capability_packs` (authoritative "enabled" list) |
+| `.autoharness/workspace-profile.yaml` | dropped from `capability_packs`, recommendation entry deleted, `agent_intercom` block flipped to `detected: false` / `recommended: false` |
+| `.autoharness/harness-manifest.yaml` | dropped from `capability_packs`, `capability_pack_overlays` entry deleted, both artifact rows deleted (108 → 106 artifacts) |
+| `.github/instructions/agent-intercom.instructions.md` | **deleted** (the pack's `overlay_instruction`) |
+| `.github/prompts/ping-loop.prompt.md` | **deleted** (intercom heartbeat prompt; had no upstream template) |
+| `AGENTS.md` | `### Capability Overlay — agent-intercom` section, the `agent-intercom + backlogit` interaction row, and the destructive-command approval bullet removed |
+| `.github/instructions/constitution.instructions.md` | `### Capability Overlay — agent-intercom` section removed |
+| `.github/copilot-instructions.md` | `### agent-intercom` under **Optional Capability Packs** removed |
+| `.github/skills/review/SKILL.md`, `doc-review/SKILL.md` | unguarded `ping` directives guarded; `gated_auto` owner re-pointed from `agent-intercom approval` to `Operator approval` |
+
+### Why ~110 `intercom` mentions were deliberately LEFT in place
+
+Before the change, the intercom reference count in every workspace file matched the
+pristine v1.5.0 template **exactly** (`_ship.agent.md` 30/30, `AGENTS.md` 8/8,
+`copilot-instructions.md` 9/9, and so on). Autoharness templates are plain
+`{{UPPER_SNAKE}}` substitution with **no conditionals**, so those clauses render
+regardless of pack selection — a fresh install *without* agent-intercom produces
+byte-identical files. Every remaining mention is self-guarding
+("When the `agent-intercom` capability pack is installed, …") and is therefore inert.
+
+Stripping them would create permanent template drift that `verify-workspace` would
+re-flag on the next tune, for zero behavioral gain. Only genuinely **unguarded**
+directives were fixed — an audit found exactly two (`review` and `doc-review` SKILLs,
+both of which said "Call `ping` at session start." with no guard) plus two routing-table
+rows naming `agent-intercom approval` as an owner.
+
+### Guardrail interactions worth knowing
+
+* Pack-scoped checks live in `PACK_ASSERTIONS` keyed by pack id, so
+  `agent_intercom_instruction`, `review_intercom_workflow`, and
+  `dark_factory_intercom_contract` (the last carries `requires_pack: "agent-intercom"`)
+  all became **not-applicable**. That is why the total dropped 71 → 68 with **zero**
+  failures — it is not a regression.
+* `copilot_remote_operator_guidance` lives in `FOUNDATION_ASSERTIONS` and is
+  **unconditional**: it hard-requires `## Remote Operator Integration` plus a literal
+  `### agent-intercom` heading in `.github/copilot-instructions.md`. That section was
+  therefore **kept**, with its dangling `ping-loop.prompt.md` sentence replaced by an
+  explicit "this pack is **not enabled** in this workspace" note. Deleting the heading
+  would fail the check.
+* `capability_pack_enforcement` is driven by `RETRIEVAL_ENFORCED_PACKS`
+  (`agent-engram`, `graphtor-docs`) only. agent-intercom is not retrieval-enforced, so
+  `capability-pack-enforcement.instructions.md` needed no edit.
+* `start.ps1` / `start.sh` never listed intercom as a sidecar (`("backlogit", "engram")`),
+  consistent with the pack shipping no MCP server.
+
+Post-removal verification: 0 blockers, 0 warnings, 0 migration proposals, 0 uninstalled
+templates, 0 portability findings, all three schema contracts `current`, both startup
+script contracts `current`, **68/68 targeted checks pass**.
+
 ## Not done / next steps
 
 * **Not pushed and no PR opened.** Branch `chore/autoharness-merge-install-20260831`
   holds commit `e2b35180`. Open a PR rather than merging to `main` directly.
 * The new `scripts/pre-commit-pipeline-topology.*` and `scripts/pre-push-quality-gates.*`
   are installed but **not wired into git hooks**. Wiring them is an operator decision.
-* `graphtor-docs` and `browser-verification` packs remain disabled; their overlay
-  sections were stripped from `AGENTS.md` and `capability-pack-enforcement.instructions.md`.
+* `graphtor-docs`, `browser-verification`, and now `agent-intercom` packs remain
+  disabled; their overlay sections were stripped from `AGENTS.md` and
+  `capability-pack-enforcement.instructions.md`.
 * Render toolchain kept under `.autoharness/staging/` (gitignored): `vars.json` (204
   variables), `render.py`, `validate.py`, `gen_manifest.py`, `emit_manifest.py`.
   Re-run `gen_manifest.py` then `emit_manifest.py` after any harness artifact edit so

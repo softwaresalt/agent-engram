@@ -19,7 +19,7 @@ stack_packs: ["rust-mcp-daemon", "rust-surrealdb-embedded", "rust-tree-sitter", 
 install_layers: ["foundation", "instructions", "workflow", "review", "runtime", "backlog", "knowledge", "overlays"]
 
 # Capability packs enabled for this workspace
-capability_packs: ["agent-intercom", "agent-engram", "backlogit", "strict-safety", "release-observability", "continuous-learning", "adversarial-review"]
+capability_packs: ["agent-engram", "backlogit", "strict-safety", "release-observability", "continuous-learning", "adversarial-review"]
 
 # Backlog tool configuration
 backlog:
