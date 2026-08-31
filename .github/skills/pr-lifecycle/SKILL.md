@@ -94,10 +94,11 @@ advisory shadow mode immediately after PR creation or after pushing new commits:
 
 1. Request shadow review per `.github/instructions/github-pr-automation.instructions.md` §1.1 when the operator or workflow enables migration shadow mode.
 2. Poll for completion using the back-off cadence in §1.2.
-3. Do not treat shadow review as a required dependency for merge readiness unless the operator explicitly elevates it for the current PR.
-4. When `DARK_MODE_ACTIVE` is present, keep shadow review advisory by default:
-   local review readiness remains authoritative, and timeout/unavailability is
-   recorded in the PR readiness summary instead of blocking merge readiness.
+3. Requesting shadow review is optional; **engagement is not**. Until a review is requested or one exists, shadow review is not a merge dependency. Once Copilot review IS engaged, P-018 applies: the §1.9.4 Check 5 copilot-review gate becomes a fail-closed dependency, and timeout or unavailability blocks rather than remaining advisory.
+4. When `DARK_MODE_ACTIVE` is present, local review readiness remains authoritative
+   for *findings*, but P-018 is preserved: if Copilot review is engaged, a review for
+   the current HEAD and resolution of every Copilot-authored thread are still required
+   before merge. Dark mode does not downgrade an engaged Copilot review to advisory.
 
 ### Step 3: Handle review feedback
 
@@ -203,15 +204,22 @@ local review readiness verification defined in
 
 1. Execute the §1.9 readiness query with full pagination until `hasNextPage`
    is false. If pagination cannot complete, fail closed and halt.
-2. Evaluate all four gate checks in order:
+2. Evaluate all five gate checks in order:
    - **Check 1**: A local review readiness record exists for the current `headRefOid`.
    - **Check 2**: The local review outcome is `READY` or `READY_WITH_FOLLOWUPS`.
    - **Check 3**: Any residual P2/P3 findings are explicitly tracked as follow-up items or residual-risk notes.
    - **Check 4**: Code-changing PRs include successful full local build evidence, or
      documentation-only/backlog-only PRs explicitly mark full-build non-applicability.
+   - **Check 5 (P-018, fail-closed)**: When Copilot review is engaged, run
+     `autoharness gate copilot-review <pr_number> --repo softwaresalt/agent-engram --enforcement <mode>`
+     and require a PASS verdict — a Copilot review for the current HEAD plus resolution of
+     every Copilot-authored thread. A `COPILOT_REVIEW_BLOCK`, timeout, or unverifiable
+     result halts; `--admin` never bypasses it.
 3. If any check fails, **halt immediately**. Do not present the PR as
    merge-ready. Report the blocking condition to the operator.
-4. If advisory shadow-review feedback exists, surface it in the merge-readiness summary without treating it as merge-blocking by default.
+4. Advisory shadow-review feedback that is *not* yet engaged is surfaced in the
+   merge-readiness summary without blocking. Once engaged, Check 5 governs and the
+   feedback is no longer advisory.
 5. Surface human review threads, `reviewDecision`, and any
    `CHANGES_REQUESTED` reviews in the merge-readiness summary — these
    may independently block merge at the GitHub level.

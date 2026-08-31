@@ -5,7 +5,7 @@
 
 schema_version: "1.0.0"
 installed_at: "2026-05-11T00:00:00Z"
-tuned_at: "2026-08-31T21:41:19Z"
+tuned_at: "2026-08-31T21:44:56Z"
 autoharness_version: "1.5.0"
 autoharness_home: "C:\\Python\\Python314\\Lib\\site-packages\\autoharness\\data"
 profile_hash: "c2c664688e4c4b5f16aa0e4957e4b2fbf3ad213fa554f902ef84fbd36859f42d"
@@ -357,7 +357,7 @@ artifacts:
     artifact_type: "agent"
     primitive: 3
     template: "templates/agents/_ship.agent.md.tmpl"
-    checksum: "0aa88bfd4209db631b2c2ccdefb5c0fd1a54ef43c632166cb821f5ab4bf08084"
+    checksum: "182cf1ae9f61bf8aecc49b7661ff9d03ee4a2397a54579c32f2128edb2dc904a"
   - path: ".github/agents/_stage.agent.md"
     artifact_type: "agent"
     primitive: 3
@@ -617,12 +617,12 @@ artifacts:
     artifact_type: "policy"
     primitive: 8
     template: "templates/policies/workflow-policies.md.tmpl"
-    checksum: "61c8343a50d56ffce8e6d9332b711cacde084d305985fe839f062e3b80eee95d"
+    checksum: "569595d8d1ecda5da4f9014b6adba1fb1a853a0a52d785c2f4ae43167791441f"
   - path: ".github/prompts/feature-flow-dark.prompt.md"
     artifact_type: "prompt"
     primitive: 6
     template: "templates/prompts/feature-flow-dark.prompt.md.tmpl"
-    checksum: "5dc67d3ad19127993568a5015b099fbd7fb94eb524fcdaf28afb5371248cf597"
+    checksum: "73f5034533d223e8d78b003b4911da624ebb6f0fdfb63b88e42e3604587b408b"
   - path: ".github/prompts/feature-flow-parallel.prompt.md"
     artifact_type: "prompt"
     primitive: 6
@@ -742,7 +742,7 @@ artifacts:
     artifact_type: "skill"
     primitive: 8
     template: "templates/skills/pr-lifecycle/SKILL.md.tmpl"
-    checksum: "e98eaeb657161ff6e9596b5f4c82ad89b636af8e2c456091ec5e51f9764a2d66"
+    checksum: "95b753e24bb2579f4a3ee106f7a3404a0dabdc939692fb636d0d2aec14a94c8b"
   - path: ".github/skills/review/SKILL.md"
     artifact_type: "skill"
     primitive: 8
@@ -878,7 +878,7 @@ tuning_history:
   - date: "2026-05-11T00:00:00Z"
     proposals_applied: 0
     profile_hash: ""
-  - date: "2026-08-31T21:41:19Z"
+  - date: "2026-08-31T21:44:56Z"
     proposals_applied: 31
     profile_hash: "c2c664688e4c4b5f16aa0e4957e4b2fbf3ad213fa554f902ef84fbd36859f42d"
 

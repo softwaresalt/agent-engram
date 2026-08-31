@@ -451,9 +451,11 @@ Invoke the **review** skill in `mode:report-only` against the changed files. The
 
 When `DARK_MODE_ACTIVE` is present under P-017, this review gate is the
 authoritative local readiness gate for PR preparation. Hosted Copilot/GitHub
-review is optional advisory shadow review by default; it cannot replace local
-review, cannot override unresolved P0/P1 findings, and does not block on timeout
-or unavailability unless the operator explicitly elevated it for the shipment.
+review cannot replace local review and cannot override unresolved P0/P1
+findings. Requesting it is optional; **engagement makes it binding**: while no
+hosted review has been requested and none exists, its absence does not block,
+but once one is engaged, P-018 applies fail-closed and timeout or unavailability
+blocks without needing operator elevation.
 Perform the local adversarial review before PR creation/presentation and carry
 its reviewed HEAD into the PR readiness block; do not rely on hosted review as a
 substitute while the operator is AFK.

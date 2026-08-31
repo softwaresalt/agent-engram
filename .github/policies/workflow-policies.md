@@ -395,7 +395,7 @@ Every agent definition (installed `.agent.md` or `.agent.md.tmpl`) must declare 
 1. The local review readiness contract has passed for the current HEAD: the latest local review result records `READY` or `READY_WITH_FOLLOWUPS`, covers the current HEAD SHA, and leaves no unresolved P0/P1 findings.
 2. The operator has given an explicit merge approval signal after the local readiness gate passed. Green CI and a passing readiness gate are necessary but not sufficient — they do not constitute merge authorization.
 
-Optional Copilot or other GitHub-hosted review may run in advisory shadow mode during migration, but those remote reviews are not a required dependency for this policy unless the operator explicitly elevates them for the current PR.
+Requesting Copilot or other GitHub-hosted review is optional under this policy: an unrequested hosted review is not a merge dependency. **Engagement is the trigger, not elevation.** Once a hosted review is requested or one exists for the PR, P-018 applies fail-closed and the hosted review becomes a required dependency — see P-018 and §1.9.4 Check 5. Operator elevation is therefore not required for a hosted review to block; it only broadens enforcement to reviews that were never engaged.
 
 Neither condition may be waived by the agent. Green CI alone is not approval. Operator approval without a passing local readiness gate is not authorization.
 
@@ -515,7 +515,7 @@ and surface:
 
 **Local review authority**: Local review readiness is authoritative. Dark mode MAY reduce reliance on hosted shadow reviews, but it MUST NOT merge with unresolved P0/P1 local findings. `READY_WITH_FOLLOWUPS` is allowed only when follow-up item IDs or explicit residual-risk notes are present.
 
-**Hosted review posture**: GitHub Copilot or other hosted review remains advisory by default. Shadow-review timeout, unavailability, or absence does not block dark mode unless the operator explicitly elevates hosted review for the current scope.
+**Hosted review posture**: GitHub Copilot or other hosted review is advisory only while it is **unengaged**. Absence of a hosted review does not block dark mode. Once hosted review is requested or one exists for the PR, P-018 applies fail-closed and shadow-review timeout or unavailability **does** block — operator elevation is not required to activate that gate.
 
 **Merge approval and admin fallback**:
 
