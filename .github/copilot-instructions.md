@@ -11,7 +11,7 @@ agent-engram is a local-first Model Context Protocol daemon providing code graph
 | Language        | Rust 2024 | (Rust 2024 edition)          |
 | Build           | cargo            | `cargo build`                   |
 | Test            | cargo           | `cargo dev-test`                    |
-| Lint            | clippy                | `cargo clippy -- -D warnings -D clippy::pedantic`                    |
+| Lint            | clippy                | `cargo clippy --all-targets -- -D warnings -D clippy::pedantic`                    |
 | Format          | rustfmt             | `cargo fmt --all`                  |
 | CI              | GitHub Actions           | CI runs on ubuntu-latest; release builds are cross-platform (Linux, Windows, macOS). Actions use @v4 tags (not SHA-pinned). cargo-audit runs with continue-on-error: true.                          |
 | SurrealDB (embedded) | `2` | Embedded graph database via kv-surrealkv feature |
@@ -33,7 +33,7 @@ src/ (101 .rs files across 12 modules: bin, cli, config, daemon, db, errors, ins
 ```bash
 cargo build              # Build
 cargo dev-test               # Run all tests
-cargo clippy -- -D warnings -D clippy::pedantic               # Lint
+cargo clippy --all-targets -- -D warnings -D clippy::pedantic               # Lint
 cargo fmt --all             # Format check
 | `cargo dev-test` | Run default test suite (dev workflow) |
 | `cargo ci` | Run all tests with all features (CI equivalent) |
@@ -106,17 +106,6 @@ tokens proportional to file size.
 | **Skill Discovery** | `scripts/search.ps1` / `scripts/search.sh` | Finding capabilities by keyword (Primitive 6) |
 
 ## Optional Capability Packs
-
-### agent-intercom
-
-When the workspace enabled the `agent-intercom` capability pack:
-
-* verify the intercom server / tool surface is reachable before depending on remote approval or operator steering
-* call heartbeat / ping at session start and keep it alive during long-running work
-* broadcast major workflow transitions so the operator can observe planning, build, review, verification, and closure progress
-* route destructive terminal commands and destructive file operations through the intercom approval workflow
-* use transmit / standby flows when blocked on operator clarification or when intentionally pausing for instructions
-* if the intercom service is unreachable, warn that remote visibility is degraded and avoid pretending approval or operator awareness exists
 
 ### agent-engram
 
@@ -202,7 +191,10 @@ When `agent-intercom` is available:
 * Route approval for destructive actions through the intercom approval workflow before executing.
 * If intercom becomes unreachable mid-task, warn that operator visibility is degraded and continue only with safe, non-destructive work.
 
-The `ping-loop.prompt.md` prompt is available in `.github/prompts/` for sustained heartbeat sessions when the pack is installed.
+The `agent-intercom` capability pack is **not enabled** in this workspace, so no intercom tool
+surface, heartbeat prompt, or remote approval path is installed. Treat the guidance above as
+inert unless the pack is explicitly re-enabled; route destructive-action approval through local
+operator confirmation instead.
 
 ### agent-engram
 
