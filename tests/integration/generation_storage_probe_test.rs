@@ -27,8 +27,13 @@
 //!    asymmetry (no safe-Rust equivalent; bounded instead by NTFS's
 //!    crash-consistency journal).
 //! 4. No `unsafe` code is required for any of the above: this file contains
-//!    no `unsafe` blocks, and the `engram` crate root already carries
-//!    `#![forbid(unsafe_code)]`.
+//!    no `unsafe` blocks, and this test crate's own root now carries
+//!    `#![forbid(unsafe_code)]` (below) — a Cargo integration test target
+//!    is its own separate crate, so the `engram` library's crate-root
+//!    `#![forbid(unsafe_code)]` (`src/lib.rs`) does not apply here and
+//!    cannot be relied on as this file's enforcement.
+
+#![forbid(unsafe_code)]
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -304,21 +309,30 @@ fn interrupted_rename_never_yields_a_torn_destination() {
     );
 }
 
-/// GIVEN this probe file compiles as part of the `engram` workspace
-/// WHEN the crate-root `#![forbid(unsafe_code)]` lint is in effect (verified
-/// separately by `cargo clippy` / `cargo build` succeeding for the whole
-/// workspace, since a forbidden lint violation is a hard compile error, not
-/// a warning that could be silently ignored)
+/// GIVEN this probe file compiles as its own separate Cargo integration
+/// test crate (NOT part of the `engram` library crate that the crate-root
+/// `#![forbid(unsafe_code)]` in `src/lib.rs` protects)
+/// WHEN this file's own `#![forbid(unsafe_code)]` inner attribute (declared
+/// at the top of this file, above the `use` statements) is in effect
+/// (verified separately by `cargo build`/`cargo clippy` succeeding for this
+/// test target, since a forbidden-lint violation is a hard compile error,
+/// not a warning that could be silently ignored)
 /// THEN no experiment above required an `unsafe` block — the safe-Rust
 /// dependency set for the selected primitives is exactly `std::fs`,
 /// `std::io::Write`, and the existing `cozo` dependency (already a default
 /// workspace dependency via the `cozo-backend` feature) plus the `tempfile`
-/// dev-dependency used only by this probe's test scaffolding.
+/// dev-dependency used only by this probe's test scaffolding. Relying on
+/// the `engram` library crate's own `#![forbid(unsafe_code)]` would NOT
+/// have enforced this: a Cargo integration test target compiles as its own
+/// independent crate, so that inner attribute does not extend to this file.
 #[test]
 fn no_unsafe_code_required_for_selected_primitives() {
     // This test is intentionally a documentation-anchor assertion: the
     // absence of `unsafe` in this file is enforced by the compiler (this
-    // file contains no `unsafe` keyword at all), and the `engram` crate
-    // root's `#![forbid(unsafe_code)]` (src/lib.rs) makes any future
-    // regression a hard compile error across the whole workspace.
+    // file contains no `unsafe` keyword at all), and this file's own
+    // `#![forbid(unsafe_code)]` inner attribute (declared at the top of
+    // this file) makes any future regression in THIS test crate a hard
+    // compile error — the `engram` library crate's `#![forbid(unsafe_code)]`
+    // (src/lib.rs) does not extend to this separately-compiled integration
+    // test crate and cannot be relied on for that guarantee here.
 }

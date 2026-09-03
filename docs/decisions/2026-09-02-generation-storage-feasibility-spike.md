@@ -130,10 +130,13 @@ asymmetry rather than introduce unsafe FFI to close it.
 
 ### 4. No `unsafe` code required — CONFIRMED
 
-None of the three probes above required an `unsafe` block. The probe file
-contains no `unsafe` keyword. The `engram` crate root already carries
-`#![forbid(unsafe_code)]` (`src/lib.rs`), which makes any future regression
-a hard compile error across the whole workspace, not merely a lint warning.
+None of the probes above required an `unsafe` block. The probe file
+contains no `unsafe` keyword. This probe file compiles as its own separate
+Cargo integration test crate, so the `engram` library crate's own
+`#![forbid(unsafe_code)]` (`src/lib.rs`) does not extend to it; the probe
+file now declares its own `#![forbid(unsafe_code)]` inner attribute at its
+own top, which makes any future regression in this test crate a hard
+compile error, not merely a lint warning.
 
 **Conclusion**: the safe-Rust dependency set for the selected primitives is
 exactly `std::fs`, `std::io::Write`, and the existing `cozo` dependency

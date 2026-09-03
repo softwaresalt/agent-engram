@@ -312,3 +312,62 @@ fn plugin_config_mode_field_invalid_value_is_carried_raw_and_fails_at_resolver()
         Err(DaemonModeParseError::Unrecognized("bogus".to_owned()))
     );
 }
+
+// A non-string explicit `mode` value (e.g. `mode = 1`) must not abort
+// deserialization of the *entire* config file — that would silently erase
+// the malformed explicit intent (falling back to `PluginConfig::default()`,
+// whose `mode` is `None`, which resolves to `Managed` instead of hard
+// erroring on the caller's actual malformed setting). The permissive
+// deserializer must instead carry the non-string value through as its
+// stringified form, still known fields load correctly, and the strict
+// resolver still hard-errors on it.
+#[test]
+fn plugin_config_mode_field_non_string_value_does_not_erase_rest_of_config() {
+    let tmp = tempfile::tempdir().expect("tmp dir");
+    write_config(
+        tmp.path(),
+        r"
+idle_timeout_minutes = 15
+mode = 1
+",
+    );
+    let cfg = PluginConfig::load(tmp.path());
+
+    assert_eq!(
+        cfg.idle_timeout_minutes, 15,
+        "a non-string mode value must not revert unrelated fields to defaults"
+    );
+    assert_eq!(
+        cfg.mode.as_deref(),
+        Some("1"),
+        "a non-string mode value must be carried through stringified, not dropped"
+    );
+    assert_eq!(
+        DaemonMode::resolve(cfg.mode.as_deref()),
+        Err(DaemonModeParseError::Unrecognized("1".to_owned())),
+        "a non-string mode value must still hard-error at the resolver, never \
+         silently default to managed"
+    );
+}
+
+// A boolean explicit `mode` value must behave identically to any other
+// non-string type: carried through stringified, hard error at the resolver.
+#[test]
+fn plugin_config_mode_field_boolean_value_does_not_erase_rest_of_config() {
+    let tmp = tempfile::tempdir().expect("tmp dir");
+    write_config(
+        tmp.path(),
+        r"
+idle_timeout_minutes = 15
+mode = true
+",
+    );
+    let cfg = PluginConfig::load(tmp.path());
+
+    assert_eq!(cfg.idle_timeout_minutes, 15);
+    assert_eq!(cfg.mode.as_deref(), Some("true"));
+    assert!(matches!(
+        DaemonMode::resolve(cfg.mode.as_deref()),
+        Err(DaemonModeParseError::Unrecognized(_))
+    ));
+}

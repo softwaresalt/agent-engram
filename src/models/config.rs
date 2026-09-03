@@ -297,12 +297,41 @@ pub struct PluginConfig {
     ///
     /// This field intentionally stays a raw, permissive string rather than a
     /// typed [`DaemonMode`] so a malformed value does not abort parsing of
-    /// the rest of the config file. Resolve it through
+    /// the rest of the config file. A non-string TOML value (e.g.
+    /// `mode = 1`) is accepted at this layer too — via
+    /// [`deserialize_permissive_mode`] — and stringified rather than
+    /// rejected outright, precisely so it cannot silently revert the whole
+    /// config file to defaults (which would erase the supplied explicit
+    /// intent entirely and let [`DaemonMode::resolve`] see `None` instead of
+    /// the malformed value). Resolve the carried value through
     /// [`DaemonMode::resolve`] — the single shared mode resolver — which
     /// returns a hard [`DaemonModeParseError`] for a present-but-unrecognized
     /// value rather than silently falling back to managed.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_permissive_mode")]
     pub mode: Option<String>,
+}
+
+/// Deserializes [`PluginConfig::mode`] permissively: any present TOML value
+/// (string, integer, float, boolean, array, table) is accepted and carried
+/// through as its stringified form, rather than requiring the value be a
+/// TOML string. Without this, a non-string explicit `mode` setting (e.g.
+/// `mode = 1`) would fail deserialization of the *entire* [`PluginConfig`]
+/// struct, causing [`PluginConfig::load`] to fall back to
+/// [`PluginConfig::default`] and silently erase the malformed value —
+/// `DaemonMode::resolve` would then see `None` and select `Managed` instead
+/// of hard-erroring on the caller's actual (malformed) explicit intent. This
+/// function only widens what is *accepted at the file-parsing layer*; it
+/// performs no mode validation itself — [`DaemonMode::resolve`] remains the
+/// single place that ever rejects a malformed explicit intent.
+fn deserialize_permissive_mode<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Option::<toml::Value>::deserialize(deserializer)?;
+    Ok(raw.map(|value| match value {
+        toml::Value::String(s) => s,
+        other => other.to_string(),
+    }))
 }
 
 impl Default for PluginConfig {
