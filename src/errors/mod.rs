@@ -1028,9 +1028,8 @@ mod tests {
 
     #[test]
     fn maps_activation_deadline_exceeded() {
-        let err = EngramError::from(ActivationError::ActivationDeadlineExceeded {
-            deadline_ms: 5000,
-        });
+        let err =
+            EngramError::from(ActivationError::ActivationDeadlineExceeded { deadline_ms: 5000 });
         let payload = err.to_response();
         assert_eq!(payload.error.code, ACTIVATION_DEADLINE_EXCEEDED);
         assert_eq!(payload.error.name, "ActivationDeadlineExceeded");
