@@ -9,10 +9,18 @@
 //! - S084: Negative `idle_timeout_minutes` → u64 parse error → defaults
 //! - S085: Very large `debounce_ms` → accepted as-is
 //! - S087: Zero `debounce_ms` → accepted
+//!
+//! Plan unit F02 (142.002-T) — strict `DaemonMode` parsing:
+//! - mode setting absent → resolves to `DaemonMode::Managed`
+//! - mode setting `"managed"` → resolves to `DaemonMode::Managed`
+//! - mode setting `"read_server"` → resolves to `DaemonMode::ReadServer`
+//! - mode setting present but unrecognized → hard parse error, never a
+//!   silent fallback to managed
+//! - round-trip parse/serialize is stable for both valid modes
 
 use std::time::Duration;
 
-use engram::models::PluginConfig;
+use engram::models::{DaemonMode, DaemonModeParseError, PluginConfig};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -203,5 +211,104 @@ fn default_impl_is_consistent() {
     assert_eq!(
         from_default, from_empty_file,
         "Default::default() and loading an empty config.toml must produce identical structs"
+    );
+}
+
+// ── F02 (142.002-T): strict DaemonMode parsing ───────────────────────────────
+
+// Absent setting → managed default.
+#[test]
+fn daemon_mode_resolve_absent_yields_managed_default() {
+    assert_eq!(DaemonMode::resolve(None), Ok(DaemonMode::Managed));
+}
+
+// Valid "managed" → DaemonMode::Managed.
+#[test]
+fn daemon_mode_resolve_valid_managed() {
+    assert_eq!(
+        DaemonMode::resolve(Some("managed")),
+        Ok(DaemonMode::Managed)
+    );
+}
+
+// Valid "read_server" → DaemonMode::ReadServer.
+#[test]
+fn daemon_mode_resolve_valid_read_server() {
+    assert_eq!(
+        DaemonMode::resolve(Some("read_server")),
+        Ok(DaemonMode::ReadServer)
+    );
+}
+
+// Present-but-unrecognized value → typed error, never a silent fallback to
+// managed.
+#[test]
+fn daemon_mode_resolve_invalid_value_is_hard_error() {
+    let err = DaemonMode::resolve(Some("bogus")).expect_err("unrecognized value must error");
+    assert_eq!(err, DaemonModeParseError::Unrecognized("bogus".to_owned()));
+}
+
+// Empty string is present-but-unrecognized, not treated as absent.
+#[test]
+fn daemon_mode_resolve_empty_string_is_hard_error() {
+    let err = DaemonMode::resolve(Some(""))
+        .expect_err("empty string is present-but-unrecognized, not absent");
+    assert_eq!(err, DaemonModeParseError::Unrecognized(String::new()));
+}
+
+// Round-trip parse/serialize is stable for both valid modes.
+#[test]
+fn daemon_mode_round_trip_is_stable_for_both_modes() {
+    for mode in [DaemonMode::Managed, DaemonMode::ReadServer] {
+        let round_tripped =
+            DaemonMode::resolve(Some(mode.as_str())).expect("canonical string must resolve");
+        assert_eq!(round_tripped, mode);
+        assert_eq!(round_tripped.as_str(), mode.as_str());
+        assert_eq!(round_tripped.to_string(), mode.as_str());
+    }
+}
+
+// PluginConfig carries the raw mode setting unresolved; the file itself
+// stays permissive (a malformed mode value does not abort parsing of the
+// rest of the config) while the single shared resolver enforces strictness.
+#[test]
+fn plugin_config_mode_field_absent_is_none() {
+    let tmp = tempfile::tempdir().expect("tmp dir");
+    write_config(tmp.path(), "");
+    let cfg = PluginConfig::load(tmp.path());
+
+    assert_eq!(cfg.mode, None);
+    assert_eq!(
+        DaemonMode::resolve(cfg.mode.as_deref()),
+        Ok(DaemonMode::Managed)
+    );
+}
+
+#[test]
+fn plugin_config_mode_field_valid_read_server_round_trips_through_resolver() {
+    let tmp = tempfile::tempdir().expect("tmp dir");
+    write_config(tmp.path(), r#"mode = "read_server""#);
+    let cfg = PluginConfig::load(tmp.path());
+
+    assert_eq!(cfg.mode.as_deref(), Some("read_server"));
+    assert_eq!(
+        DaemonMode::resolve(cfg.mode.as_deref()),
+        Ok(DaemonMode::ReadServer)
+    );
+}
+
+#[test]
+fn plugin_config_mode_field_invalid_value_is_carried_raw_and_fails_at_resolver() {
+    let tmp = tempfile::tempdir().expect("tmp dir");
+    write_config(tmp.path(), r#"mode = "bogus""#);
+    let cfg = PluginConfig::load(tmp.path());
+
+    // The permissive raw field still parses (file-level parsing is
+    // unaffected); strictness is enforced only by the single shared
+    // resolver, never by a duplicate parser at the config-file layer.
+    assert_eq!(cfg.mode.as_deref(), Some("bogus"));
+    assert_eq!(
+        DaemonMode::resolve(cfg.mode.as_deref()),
+        Err(DaemonModeParseError::Unrecognized("bogus".to_owned()))
     );
 }
