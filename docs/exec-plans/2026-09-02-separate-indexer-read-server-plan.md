@@ -2404,3 +2404,344 @@ addition, one dependency edge) and require no architectural change and no furthe
 multi-persona cycle. A Revision 7 applying exactly those three corrections,
 followed by a mechanical confirmation of the corrections only, is sufficient to
 reach PASS.
+
+## Remediation Revision 7 — Mechanical Corrections
+
+**Operator direction (2026-09-02): apply exactly the three mechanical
+corrections identified by the Revision 6 gate, run a confirmation limited to
+those three items, then harvest.** No architecture is reopened and no broad
+persona cycle is run. This revision is authoritative over Revisions 4, 5, and 6
+for the three items below and changes nothing else.
+
+### A. P0-1 — Test-manifest registration foundation
+
+**Verified repository convention.** This workspace has zero top-level
+`tests/*.rs` files; `tests/` contains only `contract/`, `fixtures/`, `helpers/`,
+`integration/`, and `unit/`. Cargo auto-discovers integration tests only at
+`tests/*.rs`, so every target is registered explicitly and root `Cargo.toml`
+carries **218** `[[test]]` blocks. The established naming convention is
+`name = "<subdir>_<basename minus _test>"` with
+`path = "tests/<subdir>/<file>_test.rs"`.
+
+Three of the plan's named harness files already exist and are already
+registered (`tests/unit/plugin_config_test.rs`,
+`tests/integration/connection_test.rs`,
+`tests/contract/start_launcher_test.rs`). The remaining **49** are new files
+and are inert until registered.
+
+**New unit F00 — Test-manifest registration foundation.**
+
+Per operator direction, registration is a single foundation unit executed
+before any RED harness unit, rather than ~30 units sharing unordered ownership
+of root `Cargo.toml`.
+
+* Files: 49 placeholder harness files (19 `tests/contract/`,
+  26 `tests/integration/`, 4 `tests/unit/`) and root `Cargo.toml`
+  (`[[test]]` section, append-only: the 49 new blocks and nothing else).
+* Internal order: create the 49 placeholder files first, then append the 49
+  `[[test]]` blocks. Cargo does not existence-check an explicitly specified
+  target `path` at metadata time; the failure surfaces at build/test time when
+  rustc cannot read the file. The file-before-block order is therefore required,
+  but it is an intra-unit ordering and never observable outside F00.
+* Placeholder content is a doc comment naming the owning unit plus a single
+  `#[test] fn placeholder_registered() {}`. Placeholders import nothing from
+  `engram`, so the tree is GREEN at registration and the unit bundles no
+  behavior change.
+* Each downstream unit then writes only its own already-registered harness body
+  and never edits root `Cargo.toml`.
+* F00 has no in-edges; it is one of the graph's roots.
+
+**Registered targets**
+
+| Owning unit | `name` | `path` |
+|---|---|---|
+| F01 | `integration_generation_storage_probe` | `tests/integration/generation_storage_probe_test.rs` |
+| F03 | `unit_app_state_mode` | `tests/unit/app_state_mode_test.rs` |
+| F04 | `contract_app_state_constructor_migration` | `tests/contract/app_state_constructor_migration_test.rs` |
+| F04a | `contract_ipc_server_seam` | `tests/contract/ipc_server_seam_test.rs` |
+| F05 | `integration_read_server_restart` | `tests/integration/read_server_restart_test.rs` |
+| F06 | `unit_generation_domain` | `tests/unit/generation_domain_test.rs` |
+| F07 | `integration_generation_store` | `tests/integration/generation_store_test.rs` |
+| F08 | `integration_generation_publish` | `tests/integration/generation_publish_test.rs` |
+| F09 | `integration_generation_db_open` | `tests/integration/generation_db_open_test.rs` |
+| F10 | `integration_candidate_indexing_service` | `tests/integration/candidate_indexing_service_test.rs` |
+| F11 | `integration_direct_sync_mode` | `tests/integration/direct_sync_mode_test.rs` |
+| F13 | `contract_supervisor_workspace_boundary` | `tests/contract/supervisor_workspace_boundary_test.rs` |
+| F14 | `contract_supervisor_release_artifact` | `tests/contract/supervisor_release_artifact_test.rs` |
+| F15 | `contract_supervisor_install_exclusion` | `tests/contract/supervisor_install_exclusion_test.rs` |
+| F16 | `unit_read_request_context` | `tests/unit/read_request_context_test.rs` |
+| F16a | `unit_generation_context` | `tests/unit/generation_context_test.rs` |
+| F17 | `integration_generation_activation` | `tests/integration/generation_activation_test.rs` |
+| F18 | `integration_read_server_startup_activation` | `tests/integration/read_server_startup_activation_test.rs` |
+| F19 | `contract_tool_descriptor_registry` | `tests/contract/tool_descriptor_registry_test.rs` |
+| F20 | `integration_request_entry_activation` | `tests/integration/request_entry_activation_test.rs` |
+| F21 | `contract_read_server_dispatch_refusal` | `tests/contract/read_server_dispatch_refusal_test.rs` |
+| F22 | `contract_mcp_tool_catalog_parity` | `tests/contract/mcp_tool_catalog_parity_test.rs` |
+| F23 | `contract_cli_tool_catalog_parity` | `tests/contract/cli_tool_catalog_parity_test.rs` |
+| F24 | `contract_read_input_ownership_inventory` | `tests/contract/read_input_ownership_inventory_test.rs` |
+| F25 | `integration_core_read_generation_pin` | `tests/integration/core_read_generation_pin_test.rs` |
+| F26 | `integration_report_read_generation_pin` | `tests/integration/report_read_generation_pin_test.rs` |
+| F27 | `integration_lifecycle_read_generation_pin` | `tests/integration/lifecycle_read_generation_pin_test.rs` |
+| F28 | `integration_eval_read_pin` | `tests/integration/eval_read_pin_test.rs` |
+| F29 | `integration_lint_read_pin` | `tests/integration/lint_read_pin_test.rs` |
+| F30 | `integration_doctor_read_pin` | `tests/integration/doctor_read_pin_test.rs` |
+| F31 | `integration_search_service_pin` | `tests/integration/search_service_pin_test.rs` |
+| F32 | `integration_registry_service_pin` | `tests/integration/registry_service_pin_test.rs` |
+| F33 | `integration_retrieval_eval_service_pin` | `tests/integration/retrieval_eval_service_pin_test.rs` |
+| F34 | `integration_metrics_service_pin` | `tests/integration/metrics_service_pin_test.rs` |
+| F35 | `integration_dax_lint_service_pin` | `tests/integration/dax_lint_service_pin_test.rs` |
+| F36 | `integration_git_graph_service_pin` | `tests/integration/git_graph_service_pin_test.rs` |
+| F37 | `contract_read_path_pinning_enforcement` | `tests/contract/read_path_pinning_enforcement_test.rs` |
+| F39 | `contract_ipc_error_envelope` | `tests/contract/ipc_error_envelope_test.rs` |
+| F40 | `integration_ipc_error_round_trip` | `tests/integration/ipc_error_round_trip_test.rs` |
+| F41 | `contract_mcp_envelope` | `tests/contract/mcp_envelope_test.rs` |
+| F42 | `contract_cli_envelope` | `tests/contract/cli_envelope_test.rs` |
+| F43 | `contract_read_response_provenance` | `tests/contract/read_response_provenance_test.rs` |
+| F44 | `integration_read_server_lifecycle` | `tests/integration/read_server_lifecycle_test.rs` |
+| F45 | `integration_generation_observability` | `tests/integration/generation_observability_test.rs` |
+| F47 | `contract_supported_transport_surface` | `tests/contract/supported_transport_surface_test.rs` |
+| F50 | `integration_preflight_gate` | `tests/integration/preflight_gate_test.rs` |
+| F52 | `contract_start_launcher_failure` | `tests/contract/start_launcher_failure_test.rs` |
+| F53 | `contract_start_sh_launcher` | `tests/contract/start_sh_launcher_test.rs` |
+| F54 | `contract_read_server_cli_mcp_parity` | `tests/contract/read_server_cli_mcp_parity_test.rs` |
+
+All 49 generated names were checked against the 218 existing target names; there
+are no collisions.
+
+**Units deliberately excluded from F00 registration**
+
+| Unit | Reason |
+|---|---|
+| F02 | `tests/unit/plugin_config_test.rs` already exists and is registered |
+| F12 | harness is `crates/engram-indexer/tests/supervisor_boundary_test.rs`, auto-discovered inside its own crate; the root manifest never registers it |
+| F38, F48, F49, F55 | own no test file |
+| F46 | deletes an existing registered harness rather than adding one |
+| F51 | `tests/contract/start_launcher_test.rs` already exists and is registered |
+| F12a | owns no test file; still carries an `F00 -> F12a` edge for root `Cargo.toml` section ordering |
+
+**Root `Cargo.toml` total order.** Ownership is now exactly four units over
+disjoint sections in a declared order:
+
+```text
+F00  -> [[test]] section: append the 49 new blocks
+F12a -> [workspace] members: add crates/engram-indexer
+F46  -> [[test]] section: remove the one pre-existing integration_connection block
+F47  -> [features]/[dependencies]: remove legacy-sse and proven-unused deps
+```
+
+F00 and F46 both touch the `[[test]]` section but over disjoint blocks — F00
+only appends the 49 new targets, F46 only removes the single pre-existing
+`integration_connection` target — under the declared `F00 -> F46` order.
+
+**Deregistration is owned by F46, not F47.** The unit that deletes
+`tests/integration/connection_test.rs` also removes its `[[test]]` block in the
+same change. Deferring the block removal to F47 would leave a broken window:
+the block carries `required-features = ["legacy-sse"]`, so `cargo dev-test`
+(default features) would stay GREEN and hide the breakage, while the
+repository's own `cargo lint` (`clippy --all-targets --all-features`) and
+`cargo ci` (`test --all-targets --all-features`) gates enable `legacy-sse` and
+would fail with `couldn't read tests/integration/connection_test.rs` for the
+whole span between F46 and F47. Co-locating the deletion and the
+deregistration keeps every unit independently gate-passing.
+
+**F00 verification**
+
+1. `cargo test --test <target> -- --list` resolves for each of the 49 new
+   target names. This is the authoritative proof that a target is registered
+   and compiled.
+2. `cargo dev-test` is GREEN with the placeholders in place.
+3. `cargo ci` (`--all-features`) is GREEN, confirming registration does not
+   break the feature-gated target set.
+
+### B. P1-1 — F12 supervisor crate dependency wiring
+
+**Amended F12 — Supervisor crate foundation**
+
+* Files: `crates/engram-indexer/Cargo.toml` (dependency sections only; after
+  F12a), `crates/engram-indexer/src/main.rs`,
+  `crates/engram-indexer/src/lib.rs`,
+  `crates/engram-indexer/tests/supervisor_boundary_test.rs`
+* F12 adds `engram = { path = "../.." }` plus the dev-dependencies its boundary
+  harness requires. Without this the harness cannot resolve the minimal public
+  supervisor facade from F06-F10 and does not build.
+* The workspace-stub-before-RED order is preserved unchanged: F12a creates the
+  crate manifest and adds workspace membership; F12 then edits only the
+  dependency sections of that manifest. `crates/engram-indexer/Cargo.toml`
+  therefore has exactly two owners in the declared order `F12a -> F12` over
+  disjoint sections.
+* F12a remains free of any dependency on the `engram` crate, so
+  `cargo test -p engram-indexer` still executes with zero tests at F12a time.
+
+### C. P1-2 — Missing `F16 -> F20` edge
+
+Amend `F02 + F17 + F38 -> F20` to `F02 + F16 + F17 + F38 -> F20`. F20 is the
+sole request-context capture site and the value it captures is
+`Arc<ReadRequestContext>`, defined by F16. This aligns F20 with every other
+context-consuming daemon unit.
+
+### Revision 7 dependency amendments
+
+Add:
+
+```text
+F00 -> F01, F03, F04, F04a, F05, F06, F07, F08, F09, F10, F11,
+       F13, F14, F15, F16, F16a, F17, F18, F19, F20, F21, F22,
+       F23, F24, F25, F26, F27, F28, F29, F30, F31, F32, F33,
+       F34, F35, F36, F37, F39, F40, F41, F42, F43, F44, F45,
+       F47, F50, F52, F53, F54
+F00 -> F12a
+F12a -> F46
+F16 -> F20
+```
+
+Replace: `F02 + F17 + F38 -> F20` becomes `F02 + F16 + F17 + F38 -> F20`.
+
+The `F12a -> F46` edge completes the root `Cargo.toml` total order
+`F00 -> F12a -> F46 -> F47`. It is acyclic: F12a's only predecessor is F00, and
+F46's out-cone (F47, F48, F49, F15, F54, F55) does not contain F00 or F12a.
+
+Dropped edges: none.
+
+All other Revision 4, 5, and 6 edges remain in force.
+
+### Revision 7 trace additions
+
+F00 is a structural enabler and carries no requirement of its own; it makes the
+test-first evidence for every requirement already traced to F01-F55 actually
+executable. No requirement gains or loses coverage.
+
+### Revision 7 gate disposition
+
+Exactly three mechanical corrections applied. Ready for a confirmation limited
+to these three items.
+
+## Plan Review — Revision 7
+
+**Gate decision: PASS.** A mechanical Rust and architecture confirmation was run
+scoped strictly to the three Revision 7 corrections. No broad persona cycle was
+run and no architectural question was reopened, per operator direction.
+
+### Confirmation scope and result
+
+**Item A — test-manifest registration (P0-1): RESOLVED.**
+
+* The convention claim was independently re-verified against the working tree:
+  0 files matching `tests/*.rs`, 218 `[[test]]` blocks in root `Cargo.toml`
+  (enumerated exactly), and `name`/`path` pairs following
+  `<subdir>_<basename>` / `tests/<subdir>/<file>_test.rs`. All 49 new paths
+  were confirmed absent from the tree, so no placeholder clobbers existing
+  content.
+* All 49 new harnesses are registered by a single unit. The false-GREEN failure
+  mode is closed: an unregistered harness can no longer exist, because no unit
+  other than F00 introduces a harness path.
+* Root `Cargo.toml` co-ownership is eliminated. Ownership is four units
+  (`F00 -> F12a -> F46 -> F47`) over disjoint sections with a declared total
+  order, satisfying the same invariant Revision 6 established for
+  `ipc_server.rs`.
+* The placeholder-before-block internal ordering is correct and is intra-unit.
+  The mechanism is build/test-time rather than metadata-time, so F00's
+  verification rests on `cargo test --test <target> -- --list`, `cargo dev-test`,
+  and `cargo ci`.
+* Placeholders import nothing from `engram`, compile clean under the
+  repository's `-Dwarnings` and `clippy::pedantic` settings, and so F00 lands
+  GREEN and introduces no behavior change. Each downstream unit's RED step is
+  genuinely RED because it replaces a passing placeholder with real assertions
+  against unwritten code.
+* All 49 names begin with `contract_`/`integration_`/`unit_`, which the existing
+  `.cargo/test-coverage-manifest.toml` surface globs already match. The
+  `unit_dev_test_coverage_oracle` completeness assertion
+  (`UNMAPPED_TARGETS_COUNT == 0`) and the `unit_dev_test_hcl_scope_guard`
+  byte-identical block assertion therefore both stay GREEN without editing that
+  manifest.
+* Generated names were collision-checked against all 218 existing target names;
+  no duplicates. Nearest neighbours (`contract_start_launcher` vs
+  `contract_start_launcher_failure`) are distinct.
+* F00's out-edge list is set-identical to the 49 registration rows plus F12a,
+  cross-checked against every unit in the roster. The registration table and the
+  exclusion table together account for every unit exactly once.
+* The F12 exclusion is correct: `crates/engram-indexer/tests/supervisor_boundary_test.rs`
+  is a top-level `tests/*.rs` **inside that crate** and is auto-discovered
+  there. Registering it in the root manifest would wrongly compile it into the
+  `engram` package.
+
+**One in-cycle P1 was raised and remediated during this confirmation.**
+
+*R7-A1 — deregistration timing.* The first draft assigned removal of the
+`integration_connection` `[[test]]` block to F47. Because that block carries
+`required-features = ["legacy-sse"]`, `cargo dev-test` (default features) would
+have stayed GREEN and hidden the breakage, while `cargo lint`
+(`clippy --all-targets --all-features`) and `cargo ci`
+(`test --all-targets --all-features`) enable `legacy-sse` and would have failed
+with `couldn't read tests/integration/connection_test.rs` for the entire span
+between F46 and F47. Ownership was moved to F46 so the deletion and the
+deregistration land together, and the `F12a -> F46` edge was added to complete
+the root-manifest total order. Re-checked: the edge is acyclic and every unit
+remains independently gate-passing. **Resolved.**
+
+**Item B — F12 dependency wiring (P1-1): RESOLVED.**
+
+* `crates/engram-indexer/Cargo.toml` now appears in F12's file list, annotated
+  "dependency sections only; after F12a". The root package `engram` has a lib
+  target, `../..` from `crates/engram-indexer/` resolves to the repo root, and
+  `engram = { path = "../.." }` is exactly what the boundary harness needs to
+  resolve the F06-F10 public facade. No dependency cycle is created: the root
+  package depends only on `powerbi-tmdl-parser`.
+* The workspace-stub-before-RED order is preserved. F12a still creates a
+  bin-only stub with no `engram` dependency, so its verification
+  (`cargo test -p engram-indexer` executing with zero tests) remains valid and
+  still proves the gate can run F12's harness before that harness is written.
+* Ownership of the crate manifest is exactly `F12a -> F12`, a declared total
+  order over disjoint TOML sections. Workspace `[patch.crates-io]` and
+  `resolver = "2"` apply to the new member automatically.
+
+**Item C — `F16 -> F20` edge (P1-2): RESOLVED.**
+
+* The edge is present. F20 can no longer start before `ReadRequestContext`
+  exists.
+* Acyclicity re-checked for this edge only. F16's transitive predecessor set
+  `{F00, F01, F02, F03, F06, F07, F08, F09, F16a, F17, F38}` is disjoint from
+  F20's out-cone `{F21, F22, F23, F42, F43, F50-F55}`, so no cycle is created.
+
+### Graph-level mechanical re-check
+
+Limited to the edges Revision 7 touches:
+
+* F00 has no in-edges. It is one of four graph roots (F00, F02, F38, F46). Its
+  50 out-edges all point at existing nodes, so acyclicity is preserved by
+  construction.
+* The full edge set remains acyclic. A valid topological order exists, for
+  example: `F00, F02, F38, F46, F01, F03, F04a, F04, F05, F06, F07, F08, F09,
+  F10, F11, F12a, F16a, F17, F16, F12, F13, F14, F15, F19, F18, F20, F21, F22,
+  F23, F24, F25-F36, F37, F39, F40, F41, F42, F43, F44, F45, F47, F48, F49,
+  F50, F51, F52, F53, F54, F55`.
+* Every file named in the plan has either a single owner or a declared total
+  order among its owners. The multi-owner files are exactly: root `Cargo.toml`
+  (`F00 -> F12a -> F46 -> F47`), `crates/engram-indexer/Cargo.toml`
+  (`F12a -> F12`), `src/daemon/ipc_server.rs` (`F04a -> F04`),
+  `src/tools/read.rs` (`F25 -> F26`), `src/tools/lifecycle.rs`
+  (`F27 -> F45`), `src/cli/runner.rs` (`F23 -> F42`), and the 49 placeholder
+  harnesses (`F00 -> owning unit`).
+
+### Findings
+
+No open P0 or P1 findings. The one P1 raised in this cycle (R7-A1) was
+remediated in place and re-confirmed above.
+
+Carried forward as non-blocking implementation-time guidance, in addition to the
+Revision 6 observations which stand unchanged:
+
+* F20 reads `ReadinessView`, whose sole writer is F18, but no `F18 -> F20` edge
+  exists. This does not break compilation, because F04a declares the seam
+  signature and ships a pass-through. Flagged only for sequencing F20's
+  dispatch-withholding assertion.
+
+### Disposition
+
+**Harvest authorized.** The plan is executable as written. Revisions 4, 5, 6,
+and 7 together constitute the authoritative roster: F00, F01-F55, F04a, F12a,
+and F16a — 59 units.
+
+Execution posture remains unchanged: RS4 and RS5 stay `ActionRisk: high` and
+require operator approval before Ship implements F08/F17 or F50/F51; the
+HTTP/SSE source deletion in F46 requires operator approval immediately before
+execution.
