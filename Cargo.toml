@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/powerbi-tmdl-parser"]
+members = [".", "crates/powerbi-tmdl-parser", "crates/engram-indexer"]
 resolver = "2"
 
 # Cozo 0.7.6 requires swapvec 0.3.x, whose published manifest restricts
