@@ -35,10 +35,10 @@ run.
 **A. P0-1 — test-manifest registration.** New foundation unit **F00** owns the
 `[[test]]` registration section of root `Cargo.toml` (append-only, 49 new
 blocks) plus 49 committed placeholder harness files (19 contract, 26
-integration, 4 unit). Verified against the tree: 0 top-level `tests/*.rs`, 218
+integration, 4 unit). Verified against the tree: 0 top-level `tests/*.rs`, 219
 existing `[[test]]` blocks, naming convention
 `<subdir>_<basename minus _test>`. All 49 generated names collision-checked
-against the 218 existing names — no duplicates. Placeholders import nothing from
+against the 219 existing names — no duplicates. Placeholders import nothing from
 `engram`, so F00 lands GREEN and each downstream unit's RED step is genuine.
 `F00 -> {49 units}` and `F00 -> F12a` edges added; F00 has no in-edges.
 
