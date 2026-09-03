@@ -64,7 +64,7 @@ a closure PR brought to readiness but not merged, explicitly withholding
    (`internal/core/shipment_lifecycle.go`,
    `internal/core/gate_transition.go`, `internal/errors/errors.go`) and
    that repository's own design-decision record. **Recorded as high-priority
-   follow-up stash `F9D1C495`** with recommended remediation: Stage
+   follow-up stash `28C0E138`** with recommended remediation: Stage
    removes `142-F` from `133-S`'s `custom_fields.items`.
 7. **Runtime verification** (foundations-only, no user-facing runtime
    change): `cargo build --release` (5m15s, clean), `engram --version`,
@@ -97,7 +97,7 @@ a closure PR brought to readiness but not merged, explicitly withholding
 11. **Follow-up stash entries**: confirmed all 5 pre-existing entries
     still present (`A7C0BA5F`, `5A7FBC37`, `58B33C45`, `7B270F79`,
     `F2E84E15` — no re-stashing, single-write invariant preserved). Added
-    one new entry (`F9D1C495`, priority high) for the shipment-archival
+    one new entry (`28C0E138`, priority high) for the shipment-archival
     blocker itself, verified persisted via `backlogit stash get`.
 12. **Mandatory P-020 `compact-context --target all`**: performed.
     Consolidated this session's three 133-S-specific memory checkpoints

@@ -20,8 +20,8 @@ follow_up_stash:
   - "58B33C45"
   - "7B270F79"
   - "F2E84E15"
-  - "F9D1C495"
-blocking_stash: "F9D1C495"
+  - "28C0E138"
+blocking_stash: "28C0E138"
 ---
 
 # 133-S post-merge operational closure
@@ -47,7 +47,7 @@ level manifest items are done and archived; the shipment record itself
 any available backlogit 1.10.1 CLI path without violating this workspace's
 own P-015 policy. See "Blocking Finding" below for full evidence. This is a
 genuine tooling/policy conflict, not a Ship execution error, and is
-recorded as high-priority follow-up stash `F9D1C495` for Stage resolution.
+recorded as high-priority follow-up stash `28C0E138` for Stage resolution.
 
 ## Merge / PR Evidence
 
@@ -166,8 +166,15 @@ binary in this session):
 explicit item despite the shipment covering only a fraction of `142-F`'s
 scope. This is a manifest-assembly correctness issue, not a Ship-side
 execution defect, and correcting shipment planning fields (`custom_fields.items`)
-is outside Ship's role boundary (Stage-only). **Recorded as follow-up stash
-`F9D1C495`** (priority: high) with the recommended remediation: Stage
+is outside Ship's role boundary (Stage-only). This defect was first
+identified during PR #372's review (stash `28C0E138`, created
+2026-09-03T04:37:02Z, predates this session's own stash entry attempt);
+this session's evidence chain confirms and
+hardens it with the exact 87/77 descendant counts and the newly-discovered
+`ErrShipmentShippedRequiresEnvelope` CLI blocker, and consolidates all
+detail onto the pre-existing entry rather than creating a duplicate.
+**Recorded as follow-up stash
+`28C0E138`** (priority: high) with the recommended remediation: Stage
 removes `142-F` from `133-S`'s `custom_fields.items`, after which
 `backlogit shipment ship 133-S` becomes safe to invoke (or a corrected
 safe-close path becomes available).
@@ -186,7 +193,7 @@ genuinely shipped/archived terminal state.
 | `ProposedAction` | Invoke `backlogit shipment ship 133-S` (the only remaining CLI path to close the shipment record) |
 | `ActionRisk` | **HIGH** — cascade would unconditionally force-mark covering feature `142-F` `done` while 77 of its 87 descendants remain incomplete, and would force-requeue-and-detach those 77 descendants from their parent chain; violates this workspace's own P-015 fully-covered-root policy |
 | Approval / containment | **Not approved.** Ship assessed the action against P-015 during this session (evidence chain above), determined it would be a policy violation, and did not invoke it. No operator approval was sought for this specific mutation because Ship independently halted before executing it — consistent with Ship's role boundary (no authority to override P-015) and its Step 6 obligation to halt rather than force a cascade |
-| `ActionResult` | **NOT EXECUTED / ABORTED.** No mutation was made to `142-F` or any of its descendants. `133-S` remains `active` (unchanged). Recorded as follow-up stash `F9D1C495` for Stage disposition instead |
+| `ActionResult` | **NOT EXECUTED / ABORTED.** No mutation was made to `142-F` or any of its descendants. `133-S` remains `active` (unchanged). Recorded as follow-up stash `28C0E138` for Stage disposition instead |
 
 ## Invariants to Preserve
 
@@ -273,19 +280,32 @@ owns the manifest-correction remediation for the blocking finding above.
 ## Compaction Status (P-020)
 
 `compact-context --target all` was invoked this session (mandatory,
-unconditional on merge). Result: **done**. The just-closed release unit's
-own session memory (three files:
-`2026-09-03-ship-pr-372-stage-133-s-merge-closure.md`,
+unconditional on merge). Result: **done** (scan-only, no-op for
+133-S/142-F memory). On first pass this session, the three 133-S session
+memory checkpoints (`2026-09-03-ship-pr-372-stage-133-s-merge-closure.md`,
 `2026-09-03-ship-133-s-mid-session-checkpoint.md`,
-`2026-09-03-ship-133-s-pr-ready-checkpoint.md`) was consolidated into
+`2026-09-03-ship-133-s-pr-ready-checkpoint.md`) were incorrectly treated as
+a completed-release-unit candidate and consolidated/archived — this was a
+process error caught during Copilot review of this closure PR: the
+compact-context skill's own eligibility rule excludes checkpoints for
+active work items, and both the `133-S` shipment record and its covering
+feature `142-F` remain `active` (this closure is explicitly `BLOCKED`, not
+complete). The compaction was **reverted**: the three checkpoint files were
+restored to `docs/memory/`, and
 `docs/memory/compacted/2026-09-03-133-s-read-server-foundations-compacted.md`
-and the verbose originals moved to `docs/archive/memory/`. `docs/exec-plans/`
-and `docs/closure/` were scanned for 133-S/142-F-specific candidates: the
+plus its `docs/archive/memory/` copies were removed. `docs/exec-plans/` and
+`docs/closure/` were also scanned for 133-S/142-F-specific candidates: the
 one related exec-plan
 (`2026-09-02-separate-indexer-read-server-plan.md`) governs feature `142-F`
 as a whole, which remains open across multiple future shipments, so it does
 not meet the "feature/chore complete" compaction precondition and was
-correctly left uncompacted (scan-only, no-op for that artifact).
+correctly left uncompacted. **Net outcome after correction: compact-context
+was invoked (P-020 mandate satisfied) but found zero eligible candidates
+this session** — a valid scan-only no-op, since neither `133-S` nor `142-F`
+has actually reached a completed/shipped state yet. Compaction of this
+session's memory should be revisited only after Stage resolves the
+manifest blocker and `133-S` genuinely reaches a terminal shipped/archived
+state.
 
 ## Releasability Evidence (structured)
 
@@ -294,7 +314,7 @@ correctly left uncompacted (scan-only, no-op for that artifact).
 | Code merged, CI green, review clean | **Satisfied** | PR #376 merged as merge commit; CI (`build`, `start-launcher-windows`) both SUCCESS; local review `READY_WITH_FOLLOWUPS`; P-018 Copilot gate `SATISFIED` |
 | Runtime verification | **Satisfied** | `PASS WITH FOLLOW-UP` — see Validator Evidence above; no new runtime regression attributable to this shipment |
 | Windows generation-publish durability | **Conditional** | Accepted, unverified residual risk (stash `F2E84E15`); condition: F07/F08 implementers must explicitly re-review before treating Windows publication as crash-durable equivalent to POSIX |
-| Shipment-record archival (`133-S` → `shipped`) | **Blocked** | See Blocking Finding and Risky Action Record above; recorded as stash `F9D1C495`; requires Stage manifest correction before this condition can clear |
+| Shipment-record archival (`133-S` → `shipped`) | **Blocked** | See Blocking Finding and Risky Action Record above; recorded as stash `28C0E138`; requires Stage manifest correction before this condition can clear |
 
 Overall: `READY_WITH_CONDITIONS` — the shipped code itself is fully ready
 and verified; the Windows durability item is a satisfiable follow-up
@@ -311,7 +331,7 @@ task-level manifest items are done and archived. The shipment record
 1.10.1 provides no CLI path to close it without either (a) an unconditional,
 unbypassable guard rejecting direct status update, or (b) a cascade that
 would violate this workspace's own P-015 policy against `142-F`'s partial
-coverage. This is recorded as high-priority follow-up stash `F9D1C495` for
+coverage. This is recorded as high-priority follow-up stash `28C0E138` for
 Stage to resolve (recommended: remove `142-F` from `133-S`'s
 `custom_fields.items`). **`134-S` must not be claimed until `133-S` reaches
 a genuinely shipped/archived terminal state** — independently enforced by
