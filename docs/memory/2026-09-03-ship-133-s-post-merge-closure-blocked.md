@@ -96,22 +96,41 @@ a closure PR brought to readiness but not merged, explicitly withholding
     taken (correct outcome, not a skip).
 11. **Follow-up stash entries**: confirmed all 5 pre-existing entries
     still present (`A7C0BA5F`, `5A7FBC37`, `58B33C45`, `7B270F79`,
-    `F2E84E15` — no re-stashing, single-write invariant preserved). Added
-    one new entry (`28C0E138`, priority high) for the shipment-archival
-    blocker itself, verified persisted via `backlogit stash get`.
-12. **Mandatory P-020 `compact-context --target all`**: performed.
-    Consolidated this session's three 133-S-specific memory checkpoints
+    `F2E84E15` — no re-stashing, single-write invariant preserved). A
+    discovery-lookup gap during this session's first pass created a new
+    entry (`F9D1C495`, priority high) for the shipment-archival blocker
+    before checking for an existing match — Copilot review round 2
+    correctly flagged this as a duplicate of pre-existing entry
+    `28C0E138` (`created_at: 2026-09-03T04:37:02Z`, originally captured
+    during PR #372's review, well before this session started). Remediated:
+    `F9D1C495` was archived via `backlogit stash archive`, and its
+    hardened evidence (exact 87/77 descendant counts, the
+    `ErrShipmentShippedRequiresEnvelope` CLI-blocker finding) was
+    consolidated onto `28C0E138` via `backlogit stash edit`. All closure
+    and memory references now cite `28C0E138`, not `F9D1C495` — no second
+    blocker entry exists.
+12. **Mandatory P-020 `compact-context --target all`**: invoked
+    (satisfying the per-merge mandate). First pass incorrectly
+    consolidated this session's three 133-S-specific memory checkpoints
     (`2026-09-03-ship-pr-372-stage-133-s-merge-closure.md`,
     `2026-09-03-ship-133-s-mid-session-checkpoint.md`,
-    `2026-09-03-ship-133-s-pr-ready-checkpoint.md`) into
-    `docs/memory/compacted/2026-09-03-133-s-read-server-foundations-compacted.md`,
-    moved verbose originals to `docs/archive/memory/`. Scanned
-    `docs/exec-plans/` and `docs/closure/` for additional 133-S/142-F
-    candidates: the one related exec-plan
-    (`2026-09-02-separate-indexer-read-server-plan.md`) governs feature
-    `142-F` as a whole (not yet complete across future shipments), so it
-    correctly does not qualify for compaction — scan-only, no-op for that
-    artifact. Recorded `compaction_status: done` in the closure artifact.
+    `2026-09-03-ship-133-s-pr-ready-checkpoint.md`) into a compacted
+    summary and archived the originals — Copilot review round 2 correctly
+    flagged this as premature, since the compact-context skill's own
+    eligibility rule excludes checkpoints for active work items, and both
+    `133-S` and `142-F` remain `active` (closure explicitly `BLOCKED`,
+    not complete). Remediated: the three checkpoint files were restored
+    to `docs/memory/`, and the compacted summary plus its
+    `docs/archive/memory/` copies were removed. Scanned `docs/exec-plans/`
+    and `docs/closure/` for additional 133-S/142-F candidates: the one
+    related exec-plan (`2026-09-02-separate-indexer-read-server-plan.md`)
+    governs feature `142-F` as a whole (not yet complete across future
+    shipments), so it correctly does not qualify for compaction. **Final,
+    correct outcome: compact-context was invoked (P-020 mandate
+    satisfied) and found zero eligible candidates this session** — a
+    valid scan-only no-op, since neither `133-S` nor `142-F` has actually
+    reached a completed/shipped state. Recorded `compaction_status: done`
+    (successful invocation, correctly did nothing) in the closure artifact.
 13. **Backlog index resync**: `backlogit sync` → `CLOSURE_INDEX_SYNC_OK`
     (`Indexed 1291 artifacts`), reflecting the task-level archival that
     already occurred as part of the merged PR's own build phase.
