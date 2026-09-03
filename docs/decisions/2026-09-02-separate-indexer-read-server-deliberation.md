@@ -7,11 +7,60 @@ decision_status: "decided"
 promoted_to: "plan"
 linked_artifacts:
   - "docs/research/2026-09-02-engram-read-only-snapshot-mode-requirements.md"
+  - "docs/exec-plans/2026-09-02-separate-indexer-read-server-plan.md"
 tags:
   - "daemon"
   - "indexing"
   - "reliability"
 ---
+
+## Amendment (2026-09-02): no generation-control endpoint
+
+**This amendment is authoritative over the original Decision, Unresolved
+Questions, and Risks sections below.** The original decision selected immutable
+generations with atomic publication, and that selection stands unchanged. What
+is withdrawn is the *activation trigger* it originally paired with that choice.
+
+The finalized requirements amend R39 and R45 and add R48
+(`docs/research/2026-09-02-engram-read-only-snapshot-mode-requirements.md`):
+
+* **R39 — AMENDED.** Candidate build and publication belong to a separately
+  distributed `engram-indexer` supervisor executable. **No live
+  generation-control endpoint is required.** The threat model trusts processes
+  running as the workspace owner.
+* **R45 — AMENDED.** The read daemon MUST reconcile the durable active manifest
+  at startup and synchronously at shared read dispatch before capturing the
+  request context. It activates only a revision greater than the currently
+  opened revision. **No notification ordering or notification retry is part of
+  the correctness contract.**
+* **R48 — NEW. No generation control endpoint.** The read daemon MUST NOT expose
+  a named or anonymous generation activation endpoint. The durable manifest is
+  the sole publication authority, and request-entry reconciliation is the sole
+  activation trigger.
+
+**Amended activation design.** The indexer publishes by atomically replacing the
+durable active-generation manifest and then stops. It never signals, notifies,
+or commands the daemon. The daemon discovers a new generation by reconciling
+that manifest at exactly two points:
+
+1. **Startup reconciliation** — `activate_initial` runs before readiness is
+   published, so the daemon never reports ready while degraded.
+2. **Request-entry reconciliation** — a single-flight `maybe_activate_newer`
+   check runs synchronously at request entry, before the request context Arc is
+   captured. `_health`, `_shutdown`, unknown methods, and refused methods do not
+   trigger activation.
+
+**Why the control endpoint was withdrawn.** The second plan review found that a
+live privileged control endpoint plus a hostile same-user filesystem threat
+model added implementation risk, a new authentication or capability boundary,
+and a notification-delivery correctness contract — none of which advanced the
+operator's reliability goal. Making the durable manifest the sole authority
+removes the lost-signal failure mode entirely rather than mitigating it: there
+is no signal to lose.
+
+**Do not implement any reload notification, control operation, or activation
+endpoint.** Every reference to one below is superseded historical context
+retained only to explain how the design evolved.
 
 ## Problem Frame
 
@@ -68,12 +117,18 @@ database, and restarts the daemon.
 ### Option B: Immutable generations with atomic publication
 
 The external indexer builds and validates a complete new generation in an
-isolated directory. It atomically publishes a small active-generation manifest,
-then notifies the read daemon through an internal control operation. The daemon
-opens the new generation before swapping its in-memory handle. Existing reads
-finish on the previous generation; new reads use the new generation. A missed
-notification leaves the prior generation available, and daemon restart reads
-the durable manifest.
+isolated directory. It atomically publishes a small active-generation manifest.
+The read daemon opens the new generation before swapping its in-memory handle.
+Existing reads finish on the previous generation; new reads use the new
+generation.
+
+> **Superseded detail (see Amendment).** As originally evaluated, this option
+> notified the read daemon through an internal control operation after
+> publication. That notification was withdrawn by amended R39/R45 and new R48.
+> The durable manifest is the sole publication authority, and the daemon
+> discovers new generations by reconciling it at startup and at request entry.
+> A missed activation is impossible because there is no signal to miss, and
+> daemon restart converges on the published manifest either way.
 
 **Pros**
 
@@ -135,14 +190,17 @@ generation currently serving reads. Publication has two phases:
 
 1. Build and validate a complete generation, including database and dehydrated
    graph artifacts.
-2. Atomically replace an active-generation manifest and request a bounded
-   read-daemon reload.
+2. Atomically replace the durable active-generation manifest. Publication then
+   ends; the indexer sends no signal and invokes no daemon operation.
 
-The read daemon opens the candidate generation before changing the active
-handle. A failed open or validation leaves the current generation untouched.
-The active handle is swapped atomically, and the previous generation remains
-available until in-flight readers release it. The daemon does not monitor
-workspace files, initiate sync, or expose index mutation to agents.
+The read daemon reconciles that durable manifest at startup and synchronously at
+shared read dispatch, activating only a revision greater than the one currently
+open. It opens the candidate generation before changing the active handle. A
+failed open or validation leaves the current generation untouched and still
+serving. The active handle is swapped atomically, and the previous generation
+remains available until in-flight readers release it. The daemon does not
+monitor workspace files, initiate sync, expose index mutation to agents, or
+expose any generation activation or reload endpoint.
 
 The session launcher performs an initial generation build when required, starts
 the daemon in read-server mode, and verifies health plus representative reads
@@ -161,8 +219,11 @@ locks, or failure modes from the read path.
 The implementation plan must resolve:
 
 * The active-generation manifest schema and atomic replacement helper
-* Whether the internal reload signal uses the existing IPC protocol or a
-  dedicated local control endpoint
+* ~~Whether the internal reload signal uses the existing IPC protocol or a
+  dedicated local control endpoint~~ — **RESOLVED by the Amendment: neither.**
+  There is no reload signal and no control endpoint. Activation is triggered
+  only by startup and request-entry reconciliation of the durable manifest
+  (R48).
 * The database-handle indirection needed to drain readers safely
 * Retention rules for superseded generations
 * A bounded first implementation slice that preserves compatibility while the
@@ -177,8 +238,9 @@ The implementation plan must resolve:
   generation identity plus schema version in the manifest
 * **Invalid candidate:** validate schema, branch identity, workspace identity,
   and representative reads before publication
-* **Lost reload signal:** keep the manifest authoritative so a retry or daemon
-  restart converges on the published generation
+* **Lost reload signal:** eliminated rather than mitigated. There is no signal.
+  The durable manifest is the sole authority, and startup plus request-entry
+  reconciliation converge on the published generation (R45/R48)
 * **Handle-swap race:** open before swap and retain the old reference until
   in-flight requests complete
 * **Agent bypass:** expose only read tools in read-server mode and enforce the

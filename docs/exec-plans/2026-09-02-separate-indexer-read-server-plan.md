@@ -5,7 +5,7 @@ date: "2026-09-02"
 source:
   - "docs/research/2026-09-02-engram-read-only-snapshot-mode-requirements.md"
   - "docs/decisions/2026-09-02-separate-indexer-read-server-deliberation.md"
-status: "ready-for-hardening"
+status: reviewed
 ---
 
 ## Problem Frame
@@ -2706,14 +2706,15 @@ remains independently gate-passing. **Resolved.**
 
 Limited to the edges Revision 7 touches:
 
-* F00 has no in-edges. It is one of four graph roots (F00, F02, F38, F46). Its
+* F00 has no in-edges. It is one of three graph roots (F00, F02, F38). Its
   50 out-edges all point at existing nodes, so acyclicity is preserved by
-  construction.
+  construction. F46 ceased to be a root when Revision 7 added `F12a -> F46`.
 * The full edge set remains acyclic. A valid topological order exists, for
-  example: `F00, F02, F38, F46, F01, F03, F04a, F04, F05, F06, F07, F08, F09,
-  F10, F11, F12a, F16a, F17, F16, F12, F13, F14, F15, F19, F18, F20, F21, F22,
-  F23, F24, F25-F36, F37, F39, F40, F41, F42, F43, F44, F45, F47, F48, F49,
-  F50, F51, F52, F53, F54, F55`.
+  example: `F00, F02, F38, F01, F03, F04a, F04, F05, F06, F07, F08, F09,
+  F10, F11, F12a, F46, F16a, F17, F16, F12, F13, F14, F15, F19, F18, F20,
+  F21, F22, F23, F24, F25-F36, F37, F39, F40, F41, F42, F43, F44, F45, F47,
+  F48, F49, F50, F51, F52, F53, F54, F55`. F46 is placed after F12a to honour
+  the Revision 7 `F12a -> F46` edge and before F47 to honour `F46 -> F47`.
 * Every file named in the plan has either a single owner or a declared total
   order among its owners. The multi-owner files are exactly: root `Cargo.toml`
   (`F00 -> F12a -> F46 -> F47`), `crates/engram-indexer/Cargo.toml`

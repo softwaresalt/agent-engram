@@ -68,11 +68,12 @@ cycle:
 
 Graph re-verified acyclic; a valid topological order exists; every multi-owner
 file carries a declared total order. Three P3 accuracy corrections were also
-folded in (F00 is one of four graph roots, not the unique root; roster is 59
-units, not 58; F12a added to the exclusion table). One P2 correction: the
-placeholder-before-block ordering is enforced at build time, not by
-`cargo metadata`, so F00 verification now rests on `cargo test --test <target>
--- --list`, `cargo dev-test`, and `cargo ci`.
+folded in (F00 is one of three graph roots — F00, F02 and F38 — not the unique
+root; F46 ceased to be a root once the `F12a -> F46` edge above was added;
+roster is 59 units, not 58; F12a added to the exclusion table). One P2
+correction: the placeholder-before-block ordering is enforced at build time,
+not by `cargo metadata`, so F00 verification now rests on
+`cargo test --test <target> -- --list`, `cargo dev-test`, and `cargo ci`.
 
 Carried forward as non-blocking: F20 reads `ReadinessView` written by F18 with
 no `F18 -> F20` edge; this does not break compilation because F04a declares the
