@@ -6,22 +6,10 @@ shipment_id: "132-S"
 feature_id: "139-F"
 release: "v0.3.0-rc.1"
 date: 2026-09-02
-closure_status: READY_WITH_CONDITIONS
+releasability: READY_WITH_CONDITIONS
+closure_status: READY
 compaction_status: degraded
 compaction_reason: "No compact-context invocation with target: all was recorded for 132-S; the verification artifact only records a judgment that no broad compaction candidate qualified, not an actual invocation. Recorded degraded per the same historical-evidence pattern as docs/closure/106-S-2026-08-05-post-merge-closure.md."
-conditions:
-  - description: "G2 merge approval and merge-commit-only integration of release PR #368 to main"
-    satisfied: true
-    evidence: "docs/closure/2026-08-29-v0.3.0-rc.1-verification.md#risky-action-record (operator approval 2026-08-30T01:34:55-07:00; merge commit e043299f5415fc081eb4d1be06205975ce88aaa7)"
-  - description: "G3 tag creation/publication and hosted native archive verification on all three supported targets"
-    satisfied: true
-    evidence: "docs/closure/2026-08-29-v0.3.0-rc.1-verification.md#g3-post-publish-verification (annotated tag 241b454d46ed11f49b67c1810b49b85b9cf1b387; publication run 33327699133; native verification run 33340411504)"
-  - description: "Remediation PR #369 merged (merge-commit-only) and hosted assets re-verified without mutation"
-    satisfied: true
-    evidence: "docs/closure/2026-08-29-v0.3.0-rc.1-verification.md#g3-post-publish-verification (merge commit 64459bbded07f32af5f7f5609dfdb71e38cf89b7; verification run 33340411504)"
-  - description: "Shipment/feature/task archival and backlog reconciliation completed via post-merge closure PR #370"
-    satisfied: true
-    evidence: ".backlogit/reconcile/132-S-post-20260830T161725-0700.md (recommendation: PROCEED); .backlogit/archive/132-S.md (archived_status: shipped, commit 64459bbded07f32af5f7f5609dfdb71e38cf89b7); PR #370 merge commit 8e9f5eb3d8a27d7864361fce1b4054760cb1dcec"
 ---
 
 ## Purpose of this document
@@ -45,9 +33,11 @@ before and after this fix, that it requires:
    `{shipment_id}-*-post-merge-closure.md` — i.e. the filename must **start**
    with the literal shipment ID, e.g. `132-S-...-post-merge-closure.md`.
 2. That file's YAML frontmatter to declare `compaction_status` (or
-   `compaction`) as `done` or `degraded`, **and** `closure_status` as
-   `READY`, or `READY_WITH_CONDITIONS` with every entry in a `conditions:`
-   list carrying a literal `satisfied: true` plus non-empty `evidence`.
+   `compaction`) as `done` or `degraded`, **and** `closure_status` as either
+   `READY` on its own, or `READY_WITH_CONDITIONS` together with a
+   `conditions:` list whose every entry carries a literal `satisfied: true`
+   plus non-empty `evidence`. The gate reads only `closure_status` (shipment
+   closure completeness) — it does not read `releasability` at all.
 
 **132-S's closure evidence was never genuinely missing** — it exists in
 full, and is exceptionally thorough:
@@ -86,17 +76,47 @@ glob therefore found zero candidate files
 identically to "not `True`" and reports as
 `PREDECESSOR_CLOSURE_INCOMPLETE`.
 
+## Readiness
+
+**Shipment closure: READY.** `closure_status: READY` reflects that shipment
+`132-S`'s own closure work — release PR #368 merged and reachable from
+`main`, remediation PR #369 merged, post-merge closure/backlog-archival PR
+#370 merged, and shipment/feature/task archival plus both pre- and
+post-reconciliation reports all recommending `PROCEED` — is completely
+done. Nothing about `132-S`'s own closure remains open.
+
+**Release: READY WITH CONDITIONS.** `releasability: READY_WITH_CONDITIONS`
+preserves, separately from shipment closure, the genuinely still-open
+release condition already recorded in the verification artifact: the
+ongoing dogfood observation window (`2026-08-30T18:37:49Z` through
+`2026-09-06T18:37:49Z`) and the block on stable `v0.3.0` pending `002-SP`
+(see `2026-08-29-v0.3.0-rc.1-verification.md:249-253,326-330`). The
+verification artifact itself states this window is "an open condition, not
+a blocker to the already shipped RC" — a separate, already-tracked,
+non-blocking operational follow-up (see
+`docs/decisions/2026-08-29-v0.3.0-rc.1-rollback-and-observability.md` and
+backlog item `002-SP`), distinct from whether shipment `132-S`'s own closure
+is complete.
+
+This document follows the same `releasability` /
+`closure_status` separation already used in existing post-merge closure
+records for this pattern (for example
+[`107-S-2026-08-05-post-merge-closure.md`](107-S-2026-08-05-post-merge-closure.md)
+and
+[`108-S-2026-08-06-post-merge-closure.md`](108-S-2026-08-06-post-merge-closure.md),
+both `releasability: READY_WITH_CONDITIONS` with `closure_status: READY`)
+rather than collapsing the still-open release condition into a synthetic,
+all-satisfied `conditions:` list under `closure_status`.
+
 ## What this document asserts, and what it does not
 
 * This document **transcribes** the already-recorded, already-operator-approved
-  `READY WITH CONDITIONS` disposition from the verification artifact above —
-  it does not upgrade, downgrade, or reinterpret that disposition.
-* The four `conditions:` entries in the frontmatter list only the specific,
-  already-completed, already-evidenced release-process steps (G2 merge, G3
-  tag/publish/native-verification, remediation merge/re-verification, and
-  shipment archival/reconciliation). Each is satisfied and cites the exact
-  existing evidence location; no new verification was performed to produce
-  these entries.
+  disposition from the verification artifact above, split across the two
+  fields the gate and this repository's convention distinguish: shipment
+  closure (`closure_status: READY` — fully complete) and release readiness
+  (`releasability: READY_WITH_CONDITIONS` — the dogfood window/`002-SP`
+  condition genuinely remains open). It does not upgrade, downgrade, or
+  reinterpret either disposition.
 * `compaction_status: degraded` is recorded truthfully rather than `done`:
   the verification artifact's "Knowledge-maintenance assessment" section
   records a judgment that no broad compaction candidate qualified, but no
@@ -108,27 +128,26 @@ identically to "not `True`" and reports as
   shipment closed before compaction evidence was required), this document
   records `degraded` with an explicit `compaction_reason` rather than
   fabricating invocation evidence that does not exist.
-* **Not asserted as satisfied**: the ongoing dogfood observation window
-  (`2026-08-30T18:37:49Z` through `2026-09-06T18:37:49Z`) and the block on
-  stable `v0.3.0` pending `002-SP` remain genuinely open. They are
-  deliberately **excluded** from the `conditions:` list above rather than
-  marked satisfied. The verification artifact itself states this window is
-  "an open condition, not a blocker to the already shipped RC" — it is a
-  separate, already-tracked, non-blocking operational follow-up (see
-  `docs/decisions/2026-08-29-v0.3.0-rc.1-rollback-and-observability.md` and
-  backlog item `002-SP`), not a precondition of shipment `132-S`'s own
-  closure completeness.
+* **Not asserted as satisfied by `closure_status: READY`**: the ongoing
+  dogfood observation window and the `002-SP` block remain genuinely open
+  and are carried under `releasability`, not folded into shipment closure.
+  `closure_status: READY` reflects only that `132-S`'s own archival and
+  reconciliation work is complete — it does not assert the release itself
+  is unconditionally ready.
 
 ## Precedent
 
 This repair follows the same pattern previously used for shipment `106-S`
 (see [`docs/closure/106-S-2026-08-05-post-merge-closure.md`](106-S-2026-08-05-post-merge-closure.md)
-in this repository) — an additive, canonical evidence artifact reconstructed
-from already-merged PRs and already-recorded memory/reconciliation reports
-after the original closure session did not write a file matching the exact
+in this repository) for the compaction-status handling — an additive,
+canonical evidence artifact reconstructed from already-merged PRs and
+already-recorded memory/reconciliation reports after the original closure
+session did not write a file matching the exact
 `{shipment_id}-*-post-merge-closure.md` path the gate expects, including its
 use of `compaction_status: degraded` with an explicit `compaction_reason`
 for historical evidence that predates or falls outside a formal compaction
-invocation. No backlog, code, source, or release state is changed by this
-document; only the missing canonical, gate-discoverable evidence artifact is
-added.
+invocation — and the same `releasability` / `closure_status` separation used
+in `docs/closure/107-S-2026-08-05-post-merge-closure.md` and
+`docs/closure/108-S-2026-08-06-post-merge-closure.md`. No backlog, code,
+source, or release state is changed by this document; only the missing
+canonical, gate-discoverable evidence artifact is added.
