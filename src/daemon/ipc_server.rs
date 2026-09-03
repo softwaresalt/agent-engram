@@ -1,8 +1,17 @@
-//! Daemon IPC server: newline-delimited JSON-RPC over a local socket.
+//! Daemon IPC composition root: newline-delimited JSON-RPC over a local socket.
 //!
-//! Listens on the workspace-scoped IPC endpoint (Unix domain socket on Linux/macOS,
-//! Windows named pipe on Windows), reads exactly one JSON-RPC request per
-//! connection, dispatches to [`crate::tools::dispatch`], and writes the response.
+//! This module owns framing and the accept loop only. It listens on the
+//! workspace-scoped IPC endpoint (Unix domain socket on Linux/macOS, Windows
+//! named pipe on Windows), reads exactly one request line per connection, and
+//! writes the response frame. Every decision beyond framing is delegated to a
+//! named seam:
+//!
+//! | Seam | Module |
+//! |------|--------|
+//! | Startup gate and readiness | [`crate::daemon::startup_activation`] |
+//! | Request admission and entry | [`crate::daemon::request_entry`] |
+//! | Domain-error to wire conversion | [`crate::daemon::error_transport`] |
+//! | Start and shutdown lifecycle | [`crate::daemon::lifecycle_policy`] |
 //!
 //! # Endpoint naming
 //!
@@ -18,23 +27,20 @@ use interprocess::local_socket::{
     ListenerOptions,
     tokio::{Listener, Stream, prelude::*},
 };
-use serde_json::{Value, json};
+use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
 
-use crate::daemon::protocol::{HealthCheckResult, IpcRequest, IpcResponse};
-use crate::daemon::request_entry::Admission;
+use crate::daemon::protocol::IpcResponse;
 use crate::daemon::ttl::TtlTimer;
 use crate::daemon::watcher::{WatcherConfig, start_watcher};
-use crate::daemon::{error_transport, lifecycle_policy, request_entry, startup_activation};
+use crate::daemon::{lifecycle_policy, request_entry, startup_activation};
 use crate::db::workspace::daemon_key_for_workspace;
 use crate::errors::{EngramError, IpcError as DomainIpcError};
 use crate::models::WatcherEvent;
 use crate::server::state::{AppState, SharedState};
-use crate::shim::version::{ENGRAM_BUILD_HASH, ENGRAM_PROTOCOL_VERSION};
-use crate::tools;
 
 // ── Endpoint naming ──────────────────────────────────────────────────────────
 
@@ -256,7 +262,7 @@ async fn handle_connection(
             IpcResponse::parse_error(format!("request exceeds {MAX_REQUEST_BYTES} byte limit")),
             false,
         ),
-        Ok(_) => process_request(&line, &state).await,
+        Ok(_) => request_entry::process_request(&line, &state).await,
         Err(e) => {
             warn!(error = %e, "failed to read IPC request line");
             debug!(connection_id = %connection_id, "ipc_connection_closed");
@@ -331,68 +337,6 @@ fn emit_response_frame_result(connection_id: &str, response_id: &Value, outcome:
             let response_id = response_id.to_string();
             emit!(response_id.as_str());
         }
-    }
-}
-
-/// Deserialize and dispatch a single raw request line, returning an [`IpcResponse`].
-async fn process_request(line: &str, state: &SharedState) -> (IpcResponse, bool) {
-    let request = match IpcRequest::from_line(line.trim()) {
-        Ok(r) => r,
-        Err(err_response) => return (err_response, false),
-    };
-
-    if let Admission::Refused(err_response) = request_entry::admit(state, &request) {
-        return (*err_response, false);
-    }
-
-    // Safe to unwrap: validate() ensures id is Some.
-    let id = request.id.clone().unwrap_or(Value::Null);
-
-    match request.method.as_str() {
-        "_health" => {
-            // Return "starting" while workspace hydration is in progress so
-            // the shim keeps polling rather than treating the daemon as healthy
-            // before it can serve real tool calls.
-            let snapshot = state.snapshot_workspace().await;
-            let status = if snapshot.is_some() && startup_activation::readiness(state).is_ready() {
-                "ready"
-            } else {
-                "starting"
-            };
-            (
-                IpcResponse::success(
-                    id,
-                    json!(HealthCheckResult {
-                        status: status.to_owned(),
-                        uptime_seconds: state.uptime_seconds(),
-                        workspace: snapshot.map(|s| s.path),
-                        active_connections: state.active_connections(),
-                        protocol_version: ENGRAM_PROTOCOL_VERSION,
-                        build_hash: ENGRAM_BUILD_HASH.to_owned(),
-                    }),
-                ),
-                false,
-            )
-        }
-        // T052: `_shutdown` is signalled by `handle_connection` only after
-        // this response has been written and flushed (S022, S037).
-        "_shutdown" => {
-            info!("daemon received _shutdown IPC request — initiating graceful shutdown");
-            (
-                IpcResponse::success(
-                    id,
-                    json!({ "status": "shutting_down", "flush_started": true }),
-                ),
-                true,
-            )
-        }
-        method => (
-            match tools::dispatch(Arc::clone(state), method, request.params).await {
-                Ok(result) => IpcResponse::success(id, result),
-                Err(e) => IpcResponse::error(id, error_transport::to_ipc_error(e)),
-            },
-            false,
-        ),
     }
 }
 
@@ -814,6 +758,7 @@ pub async fn run_with_shutdown_v2(
 mod tests {
     use super::*;
     use crate::server::state::AppState;
+    use serde_json::json;
     #[cfg(unix)]
     use std::path::{Path, PathBuf};
     use std::sync::Mutex;
