@@ -6,12 +6,15 @@ feature_id: "142-F"
 mode: post-merge
 date: 2026-09-03
 author: ship
-verdict: "BLOCKED — shipment record archival pending Stage manifest correction"
-closure_status: "BLOCKED"
+verdict: "READY — shipment record manually safe-closed (archived_status=done); Windows durability residual risk remains an accepted, documented releasability condition"
+closure_status: "READY"
 releasability: "READY_WITH_CONDITIONS"
 compaction_status: "done"
 pr_number: 376
+closure_pr_number: 377
+manual_closure_pr_number: 378
 merge_commit: "33a0a41e345cef8965b707346728d44fa5492daf"
+closure_pr_merge_commit: "224539ff4da60e477f4a93bff729cc42401ec4f8"
 head_commit_merged: "2005b3db94752dbe37946a98532c46dde1aad674"
 runtime_verification_report: "docs/closure/133-S-2026-09-03-runtime-verification.md"
 follow_up_stash:
@@ -23,11 +26,13 @@ follow_up_stash:
   - "28C0E138"
   - "F9D1C495"
   - "F9767C12"
-blocking_stash: "28C0E138"
+  - "B761AFA7"
+blocking_stash: null
 duplicate_stash_flagged_for_stage_triage:
   - "F9D1C495"
   - "28C0E138"
 cascade_mechanism_correction_stash: "F9767C12"
+shipment_record_status: "archived (archived_status=done)"
 ---
 
 # 133-S post-merge operational closure
@@ -47,18 +52,109 @@ working autonomously until the task is truly finished" — treated as a
 one-time approval scoped to PR #376 only, per the operator's own
 instruction, not a blanket future-PR authorization).
 
-**This closure is BLOCKED at the shipment-record-archival step.** All task-
-level manifest items are done and archived; the shipment record itself
-(`133-S`) cannot currently be safely transitioned to `shipped`/archived by
-any available backlogit 1.10.1 CLI path without violating this workspace's
-own P-015 policy. See "Blocking Finding" below for full evidence. This is a
-genuine tooling/policy conflict, not a Ship execution error, and is
-recorded as high-priority follow-up stash `28C0E138` for Stage resolution.
+**UPDATE (2026-09-03, continuation session): this closure is no longer
+BLOCKED.** The shipment-record-archival step was completed via an
+explicit, operator-approved manual safe-close (not `backlogit shipment
+ship`) after PR #377 (this closure PR) merged. See "Manual Closure
+Completion" below for the full evidence chain. The original blocking
+analysis is preserved unedited below for audit continuity — it remains
+accurate as a description of why the *cascade* path (`backlogit shipment
+ship`) is unsafe, which is still true and still governs how `134-S`
+through `142-S` must each be closed in turn.
+
 **Known duplicate stash entries requiring Stage triage** (see "Stash
 duplicate — flagged, not resolved" below): this session inadvertently
 created a second entry, `F9D1C495`, describing the same defect as the
 pre-existing `28C0E138`; both remain active and unedited pending Stage's
 own duplicate-detection/harvest disposition, per Ship's role boundary.
+This remains an open Stage follow-up and does not block this closure.
+
+## Manual Closure Completion (2026-09-03, continuation session)
+
+After PR #377 merged (merge commit
+`224539ff4da60e477f4a93bff729cc42401ec4f8`, confirmed ancestor of
+`origin/main`), the operator granted narrow, explicit approval for exactly
+two actions: (1) merging PR #377 after an exact-HEAD gate recheck, and (2)
+the manual closure sequence below for `133-S` — not a blanket approval for
+future PRs or other destructive actions.
+
+Sequence performed (official `backlogit` CLI seams only — `update`,
+`comment add`, `archive`, and `sync`; no direct file
+edits, no `backlogit shipment ship`):
+
+1. **Precondition verification**: `133-S` manifest's 10 task-level items
+   (`142.001-T`, `142.001.001-ST`..`142.001.005-ST`, `142.002-T`,
+   `142.004-T`, `142.006-T`, `142.007-T`) were already physically present
+   in `.backlogit/archive/` at `status: done` with correct `parent_id`
+   chains — moved there as a raw `git mv` inside feature-implementation
+   commit `3f890662` (an ancestor of PR #376's merge commit
+   `33a0a41e...`), predating the official-CLI-archival assumption in the
+   original closure plan. This precondition difference was recorded before
+   any further mutation; no queue-side copies existed, no double-archive
+   risk was present, and the difference did not block completion of the
+   requested outcome (commit attribution + shipment closure), so work
+   proceeded rather than halting.
+2. **Commit attribution**: `backlogit update <id> --commit
+   33a0a41e345cef8965b707346728d44fa5492daf` was run against each of the
+   10 already-archived task items (official update seam; works on archived
+   records). Diff-verified: exactly one `commit:` line added and
+   `updated_at` bumped per file, no other field touched. **Correction**
+   (Copilot review, this PR): the commit line was the only field this PR
+   added — but it was not the only metadata these ten records lack
+   relative to this workspace's canonical archive convention. All ten
+   remain `status: done` without the `archived_status`/`archived_from`
+   wrapper fields that the official `backlogit archive` command stamps
+   elsewhere (e.g. the `133-S.md` shipment record itself, and 255 of 741
+   other task-type archive files in this workspace); their filesystem
+   location under `.backlogit/archive/` is the only signal of archival,
+   not their frontmatter. This predates this PR — they were relocated by a
+   raw `git mv` inside earlier feature-implementation commit `3f890662`,
+   not via the official archive command — and normalizing them is a
+   separate, materially larger mutation outside this PR's narrowly
+   operator-approved manual-closure sequence (P-021 C1). Deferred as
+   stash `B761AFA7` for Stage's disposition; not fixed here.
+3. **Audit rationale**: `backlogit comment add 133-S --actor ship
+   --commit-sha 224539ff4da60e477f4a93bff729cc42401ec4f8` recorded a
+   detailed rationale explaining why `backlogit shipment ship` /
+   `ShipShipment` is unsafe for `133-S`, citing PR #376, PR #377, and stash
+   `F9767C12`. (Note: `.backlogit/logs/` is git-ignored in this workspace,
+   so this comment is durable in the local index/log but not in git
+   history; this document is the git-durable copy of that rationale.)
+4. **Shipment status transition**: `backlogit update 133-S --status done`
+   (live-verified `status: done` before archival), then `backlogit archive
+   133-S` (live-verified `status: archived`, `archived_status: done`, no
+   longer present in `.backlogit/queue/`).
+5. **Postconditions verified** (before and after `backlogit sync`):
+   `142-F` remains `active` with its queue file present and all 59 direct
+   children retaining `parent_id: 142-F` (zero orphans, verified by
+   enumerating every child and re-reading its `parent_id`); all 77
+   remaining `142-F` descendants across the other nine covering shipments
+   (`134-S` 12, `135-S` 4, `136-S` 9, `137-S` 6, `138-S` 14, `139-S` 6,
+   `140-S` 7, `141-S` 7, `142-S` 12 — task-item counts excluding the
+   covering feature itself, summing to 77) remain `queued` and attached to
+   their manifests, unchanged by this closure.
+6. **Index resync**: `backlogit sync` completed successfully
+   (`Indexed 1292 artifacts`).
+7. **Topology gate for `134-S`**: `autoharness gate pipeline-topology
+   --mode agent --shipment 134-S --phase pre_claim --json` was re-run
+   after closure. Result: still blocked, token
+   `PREDECESSOR_CLOSURE_INCOMPLETE`, because the gate's `closure_complete`
+   check additionally requires this closure document's own
+   `closure_status` frontmatter to read `READY` (or `READY_WITH_CONDITIONS`
+   with a satisfied machine-readable `conditions:` block) — which this
+   same edit now sets (`closure_status: READY`, no `conditions:` block
+   needed). `134-S` claim eligibility is therefore expected to pass once
+   this document (on this branch) reaches `main`; re-verification of the
+   gate after merge is a remaining follow-up, not performed by this
+   session (no shipment claim was made or attempted for `134-S`).
+
+No mutation touched `142-F`, any of its 59 direct children beyond the 10
+manifest items receiving commit attribution, or any of the other nine
+covering shipments' manifests. Rollback material (pre-mutation copies of
+`133-S.md` and `142-F.md`) was captured to a local temp path before any
+mutation and is available if reversal is ever required; git history on
+this branch (each step as a discrete, revertable commit) is the primary
+rollback mechanism.
 
 ## Merge / PR Evidence
 
@@ -130,7 +226,12 @@ explicitly deferred to later shipments).
 - Skipped (already archived or not found): none — no candidate fields
   existed to act on
 
-## Blocking Finding: Shipment Record Cannot Be Safely Archived
+## Blocking Finding: Shipment Record Cannot Be Safely Archived (RESOLVED — see "Manual Closure Completion" above)
+
+**Status: RESOLVED via manual safe-close, this session.** The analysis
+below is preserved unedited as the audit record of *why* the cascade path
+(`backlogit shipment ship`) is unsafe; it remains fully accurate and
+continues to govern how `134-S` through `142-S` must each be closed.
 
 **Evidence chain** (full detail; Ship independently reproduced every claim
 below against the live `.backlogit/` state and the installed `backlogit`
@@ -470,26 +571,29 @@ state.
 | Code merged, CI green, review clean | **Satisfied** | PR #376 merged as merge commit; CI (`build`, `start-launcher-windows`) both SUCCESS; local review `READY_WITH_FOLLOWUPS`; P-018 Copilot gate `SATISFIED` |
 | Runtime verification | **Satisfied** | `PASS WITH FOLLOW-UP` — see Validator Evidence above; no new runtime regression attributable to this shipment |
 | Windows generation-publish durability | **Conditional** | Accepted, unverified residual risk (stash `F2E84E15`); condition: F07/F08 implementers must explicitly re-review before treating Windows publication as crash-durable equivalent to POSIX |
-| Shipment-record archival (`133-S` → `shipped`) | **Blocked** | See Blocking Finding and Risky Action Record above; recorded as stash `28C0E138` (pre-existing) and `F9D1C495` (session-created duplicate, flagged for Stage triage — see "Stash duplicate" section); requires Stage manifest correction before this condition can clear |
+| Shipment-record archival (`133-S` → archived) | **Satisfied** | Manual safe-close completed this session: `backlogit update 133-S --status done` → verified live `status: done` → `backlogit archive 133-S` → verified `status: archived`, `archived_status: done`. See "Manual Closure Completion" above. Stash `28C0E138`/`F9D1C495` duplicate-triage remains an open Stage follow-up but does not block this closure |
 
-Overall: `READY_WITH_CONDITIONS` — the shipped code itself is fully ready
-and verified; the Windows durability item is a satisfiable follow-up
-condition; the shipment-record archival item is a hard block on declaring
-`133-S` fully `SHIPPED` (distinct from code releasability), tracked
-separately as `closure_status: BLOCKED`.
+Overall releasability: `READY_WITH_CONDITIONS` — the shipped code itself
+is fully ready and verified; the Windows durability item is a
+satisfiable, accepted follow-up condition (tracked as stash `F2E84E15`,
+requiring F07/F08 implementer re-review; see the "Windows generation-
+publish durability" row above). Shipment closure itself is `READY` (no
+open blocker) — the shipment-record archival item, previously a hard
+block, is now resolved via manual safe-close.
 
 ## Verdict
 
-**BLOCKED (shipment-record archival only)**. The code was merged, verified,
-and is production-ready; runtime verification is PASS WITH FOLLOW-UP; all
-task-level manifest items are done and archived. The shipment record
-`133-S` itself remains `active` (not `shipped`/archived) because backlogit
-1.10.1 provides no CLI path to close it without either (a) an unconditional,
-unbypassable guard rejecting direct status update, or (b) a cascade that
-would violate this workspace's own P-015 policy against `142-F`'s partial
-coverage. This is recorded as high-priority follow-up stash `28C0E138` for
-Stage to resolve (recommended: remove `142-F` from `133-S`'s
-`custom_fields.items`). **`134-S` must not be claimed until `133-S` reaches
-a genuinely shipped/archived terminal state** — independently enforced by
-the `pipeline-topology` gate's predecessor check regardless of this
-document's content.
+**Closure: READY. Releasability: READY_WITH_CONDITIONS.** The code was
+merged, verified, and is production-ready; runtime verification is PASS
+WITH FOLLOW-UP; all task-level manifest items are done and archived; the
+shipment record `133-S` itself is now `archived` with `archived_status:
+done`, closed via an explicit, operator-approved manual safe-close (never
+`backlogit shipment ship`, which remains unsafe for `142-F`'s partial
+coverage — see "Cascade mechanism correction" above). Remaining
+releasability conditions: the Windows durability residual risk
+(accepted, documented, tracked as stash `F2E84E15`) and Stage's
+duplicate-stash triage (`28C0E138`/`F9D1C495`,
+informational follow-up, non-blocking). **The nine sibling shipments
+(`134-S` through `142-S`) still partially cover `142-F` and must each use
+the same manual safe-close path — never `backlogit shipment ship` — when
+their own manifests reach completion.**
