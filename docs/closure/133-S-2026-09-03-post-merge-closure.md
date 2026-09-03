@@ -21,7 +21,11 @@ follow_up_stash:
   - "7B270F79"
   - "F2E84E15"
   - "28C0E138"
+  - "F9D1C495"
 blocking_stash: "28C0E138"
+duplicate_stash_flagged_for_stage_triage:
+  - "F9D1C495"
+  - "28C0E138"
 ---
 
 # 133-S post-merge operational closure
@@ -48,6 +52,11 @@ any available backlogit 1.10.1 CLI path without violating this workspace's
 own P-015 policy. See "Blocking Finding" below for full evidence. This is a
 genuine tooling/policy conflict, not a Ship execution error, and is
 recorded as high-priority follow-up stash `28C0E138` for Stage resolution.
+**Known duplicate stash entries requiring Stage triage** (see "Stash
+duplicate — flagged, not resolved" below): this session inadvertently
+created a second entry, `F9D1C495`, describing the same defect as the
+pre-existing `28C0E138`; both remain active and unedited pending Stage's
+own duplicate-detection/harvest disposition, per Ship's role boundary.
 
 ## Merge / PR Evidence
 
@@ -168,16 +177,18 @@ scope. This is a manifest-assembly correctness issue, not a Ship-side
 execution defect, and correcting shipment planning fields (`custom_fields.items`)
 is outside Ship's role boundary (Stage-only). This defect was first
 identified during PR #372's review (stash `28C0E138`, created
-2026-09-03T04:37:02Z, predates this session's own stash entry attempt);
-this session's evidence chain confirms and
-hardens it with the exact 87/77 descendant counts and the newly-discovered
-`ErrShipmentShippedRequiresEnvelope` CLI blocker, and consolidates all
-detail onto the pre-existing entry rather than creating a duplicate.
-**Recorded as follow-up stash
-`28C0E138`** (priority: high) with the recommended remediation: Stage
-removes `142-F` from `133-S`'s `custom_fields.items`, after which
-`backlogit shipment ship 133-S` becomes safe to invoke (or a corrected
-safe-close path becomes available).
+2026-09-03T04:37:02Z, predates this session). This session's own evidence
+chain independently confirmed and hardened the same defect with the exact
+87/77 descendant counts and the `ErrShipmentShippedRequiresEnvelope` CLI
+blocker, but — before discovering `28C0E138` already existed — captured it
+as a second entry, `F9D1C495`. See "Stash duplicate — flagged for Stage
+triage" below for the full disposition of that duplicate. **Recorded as
+follow-up stash `28C0E138`** (priority: high, pre-existing) and
+`F9D1C495` (priority: high, session-created, duplicate — left active for
+Stage to triage) with the recommended remediation: Stage removes `142-F`
+from `133-S`'s `custom_fields.items`, after which `backlogit shipment ship
+133-S` becomes safe to invoke (or a corrected safe-close path becomes
+available).
 
 **Independent safety net**: the `pipeline-topology` gate's predecessor
 check (`_is_shipped_terminal`) already fails closed on `133-S`'s current
@@ -186,6 +197,42 @@ check (`_is_shipped_terminal`) already fails closed on `133-S`'s current
 document's content. `134-S` must not be claimed until `133-S` reaches a
 genuinely shipped/archived terminal state.
 
+## Stash duplicate — flagged for Stage triage, not resolved by Ship
+
+During this session's first pass, the discovery-lookup step (searching
+active + archived stash for an existing entry describing the same
+expansion before capturing a new one) was performed insufficiently, and a
+new entry `F9D1C495` was captured before `28C0E138` (the pre-existing
+entry from PR #372's review, describing the identical `142-F`
+manifest/cascade defect) was found. Copilot review correctly flagged this
+as a duplicate.
+
+**First remediation attempt (reverted — role-boundary violation)**: Ship's
+initial fix archived `F9D1C495` via `backlogit stash archive` and edited
+`28C0E138`'s text via `backlogit stash edit` to consolidate the hardened
+evidence onto it. Copilot review correctly flagged this as a **P-010 role
+boundary violation**: Ship's role boundary (`.github/agents/_ship.agent.md`
+Backlog row) explicitly forbids "discretionary removal or archival of
+stash entries" and "triage, prioritize/re-prioritize, re-classify, edit,
+harvest, or deliberate on stash entries" outside two narrow exceptions
+(capture-only creation for a follow-up/P-021-C2 step, and retiring the
+specific `custom_fields.source_stash_id`-linked source entry at post-merge
+Step 7) — neither of which covers archiving or editing an unrelated
+duplicate. The discovery-failure protocol's own guidance is explicit that
+"both fail-safe modes rely on Stage's unconditional duplicate detection
+... to remediate any resulting duplicate" — Ship is not authorized to
+perform that remediation itself.
+
+**Correction applied**: both mutations were reverted. `F9D1C495` was
+restored to `.backlogit/stash.jsonl` (active, unarchived) in its original
+captured form; `28C0E138`'s text was restored to its original pre-session
+content (the PR #372-era text, without this session's consolidated
+evidence appended). **Current true state**: both `F9D1C495` and `28C0E138`
+exist as active, unedited stash entries, both describing the same `142-F`
+manifest/cascade defect. This duplicate is flagged here for **Stage's**
+own unconditional duplicate-detection/harvest triage to resolve — Ship
+takes no further stash-mutation action on either entry.
+
 ## Risky Action Record
 
 | Field | Value |
@@ -193,9 +240,11 @@ genuinely shipped/archived terminal state.
 | `ProposedAction` | Invoke `backlogit shipment ship 133-S` (the only remaining CLI path to close the shipment record) |
 | `ActionRisk` | **HIGH** — cascade would unconditionally force-mark covering feature `142-F` `done` while 77 of its 87 descendants remain incomplete, and would force-requeue-and-detach those 77 descendants from their parent chain; violates this workspace's own P-015 fully-covered-root policy |
 | Approval / containment | **Not approved.** Ship assessed the action against P-015 during this session (evidence chain above), determined it would be a policy violation, and did not invoke it. No operator approval was sought for this specific mutation because Ship independently halted before executing it — consistent with Ship's role boundary (no authority to override P-015) and its Step 6 obligation to halt rather than force a cascade |
-| `ActionResult` | **NOT EXECUTED / ABORTED.** No mutation was made to `142-F` or any of its descendants. `133-S` remains `active` (unchanged). Recorded as follow-up stash `28C0E138` for Stage disposition instead |
+| `ActionResult` | **NOT EXECUTED / ABORTED.** No mutation was made to `142-F` or any of its descendants. `133-S` remains `active` (unchanged). Recorded as follow-up stash `28C0E138`/`F9D1C495` (duplicate pair, flagged for Stage triage) instead |
+| *(second risky action, self-detected and reverted)* | `ProposedAction`: archive `F9D1C495` + edit `28C0E138` to resolve the duplicate found above. `ActionRisk`: **role-boundary violation (P-010)** — discretionary stash archival/edit is Stage-only. `ActionResult`: **REVERTED** within this same session before merge; both entries restored to their pre-mutation state; see "Stash duplicate — flagged for Stage triage" above |
 
 ## Invariants to Preserve
+
 
 * The strict `DaemonMode` parser (`DaemonMode::resolve`) must continue to
   hard-error (`DaemonModeParseError::Unrecognized`) on any value outside
@@ -314,7 +363,7 @@ state.
 | Code merged, CI green, review clean | **Satisfied** | PR #376 merged as merge commit; CI (`build`, `start-launcher-windows`) both SUCCESS; local review `READY_WITH_FOLLOWUPS`; P-018 Copilot gate `SATISFIED` |
 | Runtime verification | **Satisfied** | `PASS WITH FOLLOW-UP` — see Validator Evidence above; no new runtime regression attributable to this shipment |
 | Windows generation-publish durability | **Conditional** | Accepted, unverified residual risk (stash `F2E84E15`); condition: F07/F08 implementers must explicitly re-review before treating Windows publication as crash-durable equivalent to POSIX |
-| Shipment-record archival (`133-S` → `shipped`) | **Blocked** | See Blocking Finding and Risky Action Record above; recorded as stash `28C0E138`; requires Stage manifest correction before this condition can clear |
+| Shipment-record archival (`133-S` → `shipped`) | **Blocked** | See Blocking Finding and Risky Action Record above; recorded as stash `28C0E138` (pre-existing) and `F9D1C495` (session-created duplicate, flagged for Stage triage — see "Stash duplicate" section); requires Stage manifest correction before this condition can clear |
 
 Overall: `READY_WITH_CONDITIONS` — the shipped code itself is fully ready
 and verified; the Windows durability item is a satisfiable follow-up

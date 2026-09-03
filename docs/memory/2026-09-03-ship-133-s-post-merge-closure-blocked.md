@@ -102,13 +102,20 @@ a closure PR brought to readiness but not merged, explicitly withholding
     before checking for an existing match — Copilot review round 2
     correctly flagged this as a duplicate of pre-existing entry
     `28C0E138` (`created_at: 2026-09-03T04:37:02Z`, originally captured
-    during PR #372's review, well before this session started). Remediated:
-    `F9D1C495` was archived via `backlogit stash archive`, and its
-    hardened evidence (exact 87/77 descendant counts, the
-    `ErrShipmentShippedRequiresEnvelope` CLI-blocker finding) was
-    consolidated onto `28C0E138` via `backlogit stash edit`. All closure
-    and memory references now cite `28C0E138`, not `F9D1C495` — no second
-    blocker entry exists.
+    during PR #372's review, well before this session started).
+    **First remediation attempt (round 2, reverted)**: archived
+    `F9D1C495` and edited `28C0E138` to consolidate the evidence — Copilot
+    review round 4 correctly flagged this as a **P-010 role-boundary
+    violation** (Ship's role boundary forbids discretionary stash
+    archival/edit outside two narrow exceptions, neither of which applies
+    here; the discovery-failure protocol reserves duplicate remediation
+    for Stage's own triage). **Corrected**: both mutations were reverted —
+    `F9D1C495` restored to active (unarchived, original text), `28C0E138`
+    restored to its original pre-session text. **Final state**: both
+    entries remain active and unedited, flagged in the closure doc's
+    "Stash duplicate — flagged for Stage triage" section for Stage's own
+    duplicate-detection/harvest disposition. Ship performs no further
+    stash mutation on either entry.
 12. **Mandatory P-020 `compact-context --target all`**: invoked
     (satisfying the per-merge mandate). First pass incorrectly
     consolidated this session's three 133-S-specific memory checkpoints
