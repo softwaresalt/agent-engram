@@ -1,6 +1,7 @@
 # Decision: Generation Storage Feasibility Spike (F01 / S1)
 
-* **Status**: DECIDED — GO
+* **Status**: DECIDED — GO, with one documented residual risk (Windows
+  directory-durability; see "Verdict" and "Forward pointers" below)
 * **Date**: 2026-09-02 (spike executed and recorded 2026-09-03 as part of shipment 133-S)
 * **Feature**: F01 — Storage feasibility spike (task `142.004-T`)
 * **Plan reference**: `docs/exec-plans/2026-09-02-separate-indexer-read-server-plan.md`,
@@ -99,8 +100,9 @@ by the standard library's documented contract plus identical POSIX
 semantics on Unix.
 
 **3b. Directory durability (the renamed directory entry itself survives a
-crash) — Unix: PROVEN via explicit fsync; Windows: documented asymmetry,
-accepted.**
+crash) — Unix: PROVEN via explicit fsync; Windows: NOT independently
+demonstrated by an executable probe — an accepted, unverified residual
+risk, not a proven guarantee.**
 Fsyncing the staging file only guarantees the replacement's *content* is on
 stable storage before the rename; it does not by itself guarantee the
 *directory entry update* performed by the rename survives an immediate
@@ -115,18 +117,27 @@ not set), so there is no safe-Rust equivalent; `sync_parent_dir` is a
 documented no-op there. Reaching for the raw `MOVEFILE_WRITE_THROUGH` /
 `FlushFileBuffers` Win32 equivalent would require `unsafe` FFI, which
 experiment 4 below establishes is unnecessary for the selected primitives.
-This asymmetry is accepted rather than closed with `unsafe` code: on
-Windows, crash-*consistency* (never a torn state) is still guaranteed by
-NTFS's own transactional metadata journal, even though immediate
-fsync-level *durability* of the directory entry is not.
+**This asymmetry is deliberately not closed with `unsafe` code, and it is
+important to be precise about what that means: unlike the POSIX case,
+nothing in this spike's probes exercises any Windows-specific durability
+primitive, so directory-entry durability on Windows is not demonstrated
+here at all — it is an accepted, unverified engineering assumption that
+NTFS's own transactional metadata journal bounds crash-*consistency*
+(the volume is never left structurally corrupt), which is a materially
+weaker property than fsync-level *durability* of this specific rename's
+directory entry surviving an immediate power loss.** This spike does not
+claim the stronger property holds on Windows, only that no executable,
+safe-Rust way to prove or achieve it was found within this spike's scope.
 
 **Conclusion**: `std::fs::rename`, preceded by a co-located
 write-then-`fsync` of the replacement and followed by `sync_parent_dir`
 (POSIX) / documented no-op (Windows), is the selected safe-Rust
 replace-existing primitive for generation publication (F07/F08). F07/F08
 must call the directory-durability step as part of the publish path, not
-just the staging-fsync step, and must accept the documented Windows
-asymmetry rather than introduce unsafe FFI to close it.
+just the staging-fsync step, and must treat the Windows directory-durability
+gap as a tracked residual risk requiring its own explicit review at
+implementation time (see "Forward pointers") — not as a closed, proven
+guarantee equivalent to the POSIX case.
 
 ### 4. No `unsafe` code required — CONFIRMED
 
@@ -153,9 +164,10 @@ scaffolding.
 * Source inspection: `~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cozo-0.7.6/src/storage/sqlite.rs`
   (lines ~37–60, `new_cozo_sqlite`).
 
-## Verdict: GO
+## Verdict: GO, with one documented residual risk
 
-All four S1 experiments are settled. F06–F09 (later shipments) should
+All four S1 experiments are settled, with one explicit exception carried
+forward rather than silently accepted. F06–F09 (later shipments) should
 proceed on the following basis:
 
 * **Do not** attempt to rely on any Cozo-level read-only open guarantee —
@@ -166,9 +178,16 @@ proceed on the following basis:
   published generation's on-disk file.
 * **Do** use write-to-staging + `fsync` + `std::fs::rename` +
   `sync_parent_dir` (POSIX) as the replace-existing publication primitive —
-  no unsafe code, no third-party atomic-file crate required. On Windows,
-  accept the documented crash-consistency-not-durability asymmetry rather
-  than introduce unsafe FFI to close it.
+  no unsafe code, no third-party atomic-file crate required.
+* **Residual risk, not proven**: on Windows, this spike proves rename
+  *atomicity* (no torn/partial destination) but does **not** prove
+  directory-entry *durability* across an immediate crash/power loss — no
+  safe-Rust primitive was found to exercise or verify this, and no
+  executable probe demonstrates it. F07/F08 must treat this as an open,
+  tracked risk to be explicitly re-reviewed at implementation time (e.g.,
+  evaluating whether a safe wrapper crate for `FlushFileBuffers` /
+  `MOVEFILE_WRITE_THROUGH` exists, or adding compensating read-side
+  verification), not as a closed guarantee equivalent to the POSIX case.
 * No `unsafe` code is needed anywhere in the storage/publication path
   established by this spike.
 
@@ -178,7 +197,10 @@ proceed on the following basis:
   private-runtime-copy fallback established here.
 * F07/F08 (publication path) apply the `fsync` + `rename` +
   `sync_parent_dir` replace-existing primitive established here, including
-  the Unix directory-durability step and the accepted Windows asymmetry.
+  the Unix directory-durability step, **and must independently re-review the
+  unresolved Windows directory-durability residual risk** documented above
+  before treating Windows publication as crash-durable — this spike neither
+  closes nor waives that risk, it only records it.
 * This decision does not implement any of F06–F09; it only proves the
   primitives are viable ahead of that (later-shipment) implementation work,
   per the plan's explicit sequencing.

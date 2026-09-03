@@ -22,10 +22,11 @@
 //!    a torn *write* to the staging file could leave behind) and *directory
 //!    durability* (the renamed directory entry itself survives a crash,
 //!    which on POSIX requires an explicit parent-directory fsync beyond the
-//!    staging-file fsync). See the decision doc's "Durability caveat"
-//!    section for the proven Unix step and the documented Windows
-//!    asymmetry (no safe-Rust equivalent; bounded instead by NTFS's
-//!    crash-consistency journal).
+//!    staging-file fsync). See the decision doc's "3b. Directory durability"
+//!    section for the proven Unix step; on Windows, no safe-Rust primitive
+//!    was found to exercise or verify this property, so it is recorded
+//!    there as an accepted, unverified residual risk rather than a proven
+//!    guarantee.
 //! 4. No `unsafe` code is required for any of the above: this file contains
 //!    no `unsafe` blocks, and this test crate's own root now carries
 //!    `#![forbid(unsafe_code)]` (below) — a Cargo integration test target
