@@ -43,7 +43,8 @@ pub use code_edge::CodeEdge;
 pub use code_file::CodeFile;
 pub use commit::{ChangeRecord, ChangeType, CommitNode};
 pub use config::{
-    BatchConfig, CodeGraphConfig, EmbeddingConfig, LineageConfig, PluginConfig, WorkspaceConfig,
+    BatchConfig, CodeGraphConfig, DaemonMode, DaemonModeParseError, EmbeddingConfig, LineageConfig,
+    PluginConfig, WorkspaceConfig,
 };
 pub use content::ContentRecord;
 pub use file_hash::FileHashRecord;

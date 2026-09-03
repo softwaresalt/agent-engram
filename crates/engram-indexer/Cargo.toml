@@ -1,0 +1,14 @@
+[package]
+name = "engram-indexer"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Engram out-of-process indexing supervisor (structural stub; F12a)"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "engram-indexer"
+path = "src/main.rs"
+
+[dependencies]

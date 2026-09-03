@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use std::collections::BTreeMap;
 
+use thiserror::Error;
+
 use crate::models::evaluation::EvaluationConfig;
 use crate::models::lineage::LineageAuthorityContext;
 use crate::models::metrics::MetricsConfig;
@@ -184,6 +186,78 @@ const fn default_token_limit() -> usize {
     512
 }
 
+// ── DaemonMode ────────────────────────────────────────────────────────────────
+
+/// Strict daemon operating mode (142-F).
+///
+/// [`DaemonMode::resolve`] is the single shared mode resolver for the whole
+/// daemon; no other parsing logic for this setting exists anywhere else. The
+/// managed default applies only when the setting is absent (`None`). A
+/// present-but-unrecognized value is a typed [`DaemonModeParseError`] — never
+/// a silent fallback to managed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DaemonMode {
+    /// Legacy indexing-and-serving daemon (today's only behavior). The
+    /// resolved default when no mode setting is present.
+    Managed,
+    /// Read-only generation-serving daemon that never indexes and serves only
+    /// immutable, atomically published generations (142-F).
+    ReadServer,
+}
+
+impl DaemonMode {
+    /// Canonical setting string for this mode.
+    ///
+    /// Round-trips through [`DaemonMode::resolve`]:
+    /// `DaemonMode::resolve(Some(mode.as_str())) == Ok(mode)` for both
+    /// variants.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Managed => "managed",
+            Self::ReadServer => "read_server",
+        }
+    }
+
+    /// Strictly resolve the effective mode from an optional raw setting.
+    ///
+    /// * `None` (the setting is absent) resolves to [`DaemonMode::Managed`],
+    ///   the managed default.
+    /// * `Some("managed")` resolves to [`DaemonMode::Managed`].
+    /// * `Some("read_server")` resolves to [`DaemonMode::ReadServer`].
+    /// * Any other `Some(_)` value is a hard parse error
+    ///   ([`DaemonModeParseError::Unrecognized`]) — a present-but-invalid
+    ///   value never silently falls back to managed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DaemonModeParseError::Unrecognized`] when `raw` is `Some`
+    /// and does not exactly match `"managed"` or `"read_server"`.
+    pub fn resolve(raw: Option<&str>) -> Result<Self, DaemonModeParseError> {
+        match raw {
+            None => Ok(Self::Managed),
+            Some(value) if value == Self::Managed.as_str() => Ok(Self::Managed),
+            Some(value) if value == Self::ReadServer.as_str() => Ok(Self::ReadServer),
+            Some(other) => Err(DaemonModeParseError::Unrecognized(other.to_owned())),
+        }
+    }
+}
+
+impl std::fmt::Display for DaemonMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Error returned by [`DaemonMode::resolve`] for a present-but-unrecognized
+/// daemon-mode setting.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum DaemonModeParseError {
+    /// The raw setting was present but did not match a known mode.
+    #[error("unrecognized daemon mode setting {0:?}; expected \"managed\" or \"read_server\"")]
+    Unrecognized(String),
+}
+
 // ── PluginConfig ──────────────────────────────────────────────────────────────
 
 /// User-configurable settings loaded from `.engram/config.toml` at daemon startup.
@@ -218,6 +292,46 @@ pub struct PluginConfig {
     /// Log output format (`"pretty"` or `"json"`).
     #[serde(default = "default_log_format")]
     pub log_format: String,
+    /// Raw daemon-mode setting (`mode = "managed"` / `"read_server"` in
+    /// `.engram/config.toml`). `None` when unset.
+    ///
+    /// This field intentionally stays a raw, permissive string rather than a
+    /// typed [`DaemonMode`] so a malformed value does not abort parsing of
+    /// the rest of the config file. A non-string TOML value (e.g.
+    /// `mode = 1`) is accepted at this layer too — via
+    /// [`deserialize_permissive_mode`] — and stringified rather than
+    /// rejected outright, precisely so it cannot silently revert the whole
+    /// config file to defaults (which would erase the supplied explicit
+    /// intent entirely and let [`DaemonMode::resolve`] see `None` instead of
+    /// the malformed value). Resolve the carried value through
+    /// [`DaemonMode::resolve`] — the single shared mode resolver — which
+    /// returns a hard [`DaemonModeParseError`] for a present-but-unrecognized
+    /// value rather than silently falling back to managed.
+    #[serde(default, deserialize_with = "deserialize_permissive_mode")]
+    pub mode: Option<String>,
+}
+
+/// Deserializes [`PluginConfig::mode`] permissively: any present TOML value
+/// (string, integer, float, boolean, array, table) is accepted and carried
+/// through as its stringified form, rather than requiring the value be a
+/// TOML string. Without this, a non-string explicit `mode` setting (e.g.
+/// `mode = 1`) would fail deserialization of the *entire* [`PluginConfig`]
+/// struct, causing [`PluginConfig::load`] to fall back to
+/// [`PluginConfig::default`] and silently erase the malformed value —
+/// `DaemonMode::resolve` would then see `None` and select `Managed` instead
+/// of hard-erroring on the caller's actual (malformed) explicit intent. This
+/// function only widens what is *accepted at the file-parsing layer*; it
+/// performs no mode validation itself — [`DaemonMode::resolve`] remains the
+/// single place that ever rejects a malformed explicit intent.
+fn deserialize_permissive_mode<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Option::<toml::Value>::deserialize(deserializer)?;
+    Ok(raw.map(|value| match value {
+        toml::Value::String(s) => s,
+        other => other.to_string(),
+    }))
 }
 
 impl Default for PluginConfig {
@@ -229,6 +343,7 @@ impl Default for PluginConfig {
             exclude_patterns: default_exclude_patterns(),
             log_level: default_log_level(),
             log_format: default_log_format(),
+            mode: None,
         }
     }
 }
