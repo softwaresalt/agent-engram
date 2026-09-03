@@ -127,8 +127,11 @@ approval (per Step 6.0 / P-014).
   `134-S`'s topology gate is expected to clear. Re-run
   `autoharness gate pipeline-topology --mode agent --shipment 134-S
   --phase pre_claim --json` after merge to confirm.
-* Stage still owns: duplicate-stash triage (`28C0E138`/`F9D1C495`), and
+* Stage still owns: duplicate-stash triage (`28C0E138`/`F9D1C495`),
   planning-field correction (if any) for `133-S`'s manifest / the nine
-  sibling shipments' eventual manual safe-close.
+  sibling shipments' eventual manual safe-close, and the newly deferred
+  `B761AFA7` (the ten already-archived `133-S` task records lack canonical
+  `archived_status`/`archived_from` wrapper fields; normalizing them was
+  out of scope for this PR's narrow manual-closure sequence per P-021 C1).
 * No shipment was claimed this session; `134-S` claim remains for a future
   session after the topology gate clears.

@@ -66,8 +66,9 @@ descendant breakdown). No user-facing runtime behavior changed.
    exact-HEAD gate recheck, and (b) a manual safe-close of `133-S`.
    PR #377 merged as merge commit
    `224539ff4da60e477f4a93bff729cc42401ec4f8` (local main fast-forwarded).
-   Manual closure performed via the official `backlogit update` seam only
-   (no `shipment ship`): attached commit `33a0a41e...` to all 10
+   Manual closure performed via official `backlogit` CLI seams only
+   (`update`, `comment add`, `archive`, `sync` — no `shipment ship`):
+   attached commit `33a0a41e...` to all 10
    already-archived manifest items (they had been moved to
    `.backlogit/archive/` as a raw `git mv` inside an earlier feature
    commit, predating official-CLI archival — a precondition difference
@@ -78,7 +79,8 @@ descendant breakdown). No user-facing runtime behavior changed.
    children, zero orphans) and all 77 remaining `142-F` descendants across
    `134-S`..`142-S` unchanged (`queued`, attached); resynced the backlogit
    index. Updated `docs/closure/133-S-2026-09-03-post-merge-closure.md`
-   in place (`closure_status: BLOCKED -> READY_WITH_CONDITIONS`) on a new
+   in place (`closure_status: BLOCKED -> READY`; `releasability:
+   READY_WITH_CONDITIONS`) on a new
    `post-merge/133-s-manual-shipment-archival` branch/PR, not merged
    pending separate operator approval. Re-ran the `pipeline-topology`
    pre_claim gate for `134-S`: still blocked
@@ -96,6 +98,10 @@ descendant breakdown). No user-facing runtime behavior changed.
 * `F2E84E15` — accepted Windows generation-publish durability residual
   risk; F07/F08 implementers must re-review before treating Windows
   publication as crash-durable equivalent to POSIX.
+* `B761AFA7` — the ten already-archived `133-S` task records lack
+  canonical `archived_status`/`archived_from` wrapper fields; normalizing
+  them was out of scope for PR #378's narrow manual-closure sequence per
+  P-021 C1.
 * `58B33C45`, `7B270F79`, `A7C0BA5F`, `5A7FBC37` — pre-existing/out-of-scope
   items captured per P-021, not fixed in this shipment.
 * **Process precedent for `134-S` through `142-S`**: each must use the

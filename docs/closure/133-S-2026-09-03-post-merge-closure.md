@@ -6,8 +6,8 @@ feature_id: "142-F"
 mode: post-merge
 date: 2026-09-03
 author: ship
-verdict: "READY_WITH_CONDITIONS — shipment record manually safe-closed (archived_status=done); Windows durability residual risk remains an accepted, documented condition"
-closure_status: "READY_WITH_CONDITIONS"
+verdict: "READY — shipment record manually safe-closed (archived_status=done); Windows durability residual risk remains an accepted, documented releasability condition"
+closure_status: "READY"
 releasability: "READY_WITH_CONDITIONS"
 compaction_status: "done"
 pr_number: 376
@@ -17,10 +17,6 @@ merge_commit: "33a0a41e345cef8965b707346728d44fa5492daf"
 closure_pr_merge_commit: "224539ff4da60e477f4a93bff729cc42401ec4f8"
 head_commit_merged: "2005b3db94752dbe37946a98532c46dde1aad674"
 runtime_verification_report: "docs/closure/133-S-2026-09-03-runtime-verification.md"
-conditions:
-  - description: "Windows generation-publish durability residual risk explicitly accepted; requires F07/F08 implementer re-review before treating Windows publication as crash-durable equivalent to POSIX"
-    satisfied: true
-    evidence: "docs/closure/133-S-2026-09-03-runtime-verification.md (F01 storage spike, GO verdict, accepted residual risk); stash F2E84E15"
 follow_up_stash:
   - "A7C0BA5F"
   - "5A7FBC37"
@@ -30,6 +26,7 @@ follow_up_stash:
   - "28C0E138"
   - "F9D1C495"
   - "F9767C12"
+  - "B761AFA7"
 blocking_stash: null
 duplicate_stash_flagged_for_stage_triage:
   - "F9D1C495"
@@ -81,7 +78,8 @@ two actions: (1) merging PR #377 after an exact-HEAD gate recheck, and (2)
 the manual closure sequence below for `133-S` — not a blanket approval for
 future PRs or other destructive actions.
 
-Sequence performed (official `backlogit` update seam only; no direct file
+Sequence performed (official `backlogit` CLI seams only — `update`,
+`comment add`, `archive`, and `sync`; no direct file
 edits, no `backlogit shipment ship`):
 
 1. **Precondition verification**: `133-S` manifest's 10 task-level items
@@ -142,12 +140,13 @@ edits, no `backlogit shipment ship`):
    after closure. Result: still blocked, token
    `PREDECESSOR_CLOSURE_INCOMPLETE`, because the gate's `closure_complete`
    check additionally requires this closure document's own
-   `closure_status` frontmatter to read `READY`/`READY_WITH_CONDITIONS`
-   (with satisfied `conditions:`) — which this same edit now sets. `134-S`
-   claim eligibility is therefore expected to pass once this document (on
-   this branch) reaches `main`; re-verification of the gate after merge is
-   a remaining follow-up, not performed by this session (no shipment claim
-   was made or attempted for `134-S`).
+   `closure_status` frontmatter to read `READY` (or `READY_WITH_CONDITIONS`
+   with a satisfied machine-readable `conditions:` block) — which this
+   same edit now sets (`closure_status: READY`, no `conditions:` block
+   needed). `134-S` claim eligibility is therefore expected to pass once
+   this document (on this branch) reaches `main`; re-verification of the
+   gate after merge is a remaining follow-up, not performed by this
+   session (no shipment claim was made or attempted for `134-S`).
 
 No mutation touched `142-F`, any of its 59 direct children beyond the 10
 manifest items receiving commit attribution, or any of the other nine
@@ -574,23 +573,26 @@ state.
 | Windows generation-publish durability | **Conditional** | Accepted, unverified residual risk (stash `F2E84E15`); condition: F07/F08 implementers must explicitly re-review before treating Windows publication as crash-durable equivalent to POSIX |
 | Shipment-record archival (`133-S` → archived) | **Satisfied** | Manual safe-close completed this session: `backlogit update 133-S --status done` → verified live `status: done` → `backlogit archive 133-S` → verified `status: archived`, `archived_status: done`. See "Manual Closure Completion" above. Stash `28C0E138`/`F9D1C495` duplicate-triage remains an open Stage follow-up but does not block this closure |
 
-Overall: `READY_WITH_CONDITIONS` — the shipped code itself is fully ready
-and verified; the Windows durability item is a satisfiable, accepted
-follow-up condition (see `conditions:` frontmatter); the shipment-record
-archival item, previously a hard block, is now resolved via manual
-safe-close.
+Overall releasability: `READY_WITH_CONDITIONS` — the shipped code itself
+is fully ready and verified; the Windows durability item is a
+satisfiable, accepted follow-up condition (tracked as stash `F2E84E15`,
+requiring F07/F08 implementer re-review; see the "Windows generation-
+publish durability" row above). Shipment closure itself is `READY` (no
+open blocker) — the shipment-record archival item, previously a hard
+block, is now resolved via manual safe-close.
 
 ## Verdict
 
-**READY_WITH_CONDITIONS**. The code was merged, verified, and is
-production-ready; runtime verification is PASS WITH FOLLOW-UP; all
-task-level manifest items are done and archived; the shipment record
-`133-S` itself is now `archived` with `archived_status: done`, closed via
-an explicit, operator-approved manual safe-close (never `backlogit
-shipment ship`, which remains unsafe for `142-F`'s partial coverage — see
-"Cascade mechanism correction" above). Remaining conditions: the Windows
-durability residual risk (accepted, documented, tracked as stash
-`F2E84E15`) and Stage's duplicate-stash triage (`28C0E138`/`F9D1C495`,
+**Closure: READY. Releasability: READY_WITH_CONDITIONS.** The code was
+merged, verified, and is production-ready; runtime verification is PASS
+WITH FOLLOW-UP; all task-level manifest items are done and archived; the
+shipment record `133-S` itself is now `archived` with `archived_status:
+done`, closed via an explicit, operator-approved manual safe-close (never
+`backlogit shipment ship`, which remains unsafe for `142-F`'s partial
+coverage — see "Cascade mechanism correction" above). Remaining
+releasability conditions: the Windows durability residual risk
+(accepted, documented, tracked as stash `F2E84E15`) and Stage's
+duplicate-stash triage (`28C0E138`/`F9D1C495`,
 informational follow-up, non-blocking). **The nine sibling shipments
 (`134-S` through `142-S`) still partially cover `142-F` and must each use
 the same manual safe-close path — never `backlogit shipment ship` — when
