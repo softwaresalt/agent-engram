@@ -43,15 +43,22 @@ this shipment does not touch daemon bind/sync/lifecycle behavior at all
 (that surface is untouched pending F04/F06–F09/F12 in later shipments).
 
 * Surface: CLI (release build + local, no-daemon-required commands), MCP
-  tool catalog (`manifest`), and the existing MCP/CLI contract test suite.
+  tool catalog (`manifest`), the F02/F03 unit test suites, and the existing
+  MCP/CLI contract test suite.
 * Adapter: `cargo build --release`; `target/release/engram.exe --version`;
   `target/release/engram.exe manifest`; `cargo test --test
+  unit_plugin_config --test unit_app_state_mode --release` (F02/F03's own
+  real mode-contract assertions — see Probe outcomes); `cargo test --test
   contract_shim_stdio_initialize --test contract_mcp_catalog_oracle --test
   contract_mcp_tool_catalog_parity --test contract_mcp_envelope --test
   contract_read_server_cli_mcp_parity --release`.
 * Invariants: the MCP tool catalog remains schema-stable and drift-free; the
   stdio shim/daemon IPC contract suite shows no new failures introduced by
-  this shipment; the new placeholder harnesses for F00/F02/F03 remain inert
+  this shipment; `DaemonMode::resolve`'s strict parse/round-trip contract
+  (F02) and `AppState::mode`'s stability/isolation contract (F03) hold
+  under their own dedicated unit suites; the F00 placeholder harnesses
+  (`contract_mcp_envelope`, `contract_mcp_tool_catalog_parity`,
+  `contract_read_server_cli_mcp_parity`) remain inert
   (`placeholder_registered`) and do not alter existing behavior.
 
 ### Environment prechecks
@@ -72,11 +79,26 @@ this shipment does not touch daemon bind/sync/lifecycle behavior at all
 | `cargo build --release` | ok (5m15s) |
 | `engram.exe --version` | ok |
 | `engram.exe manifest` | ok (full catalog, well-formed JSON) |
+| `unit_app_state_mode` (F03, 6 tests) | ok — 6 passed, 0 failed |
+| `unit_plugin_config` (F02, 21 tests) | ok — 21 passed, 0 failed |
 | `contract_mcp_catalog_oracle` (9 tests) | ok — 9 passed, 0 failed |
 | `contract_mcp_envelope` (F00 placeholder) | ok — 1 passed |
 | `contract_mcp_tool_catalog_parity` (F00 placeholder) | ok — 1 passed |
 | `contract_read_server_cli_mcp_parity` (F00 placeholder) | ok — 1 passed |
 | `contract_shim_stdio_initialize` (19 tests) | 18 passed, 1 failed — see below |
+
+`unit_app_state_mode` and `unit_plugin_config` are F03's and F02's own
+dedicated real-assertion suites (not placeholders) — corrected after
+Copilot review round 5 flagged that the original verification pass omitted
+running them and mislabeled them as placeholders alongside the F00
+harnesses. `unit_app_state_mode` covers `AppState::mode` stability across
+repeated reads/independent instances and each constructor's mode
+resolution; `unit_plugin_config` covers `DaemonMode::resolve`'s full
+parse/round-trip contract plus `PluginConfig::mode`'s permissive-carry
+deserialization behavior (malformed/non-string/boolean values preserved
+without erasing the rest of the config, consistent with `config.rs`'s own
+`deserialize_permissive_mode` design intent).
+
 
 `shim_aborts_unresolved_startup_after_client_disconnects` failed both in
 isolation and alongside the rest of the suite. **Regression check**:
@@ -131,10 +153,14 @@ introduced by this shipment's actual scope.
 ### Verdict and handoff
 
 **PASS WITH FOLLOW-UP**. The release build succeeds, the MCP tool catalog
-and contract surfaces are unaffected, and the one observed test failure is
-confirmed pre-existing on `main` and unrelated to this shipment's scope.
-This shipment introduces no new runtime behavior (mode contract and
-`AppState::mode` are additive/inert pending F04's call-site migration; the
-new crate is an empty stub pending F12), so there is no new production
-surface to monitor beyond the existing invariants already tracked for the
-daemon/shim/MCP surfaces. Feeding to `operational-closure` below.
+and contract surfaces are unaffected, F02/F03's own dedicated unit suites
+(`unit_plugin_config`, `unit_app_state_mode` — 27 tests total) pass in
+full, confirming the mode-contract/state-plumbing foundation behaves as
+specified, and the one observed test failure is confirmed pre-existing on
+`main` and unrelated to this shipment's scope. This shipment introduces no
+new runtime behavior (mode contract and `AppState::mode` are
+additive/inert — not yet wired into production config loading, pending
+F04's call-site migration; the new crate is an empty stub pending F12), so
+there is no new production surface to monitor beyond the existing
+invariants already tracked for the daemon/shim/MCP surfaces. Feeding to
+`operational-closure` below.

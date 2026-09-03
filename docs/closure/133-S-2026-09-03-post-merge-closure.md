@@ -22,10 +22,12 @@ follow_up_stash:
   - "F2E84E15"
   - "28C0E138"
   - "F9D1C495"
+  - "F9767C12"
 blocking_stash: "28C0E138"
 duplicate_stash_flagged_for_stage_triage:
   - "F9D1C495"
   - "28C0E138"
+cascade_mechanism_correction_stash: "F9767C12"
 ---
 
 # 133-S post-merge operational closure
@@ -233,14 +235,109 @@ manifest/cascade defect. This duplicate is flagged here for **Stage's**
 own unconditional duplicate-detection/harvest triage to resolve — Ship
 takes no further stash-mutation action on either entry.
 
+**Important correction to both entries' recommended remediation** (Copilot
+review round 5, `F9767C12`): the "remove `142-F` from `133-S`'s manifest"
+remediation recommended by both `28C0E138` and `F9D1C495` is **not
+sufficient** to make `backlogit shipment ship 133-S` safe — see "Cascade
+mechanism correction" below. Stage's triage of the duplicate pair must
+account for this when deciding how to act on either entry.
+
+## Cascade mechanism correction (Copilot review round 5, verified against backlogit source)
+
+This session initially recommended (in both `28C0E138` and `F9D1C495`)
+that removing `142-F` from `133-S`'s `custom_fields.items` would make
+`backlogit shipment ship 133-S` safe to invoke. **This recommendation is
+incorrect** and must not be followed as-is. Verified by reading
+`backlogit`'s own source directly (`C:\Source\GitHub\backlogit`,
+`internal/core/shipment_lifecycle.go`):
+
+* `featureScopeRoots` (~line 1164) discovers a covering feature by walking
+  **up** the `parent_id` chain from every item already in the shipment's
+  release scope (its manifest) — this discovery is **independent of
+  whether the feature itself is an explicit manifest member**.
+* The `ShipShipment` call site (~lines 633–649) then **unconditionally**
+  invokes `returnUnreleasedFeatureItems` (~line 734) for every feature so
+  discovered. That function force-sets every descendant of the feature
+  that is **not** in the release scope to `queued` and **clears its
+  `parent_id`** ("returned to backlog after release") — regardless of
+  whether the feature itself is an explicit manifest member.
+* Only the **separate** decision to mark the feature itself `done`/archive
+  it is gated on explicit membership (`explicitScopeSet`, same file
+  ~line 641 and in `collectArchiveCandidateIDs` ~line 274).
+
+**Consequence**: removing `142-F` from `133-S`'s manifest would stop
+`142-F` itself from being wrongly force-marked `done`, but would **not**
+stop the cascade — `backlogit shipment ship 133-S` would still
+force-requeue-and-detach (clear `parent_id` on) all 77 of `142-F`'s
+descendants outside `133-S`'s 10-item manifest, corrupting the hierarchy
+for the other nine as-yet-unshipped shipments that also partially cover
+`142-F`. **This is not unique to `133-S`**: any of the ten shipments
+partially covering `142-F` would hit the identical cascade if it ever
+calls `backlogit shipment ship` instead of a manual safe-close, regardless
+of manifest edits.
+
+**Corrected guidance for Stage**: do not treat "remove `142-F` from the
+manifest" as sufficient to unblock `backlogit shipment ship` for `133-S`
+or any sibling shipment; continue using the manual safe-close path
+(individually archive manifest items, then transition the shipment's own
+status directly) for every one of the ten `142-F`-covering shipments until
+either `backlogit` changes `returnUnreleasedFeatureItems` to skip
+non-explicit-member features, or `142-F` becomes fully covered by whichever
+shipment ships last. Recorded as new follow-up stash `F9767C12`
+(discovery-checked against active + archived stash for
+`returnUnreleasedFeatureItems`/`featureScopeRoots`/`cascade` before
+capture — no existing duplicate found).
+
+**Correction note on the `F9767C12` stash entry text itself**: the
+captured entry's text names four example sibling shipment IDs (`134-S`,
+`137-S`, `139-S`, `141-S`) and cites a stash pair (`982B0B01`/`284285B5`)
+as the source for "ten shipments partially covering `142-F`." Those two
+specific stash IDs were not independently confirmed in this session
+and per the single-write invariant for a captured stash entry (P-021
+C2/C5: "Ship MUST NOT edit, amend, back-fill, re-classify, or
+re-prioritize a captured entry afterwards"), `F9767C12` is **not** being
+edited to correct that detail. However, the underlying "ten shipments"
+figure itself **is** now independently verified in this closure
+document (not merely asserted): a direct query of
+`.backlogit/queue/*.md` cross-referencing `142-F`'s 59 direct children
+(`parent_id: 142-F`) against every shipment's manifest confirms
+**exactly ten** shipments jointly and exhaustively partition all 59
+direct children, with **no overlap and no gap**:
+
+| Shipment | Direct-child items covered | Count |
+|---|---|---|
+| `133-S` (this shipment) | `142.001-T`, `142.002-T`, `142.004-T`, `142.006-T`, `142.007-T` | 5 |
+| `134-S` | `142.003-T`, `142.005-T`, `142.008-T`, `142.009-T`, `142.010-T` | 5 |
+| `135-S` | `142.023-T`, `142.024-T`, `142.025-T`, `142.026-T` | 4 |
+| `136-S` | `142.011-T`, `142.012-T`, `142.013-T`, `142.014-T`, `142.017-T` | 5 |
+| `137-S` | `142.015-T`, `142.016-T`, `142.020-T`, `142.021-T`, `142.022-T`, `142.027-T` | 6 |
+| `138-S` | `142.018-T`, `142.019-T`, `142.028-T`...`142.033-T` | 8 |
+| `139-S` | `142.034-T`...`142.039-T` | 6 |
+| `140-S` | `142.040-T`...`142.046-T` | 7 |
+| `141-S` | `142.047-T`...`142.053-T` | 7 |
+| `142-S` | `142.054-T`...`142.059-T` | 6 |
+| **Total** | | **59** |
+
+All ten are still `queue`-status shipment records except `133-S` (this
+one, closure blocked). **Corrected, verified guidance for Stage**: the
+manual safe-close path (not `backlogit shipment ship`) must be used for
+`134-S` through `142-S` as well, in whatever order they complete, until
+`142-F` is fully covered — the cascade risk is real and applies to all
+nine remaining sibling shipments exactly as described above, now with an
+exact, verified shipment list rather than an illustrative example. This
+verified table supersedes the imprecise example-ID citation inside
+`F9767C12`'s own (unedited) text; Stage should treat this closure
+document's table as authoritative over the stash entry's illustrative
+text for this specific detail.
+
 ## Risky Action Record
 
 | Field | Value |
 |---|---|
 | `ProposedAction` | Invoke `backlogit shipment ship 133-S` (the only remaining CLI path to close the shipment record) |
-| `ActionRisk` | **HIGH** — cascade would unconditionally force-mark covering feature `142-F` `done` while 77 of its 87 descendants remain incomplete, and would force-requeue-and-detach those 77 descendants from their parent chain; violates this workspace's own P-015 fully-covered-root policy |
+| `ActionRisk` | **HIGH** — cascade would unconditionally force-mark covering feature `142-F` `done` while 77 of its 87 descendants remain incomplete, and would force-requeue-and-detach those 77 descendants from their parent chain — **verified to occur independent of whether `142-F` is an explicit manifest member** (see "Cascade mechanism correction" above); violates this workspace's own P-015 fully-covered-root policy |
 | Approval / containment | **Not approved.** Ship assessed the action against P-015 during this session (evidence chain above), determined it would be a policy violation, and did not invoke it. No operator approval was sought for this specific mutation because Ship independently halted before executing it — consistent with Ship's role boundary (no authority to override P-015) and its Step 6 obligation to halt rather than force a cascade |
-| `ActionResult` | **NOT EXECUTED / ABORTED.** No mutation was made to `142-F` or any of its descendants. `133-S` remains `active` (unchanged). Recorded as follow-up stash `28C0E138`/`F9D1C495` (duplicate pair, flagged for Stage triage) instead |
+| `ActionResult` | **NOT EXECUTED / ABORTED.** No mutation was made to `142-F` or any of its descendants. `133-S` remains `active` (unchanged). Recorded as follow-up stash `28C0E138`/`F9D1C495` (duplicate pair, flagged for Stage triage) and `F9767C12` (corrected cascade-mechanism finding) instead |
 | *(second risky action, self-detected and reverted)* | `ProposedAction`: archive `F9D1C495` + edit `28C0E138` to resolve the duplicate found above. `ActionRisk`: **role-boundary violation (P-010)** — discretionary stash archival/edit is Stage-only. `ActionResult`: **REVERTED** within this same session before merge; both entries restored to their pre-mutation state; see "Stash duplicate — flagged for Stage triage" above |
 
 ## Invariants to Preserve
@@ -248,7 +345,17 @@ takes no further stash-mutation action on either entry.
 
 * The strict `DaemonMode` parser (`DaemonMode::resolve`) must continue to
   hard-error (`DaemonModeParseError::Unrecognized`) on any value outside
-  `managed`/`read_server` — no silent fallback to `managed`.
+  `managed`/`read_server` — no silent fallback to `managed` — **when it is
+  eventually wired into the startup path**. Verified this session
+  (Copilot review round 5 correction) that this resolver is **not yet
+  wired into production config loading**: `PluginConfig` carries a
+  permissive `mode: Option<String>` field, but no production call site
+  currently routes it through `DaemonMode::resolve` (every current call
+  site is a unit-test assertion in `unit_plugin_config`/
+  `unit_app_state_mode`, both passing — 27/27 tests). An invalid
+  configured mode therefore does not yet hard-fail daemon startup; F04 (or
+  a dedicated later plan unit) must wire this before the invariant has any
+  live runtime effect.
 * Existing `AppState` construction call sites (`new`,
   `with_stale_strategy`, `with_options`) must continue to forward to
   `with_mode(DaemonMode::Managed, ...)` unchanged until F04 migrates them.

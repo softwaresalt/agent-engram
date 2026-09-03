@@ -66,6 +66,20 @@ a closure PR brought to readiness but not merged, explicitly withholding
    that repository's own design-decision record. **Recorded as high-priority
    follow-up stash `28C0E138`** with recommended remediation: Stage
    removes `142-F` from `133-S`'s `custom_fields.items`.
+   **Round-5 correction (verified against `backlogit` source in this
+   session)**: that recommended remediation is **not sufficient**.
+   `featureScopeRoots` discovers a covering feature independent of
+   explicit manifest membership, and `returnUnreleasedFeatureItems` is
+   invoked unconditionally for every discovered feature — removing
+   `142-F` from the manifest would stop it from being wrongly marked
+   `done`, but would **not** stop the 77 non-manifest descendants from
+   being force-requeued/detached. This is a workspace-wide risk affecting
+   all ten shipments that jointly and exhaustively cover `142-F`'s 59
+   direct children (verified this session: `133-S` 5, `134-S` 5, `135-S`
+   4, `136-S` 5, `137-S` 6, `138-S` 8, `139-S` 6, `140-S` 7, `141-S` 7,
+   `142-S` 6 = 59, no overlap/no gap). Recorded as new follow-up stash
+   `F9767C12` (see closure doc's "Cascade mechanism correction" section
+   for the full evidence chain and the verified shipment table).
 7. **Runtime verification** (foundations-only, no user-facing runtime
    change): `cargo build --release` (5m15s, clean), `engram --version`,
    `engram manifest` (full catalog unchanged), MCP contract suites
@@ -89,6 +103,17 @@ a closure PR brought to readiness but not merged, explicitly withholding
    `managed`/`read_server`, corrected after Copilot review flagged an
    initial-draft `strict` typo), proportionate to
    the actual (empty-stub, non-behavior-changing) scope shipped.
+   **Round-5 correction**: the doc's description of `DaemonMode::resolve`
+   wiring was itself overstated (implied it was reachable from production
+   config loading). Corrected after verifying `PluginConfig` does carry a
+   permissive `mode: Option<String>` field
+   (`deserialize_permissive_mode`), but **no production call site**
+   currently routes it through `DaemonMode::resolve` — confirmed via a
+   full-repo grep of `src/`; every call site is a unit-test assertion in
+   `tests/unit/plugin_config_test.rs` (21 tests) or
+   `tests/unit/app_state_mode_test.rs` (6 tests), both run this session
+   and passing 27/27 after killing a stale `engram.exe` process that was
+   holding a file lock on `target/release/engram.exe`.
 10. **compound-refresh evaluation**: scanned `docs/compound/` for entries
     referencing storage/generation/read-only-open topics potentially
     superseded by this shipment's F01 spike decision doc; none found
@@ -161,10 +186,29 @@ predecessor check independently and correctly blocks `134-S` claim
    separate explicit operator approval.
 2. Present final report to operator: merge SHA, shipment status
    (`active`, blocked), closure PR link, and the exact remaining gate
-   (Stage must correct `133-S`'s manifest to remove `142-F` from
-   `custom_fields.items`, or provide an alternate explicit resolution
-   decision, before `backlogit shipment ship 133-S` can be safely
-   invoked).
+   (Stage must resolve the `142-F` cascade-membership conflict for
+   `133-S` — verified this session to require more than a manifest edit:
+   removing `142-F` from `133-S`'s `custom_fields.items` alone does not
+   prevent `backlogit shipment ship`'s unconditional
+   `returnUnreleasedFeatureItems` cascade from force-requeuing/detaching
+   `142-F`'s 77 non-manifest descendants. Manual safe-close remains
+   required for `133-S` and, per the same mechanism, for all nine sibling
+   shipments — `134-S` through `142-S` — until `142-F` becomes fully
+   covered by whichever ships last, or `backlogit` changes this behavior).
 3. Do **not** claim `134-S` until `133-S` reaches a genuinely
    shipped/archived terminal state and this closure PR (if any repository
    state change requires one) is merged.
+
+## Round 5 Copilot review summary (PR #377, HEAD `a81ce1a8`)
+
+Five findings, all substantive (not cosmetic): (1-3) three threads on the
+same root cause — the "remove `142-F` from the manifest" remediation
+recommended by stash `28C0E138`/`F9D1C495` is factually incorrect;
+verified directly against `backlogit` source and corrected throughout this
+memory file, the closure doc, and a new stash entry `F9767C12`. (4)
+`docs/architecture.md` overstated `DaemonMode` production wiring; corrected
+after confirming (full-repo grep) zero production call sites exist outside
+unit tests. (5) The runtime-verification doc mislabeled F02/F03's real
+mode-contract unit suites as inert placeholders and never actually ran
+them; corrected by running `unit_plugin_config` (21/21 passed) and
+`unit_app_state_mode` (6/6 passed) and updating the Probe Outcomes table.
