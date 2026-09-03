@@ -143,7 +143,15 @@ function Test-EngramDaemonRunning {
     # `start_time_unix <= 1`.
     $RecordedStartTimeUnix = 0
     if ($null -ne $Parsed -and (Get-Member -InputObject $Parsed -Name "start_time_unix" -ErrorAction SilentlyContinue)) {
-        [void][long]::TryParse([string]$Parsed.start_time_unix, [ref]$RecordedStartTimeUnix)
+        if (-not [long]::TryParse([string]$Parsed.start_time_unix, [ref]$RecordedStartTimeUnix) -or $RecordedStartTimeUnix -lt 0) {
+            # Structured JSON present but "start_time_unix" is non-integer,
+            # out of range, or negative. Rust's start_time_unix field is an
+            # unsigned 64-bit integer, so a negative or malformed value could
+            # never deserialize there either -- treat this the same as
+            # malformed "pid" metadata above: safe skip rather than silently
+            # falling through to a liveness-only match.
+            return $false
+        }
     }
 
     if ($RecordedStartTimeUnix -gt 1) {

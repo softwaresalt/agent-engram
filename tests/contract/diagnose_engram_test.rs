@@ -169,6 +169,55 @@ fn diagnose_engram_treats_pid_reuse_fingerprint_mismatch_as_no_daemon() {
 }
 
 #[test]
+fn diagnose_engram_treats_malformed_start_time_unix_as_no_daemon() {
+    let fixture = TempDir::new().expect("fixture dir");
+    let log_path = write_engram_fixture(fixture.path());
+
+    let workspace = TempDir::new().expect("workspace dir");
+    let run_dir = workspace.path().join(".engram").join("run");
+    fs::create_dir_all(&run_dir).expect("create run dir");
+
+    // This process's PID is genuinely live, but the recorded `start_time_unix`
+    // fingerprint is negative -- a value Rust's `start_time_unix: u64` field
+    // could never deserialize (it would instead fail to parse as structured
+    // JSON entirely and fall back to legacy-numeric-or-absent handling). A
+    // negative fingerprint is therefore malformed metadata, not a genuine
+    // "no fingerprint recorded" legacy record, and must take the same safe
+    // skip path as an unparseable one rather than being silently ignored and
+    // falling through to a liveness-only match.
+    let pid_record = format!(
+        r#"{{"pid": {}, "start_time_unix": -5}}"#,
+        std::process::id()
+    );
+    fs::write(run_dir.join("engram.pid"), pid_record).expect("write malformed pid record");
+
+    let output = run_diagnose_script(workspace.path(), fixture.path(), &log_path);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "script must report a failure exit code when daemon-backed diagnostics are skipped; \
+         stdout: {stdout}; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains("not running (no-auto-spawn probe found no live PID)"),
+        "a malformed start_time_unix fingerprint must be reported identically to no daemon \
+         present; stdout: {stdout}"
+    );
+
+    let invocation_log = fs::read_to_string(&log_path).unwrap_or_default();
+    for forbidden in ["daemon-status", "workspace-status", "health", "search"] {
+        assert!(
+            !invocation_log.contains(forbidden),
+            "a malformed start_time_unix fingerprint must never be treated as a live daemon -- \
+             that would violate the read-only contract; invocation log: {invocation_log}"
+        );
+    }
+}
+
+#[test]
 fn diagnose_engram_continues_past_unreadable_diagnostics_log_to_summary() {
     let fixture = TempDir::new().expect("fixture dir");
     let log_path = write_engram_fixture(fixture.path());
