@@ -320,6 +320,10 @@ name = "contract_start_launcher"
 path = "tests/contract/start_launcher_test.rs"
 
 [[test]]
+name = "contract_diagnose_engram"
+path = "tests/contract/diagnose_engram_test.rs"
+
+[[test]]
 name = "integration_shim_error"
 path = "tests/integration/shim_error_test.rs"
 
