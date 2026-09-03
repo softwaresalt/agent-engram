@@ -33,8 +33,9 @@ any release verification, and it does not modify any already-merged file.
 `autoharness gate pipeline-topology --mode agent --shipment 133-S --phase pre_claim`
 was blocking with `PREDECESSOR_CLOSURE_INCOMPLETE: predecessor 132-S is
 terminal but missing required closure evidence`. Investigation of the gate's
-`closure_complete()` reader
-(`src/autoharness/gates/topology.py`) established that it requires:
+`closure_complete()` reader — the installed autoharness plugin at
+`.copilot/installed-plugins/autoharness/autoharness/src/autoharness/gates/topology.py`
+in this workspace — established that it requires:
 
 1. A file in `docs/closure/` matching the glob
    `{shipment_id}-*-post-merge-closure.md` — i.e. the filename must **start**
