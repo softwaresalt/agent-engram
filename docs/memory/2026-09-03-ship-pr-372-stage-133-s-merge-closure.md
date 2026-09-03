@@ -63,9 +63,11 @@ required.
 * Confirmed `.backlogit/queue/133-S.md` exists on `origin/main`
   (`git ls-tree origin/main -- .backlogit/queue/133-S.md` ->
   blob `c95b2379d94ea2376b3369a207d6fedc003b0929`), with
-  `status: queued` and manifest items headed by `142-F` plus its
-  `142.001-T`..`142.059-T` task/subtask tree. This is the shipment record
-  the Orchestrator's staging gate checks for.
+  `status: queued` and manifest items: `142-F`, `142.001-T` plus its five
+  subtasks (`142.001.001-ST`..`142.001.005-ST`), and four sibling tasks
+  (`142.006-T`, `142.004-T`, `142.002-T`, `142.007-T`) — 11 items total, not
+  a full `142.001-T`..`142.059-T` task/subtask tree. This is the shipment
+  record the Orchestrator's staging gate checks for.
 
 ## Staging gate disposition for 133-S
 
@@ -88,7 +90,13 @@ scope limitation for this task.
 
 ## Memory/context compaction
 
-Session tracking artifacts for this task were minimal (gate verification +
-one merge + one checkpoint). No `docs/memory/` checkpoint-count or size
-threshold was exceeded, so no `compact-context` invocation was required
-beyond writing this single checkpoint.
+**Correction (identified in PR #373 review):** P-020 mandates invoking
+`compact-context` with `target: all` once per merge as a bounded, cheap
+Tier-1 consolidation of the just-closed release unit's memory — this is
+unconditional on merge, not gated by whether checkpoint-count/size
+thresholds were separately exceeded. That invocation was **not** performed
+during the PR #372 closure session recorded above; the original rationale
+in this section incorrectly treated the mandatory call as threshold-gated.
+This is recorded here as a process gap for this shipment's closure rather
+than corrected retroactively (out of scope for the current PR #373 session),
+and is tracked as a deferred-scope-expansion follow-up per P-021 C2.
