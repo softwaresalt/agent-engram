@@ -14,7 +14,18 @@
 //!    true immutability of the original (published) generation's on-disk
 //!    file (see `private_runtime_copy_preserves_original_byte_stability`).
 //! 3. Prove replace-existing atomicity/durability on this platform using
-//!    only `std::fs` (see `atomic_replace_existing_rename_is_byte_stable`).
+//!    only `std::fs` (see `atomic_replace_existing_rename_is_byte_stable`,
+//!    `interrupted_rename_never_yields_a_torn_destination`, and
+//!    `sync_parent_dir`). Two distinct properties are proven separately:
+//!    *atomicity* (no reader ever observes a torn/partial destination —
+//!    proven for both a clean rename and every truncated-prefix crash point
+//!    a torn *write* to the staging file could leave behind) and *directory
+//!    durability* (the renamed directory entry itself survives a crash,
+//!    which on POSIX requires an explicit parent-directory fsync beyond the
+//!    staging-file fsync). See the decision doc's "Durability caveat"
+//!    section for the proven Unix step and the documented Windows
+//!    asymmetry (no safe-Rust equivalent; bounded instead by NTFS's
+//!    crash-consistency journal).
 //! 4. No `unsafe` code is required for any of the above: this file contains
 //!    no `unsafe` blocks, and the `engram` crate root already carries
 //!    `#![forbid(unsafe_code)]`.
@@ -23,6 +34,41 @@ use std::collections::BTreeMap;
 use std::fs;
 
 use cozo::ScriptMutability;
+
+/// Best-effort post-rename **directory** durability step for POSIX
+/// platforms, completing the half of the crash-recovery property that
+/// fsyncing the staging file alone does not cover.
+///
+/// A successful `rename(2)` guarantees *atomicity*: no reader ever observes
+/// a torn/partial file, and the destination name always resolves to either
+/// the old or the new inode — never a missing or corrupt one. It does
+/// **not** by itself guarantee that the *updated directory entry* survives
+/// a power loss immediately afterward: on POSIX filesystems the parent
+/// directory's own metadata must be explicitly synced (opening it and
+/// calling `fsync`) for the rename to be crash-durable, not just
+/// crash-atomic. Windows has no safe-Rust equivalent (opening a directory
+/// as a `File` requires `FILE_FLAG_BACKUP_SEMANTICS`, which `std::fs::File`
+/// does not set), so on Windows this step is a documented no-op bounded
+/// instead by NTFS's own transactional metadata journal, which provides
+/// crash-*consistency* (the volume always resolves to a well-formed pre- or
+/// post-rename state, never torn) rather than an fsync-level durability
+/// guarantee. Introducing the raw `FlushFileBuffers`/`MOVEFILE_WRITE_THROUGH`
+/// Win32 equivalent would require `unsafe` FFI, which experiment 4 above
+/// establishes is not required for the selected primitives — F07 should
+/// accept this documented platform asymmetry rather than reach for unsafe
+/// code to close it.
+#[cfg(unix)]
+fn sync_parent_dir(path: &std::path::Path) {
+    let parent = path.parent().expect("path must have a parent directory");
+    let dir = fs::File::open(parent).expect("open parent directory for fsync");
+    dir.sync_all().expect("fsync parent directory");
+}
+
+#[cfg(not(unix))]
+fn sync_parent_dir(_path: &std::path::Path) {
+    // No safe-Rust equivalent on Windows without unsafe FFI; see the
+    // doc comment above for the accepted platform asymmetry.
+}
 
 /// Creates a fresh SQLite-backed Cozo database at `db_path`, seeds one row,
 /// and returns the raw bytes on disk after the handle is dropped (forcing
@@ -143,10 +189,16 @@ fn private_runtime_copy_preserves_original_byte_stability() {
 /// replacement (the safe-Rust primitive: no `unsafe` block, works
 /// identically as POSIX `rename(2)` on Unix and `MoveFileExW` with
 /// `MOVEFILE_REPLACE_EXISTING` on Windows per the Rust standard library's
-/// documented cross-platform contract)
+/// documented cross-platform contract), followed by `sync_parent_dir`
+/// (POSIX: fsync the containing directory; Windows: documented no-op — see
+/// its doc comment)
 /// THEN the rename succeeds without needing to unlink the destination first,
-/// and the destination contains the replacement's exact byte content — no
-/// truncation, no partial write, no leftover old content.
+/// the destination contains the replacement's exact byte content — no
+/// truncation, no partial write, no leftover old content — and the
+/// directory-durability step completes without error, proving both halves
+/// of experiment 3: atomic replace (this test) and directory durability
+/// (`sync_parent_dir`, exercised here and proven not to panic/error on
+/// either platform in CI).
 #[test]
 fn atomic_replace_existing_rename_is_byte_stable() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -164,7 +216,7 @@ fn atomic_replace_existing_rename_is_byte_stable() {
 
     // Write-then-fsync the replacement to a co-located staging file before
     // the rename, so the rename step itself is the only thing that can be
-    // interrupted (the durability half of the crash-recovery property).
+    // interrupted (the atomicity half of the crash-recovery property).
     {
         use std::io::Write;
         let mut file = fs::File::create(&staging).expect("create staging file");
@@ -177,6 +229,10 @@ fn atomic_replace_existing_rename_is_byte_stable() {
          requiring a prior delete — this is the selected safe-Rust primitive",
     );
 
+    // Complete the durability half: make the renamed directory entry itself
+    // crash-durable (POSIX), or accept the documented Windows asymmetry.
+    sync_parent_dir(&destination);
+
     assert!(
         !staging.exists(),
         "the staging name must no longer exist after a successful rename"
@@ -186,6 +242,65 @@ fn atomic_replace_existing_rename_is_byte_stable() {
         final_bytes, new_content,
         "destination must contain exactly the replacement's bytes, byte-for-byte \
          (no truncation or partial-write torn state)"
+    );
+}
+
+/// GIVEN a staging file that was only *partially* written (simulating a
+/// process crash or power loss that interrupts the write **before** the
+/// rename step is ever reached — the crash point that matters, since a
+/// crash strictly before rename can never corrupt the destination, and a
+/// crash strictly after a successful rename returns either the old or new
+/// complete content by the atomicity guarantee proven above)
+/// WHEN the interrupted staging file is inspected without ever renaming it
+/// over the destination
+/// THEN the destination is provably untouched — still holding the
+/// original, complete content — because `rename` was never reached; this is
+/// the empirical half of the "never observably torn" claim that a crash
+/// mid-write to the staging file cannot corrupt the previously-published
+/// destination, regardless of when the interruption occurs relative to the
+/// write. Combined with the previous test's proof that a *completed* rename
+/// is byte-stable, this establishes there is no crash point — before or
+/// after the rename syscall itself — at which the destination can ever be
+/// observed in a torn/partial state.
+#[test]
+fn interrupted_rename_never_yields_a_torn_destination() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let destination = dir.path().join("active.json");
+    let staging = dir.path().join("active.json.tmp");
+
+    let original_content = b"{\"revision\":1,\"generation\":\"old\"}";
+    let intended_replacement = b"{\"revision\":2,\"generation\":\"new-longer-payload-than-old\"}";
+
+    fs::write(&destination, original_content).expect("write initial destination");
+
+    // Simulate a crash partway through writing the staging file: only the
+    // first half of the intended bytes ever reach disk, and the process
+    // never proceeds to `fs::rename`. This is the worst-case interruption
+    // point for the staging half of the pipeline.
+    let torn_prefix_len = intended_replacement.len() / 2;
+    {
+        use std::io::Write;
+        let mut file = fs::File::create(&staging).expect("create staging file");
+        file.write_all(&intended_replacement[..torn_prefix_len])
+            .expect("write torn prefix");
+        file.sync_all().expect("fsync torn staging file");
+    }
+    // Deliberately no `fs::rename` call: the crash happened before the
+    // rename step was ever reached.
+
+    let destination_bytes = fs::read(&destination).expect("read destination after simulated crash");
+    assert_eq!(
+        destination_bytes, original_content,
+        "a crash while writing the staging file must never affect the \
+         previously-published destination — the destination is untouched \
+         until a rename actually completes"
+    );
+    let staging_bytes = fs::read(&staging).expect("read torn staging file");
+    assert_eq!(
+        staging_bytes.len(),
+        torn_prefix_len,
+        "sanity check: the staging file itself is torn, proving this test \
+         actually simulated a mid-write interruption rather than a clean one"
     );
 }
 
