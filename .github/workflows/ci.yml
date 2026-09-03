@@ -128,3 +128,6 @@ jobs:
 
       - name: Test PowerShell launcher contract
         run: cargo test --test contract_start_launcher
+
+      - name: Test diagnose-engram diagnostic script contract
+        run: cargo test --test contract_diagnose_engram

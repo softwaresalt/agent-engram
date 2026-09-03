@@ -2720,8 +2720,9 @@ Limited to the edges Revision 7 touches:
   (`F00 -> F12a -> F46 -> F47`), `crates/engram-indexer/Cargo.toml`
   (`F12a -> F12`), `src/daemon/ipc_server.rs` (`F04a -> F04`),
   `src/tools/read.rs` (`F25 -> F26`), `src/tools/lifecycle.rs`
-  (`F27 -> F45`), `src/cli/runner.rs` (`F23 -> F42`), and the 49 placeholder
-  harnesses (`F00 -> owning unit`).
+  (`F27 -> F45`), `src/cli/runner.rs` (`F23 -> F42`),
+  `tests/contract/start_launcher_test.rs` (`F51 -> F52`), and the 49
+  placeholder harnesses (`F00 -> owning unit`).
 
 ### Findings
 

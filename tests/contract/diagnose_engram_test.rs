@@ -125,6 +125,50 @@ fn diagnose_engram_skips_daemon_backed_probes_without_auto_spawn_when_daemon_abs
 }
 
 #[test]
+fn diagnose_engram_treats_pid_reuse_fingerprint_mismatch_as_no_daemon() {
+    let fixture = TempDir::new().expect("fixture dir");
+    let log_path = write_engram_fixture(fixture.path());
+
+    let workspace = TempDir::new().expect("workspace dir");
+    let run_dir = workspace.path().join(".engram").join("run");
+    fs::create_dir_all(&run_dir).expect("create run dir");
+
+    // This process's PID is genuinely live, but the recorded `start_time_unix`
+    // fingerprint (2, well below any real Unix timestamp) deliberately does
+    // not match this process's actual start time. A PID-reuse scenario looks
+    // exactly like this: the OS has reassigned a previously-recorded PID to
+    // an unrelated live process. The probe must treat the fingerprint
+    // mismatch the same as "no daemon" rather than trusting bare liveness.
+    let pid_record = format!(r#"{{"pid": {}, "start_time_unix": 2}}"#, std::process::id());
+    fs::write(run_dir.join("engram.pid"), pid_record).expect("write mismatched pid record");
+
+    let output = run_diagnose_script(workspace.path(), fixture.path(), &log_path);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "script must report a failure exit code when daemon-backed diagnostics are skipped; \
+         stdout: {stdout}; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains("not running (no-auto-spawn probe found no live PID)"),
+        "a fingerprint mismatch must be reported identically to no daemon present; \
+         stdout: {stdout}"
+    );
+
+    let invocation_log = fs::read_to_string(&log_path).unwrap_or_default();
+    for forbidden in ["daemon-status", "workspace-status", "health", "search"] {
+        assert!(
+            !invocation_log.contains(forbidden),
+            "a PID-reuse fingerprint mismatch must never be treated as a live daemon -- that \
+             would violate the read-only contract; invocation log: {invocation_log}"
+        );
+    }
+}
+
+#[test]
 fn diagnose_engram_continues_past_unreadable_diagnostics_log_to_summary() {
     let fixture = TempDir::new().expect("fixture dir");
     let log_path = write_engram_fixture(fixture.path());

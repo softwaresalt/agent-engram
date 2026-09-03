@@ -127,7 +127,40 @@ function Test-EngramDaemonRunning {
         return $false
     }
 
-    return $null -ne (Get-Process -Id $RecordedPid -ErrorAction SilentlyContinue)
+    $Process = Get-Process -Id $RecordedPid -ErrorAction SilentlyContinue
+    if ($null -eq $Process) {
+        return $false
+    }
+
+    # Structured PID records also carry `start_time_unix` (src/shim/pidfile.rs)
+    # specifically to prevent PID-reuse false positives: an unrelated process
+    # can be assigned the same PID after the recorded daemon exits, and a
+    # liveness-only check cannot tell the two apart. When a real fingerprint
+    # (greater than the legacy/unknown sentinel value of 1) is present, treat
+    # a mismatch the same as "no daemon" -- this mirrors PidFile::verify_alive
+    # exactly. Legacy numeric-only PID files carry no fingerprint and fall
+    # through to the liveness-only result, matching the Rust behavior for
+    # `start_time_unix <= 1`.
+    $RecordedStartTimeUnix = 0
+    if ($null -ne $Parsed -and (Get-Member -InputObject $Parsed -Name "start_time_unix" -ErrorAction SilentlyContinue)) {
+        [void][long]::TryParse([string]$Parsed.start_time_unix, [ref]$RecordedStartTimeUnix)
+    }
+
+    if ($RecordedStartTimeUnix -gt 1) {
+        try {
+            $ActualStartTimeUnix = ([DateTimeOffset]$Process.StartTime).ToUnixTimeSeconds()
+        } catch {
+            # Cannot verify the fingerprint -- treat as "no daemon" rather than
+            # trusting an unverifiable liveness match.
+            return $false
+        }
+
+        if ($ActualStartTimeUnix -ne $RecordedStartTimeUnix) {
+            return $false
+        }
+    }
+
+    return $true
 }
 
 $DaemonRunning = Test-EngramDaemonRunning -Workspace $ResolvedWorkspace
