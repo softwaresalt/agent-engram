@@ -1875,7 +1875,7 @@ I/O failures retry with bounded backoff and are never permanently cached.
 #### F49 — Supersede retired transport decisions
 
 * Files: `docs/adrs/0016-legacy-sse-feature-gate.md`,
-  `docs/adrs/0003-rate-limiting.md`
+  `docs/adrs/0003-sliding-window-rate-limiter.md`
 * Mark both superseded by the retirement decision.
 
 #### F50 — Typed preflight state machine
@@ -2329,7 +2329,7 @@ This repository has **no** Cargo test auto-discovery: `tests/` contains only
 `contract/`, `fixtures/`, `helpers/`, `integration/`, and `unit/`
 subdirectories and **zero** top-level `tests/*.rs` files. Cargo auto-discovers
 integration tests only at `tests/*.rs`, so every target is registered
-explicitly — root `Cargo.toml` currently carries **218** `[[test]]` blocks.
+explicitly — root `Cargo.toml` currently carries **219** `[[test]]` blocks.
 
 Consequences for the final roster:
 
@@ -2419,7 +2419,7 @@ for the three items below and changes nothing else.
 `tests/*.rs` files; `tests/` contains only `contract/`, `fixtures/`, `helpers/`,
 `integration/`, and `unit/`. Cargo auto-discovers integration tests only at
 `tests/*.rs`, so every target is registered explicitly and root `Cargo.toml`
-carries **218** `[[test]]` blocks. The established naming convention is
+carries **219** `[[test]]` blocks. The established naming convention is
 `name = "<subdir>_<basename minus _test>"` with
 `path = "tests/<subdir>/<file>_test.rs"`.
 
@@ -2505,7 +2505,7 @@ of root `Cargo.toml`.
 | F53 | `contract_start_sh_launcher` | `tests/contract/start_sh_launcher_test.rs` |
 | F54 | `contract_read_server_cli_mcp_parity` | `tests/contract/read_server_cli_mcp_parity_test.rs` |
 
-All 49 generated names were checked against the 218 existing target names; there
+All 49 generated names were checked against the 219 existing target names; there
 are no collisions.
 
 **Units deliberately excluded from F00 registration**
@@ -2626,7 +2626,7 @@ run and no architectural question was reopened, per operator direction.
 **Item A — test-manifest registration (P0-1): RESOLVED.**
 
 * The convention claim was independently re-verified against the working tree:
-  0 files matching `tests/*.rs`, 218 `[[test]]` blocks in root `Cargo.toml`
+  0 files matching `tests/*.rs`, 219 `[[test]]` blocks in root `Cargo.toml`
   (enumerated exactly), and `name`/`path` pairs following
   `<subdir>_<basename>` / `tests/<subdir>/<file>_test.rs`. All 49 new paths
   were confirmed absent from the tree, so no placeholder clobbers existing
@@ -2653,7 +2653,7 @@ run and no architectural question was reopened, per operator direction.
   (`UNMAPPED_TARGETS_COUNT == 0`) and the `unit_dev_test_hcl_scope_guard`
   byte-identical block assertion therefore both stay GREEN without editing that
   manifest.
-* Generated names were collision-checked against all 218 existing target names;
+* Generated names were collision-checked against all 219 existing target names;
   no duplicates. Nearest neighbours (`contract_start_launcher` vs
   `contract_start_launcher_failure`) are distinct.
 * F00's out-edge list is set-identical to the 49 registration rows plus F12a,

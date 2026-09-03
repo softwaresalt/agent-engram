@@ -113,7 +113,11 @@ function Test-EngramDaemonRunning {
     }
 
     if ($null -ne $Parsed -and (Get-Member -InputObject $Parsed -Name "pid" -ErrorAction SilentlyContinue)) {
-        $RecordedPid = [int]$Parsed.pid
+        if (-not [int]::TryParse([string]$Parsed.pid, [ref]$RecordedPid)) {
+            # Structured JSON present but "pid" is non-integer or out of range --
+            # malformed metadata takes the safe skip path rather than throwing.
+            return $false
+        }
     } elseif (-not [int]::TryParse($Raw, [ref]$RecordedPid)) {
         # Neither structured JSON nor the legacy bare-numeric PID file format.
         return $false
