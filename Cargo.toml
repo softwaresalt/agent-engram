@@ -1092,6 +1092,202 @@ path = "tests/unit/dev_test_coverage_oracle_test.rs"
 name = "unit_dev_test_hcl_scope_guard"
 path = "tests/unit/dev_test_hcl_scope_guard_test.rs"
 
+[[test]]
+name = "integration_generation_storage_probe"
+path = "tests/integration/generation_storage_probe_test.rs"
+
+[[test]]
+name = "unit_app_state_mode"
+path = "tests/unit/app_state_mode_test.rs"
+
+[[test]]
+name = "contract_app_state_constructor_migration"
+path = "tests/contract/app_state_constructor_migration_test.rs"
+
+[[test]]
+name = "contract_ipc_server_seam"
+path = "tests/contract/ipc_server_seam_test.rs"
+
+[[test]]
+name = "integration_read_server_restart"
+path = "tests/integration/read_server_restart_test.rs"
+
+[[test]]
+name = "unit_generation_domain"
+path = "tests/unit/generation_domain_test.rs"
+
+[[test]]
+name = "integration_generation_store"
+path = "tests/integration/generation_store_test.rs"
+
+[[test]]
+name = "integration_generation_publish"
+path = "tests/integration/generation_publish_test.rs"
+
+[[test]]
+name = "integration_generation_db_open"
+path = "tests/integration/generation_db_open_test.rs"
+
+[[test]]
+name = "integration_candidate_indexing_service"
+path = "tests/integration/candidate_indexing_service_test.rs"
+
+[[test]]
+name = "integration_direct_sync_mode"
+path = "tests/integration/direct_sync_mode_test.rs"
+
+[[test]]
+name = "contract_supervisor_workspace_boundary"
+path = "tests/contract/supervisor_workspace_boundary_test.rs"
+
+[[test]]
+name = "contract_supervisor_release_artifact"
+path = "tests/contract/supervisor_release_artifact_test.rs"
+
+[[test]]
+name = "contract_supervisor_install_exclusion"
+path = "tests/contract/supervisor_install_exclusion_test.rs"
+
+[[test]]
+name = "unit_read_request_context"
+path = "tests/unit/read_request_context_test.rs"
+
+[[test]]
+name = "unit_generation_context"
+path = "tests/unit/generation_context_test.rs"
+
+[[test]]
+name = "integration_generation_activation"
+path = "tests/integration/generation_activation_test.rs"
+
+[[test]]
+name = "integration_read_server_startup_activation"
+path = "tests/integration/read_server_startup_activation_test.rs"
+
+[[test]]
+name = "contract_tool_descriptor_registry"
+path = "tests/contract/tool_descriptor_registry_test.rs"
+
+[[test]]
+name = "integration_request_entry_activation"
+path = "tests/integration/request_entry_activation_test.rs"
+
+[[test]]
+name = "contract_read_server_dispatch_refusal"
+path = "tests/contract/read_server_dispatch_refusal_test.rs"
+
+[[test]]
+name = "contract_mcp_tool_catalog_parity"
+path = "tests/contract/mcp_tool_catalog_parity_test.rs"
+
+[[test]]
+name = "contract_cli_tool_catalog_parity"
+path = "tests/contract/cli_tool_catalog_parity_test.rs"
+
+[[test]]
+name = "contract_read_input_ownership_inventory"
+path = "tests/contract/read_input_ownership_inventory_test.rs"
+
+[[test]]
+name = "integration_core_read_generation_pin"
+path = "tests/integration/core_read_generation_pin_test.rs"
+
+[[test]]
+name = "integration_report_read_generation_pin"
+path = "tests/integration/report_read_generation_pin_test.rs"
+
+[[test]]
+name = "integration_lifecycle_read_generation_pin"
+path = "tests/integration/lifecycle_read_generation_pin_test.rs"
+
+[[test]]
+name = "integration_eval_read_pin"
+path = "tests/integration/eval_read_pin_test.rs"
+
+[[test]]
+name = "integration_lint_read_pin"
+path = "tests/integration/lint_read_pin_test.rs"
+
+[[test]]
+name = "integration_doctor_read_pin"
+path = "tests/integration/doctor_read_pin_test.rs"
+
+[[test]]
+name = "integration_search_service_pin"
+path = "tests/integration/search_service_pin_test.rs"
+
+[[test]]
+name = "integration_registry_service_pin"
+path = "tests/integration/registry_service_pin_test.rs"
+
+[[test]]
+name = "integration_retrieval_eval_service_pin"
+path = "tests/integration/retrieval_eval_service_pin_test.rs"
+
+[[test]]
+name = "integration_metrics_service_pin"
+path = "tests/integration/metrics_service_pin_test.rs"
+
+[[test]]
+name = "integration_dax_lint_service_pin"
+path = "tests/integration/dax_lint_service_pin_test.rs"
+
+[[test]]
+name = "integration_git_graph_service_pin"
+path = "tests/integration/git_graph_service_pin_test.rs"
+
+[[test]]
+name = "contract_read_path_pinning_enforcement"
+path = "tests/contract/read_path_pinning_enforcement_test.rs"
+
+[[test]]
+name = "contract_ipc_error_envelope"
+path = "tests/contract/ipc_error_envelope_test.rs"
+
+[[test]]
+name = "integration_ipc_error_round_trip"
+path = "tests/integration/ipc_error_round_trip_test.rs"
+
+[[test]]
+name = "contract_mcp_envelope"
+path = "tests/contract/mcp_envelope_test.rs"
+
+[[test]]
+name = "contract_cli_envelope"
+path = "tests/contract/cli_envelope_test.rs"
+
+[[test]]
+name = "contract_read_response_provenance"
+path = "tests/contract/read_response_provenance_test.rs"
+
+[[test]]
+name = "integration_read_server_lifecycle"
+path = "tests/integration/read_server_lifecycle_test.rs"
+
+[[test]]
+name = "integration_generation_observability"
+path = "tests/integration/generation_observability_test.rs"
+
+[[test]]
+name = "contract_supported_transport_surface"
+path = "tests/contract/supported_transport_surface_test.rs"
+
+[[test]]
+name = "integration_preflight_gate"
+path = "tests/integration/preflight_gate_test.rs"
+
+[[test]]
+name = "contract_start_launcher_failure"
+path = "tests/contract/start_launcher_failure_test.rs"
+
+[[test]]
+name = "contract_start_sh_launcher"
+path = "tests/contract/start_sh_launcher_test.rs"
+
+[[test]]
+name = "contract_read_server_cli_mcp_parity"
+path = "tests/contract/read_server_cli_mcp_parity_test.rs"
+
 [[example]]
 name = "cozo_api_spike"
 path = "examples/cozo_api_spike.rs"
