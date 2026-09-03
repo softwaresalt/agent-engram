@@ -65,32 +65,52 @@ any other shipment this session.
    so the P-018 gate and local review readiness are the operative merge
    gates.
 
-## Final state
+## Final state (as of the pre-checkpoint commit, `ca09d4bd`)
 
 - **PR**: #374, OPEN, `state: OPEN`, `mergeable: MERGEABLE`
-- **HEAD**: `ca09d4bda2a832dd4bbd7d40b699b1540252c3ef`
-- **Diff**: 6 files — the 5 shipment normalizations (unchanged since
-  original push) + `.backlogit/stash.jsonl` (net +4 legitimate deferred
+- **Pre-checkpoint reviewed HEAD**: `ca09d4bda2a832dd4bbd7d40b699b1540252c3ef`
+  — this is the HEAD the P-018 gate returned `SATISFIED` against, with 0
+  unresolved threads, and is the last HEAD confirmed **before** this memory
+  checkpoint file itself was committed.
+- **Diff at that HEAD**: 6 files — the 5 shipment normalizations (unchanged
+  since original push) + `.backlogit/stash.jsonl` (net +4 legitimate deferred
   entries; the erroneous 5th entry was added then removed within this
   session, net diff clean)
-- **Local Review Readiness**: `READY_WITH_FOLLOWUPS`, P0=0, P1=0
-- **P-018 Copilot-review gate**: `SATISFIED` at current HEAD, 0 unresolved
-  threads
-- **P-009**: merge-commit-only confirmed
+- **Local Review Readiness at that HEAD**: `READY_WITH_FOLLOWUPS`, P0=0, P1=0
+
+**IMPORTANT — staleness note**: committing this checkpoint file necessarily
+advances the PR's actual HEAD past `ca09d4bd` (this file is itself a 7th
+tracked file in the diff). The `ca09d4bd` result above must NOT be read as
+covering the PR's current HEAD. Whoever resumes must re-query the PR's
+**actual current `headRefOid`** (`gh pr view 374 --json headRefOid`) and
+treat the P-018 Copilot-review gate and the local review readiness record as
+**not yet satisfied for that HEAD** until re-run and confirmed fresh —
+never assume the `ca09d4bd` verdict carries forward past this commit.
+
+- **P-009**: merge-commit-only confirmed (repo-level setting, does not go
+  stale with HEAD).
 - **Not merged** — awaiting explicit operator approval per P-014. Ship did
   not merge and will not merge without that signal.
 
 ## Next steps (for whoever resumes)
 
+- Re-query the PR's current `headRefOid` and re-run `autoharness gate
+  copilot-review 374 --repo softwaresalt/agent-engram --enforcement auto
+  --max-wait 900 --json` plus the §1.9 local-readiness re-check for that
+  exact HEAD before treating the PR as merge-ready — do not trust the
+  `ca09d4bd` result above once HEAD has advanced further.
 - Await operator review/approval of PR #374.
 - On approval: re-run the last-mile P-018 + §1.9 re-checks (per Step 5 items
   15-16) immediately before merge if any further HEAD changes occur, then
   merge with the merge-commit strategy only.
-- Post-merge: this is a narrow backlog-repair PR, not a shipment-scoped
-  release unit — confirm with operator whether the full Step 6 post-merge
-  closure protocol (compact-context, operational-closure, etc.) applies, or
-  whether a lighter-weight closure is appropriate given no shipment was
-  claimed for this work.
+- **Post-merge closure is mandatory, not optional, regardless of PR scope.**
+  P-020 requires Ship to invoke `compact-context` with `target: all` at
+  every post-merge closure unconditionally; a backlog-only PR is not an
+  exception to this invocation (only shipment-specific steps — e.g. backlog
+  archival via `shipment-reconcile`, since no shipment was claimed for this
+  work — may be marked not applicable). Confirm with the operator only
+  whether shipment-specific Step 6 sub-steps apply; the `compact-context`
+  invocation itself must remain in the resume plan unconditionally.
 - 4 deferred P-021 stash entries (`D2B6FEE6`, `B8245F6D`, `5952F8D8`,
   `65333249`) await Stage triage. Note: `B8245F6D` contains a known factual
   error (flagged by Copilot, documented in this session and in the PR body)
