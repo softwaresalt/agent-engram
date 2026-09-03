@@ -27,9 +27,11 @@ use tokio::sync::{mpsc, watch};
 use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
 
-use crate::daemon::protocol::{HealthCheckResult, IpcError as WireError, IpcRequest, IpcResponse};
+use crate::daemon::protocol::{HealthCheckResult, IpcRequest, IpcResponse};
+use crate::daemon::request_entry::Admission;
 use crate::daemon::ttl::TtlTimer;
 use crate::daemon::watcher::{WatcherConfig, start_watcher};
+use crate::daemon::{error_transport, lifecycle_policy, request_entry, startup_activation};
 use crate::db::workspace::daemon_key_for_workspace;
 use crate::errors::{EngramError, IpcError as DomainIpcError};
 use crate::models::WatcherEvent;
@@ -347,8 +349,8 @@ async fn process_request(line: &str, state: &SharedState) -> (IpcResponse, bool)
         Err(err_response) => return (err_response, false),
     };
 
-    if let Err(err_response) = request.validate() {
-        return (err_response, false);
+    if let Admission::Refused(err_response) = request_entry::admit(state, &request) {
+        return (*err_response, false);
     }
 
     // Safe to unwrap: validate() ensures id is Some.
@@ -360,7 +362,7 @@ async fn process_request(line: &str, state: &SharedState) -> (IpcResponse, bool)
             // the shim keeps polling rather than treating the daemon as healthy
             // before it can serve real tool calls.
             let snapshot = state.snapshot_workspace().await;
-            let status = if snapshot.is_some() && state.is_hydration_ready() {
+            let status = if snapshot.is_some() && startup_activation::readiness(state).is_ready() {
                 "ready"
             } else {
                 "starting"
@@ -395,17 +397,7 @@ async fn process_request(line: &str, state: &SharedState) -> (IpcResponse, bool)
         method => (
             match tools::dispatch(Arc::clone(state), method, request.params).await {
                 Ok(result) => IpcResponse::success(id, result),
-                Err(e) => {
-                    let resp = e.to_response();
-                    IpcResponse::error(
-                        id,
-                        WireError {
-                            code: -32_603,
-                            message: resp.error.message,
-                            data: Some(json!({ "engram_code": resp.error.code })),
-                        },
-                    )
-                }
+                Err(e) => IpcResponse::error(id, error_transport::to_ipc_error(e)),
             },
             false,
         ),
@@ -614,6 +606,7 @@ pub async fn run_with_shutdown(
     let endpoint = ipc_endpoint(&workspace_path)?;
     let listener = bind_listener(&endpoint)?;
     info!(endpoint = %endpoint, "IPC listener bound");
+    lifecycle_policy::on_start(&state);
 
     // T077 / S097: Set Unix socket permissions to 0o600 (owner read/write only).
     // Windows named pipes inherit the creating user's security context via OS ACL —
@@ -688,6 +681,7 @@ pub async fn run_with_shutdown(
     });
 
     accept_loop(listener, Arc::clone(&state), ttl, shutdown_tx, shutdown_rx).await;
+    lifecycle_policy::on_shutdown(&state);
     if let Err(error) = startup_driver.join().await {
         warn!(%error, "startup driver join failed");
     }
@@ -848,6 +842,7 @@ pub async fn run_with_shutdown_v2(
     let endpoint = ipc_endpoint(&workspace_path)?;
     let listener = bind_listener(&endpoint)?;
     info!(endpoint = %endpoint, "IPC listener bound");
+    lifecycle_policy::on_start(&state);
 
     // T077 / S097: Set Unix socket permissions to 0o600 (owner read/write only).
     #[cfg(unix)]
@@ -953,6 +948,7 @@ pub async fn run_with_shutdown_v2(
     });
 
     accept_loop(listener, Arc::clone(&state), ttl, shutdown_tx, shutdown_rx).await;
+    lifecycle_policy::on_shutdown(&state);
     if let Err(error) = startup_driver.join().await {
         warn!(%error, "startup driver join failed");
     }

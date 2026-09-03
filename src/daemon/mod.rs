@@ -6,9 +6,13 @@
 //! use and runs as a background process.
 
 pub mod debounce;
+pub mod error_transport;
 pub mod ipc_server;
+pub mod lifecycle_policy;
 pub mod lockfile;
 pub mod protocol;
+pub mod request_entry;
+pub mod startup_activation;
 pub mod ttl;
 pub mod watcher;
 
