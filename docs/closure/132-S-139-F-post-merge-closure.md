@@ -7,7 +7,8 @@ feature_id: "139-F"
 release: "v0.3.0-rc.1"
 date: 2026-09-02
 closure_status: READY_WITH_CONDITIONS
-compaction_status: done
+compaction_status: degraded
+compaction_reason: "No compact-context invocation with target: all was recorded for 132-S; the verification artifact only records a judgment that no broad compaction candidate qualified, not an actual invocation. Recorded degraded per the same historical-evidence pattern as docs/closure/106-S-2026-08-05-post-merge-closure.md."
 conditions:
   - description: "G2 merge approval and merge-commit-only integration of release PR #368 to main"
     satisfied: true
@@ -91,13 +92,17 @@ identically to "not `True`" and reports as
   shipment archival/reconciliation). Each is satisfied and cites the exact
   existing evidence location; no new verification was performed to produce
   these entries.
-* `compaction_status: done` reflects the deliberate, already-recorded
-  knowledge-maintenance assessment in the verification artifact's own
-  "Knowledge-maintenance assessment" section: same-day active closure
-  material was correctly judged not to be a compaction candidate, and no
-  compound entry was superseded. This is a completed (non-skipped) Tier-1
-  evaluation that produced a legitimate scan-only no-op, consistent with the
-  Ship agent's P-020 contract.
+* `compaction_status: degraded` is recorded truthfully rather than `done`:
+  the verification artifact's "Knowledge-maintenance assessment" section
+  records a judgment that no broad compaction candidate qualified, but no
+  actual `compact-context` invocation with `target: all` was performed or
+  recorded for `132-S` at the time. Per the same historical-evidence pattern
+  established in
+  [`docs/closure/106-S-2026-08-05-post-merge-closure.md`](106-S-2026-08-05-post-merge-closure.md)
+  (`compaction_status: degraded` with an explicit `compaction_reason` for a
+  shipment closed before compaction evidence was required), this document
+  records `degraded` with an explicit `compaction_reason` rather than
+  fabricating invocation evidence that does not exist.
 * **Not asserted as satisfied**: the ongoing dogfood observation window
   (`2026-08-30T18:37:49Z` through `2026-09-06T18:37:49Z`) and the block on
   stable `v0.3.0` pending `002-SP` remain genuinely open. They are
@@ -111,11 +116,14 @@ identically to "not `True`" and reports as
 
 ## Precedent
 
-This repair follows the same pattern previously used for shipment `117-S`
-(see the autoharness framework's own
-`docs/archive/closure/117-S-110-F-post-merge-closure.md` — a canonical
-evidence artifact reconstructed from already-merged PRs and already-recorded
-memory after the original closure session omitted writing it to the exact
-path the gate expects). No backlog, code, source, or release state is
-changed by this document; only the missing canonical, gate-discoverable
-evidence artifact is added.
+This repair follows the same pattern previously used for shipment `106-S`
+(see [`docs/closure/106-S-2026-08-05-post-merge-closure.md`](106-S-2026-08-05-post-merge-closure.md)
+in this repository) — an additive, canonical evidence artifact reconstructed
+from already-merged PRs and already-recorded memory/reconciliation reports
+after the original closure session did not write a file matching the exact
+`{shipment_id}-*-post-merge-closure.md` path the gate expects, including its
+use of `compaction_status: degraded` with an explicit `compaction_reason`
+for historical evidence that predates or falls outside a formal compaction
+invocation. No backlog, code, source, or release state is changed by this
+document; only the missing canonical, gate-discoverable evidence artifact is
+added.
