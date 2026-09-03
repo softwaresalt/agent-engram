@@ -76,15 +76,17 @@ PRs or other destructive actions.
    Result: `PREDECESSOR_CLOSURE_INCOMPLETE` (blocked) — the gate's
    `closure_complete(133-S)` check additionally requires
    `docs/closure/133-S-2026-09-03-post-merge-closure.md`'s own
-   `closure_status` frontmatter to read `READY`/`READY_WITH_CONDITIONS`
-   with satisfied `conditions:`. Updated that document in place on this
-   branch (`closure_status: BLOCKED -> READY_WITH_CONDITIONS`, added a
-   machine-readable `conditions:` block, added a "Manual Closure
-   Completion" section) — verified via direct Python invocation of the
-   gate's own `_closure_artifact_complete` function that it now evaluates
-   `True`. The gate itself will pass once this document lands on `main`;
-   re-running it after this closure PR merges is a remaining follow-up
-   (no `134-S` claim was made or attempted this session).
+   `closure_status` frontmatter to read `READY` (or `READY_WITH_CONDITIONS`
+   with satisfied `conditions:`). Updated that document in place on this
+   branch (`closure_status: BLOCKED -> READY`, `releasability:
+   READY_WITH_CONDITIONS` kept separate per this workspace's established
+   107-S/108-S/132-S convention, no synthetic `conditions:` block needed,
+   added a "Manual Closure Completion" section) — verified via direct
+   Python invocation of the gate's own `_closure_artifact_complete`
+   function that it now evaluates `True`. The gate itself will pass once
+   this document lands on `main`; re-running it after this closure PR
+   merges is a remaining follow-up (no `134-S` claim was made or attempted
+   this session).
 
 ## Compaction (P-020, mandatory)
 
