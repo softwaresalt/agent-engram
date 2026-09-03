@@ -592,6 +592,33 @@ availability outage.
 | `src/db/` | CozoDB setup, query helpers, content-record persistence, and workspace storage resolution |
 | `src/models/` | Workspace, config, symbol, metrics, notebook, and Power BI entity models |
 | `src/installer/` | Workspace install, update, reinstall, uninstall, and client helper generation |
+| `crates/engram-indexer/` | New workspace member (`133-S`, foundations only): an empty, zero-dependency, `#![forbid(unsafe_code)]` stub crate reserved for the future indexer/read-server split described in `docs/exec-plans/2026-09-02-separate-indexer-read-server-plan.md`. It does not run or participate in any daemon behavior yet — the real supervisor logic (plan unit F12) ships in a later shipment under feature `142-F`. |
+
+`src/models/config.rs` and `src/server/state.rs` also gained a `DaemonMode`
+mode-contract **foundation** (`managed`/`read_server`, with a strict
+standalone resolver, `DaemonMode::resolve`, that hard-errors via
+`DaemonModeParseError` on any unrecognized value — no silent fallback) and
+an immutable `AppState::mode` field, as foundational plumbing for the same
+split (`133-S`, plan units F02/F03). **This foundation is not yet wired
+into production config loading**: `PluginConfig` gained a permissive
+`mode: Option<String>` field (`deserialize_permissive_mode` carries a
+present-but-malformed raw value through rather than erasing it at the
+TOML-parsing layer, precisely so a later caller can still hard-reject it via
+`DaemonMode::resolve`), but **no production call site currently reads
+`PluginConfig::mode` and routes it through `DaemonMode::resolve`** — every
+current call site of `DaemonMode::resolve` is a unit-test assertion in
+`tests/unit/plugin_config_test.rs` (21 tests, all passing) or
+`tests/unit/app_state_mode_test.rs` (6 tests, all passing; verified this
+session via `cargo test --test unit_plugin_config --test
+unit_app_state_mode --release`). An invalid configured mode therefore does
+**not** yet hard-fail daemon startup; wiring `PluginConfig::mode` through
+`DaemonMode::resolve` at actual startup is deferred to a later shipment
+alongside plan unit F04's `AppState` call-site migration. No existing
+`AppState` construction call site was migrated onto the new `with_mode`
+constructor yet (~45 call sites still call the pre-existing constructors,
+which forward to `with_mode(DaemonMode::Managed, ...)` to preserve current
+behavior unchanged) — that migration is plan unit F04, deferred to a later
+shipment.
 
 ## Compatibility note
 
