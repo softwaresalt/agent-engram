@@ -88,7 +88,7 @@ Verdict: **PASS WITH FOLLOW-UP** (full report:
 |---|---|
 | Surface / adapter | CLI (release build, no-daemon commands); `cargo test` for MCP/CLI contract suites |
 | Verdict | `PASS_WITH_FOLLOW_UP` |
-| Probe outcomes | `cargo build --release`: ok (5m15s). `engram.exe --version`/`manifest`: ok. `contract_mcp_catalog_oracle`: 9/9 passed. `contract_mcp_tool_catalog_parity` / `contract_mcp_envelope` / `contract_read_server_cli_mcp_parity` (F00 placeholders): 1/1 each. `contract_shim_stdio_initialize`: 18/19 passed |
+| Probe outcomes | `cargo build --release`: ok (5m15s). `engram.exe --version`/`manifest`: ok. `unit_app_state_mode` (F03): 6/6 passed. `unit_plugin_config` (F02): 21/21 passed. `contract_mcp_catalog_oracle`: 9/9 passed. `contract_mcp_tool_catalog_parity` / `contract_mcp_envelope` / `contract_read_server_cli_mcp_parity` (F00 placeholders): 1/1 each. `contract_shim_stdio_initialize`: 18/19 passed |
 | Manual checkpoint evidence | Isolated diagnostic worktree (`git worktree add`) checked out at pre-merge `main` tip `c66d320ee2ce8b0aab90e73bc07d4f81c3059862`, same test re-run, identical failure reproduced — confirms the one `contract_shim_stdio_initialize` failure (`shim_aborts_unresolved_startup_after_client_disconnects`) is pre-existing and unrelated to this shipment; worktree removed after comparison |
 | Blocked prerequisites | `daemon-status`/`workspace-status`/`sync_workspace` probes require a bound running daemon session — not applicable to this foundations-only, no-daemon-behavior-change shipment; explicitly skipped, not silently omitted |
 
