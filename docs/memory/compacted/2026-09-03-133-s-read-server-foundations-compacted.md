@@ -70,10 +70,14 @@ deferred to later shipments.
 `backlogit shipment ship 133-S` (the only CLI path to `status: shipped` in
 backlogit 1.10.1 — direct `move --status shipped` is unconditionally
 rejected by the 144-F `ErrShipmentShippedRequiresEnvelope` guard) cannot be
-safely invoked: covering feature `142-F` is an explicit manifest member but
-only ~10 of its 59 subtasks are in scope for `133-S` (a multi-shipment
-feature). The cascade would force-mark `142-F` `done` and detach ~49
-sibling subtasks — forbidden by this workspace's own P-015
+safely invoked: covering feature `142-F` is an explicit manifest member
+with 59 direct task children and 28 nested subtask descendants (87 total,
+verified by direct file enumeration under the `142.*` ID namespace); the
+manifest contains only 5 of each (10 of 87), leaving 77 descendants outside
+scope for `133-S` (a multi-shipment feature). The cascade would force-mark
+`142-F` `done` and
+force-requeue-and-detach the other 77 descendants — forbidden by this
+workspace's own P-015
 fully-covered-root test. See
 `docs/closure/133-S-2026-09-03-post-merge-closure.md` for the full
 evidence chain and recommended remediation (Stage should remove `142-F`

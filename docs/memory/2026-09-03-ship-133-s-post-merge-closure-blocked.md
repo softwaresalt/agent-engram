@@ -42,8 +42,11 @@ a closure PR brought to readiness but not merged, explicitly withholding
    exists — see blocker below): confirmed all 10 task-level manifest items
    (`142.001-T` + 5 subtasks, `142.002-T`, `142.004-T`, `142.006-T`,
    `142.007-T`) are `done` and archived in `.backlogit/archive/`; covering
-   feature `142-F` correctly remains `active`/queued (59 total subtasks,
-   only 10 in this shipment's scope); orphan scan found no
+   feature `142-F` correctly remains `active`/queued (verified by direct
+   file enumeration under the `142.*` ID namespace: 59 direct task
+   children + 28 nested subtask descendants = 87 total; the manifest
+   contains 5 of each — 10 total — leaving 77 outside scope); orphan scan
+   found no
    `shipment_id: 133-S` back-references (expected for this backlogit
    version). No `source_stash_id`/`source_deliberation_id` fields present
    on `133-S`/`142-F` — no source-artifact cleanup needed.
@@ -52,8 +55,10 @@ a closure PR brought to readiness but not merged, explicitly withholding
    (`ErrShipmentShippedRequiresEnvelope`, backlogit feature `144-F`
    hardening, no `--force` bypass). The only remaining path,
    `backlogit shipment ship 133-S`, would cascade-force-close covering
-   feature `142-F` (only 10 of 59 subtasks in scope) and detach ~49
-   sibling subtasks — forbidden by this workspace's own P-015
+   feature `142-F` (only 5 of its 59 direct task children and 5 of its 28
+   nested subtasks — 10 of 87 total descendants — in scope) and
+   force-requeue-and-detach the other 77 —
+   forbidden by this workspace's own P-015
    fully-covered-root test. Confirmed via direct CLI reproduction plus a
    deep-dive into the `backlogit` Go source
    (`internal/core/shipment_lifecycle.go`,
@@ -78,9 +83,11 @@ a closure PR brought to readiness but not merged, explicitly withholding
    BLOCKED`, `releasability: READY_WITH_CONDITIONS`, documenting the
    Windows directory-durability residual risk (stash `F2E84E15`, already
    present, not re-created) alongside the shipment-archival blocker.
-9. **`docs/ARCHITECTURE.md`** updated (Module boundaries section):
+9. **`docs/architecture.md`** updated (Module boundaries section):
    documented the new `crates/engram-indexer` stub crate and the
-   `DaemonMode`/`AppState::mode` foundational plumbing, proportionate to
+   `DaemonMode`/`AppState::mode` foundational plumbing (mode values
+   `managed`/`read_server`, corrected after Copilot review flagged an
+   initial-draft `strict` typo), proportionate to
    the actual (empty-stub, non-behavior-changing) scope shipped.
 10. **compound-refresh evaluation**: scanned `docs/compound/` for entries
     referencing storage/generation/read-only-open topics potentially

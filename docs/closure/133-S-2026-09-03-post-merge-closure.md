@@ -68,13 +68,21 @@ recorded as high-priority follow-up stash `F9D1C495` for Stage resolution.
 
 ## Runtime Verification
 
-Verdict: **PASS WITH FOLLOW-UP** (see
+Verdict: **PASS WITH FOLLOW-UP** (full report:
 [`133-S-2026-09-03-runtime-verification.md`](./133-S-2026-09-03-runtime-verification.md)).
+
+### Validator Evidence (structured)
+
+| Field | Value |
+|---|---|
+| Surface / adapter | CLI (release build, no-daemon commands); `cargo test` for MCP/CLI contract suites |
+| Verdict | `PASS_WITH_FOLLOW_UP` |
+| Probe outcomes | `cargo build --release`: ok (5m15s). `engram.exe --version`/`manifest`: ok. `contract_mcp_catalog_oracle`: 9/9 passed. `contract_mcp_tool_catalog_parity` / `contract_mcp_envelope` / `contract_read_server_cli_mcp_parity` (F00 placeholders): 1/1 each. `contract_shim_stdio_initialize`: 18/19 passed |
+| Manual checkpoint evidence | Isolated diagnostic worktree (`git worktree add`) checked out at pre-merge `main` tip `c66d320ee2ce8b0aab90e73bc07d4f81c3059862`, same test re-run, identical failure reproduced — confirms the one `contract_shim_stdio_initialize` failure (`shim_aborts_unresolved_startup_after_client_disconnects`) is pre-existing and unrelated to this shipment; worktree removed after comparison |
+| Blocked prerequisites | `daemon-status`/`workspace-status`/`sync_workspace` probes require a bound running daemon session — not applicable to this foundations-only, no-daemon-behavior-change shipment; explicitly skipped, not silently omitted |
+
 Release build succeeds; MCP tool catalog and existing MCP/CLI contract
-suites unaffected; one contract-suite failure
-(`shim_aborts_unresolved_startup_after_client_disconnects`) confirmed
-pre-existing and unrelated via isolated-worktree reproduction against the
-pre-merge `main` tip. No new runtime behavior is introduced by this
+suites unaffected. No new runtime behavior is introduced by this
 shipment (F04's call-site migration and F06–F09/F12's real logic are
 explicitly deferred to later shipments).
 
@@ -86,14 +94,30 @@ explicitly deferred to later shipments).
   all 10 task-level manifest items (`142.001-T` + 5 subtasks, `142.002-T`,
   `142.004-T`, `142.006-T`, `142.007-T`) present in `.backlogit/archive/`
   with `status: done`. Covering feature `142-F` correctly remains in
-  `.backlogit/queue/` at `status: active` (59 total subtasks, only 10 in
-  this shipment's manifest — not fully covered, correctly untouched by the
-  merged build work).
+  `.backlogit/queue/` at `status: active`. **Verified descendant count**
+  (all files under the `142.*` ID namespace in `.backlogit/queue/` +
+  `.backlogit/archive/`, corrected after Copilot review flagged the
+  original draft's figure as inaccurate): `142-F` has **59 direct task
+  children plus 28 nested subtask descendants (87 total)**. The manifest
+  contains **5 of each** (5 direct tasks, 5 nested subtasks — 10 total),
+  leaving **77 descendants** (54 direct tasks + 23 subtasks) outside the
+  manifest — not fully covered, correctly untouched by the merged build
+  work.
 * Orphan scan (grep for `shipment_id: 133-S` across queue/archive):
   no matches — expected, this backlogit version does not store
   shipment back-references on task records.
 * No `source_stash_id` or `source_deliberation_id` custom fields exist on
-  `133-S` or `142-F` — no source-artifact cleanup required.
+  `133-S` or `142-F` — no source-artifact cleanup required (see dedicated
+  section below).
+
+## Source artifact cleanup
+
+- Archived stash (`source_stash_id`): none — `133-S` and `142-F` carry no
+  `source_stash_id` custom field
+- Archived deliberations (`source_deliberation_id`): none — `133-S` and
+  `142-F` carry no `source_deliberation_id` custom field
+- Skipped (already archived or not found): none — no candidate fields
+  existed to act on
 
 ## Blocking Finding: Shipment Record Cannot Be Safely Archived
 
@@ -117,10 +141,13 @@ binary in this session):
    if the feature itself is an explicit manifest member, it is
    **unconditionally** marked `done` regardless of actual completion.
 3. `133-S`'s manifest lists `142-F` (the covering feature) as an explicit
-   item, alongside only 10 of its 59 total subtasks. Invoking
-   `backlogit shipment ship 133-S` would therefore force-mark `142-F`
-   `done` (58 of 59 subtasks still incomplete) and detach roughly 49
-   sibling subtasks from their parent.
+   item, alongside only 5 of its 59 direct task children and 5 of its 28
+   nested subtask descendants (10 of 87 total descendants — verified by
+   direct enumeration of every file under the `142.*` ID namespace).
+   Invoking `backlogit shipment ship 133-S` would therefore force-mark
+   `142-F` `done` (77 of 87 descendants still incomplete) and
+   force-requeue-and-detach those 77 non-manifest descendants from their
+   parent chain.
 4. This workspace's own P-015 policy permits the cascade close path
    **only** when every feature member of a shipment manifest is a root and
    fully covered (100% of its live children are manifest members) —
@@ -152,10 +179,20 @@ check (`_is_shipped_terminal`) already fails closed on `133-S`'s current
 document's content. `134-S` must not be claimed until `133-S` reaches a
 genuinely shipped/archived terminal state.
 
+## Risky Action Record
+
+| Field | Value |
+|---|---|
+| `ProposedAction` | Invoke `backlogit shipment ship 133-S` (the only remaining CLI path to close the shipment record) |
+| `ActionRisk` | **HIGH** — cascade would unconditionally force-mark covering feature `142-F` `done` while 77 of its 87 descendants remain incomplete, and would force-requeue-and-detach those 77 descendants from their parent chain; violates this workspace's own P-015 fully-covered-root policy |
+| Approval / containment | **Not approved.** Ship assessed the action against P-015 during this session (evidence chain above), determined it would be a policy violation, and did not invoke it. No operator approval was sought for this specific mutation because Ship independently halted before executing it — consistent with Ship's role boundary (no authority to override P-015) and its Step 6 obligation to halt rather than force a cascade |
+| `ActionResult` | **NOT EXECUTED / ABORTED.** No mutation was made to `142-F` or any of its descendants. `133-S` remains `active` (unchanged). Recorded as follow-up stash `F9D1C495` for Stage disposition instead |
+
 ## Invariants to Preserve
 
-* The strict `DaemonMode` parser must continue to hard-error on any value
-  outside `managed`/`strict` — no silent fallback.
+* The strict `DaemonMode` parser (`DaemonMode::resolve`) must continue to
+  hard-error (`DaemonModeParseError::Unrecognized`) on any value outside
+  `managed`/`read_server` — no silent fallback to `managed`.
 * Existing `AppState` construction call sites (`new`,
   `with_stale_strategy`, `with_options`) must continue to forward to
   `with_mode(DaemonMode::Managed, ...)` unchanged until F04 migrates them.
@@ -171,7 +208,7 @@ genuinely shipped/archived terminal state.
   call site.
 * No new external dependency, port, or credential surface introduced.
 * Scope confirmed via merge-diff to be limited to the F00/F01/F02/F03/F12a
-  files described in `docs/ARCHITECTURE.md`'s updated Module boundaries
+  files described in `docs/architecture.md`'s updated Module boundaries
   section, plus test/backlog/documentation artifacts.
 
 ## Deployment / Rollout Path
@@ -249,6 +286,21 @@ one related exec-plan
 as a whole, which remains open across multiple future shipments, so it does
 not meet the "feature/chore complete" compaction precondition and was
 correctly left uncompacted (scan-only, no-op for that artifact).
+
+## Releasability Evidence (structured)
+
+| Requirement | Status | Detail |
+|---|---|---|
+| Code merged, CI green, review clean | **Satisfied** | PR #376 merged as merge commit; CI (`build`, `start-launcher-windows`) both SUCCESS; local review `READY_WITH_FOLLOWUPS`; P-018 Copilot gate `SATISFIED` |
+| Runtime verification | **Satisfied** | `PASS WITH FOLLOW-UP` — see Validator Evidence above; no new runtime regression attributable to this shipment |
+| Windows generation-publish durability | **Conditional** | Accepted, unverified residual risk (stash `F2E84E15`); condition: F07/F08 implementers must explicitly re-review before treating Windows publication as crash-durable equivalent to POSIX |
+| Shipment-record archival (`133-S` → `shipped`) | **Blocked** | See Blocking Finding and Risky Action Record above; recorded as stash `F9D1C495`; requires Stage manifest correction before this condition can clear |
+
+Overall: `READY_WITH_CONDITIONS` — the shipped code itself is fully ready
+and verified; the Windows durability item is a satisfiable follow-up
+condition; the shipment-record archival item is a hard block on declaring
+`133-S` fully `SHIPPED` (distinct from code releasability), tracked
+separately as `closure_status: BLOCKED`.
 
 ## Verdict
 

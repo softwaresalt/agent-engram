@@ -595,8 +595,9 @@ availability outage.
 | `crates/engram-indexer/` | New workspace member (`133-S`, foundations only): an empty, zero-dependency, `#![forbid(unsafe_code)]` stub crate reserved for the future indexer/read-server split described in `docs/exec-plans/2026-09-02-separate-indexer-read-server-plan.md`. It does not run or participate in any daemon behavior yet — the real supervisor logic (plan unit F12) ships in a later shipment under feature `142-F`. |
 
 `src/models/config.rs` and `src/server/state.rs` also gained a `DaemonMode`
-mode contract (`managed`/`strict`, strict TOML parsing, hard error on any
-other value) and an immutable `AppState::mode` field as foundational plumbing
+mode contract (`managed`/`read_server`, strict TOML parsing via
+`DaemonMode::resolve`, hard `DaemonModeParseError` on any other value — no
+silent fallback) and an immutable `AppState::mode` field as foundational plumbing
 for the same split (`133-S`, plan units F02/F03). No existing `AppState`
 construction call site was migrated onto the new `with_mode` constructor yet
 (~45 call sites still call the pre-existing constructors, which forward to
