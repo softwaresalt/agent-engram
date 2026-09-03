@@ -38,7 +38,7 @@ use tokio::sync::{Notify, RwLock, watch};
 
 use crate::config::StaleStrategy;
 use crate::errors::WorkspaceError;
-use crate::models::config::WorkspaceConfig;
+use crate::models::config::{DaemonMode, WorkspaceConfig};
 use crate::models::health::ScanProgress;
 use crate::services::connection::ConnectionRegistry;
 use crate::services::hydration::FileFingerprint;
@@ -996,6 +996,12 @@ pub struct AppState {
     /// `_health` gates "ready" on this flag so polling clients do not issue
     /// workspace calls against an uninitialized branch.
     hydration_ready: AtomicBool,
+    /// Resolved daemon mode for this process lifetime (F03).
+    ///
+    /// Set once at construction and never reassigned: there is no setter and
+    /// no interior-mutability path, so no code path can observe two different
+    /// modes within one process lifetime.
+    mode: DaemonMode,
 }
 
 /// Exclusive ownership of an identity-changing workspace publication.
@@ -1016,7 +1022,39 @@ impl AppState {
     }
 
     /// Create `AppState` with full configuration including rate limit parameters.
+    ///
+    /// Managed-mode behavior is unchanged: this constructor is a thin
+    /// forwarder onto [`AppState::with_mode`] with an explicit
+    /// [`DaemonMode::Managed`] argument. It is a temporary constructor per
+    /// plan unit F03/F04 (see `docs/exec-plans/2026-09-02-separate-indexer-read-server-plan.md`);
+    /// F04 will migrate call sites onto an explicit-mode constructor and
+    /// remove this one and [`AppState::new`] / [`AppState::with_stale_strategy`].
     pub fn with_options(
+        max_workspaces: usize,
+        stale_strategy: StaleStrategy,
+        rate_limit_max: usize,
+        rate_limit_window_secs: u64,
+    ) -> Self {
+        Self::with_mode(
+            DaemonMode::Managed,
+            max_workspaces,
+            stale_strategy,
+            rate_limit_max,
+            rate_limit_window_secs,
+        )
+    }
+
+    /// Create `AppState` with an explicit, required [`DaemonMode`].
+    ///
+    /// This is the sole construction path that owns the `mode` field: every
+    /// other constructor on `AppState` forwards here with an explicit mode
+    /// argument (currently always [`DaemonMode::Managed`] for
+    /// `new`/`with_stale_strategy`/`with_options`, until F04 migrates their
+    /// call sites). There is no default-mode escape hatch, no setter, and no
+    /// interior-mutability path for `mode`: it is set once here and never
+    /// reassigned for the lifetime of the returned value.
+    pub fn with_mode(
+        mode: DaemonMode,
         max_workspaces: usize,
         stale_strategy: StaleStrategy,
         rate_limit_max: usize,
@@ -1041,7 +1079,17 @@ impl AppState {
             scan_progress: RwLock::new(None),
             reliability: ReliabilityCounters::default(),
             hydration_ready: AtomicBool::new(false),
+            mode,
         }
+    }
+
+    /// The resolved daemon mode for this process lifetime.
+    ///
+    /// Readable by every consumer that needs it; there is no corresponding
+    /// setter, so this value cannot change after construction.
+    #[must_use]
+    pub fn mode(&self) -> DaemonMode {
+        self.mode
     }
 
     pub fn uptime_seconds(&self) -> u64 {
