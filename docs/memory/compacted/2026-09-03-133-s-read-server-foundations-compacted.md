@@ -20,11 +20,12 @@ compacted_from:
 storage feasibility spike, F02 strict `DaemonMode` parsing, F03 immutable
 `AppState.mode`, F12a `engram-indexer` stub crate) is **complete and
 closed**. Shipment record `archived`, `archived_status: done`. Covering
-feature `142-F` remains `active` (multi-shipment feature; 49 of its 59
-direct children still owned by nine other shipments). No user-facing
-runtime behavior changed.
+feature `142-F` remains `active` (multi-shipment feature; 54 of its 59
+direct children still owned by nine other shipments — see the closure
+doc's Reconciliation section for the full 54 direct + 23 nested = 77
+descendant breakdown). No user-facing runtime behavior changed.
 
-## Timeline (across 3 sessions, all same shipment)
+## Timeline (across 4 sessions, all same shipment)
 
 1. **PR #372** (staging gate, `chore/stage-133-s`) merged as merge commit
    `<see PR history>`; opened the Orchestrator staging gate for `133-S`.

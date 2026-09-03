@@ -100,7 +100,21 @@ edits, no `backlogit shipment ship`):
    33a0a41e345cef8965b707346728d44fa5492daf` was run against each of the
    10 already-archived task items (official update seam; works on archived
    records). Diff-verified: exactly one `commit:` line added and
-   `updated_at` bumped per file, no other field touched.
+   `updated_at` bumped per file, no other field touched. **Correction**
+   (Copilot review, this PR): the commit line was the only field this PR
+   added — but it was not the only metadata these ten records lack
+   relative to this workspace's canonical archive convention. All ten
+   remain `status: done` without the `archived_status`/`archived_from`
+   wrapper fields that the official `backlogit archive` command stamps
+   elsewhere (e.g. the `133-S.md` shipment record itself, and 255 of 741
+   other task-type archive files in this workspace); their filesystem
+   location under `.backlogit/archive/` is the only signal of archival,
+   not their frontmatter. This predates this PR — they were relocated by a
+   raw `git mv` inside earlier feature-implementation commit `3f890662`,
+   not via the official archive command — and normalizing them is a
+   separate, materially larger mutation outside this PR's narrowly
+   operator-approved manual-closure sequence (P-021 C1). Deferred as
+   stash `B761AFA7` for Stage's disposition; not fixed here.
 3. **Audit rationale**: `backlogit comment add 133-S --actor ship
    --commit-sha 224539ff4da60e477f4a93bff729cc42401ec4f8` recorded a
    detailed rationale explaining why `backlogit shipment ship` /
