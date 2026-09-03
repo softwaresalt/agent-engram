@@ -896,12 +896,16 @@ requirements.
 
 ### Amended requirements
 
-* **R38 — AMENDED.** The read daemon MUST open and validate a candidate into a
-  `GenerationReadContext` containing the database handle and typed provenance
-  before publication. Each request MUST capture one
-  `Arc<GenerationReadContext>` at dispatch entry and use it for its entire
-  lifetime. Publishing a path while handlers reopen databases independently is
-  forbidden.
+* **R38 — AMENDED.** Validating a candidate before publication is the indexer's
+  duty under R36; the read daemon MUST NOT open a candidate before it is
+  published. The daemon discovers a generation only after the manifest
+  publication that names it, and MUST then open and validate that published
+  generation into a `GenerationReadContext` containing the database handle and
+  typed provenance. That open-and-validate MUST complete successfully before the
+  active request context is swapped; a failure leaves the previous context
+  serving. Each request MUST capture one `Arc<GenerationReadContext>` at
+  dispatch entry and use it for its entire lifetime. Publishing a path while
+  handlers reopen databases independently is forbidden.
 * **R39 — AMENDED.** Supervisor operations MUST use a distinct control plane
   and executable that are not part of the agent CLI or MCP catalogs. Catalog
   omission alone is not authorization. The control plane MUST require an
