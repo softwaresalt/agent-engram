@@ -131,17 +131,16 @@ pub async fn run(workspace: &str) -> Result<(), EngramError> {
 
     // ── 3a-i. Resolve the daemon mode (142-F) ─────────────────────────────────
     //
-    // `DaemonMode::resolve` is the single shared mode resolver: an absent
-    // setting resolves to `Managed`, a present-but-unrecognized value is a hard
-    // error. The resolved mode is threaded explicitly into the IPC server and
-    // from there into `AppState::with_mode`; nothing downstream defaults it.
-    let mode =
-        crate::models::config::DaemonMode::resolve(plugin_config.mode.as_deref()).map_err(|e| {
-            EngramError::Config(crate::errors::ConfigError::InvalidValue {
-                key: "mode".to_owned(),
-                reason: e.to_string(),
-            })
-        })?;
+    // Delegates to `ipc_server::resolve_daemon_mode`, the single shared mode
+    // resolver: an absent setting resolves to `Managed`, a present-but-
+    // unrecognized value is a hard error, and — because mode selection is a
+    // safety boundary rather than a convenience setting — a `config.toml` that
+    // exists but fails to parse (even due to an unrelated malformed field) is
+    // also a hard error rather than a silent fallback to `Managed` via
+    // `PluginConfig::load`'s lenient default. The resolved mode is threaded
+    // explicitly into the IPC server and from there into `AppState::with_mode`;
+    // nothing downstream defaults it.
+    let mode = crate::daemon::ipc_server::resolve_daemon_mode(&workspace_path)?;
     info!(mode = %mode, "daemon mode resolved");
 
     // ── 3b. Resolve idle timeout (env var overrides config for test harness) ──

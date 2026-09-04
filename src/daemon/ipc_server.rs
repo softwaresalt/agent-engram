@@ -536,11 +536,34 @@ pub async fn run(workspace: &str) -> Result<(), EngramError> {
 /// [`DaemonMode::Managed`]; a present-but-unrecognized value is a hard
 /// [`ConfigError::InvalidValue`].
 ///
+/// [`PluginConfig::load`] is deliberately lenient for every *other* config
+/// field: a TOML parse failure anywhere in the file falls back to
+/// [`PluginConfig::default`] so unrelated daemon settings degrade gracefully.
+/// Mode selection is a safety boundary rather than a convenience setting, so
+/// that same fallback must not silently discard an explicitly configured
+/// `mode = "read_server"` merely because some unrelated field in the same
+/// file is malformed. This function therefore independently re-parses the
+/// raw file first and fails closed on any parse error, before ever consulting
+/// the (possibly-defaulted) [`PluginConfig::load`] result.
+///
 /// # Errors
 ///
-/// Returns [`EngramError::Config`] when the configured `mode` value is present
-/// but unrecognized.
+/// Returns [`EngramError::Config`] when `config.toml` exists but fails to
+/// parse, or when the configured `mode` value is present but unrecognized.
 pub fn resolve_daemon_mode(workspace_path: &Path) -> Result<DaemonMode, EngramError> {
+    let config_path = workspace_path.join(".engram").join("config.toml");
+    if let Ok(content) = std::fs::read_to_string(&config_path) {
+        if let Err(parse_error) = toml::from_str::<PluginConfig>(&content) {
+            return Err(EngramError::Config(ConfigError::InvalidValue {
+                key: "config.toml".to_owned(),
+                reason: format!(
+                    "{path} failed to parse: {parse_error}",
+                    path = config_path.display()
+                ),
+            }));
+        }
+    }
+
     let plugin_config = PluginConfig::load(workspace_path);
     DaemonMode::resolve(plugin_config.mode.as_deref()).map_err(|e| {
         EngramError::Config(ConfigError::InvalidValue {
