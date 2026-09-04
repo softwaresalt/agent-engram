@@ -41,8 +41,14 @@ Investigated and classified per P-021:
   findings list (now 5 stash entries), and refreshed the Local Review Readiness
   block (10 threads total, all resolved; follow-ups list now includes `F95653D1`).
 
-## Final state (HEAD `b6a5f860da7cae684953cb713a5c37acec1f88d4`, unchanged by this work
-since the disposition required no code change)
+## Historical readiness snapshot — HEAD `b6a5f860da7cae684953cb713a5c37acec1f88d4`
+
+This snapshot describes the HEAD that existed **immediately before** the commit
+that introduces this checkpoint file. It is historical evidence only, not a
+claim about the PR's current readiness — committing this file necessarily
+advances the PR to a new HEAD that this text cannot describe (see "Whatever
+reads this file next" below for the authoritative current-state source). At
+the snapshot HEAD:
 
 - CI: `build` PASS (6m24s), `start-launcher-windows` PASS (2m25s)
 - Copilot gate (P-018): `SATISFIED`, `unresolved_thread_ids: []`, `blocked: false`
@@ -53,6 +59,13 @@ since the disposition required no code change)
 - Full local build/clippy(pedantic, default + git-graph)/fmt/test suite: clean,
   except the single known pre-existing Windows-only flake
   (`archive_verifier_runs_the_unpacked_native_binary`, stash `4EE241DC`)
+
+**Known limitation of this snapshot**: the commit that adds this file (and the
+`.backlogit/stash.jsonl` entry `F95653D1` alongside it) itself produces a new
+HEAD. That new HEAD requires its own fresh CI run and its own fresh Copilot
+review pass — the readiness evidence above does **not** carry forward to it.
+Re-run the required gates for the actual current HEAD; do not treat this
+snapshot as current-HEAD evidence at any point after its own commit lands.
 
 ## Whatever reads this file next
 

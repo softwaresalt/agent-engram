@@ -227,13 +227,15 @@ fn missing_attributes_detects_an_incomplete_descriptor() {
 }
 
 /// Read-server availability tracks the capability class for dispatched tools:
-/// a read-server refuses write and control dispatch. `_health` and `_shutdown`
-/// are the declared exceptions — request entry answers both before the
-/// mode-gated dispatch path.
+/// a read-server refuses write and control dispatch. `_health` is the sole
+/// declared exception — its `Read` capability already makes it available by
+/// the general rule below, and request entry additionally answers it before
+/// the mode-gated dispatch path. `_shutdown` is `Control` and is refused like
+/// any other Control tool; it is not exempted.
 #[test]
 fn write_and_control_tools_are_unavailable_on_a_read_server() {
     for descriptor in capabilities::all_descriptors() {
-        if descriptor.name == HEALTH_METHOD || descriptor.name == SHUTDOWN_METHOD {
+        if descriptor.name == HEALTH_METHOD {
             continue;
         }
         match descriptor.capability {
@@ -279,7 +281,9 @@ fn health_is_declared_direct_ipc_only_liveness() {
     );
 }
 
-/// `_shutdown` is a Control method on the direct-IPC surface.
+/// `_shutdown` is a Control method on the direct-IPC surface, refused on a
+/// read-server per plan P22 ("Refuse non-read capabilities before side
+/// effects, including raw `_shutdown`").
 #[test]
 fn shutdown_is_declared_control() {
     let shutdown = require(SHUTDOWN_METHOD);
@@ -287,6 +291,10 @@ fn shutdown_is_declared_control() {
         shutdown.capability,
         CapabilityClass::Control,
         "`_shutdown` must be declared with the Control capability class"
+    );
+    assert!(
+        !shutdown.read_server_available,
+        "`_shutdown` must not be declared available on a read-server (plan P22)"
     );
     assert_eq!(
         shutdown.surfaces,
