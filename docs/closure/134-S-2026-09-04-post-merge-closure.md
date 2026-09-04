@@ -11,7 +11,7 @@ closure_status: "BLOCKED"
 releasability: "BLOCKED"
 compaction_status: "done"
 pr_number: 379
-closure_pr_number: null
+closure_pr_number: 380
 manual_closure_pr_number: null
 merge_commit: "760b44752a0f00704bd1a6f88fb78f91bd4e997d"
 closure_pr_merge_commit: null
@@ -24,6 +24,7 @@ follow_up_stash:
   - "1918AFD2"
   - "F95653D1"
   - "AA5698E3"
+  - "C1EFF21F"
 blocking_stash: "6C9AA7D3"
 shipment_record_status: "active (unarchived — manual safe-close intentionally withheld this session)"
 ---
@@ -34,9 +35,10 @@ shipment_record_status: "active (unarchived — manual safe-close intentionally 
 
 `134-S` (feature `142-F`) delivered IPC seam extraction (`142.008-T` + 4
 subtasks: `startup_activation.rs`, `request_entry.rs`, `error_transport.rs`,
-`lifecycle_policy.rs`), `142.009-T`, `142.010-T`, `AppState` mode
-constructor migration (`142.003-T`), and error envelope / descriptor schema
-work (`142.005-T` + 3 subtasks: `capabilities.rs`, error code ranges,
+`lifecycle_policy.rs`), `AppState` mode constructor migration (`142.009-T`),
+shim restart mode propagation (`142.010-T`), the stable error envelope
+(`142.003-T`), and descriptor schema / tool descriptor registry work
+(`142.005-T` + 3 subtasks: `capabilities.rs`, error code ranges,
 tool descriptor registry updates).
 
 PR #379 merged as a merge commit (repo policy: merge-only, squash/rebase
@@ -86,15 +88,20 @@ neither of which involves any Ship action outside its authorized scope:**
 
 ## Runtime Verification
 
-Verdict: **PASS WITH FOLLOW-UP** (full report:
-[`134-S-2026-09-04-runtime-verification.md`](./134-S-2026-09-04-runtime-verification.md)).
+Verdict: **FAIL** (full report:
+[`134-S-2026-09-04-runtime-verification.md`](./134-S-2026-09-04-runtime-verification.md)) —
+`cargo build --release` is an explicit mandatory validator target and it
+fails to compile; per the runtime-verification contract this classifies as
+`FAIL`, not `PASS WITH FOLLOW-UP` (which is reserved for a usable surface
+needing cleanup/monitoring, not one that fails a mandatory validator
+target).
 
 ### Validator Evidence (structured)
 
 | Field | Value |
 |---|---|
 | Surface / adapter | API/IPC (daemon composition root, admission, error transport, descriptor registry); CLI (binary version/manifest, mode resolution) |
-| Verdict | `PASS_WITH_FOLLOW_UP` |
+| Verdict | `FAIL` |
 | Healthy signal | `cargo check --all-targets` (1m14s) and `cargo build` (dev, 1m09s) succeed; `engram.exe --version`/`manifest` ok; 36/36 targeted contract/unit/integration tests pass (seam extraction, tool descriptor registry, error-code contract, `AppState` constructor migration, read-server mode/restart) |
 | Failure signal | `cargo build --release` fails to compile (`-D unused-imports`, `src/daemon/startup_activation.rs:11`) — release-artifact-only, does not affect dev/test behavior |
 | Manual checkpoint evidence | Targeted test run listed above executed directly against the merged `main` tip on the `post-merge/*` closure branch (no worktree needed — same tree) |
@@ -107,7 +114,15 @@ Verdict: **PASS WITH FOLLOW-UP** (full report:
   (`142.008-T` + 4 subtasks, `142.009-T`, `142.010-T`, `142.003-T`,
   `142.005-T` + 3 subtasks) are confirmed `status: done` and already
   physically present in `.backlogit/archive/` (classified `pre-archived`
-  per the `shipment-reconcile` schema — valid, expected, not an error).
+  per the `shipment-reconcile` schema — a valid, expected pre-close state,
+  not a reconciliation error). All 12 also lack the canonical
+  `archived_status`/`archived_from` metadata that the official `backlogit
+  archive` command stamps elsewhere in this workspace — their filesystem
+  location under `.backlogit/archive/` is the only archival signal on
+  these records. This mirrors the `133-S` precedent (tracked there as
+  stash `B761AFA7`); normalizing it is a separate, materially larger
+  mutation outside this PR's evidence-only scope (P-021 C1) and is not
+  fixed here — captured as stash `C1EFF21F` for Stage's disposition.
   None carry a `commit:` frontmatter field yet (verified individually).
   Covering feature `142-F` is **not** a manifest member of `134-S` (task-only
   manifest, consistent with the `097-S` precedent) and correctly remains
@@ -187,8 +202,8 @@ No mutation in this session touched `142-F`, any of its direct/nested
 descendants, or any other covering shipment's manifest (`135-S` through
 `142-S`). All reconciliation performed above was read-only (`backlogit
 get`, filesystem enumeration, grep) — zero write operations were issued
-against any backlog artifact other than the one non-destructive stash
-entry (`6C9AA7D3`) explicitly permitted by the Role Boundary's stash
+against any backlog artifact other than the non-destructive stash entries
+(`6C9AA7D3`, `C1EFF21F`) explicitly permitted by the Role Boundary's stash
 carve-out.
 
 ## Follow-ups Stashed This Session
@@ -196,6 +211,7 @@ carve-out.
 | Stash ID | Kind | Priority | Summary |
 |---|---|---|---|
 | `6C9AA7D3` | bug | high | `cargo build --release` fails — unused `Duration` import in `src/daemon/startup_activation.rs`, release-profile-only regression introduced by `134-S`; blocks release-artifact packaging until fixed |
+| `C1EFF21F` | bug | medium | 134-S manifest's 12 already-archived task/subtask items lack canonical `archived_status`/`archived_from` metadata (mirrors `133-S`'s `B761AFA7`); captured during PR #380 review remediation |
 
 Pre-existing stash entries carried forward from the PR #379 readiness block
 (not created this session, listed for closure traceability only):

@@ -5,7 +5,7 @@ shipment_id: "134-S"
 feature_id: "142-F"
 surface: cli, api
 adapter: cargo-test
-verdict: PASS WITH FOLLOW-UP
+verdict: FAIL
 ---
 
 ## Shipment 134-S Runtime Verification
@@ -15,8 +15,9 @@ verdict: PASS WITH FOLLOW-UP
 `134-S` (feature `142-F`) delivers: `142.008-T` (IPC server seam extraction
 into four dedicated modules — `startup_activation.rs`, `request_entry.rs`,
 `error_transport.rs`, `lifecycle_policy.rs`, plus four subtasks),
-`142.009-T` and `142.010-T`, `142.003-T` (`AppState` mode constructor
-migration), and `142.005-T` (error envelope / descriptor schema work, plus
+`142.009-T` (`AppState` mode constructor migration), `142.010-T` (shim
+restart mode propagation), `142.003-T` (the stable error envelope), and
+`142.005-T` (descriptor schema / tool descriptor registry work, plus
 three subtasks). This shipment directly touches the daemon IPC composition
 root, request admission, error transport, tool descriptor registry, and
 `AppState` construction — squarely the `api` (MCP/IPC) runtime surface, and
@@ -110,14 +111,21 @@ narrowed-but-covered rather than skipped.
 ### Risky action state
 
 No production-affecting risky action was taken during verification (build +
-local dev-profile CLI commands + existing/new test suites only, on a
-non-merged `post-merge/*` closure branch that will not itself be merged).
+local dev-profile CLI commands + existing/new test suites only, on
+open closure PR #380's `post-merge/*` branch, which the closure record's
+own next steps identify as the source of an operator-approved merge — this
+verification pass itself made no source changes).
 
-### Follow-up (why PASS WITH FOLLOW-UP, not plain PASS)
+### Follow-up (why FAIL, despite passing dev-profile checks)
 
 * **Release build regression (new, this shipment)**: `cargo build
   --release` fails to compile due to the unused `Duration` import described
-  above. This blocks producing an actual release/distributable binary from
+  above. `cargo build --release` is an explicit mandatory validator target
+  in this shipment's own validator contract (see above), so its failure
+  classifies this verification as `FAIL` per the runtime-verification
+  contract — `PASS WITH FOLLOW-UP` is reserved for a usable surface that
+  merely needs cleanup or monitoring, not one that fails a mandatory
+  target. This blocks producing an actual release/distributable binary from
   the current `main` tip until fixed. Captured as stash `6C9AA7D3`
   (kind: bug, priority: high; source refs: task `142.008-T`, feature
   `142-F`, shipment `134-S`, PR `379`). Fixing this is a same-contract-
@@ -136,13 +144,16 @@ non-merged `post-merge/*` closure branch that will not itself be merged).
 
 ### Verdict and handoff
 
-**PASS WITH FOLLOW-UP**. `cargo check --all-targets` and `cargo build`
-(dev profile) succeed; the full targeted contract/unit/integration suite
-for this shipment's actual scope (36 tests across seam extraction, tool
-descriptor registry, error-code contract, `AppState` constructor migration,
-and read-server mode/restart behavior) passes in full; the MCP tool catalog
-is unaffected. One genuine, narrow, release-profile-only compile regression
-was discovered and is not fixed in this session (out of scope for a
-non-destructive, evidence-only closure branch) — captured as stash
-`6C9AA7D3` for prompt Stage-planned remediation. Feeding to
-`operational-closure` below.
+**FAIL**. `cargo build --release` — an explicit mandatory validator target
+for this shipment — fails to compile, so this verification classifies as
+`FAIL` per the runtime-verification contract, notwithstanding that
+`cargo check --all-targets` and `cargo build` (dev profile) succeed and the
+full targeted contract/unit/integration suite for this shipment's actual
+scope (36 tests across seam extraction, tool descriptor registry,
+error-code contract, `AppState` constructor migration, and read-server
+mode/restart behavior) passes in full; the MCP tool catalog is unaffected.
+The one genuine, narrow, release-profile-only compile regression that
+drives this `FAIL` verdict was discovered and is not fixed in this session
+(out of scope for a non-destructive, evidence-only closure branch) —
+captured as stash `6C9AA7D3` for prompt Stage-planned remediation. Feeding
+to `operational-closure` below.

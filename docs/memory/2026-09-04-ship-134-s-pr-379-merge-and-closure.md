@@ -68,7 +68,9 @@ separate, explicit destructive-action approval.
    explicitly permitted by the Role Boundary's stash carve-out. Verified
    via `backlogit stash get`.
 8. Wrote `docs/closure/134-S-2026-09-04-runtime-verification.md` (verdict:
-   `PASS WITH FOLLOW-UP`) and
+   `FAIL` — `cargo build --release` is an explicit mandatory validator
+   target and it does not compile, so the runtime-verification contract
+   classifies this as `FAIL`, not `PASS WITH FOLLOW-UP`) and
    `docs/closure/134-S-2026-09-04-post-merge-closure.md` (`closure_status:
    BLOCKED`, `releasability: BLOCKED` — both blockers explicitly documented:
    the withheld manual archival, and the release-build regression). The
