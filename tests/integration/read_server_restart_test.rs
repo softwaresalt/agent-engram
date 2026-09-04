@@ -62,6 +62,7 @@ const TRACE_TIMEOUT: Duration = Duration::from_secs(30);
 /// not return until the daemon it started has exited, so the idle TTL bounds
 /// how long each auto-spawn costs. `integration_cold_cli_request_frame_correlation`
 /// uses the same convention.
+const IDLE_TIMEOUT_MS_NUM: u64 = 20_000;
 const IDLE_TIMEOUT_MS: &str = "20000";
 
 // ── Workspace + CLI harness ───────────────────────────────────────────────────
@@ -256,11 +257,17 @@ fn rotate_trace(root: &Path, tag: &str) {
 
 /// Wait until the shim-spawned daemon has released `endpoint`.
 ///
-/// The CLI child does not return until the daemon it spawned has exited (idle
-/// TTL), so this is normally already true; the poll only absorbs the brief
-/// window between process exit and listener teardown.
+/// The CLI child is expected not to return until the daemon it spawned has
+/// exited (idle TTL), so this is normally already true by the time the poll
+/// starts. The deadline is nonetheless bounded by the daemon's own idle
+/// timeout (`IDLE_TIMEOUT_MS_NUM`) plus a generous margin — not a "brief
+/// window" constant — because CI runners can be slow enough that the CLI
+/// process returns before its spawned daemon's idle-timeout self-shutdown has
+/// fully torn down the listener, and a tight fixed budget flakes under that
+/// scheduling variance without indicating any real defect.
 async fn await_endpoint_released(endpoint: &str, phase: &str) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    let budget = Duration::from_millis(IDLE_TIMEOUT_MS_NUM) + Duration::from_secs(30);
+    let deadline = tokio::time::Instant::now() + budget;
     while endpoint_reachable(endpoint).await {
         assert!(
             tokio::time::Instant::now() < deadline,
