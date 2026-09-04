@@ -1,16 +1,31 @@
-# Ship 134-S — Final Session Report
+# Ship 134-S — Session Report (Historical Snapshot)
 
 **Date**: 2026-09-04
 **Shipment**: `134-S` — "IPC seam extraction, mode constructor migration, error envelope, descriptor schema"
 **Branch**: `feat/134-s-ipc-seam-extraction-mode-constructor-migration-error-envelope-descriptor-schema`
 **PR**: [#379](https://github.com/softwaresalt/agent-engram/pull/379)
-**Final HEAD (this session)**: `5c73ecf78d6c2c62fb91953f8302e7f9bf74021a`
+**Narrative snapshot as-of HEAD**: `5c73ecf78d6c2c62fb91953f8302e7f9bf74021a` (the
+state produced by the work described in this report)
 
-## Status: PR readiness complete — awaiting explicit operator merge approval
+## Important framing note (self-reference safety)
 
-This snapshot is accurate only for HEAD `5c73ecf7` at the time of writing. Any
-later push, thread mutation, or PR-body edit may re-arm the Copilot gate or
-CI; re-verify before merge if any further activity occurs on this PR.
+Committing this file to the branch necessarily produces a new commit and
+therefore a new HEAD beyond the `5c73ecf7` state it narrates — and that new
+HEAD itself re-arms CI and the Copilot review gate. This file intentionally
+does **not** claim to describe the live/current readiness of the PR at the
+time it is read. **The single authoritative source for the PR's live,
+current readiness state is the "Local Review Readiness" section of PR #379's
+own body**, which is re-verified and re-updated after every commit
+(including the one that adds this file) and after every gate re-check. Do
+not treat any specific-HEAD claim below as still current — check the PR body
+instead.
+
+## Status of the narrated work: complete as of `5c73ecf7`
+
+The implementation, quality-gate, and review work described below was
+verified complete and stable at HEAD `5c73ecf7`. Whether the PR is currently
+merge-ready depends on gate results recorded in the PR body for whatever the
+current HEAD is at the time of reading, which may be later than `5c73ecf7`.
 
 ## Manifest coverage (12/12 items `done`)
 
@@ -93,13 +108,21 @@ No new stash entries beyond these 5; no manifest scope was expanded.
    Reverted the finding-10 change back to `true` (matching current runtime
    reality) at HEAD `5c73ecf7`, with doc comments now explicitly naming the
    gap and pointing to stash `1918AFD2`.
-5. All 13 threads replied to and resolved. CI green. Copilot gate confirmed
-   `SATISFIED` and stable across repeated checks. PR body updated to reflect
-   final state.
+5. All 13 threads (as of `5c73ecf7`) replied to and resolved. CI green.
+   Copilot gate confirmed `SATISFIED` and stable across repeated checks. PR
+   body updated to reflect this state.
+6. Adding this report file itself produced a further commit beyond
+   `5c73ecf7` (self-reference note above); any subsequent round(s) of
+   findings triggered by that commit, and their resolution, are tracked in
+   the PR body's "Local Review Readiness" section and narrative, not in this
+   file — see the PR for the true final state.
 
 ## Next steps for the operator
 
-1. Review PR #379 at HEAD `5c73ecf7`.
+1. Review PR #379 — check the "Local Review Readiness" section of the PR
+   body for the current, live HEAD and gate state (do not rely on the
+   `5c73ecf7` HEAD referenced above; later commits, including the one that
+   added this file, are tracked there instead).
 2. If satisfied, give explicit merge approval (merge-commit strategy only).
 3. After merge, a separate Ship session (or this one, in a future turn) must
    run post-merge closure using the **safe-close** path — never
