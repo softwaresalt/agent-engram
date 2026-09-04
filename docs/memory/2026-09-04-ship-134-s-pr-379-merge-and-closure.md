@@ -118,7 +118,7 @@ separate, explicit destructive-action approval.
    requires this closure document's `closure_status` to read `READY`.
 4. Review/merge the `post-merge/134-s-...` closure PR (operator decision).
 
-## Update (PR #380 remediation, current HEAD `04d1a38d`)
+## Update (PR #380 remediation, remediation snapshot HEAD `04d1a38d`)
 
 During PR #380's Copilot review remediation (separate session, same
 closure branch): corrected `closure_pr_number` (now `380`), corrected
@@ -134,5 +134,9 @@ manifest items (mirrors `133-S`'s `B761AFA7`). Separately, PR #381 (merge
 branch merged `origin/main` to pick up that fix, resolving a real
 `.backlogit/stash.jsonl` append conflict (union-merged, no record content
 altered), and confirmed via a direct `cargo build --release` re-run on
-this branch that the regression no longer reproduces. See the closure
-document's "Remaining Blockers" section for the current, non-stale state.
+this branch that the regression no longer reproduced **as of this
+snapshot**. This is a point-in-time note, not a live/current-state claim —
+the branch may have advanced past `04d1a38d` since; see the PR's own
+"Local Review Readiness" block for the authoritative current-HEAD state,
+and the closure document's "Remaining Blockers" section for the
+release-readiness narrative.

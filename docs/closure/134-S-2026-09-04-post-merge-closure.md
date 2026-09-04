@@ -112,6 +112,95 @@ target).
 | Manual checkpoint evidence | Targeted test run listed above executed directly against the merged `main` tip on the `post-merge/*` closure branch (no worktree needed — same tree) |
 | Blocked prerequisites | Bound-daemon CLI probes (`engram status`/`health`/`sync`) not separately exercised; superseded by the more specific `integration_read_server_restart` suite already covering daemon startup/mode/restart behavior for this shipment's scope |
 
+## Operational Closure Checklist
+
+* **Invariants to preserve**: IPC seam boundaries (`request_entry.rs`,
+  `error_transport.rs`, `lifecycle_policy.rs`, `startup_activation.rs`)
+  must continue enforcing the same admission/error-transport contracts as
+  before extraction; the stable error envelope (`142.003-T`) must remain
+  wire-compatible for existing clients; `AppState`'s constructor migration
+  (`142.009-T`) must not change externally observable daemon startup
+  behavior; the tool descriptor registry (`142.005-T`) must continue
+  serving the same descriptor schema/error-code ranges consumed
+  downstream.
+* **Pre-deploy audits**: none required — no config schema, migration, or
+  access-control surface changed. The only pre-deploy-relevant item was
+  the release-build regression (resolved; see Runtime Verification).
+* **Deployment / rollout path**: merge-only to `main` (repo policy:
+  squash/rebase disabled, merge commit only). The actual `134-S` code
+  change already completed this path via PR #379's merge (`760b4475`);
+  this PR (#380) is evidence-only and carries no further rollout of its
+  own. `engram` is a locally-run daemon/CLI binary distributed via release
+  artifact (no server-side canary/phased-rollout mechanism); the next
+  release-artifact build (`release.yml`, `cargo build --release`) is the
+  next rollout checkpoint and is confirmed unblocked (see Runtime
+  Verification).
+* **Post-deploy checks**: `cargo check --all-targets` and `cargo build`
+  (dev) green; `engram.exe --version`/`manifest` smoke checks pass; 39/39
+  targeted contract/unit/integration tests pass (seam extraction, tool
+  descriptor registry, error-code contract, `AppState` constructor
+  migration, read-server mode/restart); `cargo build --release` now passes
+  (confirmed directly on this branch after merging PR #381's fix).
+* **Risky action record**: `ProposedAction`: merge PR #379 to `main`
+  (daemon startup/IPC composition-root change). `ActionRisk`: medium
+  (affects daemon startup and inter-process error transport, but is
+  additive/refactor-only — no removed capability). Approval path:
+  explicit operator approval recorded in-session, scoped to PR #379's
+  merge. `ActionResult`: success — merge completed cleanly, ancestry
+  verified (`merge-base --is-ancestor`), CI green pre-merge. A second,
+  smaller risky action occurred during this closure PR's own remediation:
+  merging `origin/main` into the closure branch to absorb PR #381's fix;
+  `ActionRisk`: low (docs/backlog-only branch, one resolved JSONL
+  append-conflict, source-tree diff against `main` remains empty);
+  `ActionResult`: success, verified via `cargo build --release` re-run.
+* **Healthy signals**: see Validator Evidence table above — dev
+  build/check, smoke CLI checks, and full targeted suite all green, and
+  the release-profile build now also green.
+* **Failure signals**: a future `cargo build --release` failure on `main`,
+  a daemon startup/health-probe regression, or an IPC error-transport
+  contract break for existing clients would each indicate rollback or
+  hotfix intervention is needed (the release-build case already
+  materialized once for `134-S` and was hotfixed via PR #381 — this is
+  the concrete, exercised failure-signal-to-response path for this
+  shipment).
+* **Monitoring plan**: no live dashboards/alerts apply to this
+  locally-run developer tool; the operative monitoring signal is the next
+  scheduled/triggered `release.yml` build (which exercises
+  `cargo build --release` directly) and the existing targeted test suite
+  run on subsequent PRs touching the same daemon/IPC surfaces.
+* **Rollback trigger**: a `release.yml` build failure, or a reported
+  daemon startup/IPC regression traced to one of the four extracted seam
+  files or the `AppState` constructor migration.
+* **Rollback procedure**: fix-forward is preferred over reverting
+  `760b4475` (as already demonstrated by PR #381's hotfix), since a hard
+  revert would also remove subsequently-layered work; if fix-forward is
+  not viable, revert the merge commit on `main` and re-open `142-F`'s
+  affected tasks.
+* **Validation window**: through the next `release.yml` run and the next
+  shipment's own build/test cycle touching daemon/IPC code (no fixed
+  calendar duration — this is a locally-triggered CI/release tool, not a
+  continuously-monitored production service).
+* **Owner**: the Ship agent / operator executing the next release cut or
+  the next shipment touching daemon/IPC surfaces.
+
+### Releasability Evidence (structured)
+
+| Requirement | Status |
+|---|---|
+| Dev build/check | Satisfied — `cargo check --all-targets`, `cargo build` green |
+| Targeted test suite | Satisfied — 39/39 green |
+| Release-artifact build | Satisfied — `cargo build --release` green (post PR #381 merge-in) |
+| CI required checks (PR #379) | Satisfied — `build`, `start-launcher-windows` both SUCCESS |
+| Local review readiness (PR #379) | Satisfied — `READY`, P0=0, P1=0 |
+| P-018 Copilot review gate (PR #379) | Satisfied — `SATISFIED`, 0 unresolved threads at merge |
+| Rollback path defined | Satisfied — fix-forward primary, hard-revert fallback documented above |
+| Monitoring plan defined | Satisfied — see Monitoring plan above (release-build + subsequent-PR test signal) |
+| Shipment-record archival (manual safe-close) | Conditional/BLOCKED — withheld pending separate, explicit operator approval (procedural only; does not affect release-artifact readiness) |
+
+**Overall**: `READY` for the shipped code/release-artifact surface;
+`closure_status` remains `BLOCKED` only for the orthogonal, intentionally
+withheld procedural item above.
+
 ## Reconciliation
 
 * **Pre-archive reconciliation (read-only check, no lock acquired — safe-close

@@ -158,17 +158,21 @@ drives this `FAIL` verdict was discovered and is not fixed in this session
 captured as stash `6C9AA7D3` for prompt Stage-planned remediation. Feeding
 to `operational-closure` below.
 
-### Post-remediation update (PR #380 review, current HEAD `04d1a38d`)
+### Post-remediation update (PR #380 review, remediation snapshot HEAD `04d1a38d`)
 
 The `FAIL` verdict above is retained as an accurate historical record of
 this verification pass, performed against merged `main` at `760b4475`
-(before PR #381 existed). It is **no longer a live release blocker**: PR
-#381 (merge `c9cf8adb0eb03702a27866c35f9a4d97cc49ab91`) subsequently fixed
-the regression by cfg-gating the `Duration` import. This closure branch
-was updated to merge `origin/main` (which includes that fix), and `cargo
-build --release` was re-run directly on the resulting branch — it now
-**passes**. See `docs/closure/134-S-2026-09-04-post-merge-closure.md`
-("Remaining Blockers") for the current, non-stale release-readiness state.
-This addendum does not retroactively change the `FAIL` verdict recorded
-above, which reflects the state of `main` at the time this verification
-was performed.
+(before PR #381 existed). It is **no longer a live release blocker as of
+the remediation snapshot below**: PR #381 (merge
+`c9cf8adb0eb03702a27866c35f9a4d97cc49ab91`) subsequently fixed the
+regression by cfg-gating the `Duration` import. As of remediation commit
+`04d1a38d`, this closure branch had merged `origin/main` (which includes
+that fix), and `cargo build --release` was re-run directly on the
+resulting branch — it **passed at that snapshot**. This is a
+point-in-time confirmation, not a live/current-state claim — later
+commits on this branch may have advanced further; see the PR's own
+"Local Review Readiness" block for the authoritative current-HEAD state,
+and `docs/closure/134-S-2026-09-04-post-merge-closure.md` ("Remaining
+Blockers") for the release-readiness narrative. This addendum does not
+retroactively change the `FAIL` verdict recorded above, which reflects the
+state of `main` at the time this verification was originally performed.
