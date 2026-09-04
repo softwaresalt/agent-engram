@@ -60,13 +60,17 @@ separate, explicit destructive-action approval.
      `release.yml`'s actual release build step uses the same
      `--release` flag and would fail identically — this currently blocks
      cutting a real release from `main`.
-   * Targeted contract/unit/integration suite (36 tests: seam extraction,
+   * Targeted contract/unit/integration suite (39 tests: seam extraction,
      tool descriptor registry, error-code contract, `AppState` constructor
-     migration, read-server mode/restart): 36/36 passed.
+     migration, read-server mode/restart): 39/39 passed.
 7. Captured the release-build regression as stash `6C9AA7D3` (kind: bug,
-   priority: high) — the only backlog mutation performed this session,
-   explicitly permitted by the Role Boundary's stash carve-out. Verified
-   via `backlogit stash get`.
+   priority: high) — the only backlog mutation performed in this
+   session's original narrative (items 1–8 below), explicitly permitted
+   by the Role Boundary's stash carve-out. Verified via `backlogit stash
+   get`. (A second stash, `C1EFF21F`, was captured in a later PR #380
+   remediation pass against this same checkpoint file — see "Update (PR
+   #380 remediation)" below; the file's current diff therefore reflects
+   two stash mutations in total, not one.)
 8. Wrote `docs/closure/134-S-2026-09-04-runtime-verification.md` (verdict:
    `FAIL` — `cargo build --release` is an explicit mandatory validator
    target and it does not compile, so the runtime-verification contract
@@ -102,11 +106,33 @@ separate, explicit destructive-action approval.
 
 ## Next steps for a future session
 
-1. Fix the release-build regression (stash `6C9AA7D3`) — small, in-scope
-   completion of `142.008-T`, needs its own PR/build-fix cycle.
+1. ~~Fix the release-build regression (stash `6C9AA7D3`)~~ — **RESOLVED**:
+   fixed by PR #381 (merge `c9cf8adb0eb03702a27866c35f9a4d97cc49ab91`).
+   This closure branch merged `origin/main` (which includes that fix);
+   `cargo build --release` re-run directly on this branch now passes. See
+   "Update (PR #380 remediation)" below.
 2. Obtain separate, explicit operator approval for the 15-step manual
    safe-close of `134-S` (see closure doc), then execute it.
 3. Re-run `autoharness gate pipeline-topology --phase pre_claim` for the
-   next shipment (`135-S`) once both of the above are resolved — the gate
+   next shipment (`135-S`) once step 2 above is resolved — the gate
    requires this closure document's `closure_status` to read `READY`.
 4. Review/merge the `post-merge/134-s-...` closure PR (operator decision).
+
+## Update (PR #380 remediation, current HEAD `04d1a38d`)
+
+During PR #380's Copilot review remediation (separate session, same
+closure branch): corrected `closure_pr_number` (now `380`), corrected
+task-ownership mapping (`142.009-T`=`AppState` ctor migration,
+`142.010-T`=shim mode propagation, `142.003-T`=error envelope,
+`142.005-T`=descriptor schema/registry only), corrected the targeted-test
+total (39, not 36, per `5+10+5+13+3+3`), corrected the runtime-verification
+verdict to `FAIL` (since `cargo build --release` was a failing mandatory
+validator target at the time of that verification pass), and captured
+stash `C1EFF21F` for the pre-existing archive-convention debt on the 12
+manifest items (mirrors `133-S`'s `B761AFA7`). Separately, PR #381 (merge
+`c9cf8adb`) fixed the release-build regression on `main`; this closure
+branch merged `origin/main` to pick up that fix, resolving a real
+`.backlogit/stash.jsonl` append conflict (union-merged, no record content
+altered), and confirmed via a direct `cargo build --release` re-run on
+this branch that the regression no longer reproduces. See the closure
+document's "Remaining Blockers" section for the current, non-stale state.

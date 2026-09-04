@@ -73,7 +73,7 @@ Merged via PR #379, merge commit
 | `integration_read_server_restart` (3 tests) | ok — 3/3 passed, including `read_server_mode_survives_auto_spawn_and_bounded_restart` (78.89s) |
 | `unit_app_state_mode` (3 tests) | ok — 3/3 passed |
 
-36 of 36 targeted tests passed. The one failure is a `--release`-profile-only
+39 of 39 targeted tests passed. The one failure is a `--release`-profile-only
 compile break, not a test failure.
 
 ### Root cause of the release-build failure
@@ -95,7 +95,7 @@ This file was newly created by `134-S` (`142.008-T`, IPC seam extraction),
 so this is a **genuine regression introduced by this shipment**, not a
 pre-existing defect. It is release-artifact-only: it does not affect
 `cargo dev-test`, the dev/debug binary, or any of the behavior asserted by
-the 36 targeted tests above, all of which pass in full.
+the 39 targeted tests above, all of which pass in full.
 
 ### Blocked prerequisites
 
@@ -149,7 +149,7 @@ for this shipment — fails to compile, so this verification classifies as
 `FAIL` per the runtime-verification contract, notwithstanding that
 `cargo check --all-targets` and `cargo build` (dev profile) succeed and the
 full targeted contract/unit/integration suite for this shipment's actual
-scope (36 tests across seam extraction, tool descriptor registry,
+scope (39 tests across seam extraction, tool descriptor registry,
 error-code contract, `AppState` constructor migration, and read-server
 mode/restart behavior) passes in full; the MCP tool catalog is unaffected.
 The one genuine, narrow, release-profile-only compile regression that
@@ -157,3 +157,18 @@ drives this `FAIL` verdict was discovered and is not fixed in this session
 (out of scope for a non-destructive, evidence-only closure branch) —
 captured as stash `6C9AA7D3` for prompt Stage-planned remediation. Feeding
 to `operational-closure` below.
+
+### Post-remediation update (PR #380 review, current HEAD `04d1a38d`)
+
+The `FAIL` verdict above is retained as an accurate historical record of
+this verification pass, performed against merged `main` at `760b4475`
+(before PR #381 existed). It is **no longer a live release blocker**: PR
+#381 (merge `c9cf8adb0eb03702a27866c35f9a4d97cc49ab91`) subsequently fixed
+the regression by cfg-gating the `Duration` import. This closure branch
+was updated to merge `origin/main` (which includes that fix), and `cargo
+build --release` was re-run directly on the resulting branch — it now
+**passes**. See `docs/closure/134-S-2026-09-04-post-merge-closure.md`
+("Remaining Blockers") for the current, non-stale release-readiness state.
+This addendum does not retroactively change the `FAIL` verdict recorded
+above, which reflects the state of `main` at the time this verification
+was performed.

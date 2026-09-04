@@ -6,9 +6,9 @@ feature_id: "142-F"
 mode: post-merge
 date: 2026-09-04
 author: ship
-verdict: "BLOCKED-FOR-DESTRUCTIVE-STEPS — evidence and non-destructive closure complete; shipment record archival withheld pending separate operator approval; a genuine release-build regression (stash 6C9AA7D3) additionally blocks release-artifact packaging until fixed"
+verdict: "BLOCKED-FOR-DESTRUCTIVE-STEPS — evidence and non-destructive closure complete; shipment record archival withheld pending separate operator approval. The release-build regression (stash 6C9AA7D3) was fixed by PR #381 (merge c9cf8adb0eb03702a27866c35f9a4d97cc49ab91) and confirmed via cargo build --release passing on this branch after merging origin/main; retained here as historical record only, no longer a live release-artifact blocker"
 closure_status: "BLOCKED"
-releasability: "BLOCKED"
+releasability: "READY"
 compaction_status: "done"
 pr_number: 379
 closure_pr_number: 380
@@ -25,7 +25,7 @@ follow_up_stash:
   - "F95653D1"
   - "AA5698E3"
   - "C1EFF21F"
-blocking_stash: "6C9AA7D3"
+blocking_stash: null
 shipment_record_status: "active (unarchived — manual safe-close intentionally withheld this session)"
 ---
 
@@ -49,26 +49,31 @@ decision and non-destructive post-merge work; it does **not** authorize
 manual shipment-record archival, which the operator explicitly withheld
 for a separate approval).
 
-**This closure is intentionally incomplete for two independent reasons,
-neither of which involves any Ship action outside its authorized scope:**
+**This closure was originally intentionally incomplete for two independent
+reasons, neither of which involved any Ship action outside its authorized
+scope; reason 2 below is now resolved (retained as history):**
 
-1. **Procedural**: the shipment-record archival sequence (commit
-   attribution on 12 manifest items + status transition + archive) is
-   withheld pending separate, explicit operator approval, per this
+1. **Procedural (still open)**: the shipment-record archival sequence
+   (commit attribution on 12 manifest items + status transition + archive)
+   is withheld pending separate, explicit operator approval, per this
    session's instructions. This is not a defect — it is deliberate scope
    discipline (P-010/Role Boundary: "manually transition/archive 134-S or
    its items" requires destructive-action approval).
-2. **Substantive**: `cargo build --release` fails to compile on the merged
-   `main` tip (`760b4475`) due to an unused-import lint (`Duration` in
-   `src/daemon/startup_activation.rs`, only referenced inside a
-   `#[cfg(debug_assertions)]` block — see runtime-verification report for
-   full root cause). `release.yml`'s actual release-artifact build step
-   (`cargo build --locked --release --target ... --bin engram`) would fail
-   identically. This is a genuine regression introduced by `134-S` itself
-   (the file is new to this shipment), not a pre-existing issue, and is
-   **not** fixed on this branch (fixing source on `main` is out of scope
-   for a non-destructive, evidence-only closure branch/PR). Captured as
-   stash `6C9AA7D3` (priority: high) for prompt Stage-planned remediation.
+2. **Substantive — RESOLVED**: `cargo build --release` failed to compile
+   on the merged `main` tip (`760b4475`) due to an unused-import lint
+   (`Duration` in `src/daemon/startup_activation.rs`, only referenced
+   inside a `#[cfg(debug_assertions)]` block — see runtime-verification
+   report for full root cause). This was a genuine regression introduced
+   by `134-S` itself (the file is new to this shipment), not a
+   pre-existing issue, and was not fixed on the original evidence-only
+   closure branch/PR (fixing source on `main` was out of scope for that
+   non-destructive session). It was subsequently fixed by PR #381 (merge
+   `c9cf8adb0eb03702a27866c35f9a4d97cc49ab91`), and this closure branch
+   was updated to merge `origin/main` (which includes that fix) —
+   `cargo build --release` now passes when re-run directly on this
+   branch. Captured historically as stash `6C9AA7D3` (already resolved by
+   PR #381; no longer a live blocker).
+
 
 ## Merge / PR Evidence
 
@@ -102,7 +107,7 @@ target).
 |---|---|
 | Surface / adapter | API/IPC (daemon composition root, admission, error transport, descriptor registry); CLI (binary version/manifest, mode resolution) |
 | Verdict | `FAIL` |
-| Healthy signal | `cargo check --all-targets` (1m14s) and `cargo build` (dev, 1m09s) succeed; `engram.exe --version`/`manifest` ok; 36/36 targeted contract/unit/integration tests pass (seam extraction, tool descriptor registry, error-code contract, `AppState` constructor migration, read-server mode/restart) |
+| Healthy signal | `cargo check --all-targets` (1m14s) and `cargo build` (dev, 1m09s) succeed; `engram.exe --version`/`manifest` ok; 39/39 targeted contract/unit/integration tests pass (seam extraction, tool descriptor registry, error-code contract, `AppState` constructor migration, read-server mode/restart) |
 | Failure signal | `cargo build --release` fails to compile (`-D unused-imports`, `src/daemon/startup_activation.rs:11`) — release-artifact-only, does not affect dev/test behavior |
 | Manual checkpoint evidence | Targeted test run listed above executed directly against the merged `main` tip on the `post-merge/*` closure branch (no worktree needed — same tree) |
 | Blocked prerequisites | Bound-daemon CLI probes (`engram status`/`health`/`sync`) not separately exercised; superseded by the more specific `integration_read_server_restart` suite already covering daemon startup/mode/restart behavior for this shipment's scope |
@@ -242,17 +247,23 @@ of this closure sequence. Outcome: **done**.
 
 ## Remaining Blockers (for operator visibility)
 
-1. **Release-build regression (substantive, currently live on `main`)**:
-   `cargo build --release` (and `release.yml`'s actual release build step)
-   fails on `main` at `760b4475`. Requires a small, separately-approved
-   source fix (gate the `Duration` import behind `#[cfg(debug_assertions)]`
-   in `src/daemon/startup_activation.rs`). Tracked as stash `6C9AA7D3`.
+1. **Release-build regression — RESOLVED, retained as history**: `cargo
+   build --release` (and `release.yml`'s actual release build step) failed
+   on `main` at `760b4475` (the exact merged HEAD for this shipment) due
+   to an unused-import lint. This was fixed by PR #381 (merge
+   `c9cf8adb0eb03702a27866c35f9a4d97cc49ab91`, gating the `Duration`
+   import behind `#[cfg(debug_assertions)]` in
+   `src/daemon/startup_activation.rs`). After merging `origin/main` (which
+   includes PR #381) into this closure branch, `cargo build --release` was
+   re-run directly on this branch and **passes**. Tracked historically as
+   stash `6C9AA7D3` (already resolved by the above fix; no longer a live
+   blocker).
 2. **Shipment-record closure (procedural, withheld by explicit operator
    scope)**: `134-S` remains `status: active` in the backlog. The 15-step
    manual mutation set above is fully specified and ready to execute once
    separately approved.
 3. **P-001 release-closure gate**: per Ship's Release Closure Completion
    Gate, `134-S` is treated as still "active" for P-001 purposes until
-   both of the above are resolved — another top-level release unit should
-   not begin until this closure completes (or the operator explicitly
-   accepts the risk of proceeding in parallel).
+   item 2 above is resolved — another top-level release unit should not
+   begin until this closure completes (or the operator explicitly accepts
+   the risk of proceeding in parallel).
