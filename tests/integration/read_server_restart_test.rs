@@ -257,29 +257,60 @@ fn rotate_trace(root: &Path, tag: &str) {
 
 /// Wait until the shim-spawned daemon has released `endpoint`.
 ///
-/// The CLI child is expected not to return until the daemon it spawned has
-/// exited (idle TTL), so this is normally already true within a second or two
-/// of the poll starting. The deadline is nonetheless bounded generously beyond
-/// the daemon's own idle timeout (`IDLE_TIMEOUT_MS_NUM`): a first CI failure
-/// at a `+30s` margin (finishing at 50.26s against a 50s budget) showed that
-/// socket-teardown latency under CI's shared, heavily parallel `cargo test`
-/// load can itself run into tens of seconds after the daemon process has
-/// otherwise exited, so a "generous" margin close to the raw timeout is not
-/// generous enough. The margin here is `+90s` (3x the original), and the
-/// panic message reports the actual elapsed wait so a future flake carries
-/// its own timing evidence instead of just the budget that was exceeded.
+/// # Why this cannot be a tight reachability poll
+///
+/// A reachability probe (`endpoint_reachable` → [`probe`]) opens a real IPC
+/// connection. The daemon's own accept loop resets its idle TTL on *every*
+/// accepted connection, regardless of whether the client sends a request
+/// before dropping the stream (`ipc_server.rs::accept_loop`, `ttl.reset()`,
+/// S046). A short-interval polling loop is therefore self-defeating: each
+/// probe re-arms the very idle timer the loop is waiting to expire, so as
+/// long as probes keep arriving faster than the idle timeout, the daemon can
+/// never observe enough true idle time to shut down.
+///
+/// This was misdiagnosed twice as a margin problem — widening the polling
+/// loop's overall deadline from `+30s` to `+90s` past the idle timeout made
+/// no difference, because CI kept landing at *exactly* the new deadline both
+/// times. That is the signature of a probe-driven livelock (Unix domain
+/// socket `accept()` on Linux CI succeeds essentially every time, so the
+/// timer is reset roughly every 100ms and never once reaches
+/// `IDLE_TIMEOUT_MS_NUM`), not of ordinary scheduling slack (which would
+/// produce a failure at some variable point *before* the deadline, not
+/// consistently at it).
+///
+/// # The fix
+///
+/// Sleep past the full idle timeout *before* every probe, so a probe can
+/// only ever observe genuine non-termination — never induce it. Each attempt
+/// waits `IDLE_TIMEOUT_MS_NUM + SETTLE_MARGIN` (covering the expiry loop's
+/// own wake interval plus graceful-shutdown teardown) and then checks once.
+/// If the daemon is still reachable after `MAX_ATTEMPTS` such attempts, that
+/// is a genuine hang (the daemon sat fully idle for a whole settle window and
+/// still didn't exit), not a timing artifact, so this fails loudly with the
+/// observed elapsed time.
 async fn await_endpoint_released(endpoint: &str, phase: &str) {
-    let budget = Duration::from_millis(IDLE_TIMEOUT_MS_NUM) + Duration::from_secs(90);
+    const SETTLE_MARGIN: Duration = Duration::from_secs(10);
+    const MAX_ATTEMPTS: u32 = 3;
+
+    let idle_timeout = Duration::from_millis(IDLE_TIMEOUT_MS_NUM);
+    let settle = idle_timeout + SETTLE_MARGIN;
     let started = tokio::time::Instant::now();
-    let deadline = started + budget;
-    while endpoint_reachable(endpoint).await {
+
+    for attempt in 1..=MAX_ATTEMPTS {
+        tokio::time::sleep(settle).await;
+        if !endpoint_reachable(endpoint).await {
+            return;
+        }
         assert!(
-            tokio::time::Instant::now() < deadline,
+            attempt != MAX_ATTEMPTS,
             "{phase}: endpoint {endpoint} was never released by the auto-spawned \
-             daemon after waiting {elapsed:?} (budget {budget:?})",
+             daemon after {attempt} settle-then-probe attempt(s) spanning {elapsed:?} \
+             (idle timeout {idle_timeout:?}, settle window {settle:?} per attempt) — \
+             each attempt already avoids re-arming the daemon's idle TTL via probing, \
+             so this indicates the daemon is genuinely still alive, not a self-inflicted \
+             livelock",
             elapsed = started.elapsed()
         );
-        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 
