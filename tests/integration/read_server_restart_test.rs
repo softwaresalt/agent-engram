@@ -258,20 +258,26 @@ fn rotate_trace(root: &Path, tag: &str) {
 /// Wait until the shim-spawned daemon has released `endpoint`.
 ///
 /// The CLI child is expected not to return until the daemon it spawned has
-/// exited (idle TTL), so this is normally already true by the time the poll
-/// starts. The deadline is nonetheless bounded by the daemon's own idle
-/// timeout (`IDLE_TIMEOUT_MS_NUM`) plus a generous margin — not a "brief
-/// window" constant — because CI runners can be slow enough that the CLI
-/// process returns before its spawned daemon's idle-timeout self-shutdown has
-/// fully torn down the listener, and a tight fixed budget flakes under that
-/// scheduling variance without indicating any real defect.
+/// exited (idle TTL), so this is normally already true within a second or two
+/// of the poll starting. The deadline is nonetheless bounded generously beyond
+/// the daemon's own idle timeout (`IDLE_TIMEOUT_MS_NUM`): a first CI failure
+/// at a `+30s` margin (finishing at 50.26s against a 50s budget) showed that
+/// socket-teardown latency under CI's shared, heavily parallel `cargo test`
+/// load can itself run into tens of seconds after the daemon process has
+/// otherwise exited, so a "generous" margin close to the raw timeout is not
+/// generous enough. The margin here is `+90s` (3x the original), and the
+/// panic message reports the actual elapsed wait so a future flake carries
+/// its own timing evidence instead of just the budget that was exceeded.
 async fn await_endpoint_released(endpoint: &str, phase: &str) {
-    let budget = Duration::from_millis(IDLE_TIMEOUT_MS_NUM) + Duration::from_secs(30);
-    let deadline = tokio::time::Instant::now() + budget;
+    let budget = Duration::from_millis(IDLE_TIMEOUT_MS_NUM) + Duration::from_secs(90);
+    let started = tokio::time::Instant::now();
+    let deadline = started + budget;
     while endpoint_reachable(endpoint).await {
         assert!(
             tokio::time::Instant::now() < deadline,
-            "{phase}: endpoint {endpoint} was never released by the auto-spawned daemon"
+            "{phase}: endpoint {endpoint} was never released by the auto-spawned \
+             daemon after waiting {elapsed:?} (budget {budget:?})",
+            elapsed = started.elapsed()
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
