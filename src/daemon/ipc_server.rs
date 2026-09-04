@@ -542,22 +542,43 @@ pub async fn run(workspace: &str) -> Result<(), EngramError> {
 /// Mode selection is a safety boundary rather than a convenience setting, so
 /// that same fallback must not silently discard an explicitly configured
 /// `mode = "read_server"` merely because some unrelated field in the same
-/// file is malformed. This function therefore independently re-parses the
-/// raw file first and fails closed on any parse error, before ever consulting
-/// the (possibly-defaulted) [`PluginConfig::load`] result.
+/// file is malformed, or because the file could not be read at all. This
+/// function therefore independently re-reads and re-parses the raw file
+/// first and fails closed on any parse error *or* any read error other than
+/// "the file does not exist" (a missing file is the legitimate case that
+/// falls through to [`DaemonMode::resolve`]'s own absent-setting default),
+/// before ever consulting the (possibly-defaulted) [`PluginConfig::load`]
+/// result.
 ///
 /// # Errors
 ///
-/// Returns [`EngramError::Config`] when `config.toml` exists but fails to
-/// parse, or when the configured `mode` value is present but unrecognized.
+/// Returns [`EngramError::Config`] when `config.toml` exists but fails to be
+/// read or fails to parse, or when the configured `mode` value is present
+/// but unrecognized.
 pub fn resolve_daemon_mode(workspace_path: &Path) -> Result<DaemonMode, EngramError> {
     let config_path = workspace_path.join(".engram").join("config.toml");
-    if let Ok(content) = std::fs::read_to_string(&config_path) {
-        if let Err(parse_error) = toml::from_str::<PluginConfig>(&content) {
+    match std::fs::read_to_string(&config_path) {
+        Ok(content) => {
+            if let Err(parse_error) = toml::from_str::<PluginConfig>(&content) {
+                return Err(EngramError::Config(ConfigError::InvalidValue {
+                    key: "config.toml".to_owned(),
+                    reason: format!(
+                        "{path} failed to parse: {parse_error}",
+                        path = config_path.display()
+                    ),
+                }));
+            }
+        }
+        Err(read_error) if read_error.kind() == std::io::ErrorKind::NotFound => {
+            // No config file at all: fall through to `DaemonMode::resolve`'s
+            // own absent-setting default (`Managed`), the same as
+            // `PluginConfig::load` would apply below.
+        }
+        Err(read_error) => {
             return Err(EngramError::Config(ConfigError::InvalidValue {
                 key: "config.toml".to_owned(),
                 reason: format!(
-                    "{path} failed to parse: {parse_error}",
+                    "{path} could not be read: {read_error}",
                     path = config_path.display()
                 ),
             }));
@@ -1163,5 +1184,71 @@ mod tests {
             .await
             .expect("shutdown handler must not self-join or deadlock");
         assert!(*shutdown_tx.borrow());
+    }
+
+    #[test]
+    fn resolve_daemon_mode_hard_fails_on_malformed_config_toml() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        std::fs::create_dir_all(workspace.path().join(".engram")).expect(".engram dir");
+        // A syntactically invalid TOML file: an unterminated string value.
+        // `PluginConfig::load` would silently swallow this and return
+        // defaults (`Managed`); `resolve_daemon_mode` must hard-fail instead,
+        // even though `mode` itself is not the malformed field.
+        std::fs::write(
+            workspace.path().join(".engram").join("config.toml"),
+            "mode = \"read_server\"\nwatch_patterns = [\"unterminated\n",
+        )
+        .expect("write malformed config.toml");
+
+        let result = resolve_daemon_mode(workspace.path());
+        assert!(
+            result.is_err(),
+            "a malformed config.toml must hard-fail mode resolution, not silently default to Managed"
+        );
+        let message = result.expect_err("must be an error").to_string();
+        assert!(
+            message.contains("config.toml"),
+            "error must identify config.toml as the source: {message}"
+        );
+    }
+
+    #[test]
+    fn resolve_daemon_mode_falls_through_to_default_when_config_toml_absent() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        std::fs::create_dir_all(workspace.path().join(".engram")).expect(".engram dir");
+        // No config.toml written at all: this is the legitimate default case
+        // and must resolve to Managed, not be treated as a read failure.
+        assert_eq!(
+            resolve_daemon_mode(workspace.path()).expect("absent config.toml must resolve"),
+            DaemonMode::Managed
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_daemon_mode_hard_fails_when_config_toml_is_unreadable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        std::fs::create_dir_all(workspace.path().join(".engram")).expect(".engram dir");
+        let config_path = workspace.path().join(".engram").join("config.toml");
+        std::fs::write(&config_path, "mode = \"read_server\"\n").expect("write config.toml");
+        // Remove all read permission so `read_to_string` fails with a
+        // non-`NotFound` I/O error rather than parsing successfully.
+        std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o000))
+            .expect("chmod config.toml unreadable");
+
+        let result = resolve_daemon_mode(workspace.path());
+
+        // Restore permissions so the tempdir can be cleaned up regardless of
+        // assertion outcome.
+        std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o644))
+            .expect("restore config.toml permissions");
+
+        assert!(
+            result.is_err(),
+            "an unreadable config.toml must hard-fail mode resolution, not silently \
+             fall through to PluginConfig::load's lenient default"
+        );
     }
 }
