@@ -1013,45 +1013,12 @@ pub(crate) struct WorkspacePublicationGuard {
 }
 
 impl AppState {
-    pub fn new(max_workspaces: usize) -> Self {
-        Self::with_options(max_workspaces, StaleStrategy::Warn, 20, 60)
-    }
-
-    pub fn with_stale_strategy(max_workspaces: usize, stale_strategy: StaleStrategy) -> Self {
-        Self::with_options(max_workspaces, stale_strategy, 20, 60)
-    }
-
-    /// Create `AppState` with full configuration including rate limit parameters.
-    ///
-    /// Managed-mode behavior is unchanged: this constructor is a thin
-    /// forwarder onto [`AppState::with_mode`] with an explicit
-    /// [`DaemonMode::Managed`] argument. It is a temporary constructor per
-    /// plan unit F03/F04 (see `docs/exec-plans/2026-09-02-separate-indexer-read-server-plan.md`);
-    /// F04 will migrate call sites onto an explicit-mode constructor and
-    /// remove this one and [`AppState::new`] / [`AppState::with_stale_strategy`].
-    pub fn with_options(
-        max_workspaces: usize,
-        stale_strategy: StaleStrategy,
-        rate_limit_max: usize,
-        rate_limit_window_secs: u64,
-    ) -> Self {
-        Self::with_mode(
-            DaemonMode::Managed,
-            max_workspaces,
-            stale_strategy,
-            rate_limit_max,
-            rate_limit_window_secs,
-        )
-    }
-
     /// Create `AppState` with an explicit, required [`DaemonMode`].
     ///
-    /// This is the sole construction path that owns the `mode` field: every
-    /// other constructor on `AppState` forwards here with an explicit mode
-    /// argument (currently always [`DaemonMode::Managed`] for
-    /// `new`/`with_stale_strategy`/`with_options`, until F04 migrates their
-    /// call sites). There is no default-mode escape hatch, no setter, and no
-    /// interior-mutability path for `mode`: it is set once here and never
+    /// This is the sole constructor and the sole owner of the `mode` field.
+    /// There is no convenience constructor, no default-mode escape hatch, no
+    /// setter, and no interior-mutability path for `mode`: every caller must
+    /// name the mode it wants, the value is set once here, and it is never
     /// reassigned for the lifetime of the returned value.
     pub fn with_mode(
         mode: DaemonMode,
@@ -2129,7 +2096,7 @@ mod coordinator_tests {
 
     #[tokio::test]
     async fn binding_publication_is_coherent_and_overflow_safe() {
-        let state = AppState::new(1);
+        let state = AppState::with_mode(DaemonMode::Managed, 1, StaleStrategy::Warn, 20, 60);
         let old_waiter = admission(&state.coordinator);
         let alpha = workspace("alpha", "uuid-alpha", "id-alpha");
         let (generation, new_cancel_rx) = publish(&state, alpha.clone()).await;
@@ -2185,7 +2152,7 @@ mod coordinator_tests {
     #[tokio::test]
     async fn qualified_reissue_survives_same_target_republication_exactly_once() {
         for qualified_first in [true, false] {
-            let state = AppState::new(2);
+            let state = AppState::with_mode(DaemonMode::Managed, 2, StaleStrategy::Warn, 20, 60);
             let old = workspace("old", "uuid-old", "id-old");
             let _ = publish(&state, old.clone()).await;
             let old_owner = acquired(request(
@@ -2252,7 +2219,7 @@ mod coordinator_tests {
 
     #[tokio::test]
     async fn retirement_acknowledgment_atomically_claims_reissued_index_work() {
-        let state = AppState::new(2);
+        let state = AppState::with_mode(DaemonMode::Managed, 2, StaleStrategy::Warn, 20, 60);
         let mut target = workspace("worktree", "uuid-worktree", "id-main");
         let _ = publish(&state, target.clone()).await;
         let old_owner = acquired(request(
@@ -2305,7 +2272,7 @@ mod coordinator_tests {
 
     #[tokio::test]
     async fn stale_generation_cannot_restore_hydration_readiness() {
-        let state = AppState::new(2);
+        let state = AppState::with_mode(DaemonMode::Managed, 2, StaleStrategy::Warn, 20, 60);
         let (old_generation, _) = publish(&state, workspace("old", "uuid-old", "id-old")).await;
         assert!(state.set_hydration_ready_for_generation(old_generation));
         assert!(state.is_hydration_ready());
@@ -2323,7 +2290,7 @@ mod coordinator_tests {
 
     #[tokio::test]
     async fn guarded_dispatch_keeps_immutable_payload_when_publication_cancels_owner() {
-        let state = AppState::new(2);
+        let state = AppState::with_mode(DaemonMode::Managed, 2, StaleStrategy::Warn, 20, 60);
         let alpha = workspace("alpha", "uuid-alpha", "id-alpha");
         let _ = publish(&state, alpha).await;
         let Some((admission, dispatch)) = state.guarded_dispatch_context().await else {
@@ -2342,7 +2309,7 @@ mod coordinator_tests {
 
     #[tokio::test]
     async fn older_hydration_driver_cannot_displace_newer_retained_generation() {
-        let state = AppState::new(1);
+        let state = AppState::with_mode(DaemonMode::Managed, 1, StaleStrategy::Warn, 20, 60);
         let newer = DriverTaskGuard {
             task: Some(tokio::spawn(std::future::pending::<()>())),
         };
@@ -2384,7 +2351,8 @@ mod coordinator_tests {
                 OwnerKind::Watcher,
             ] {
                 for explicit_ack in [true, false] {
-                    let state = AppState::new(2);
+                    let state =
+                        AppState::with_mode(DaemonMode::Managed, 2, StaleStrategy::Warn, 20, 60);
                     let old = workspace("old", "uuid-old", "id-old");
                     let _ = publish(&state, old.clone()).await;
                     let permit = acquired(request(
@@ -2494,7 +2462,7 @@ mod coordinator_tests {
 
     #[tokio::test]
     async fn repeated_rebind_retargets_one_barrier_and_stale_terminals_do_nothing() {
-        let state = AppState::new(2);
+        let state = AppState::with_mode(DaemonMode::Managed, 2, StaleStrategy::Warn, 20, 60);
         let old = workspace("old", "uuid-old", "id-old");
         let _ = publish(&state, old.clone()).await;
         let permit = acquired(request(
@@ -2712,7 +2680,8 @@ mod coordinator_tests {
     async fn startup_and_watcher_rebind_waits_for_drop_ack_and_isolates_stale_terminal() {
         for kind in [OwnerKind::Startup, OwnerKind::Watcher] {
             for same_binding in [true, false] {
-                let state = AppState::new(2);
+                let state =
+                    AppState::with_mode(DaemonMode::Managed, 2, StaleStrategy::Warn, 20, 60);
                 let _ = publish(&state, workspace("old", "uuid-old", "id-old")).await;
                 let permit = acquired(request(
                     admission(&state.coordinator),

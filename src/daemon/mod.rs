@@ -129,6 +129,21 @@ pub async fn run(workspace: &str) -> Result<(), EngramError> {
     // ── 3a. Load plugin config ────────────────────────────────────────────────
     let plugin_config = crate::models::PluginConfig::load(&workspace_path);
 
+    // ── 3a-i. Resolve the daemon mode (142-F) ─────────────────────────────────
+    //
+    // `DaemonMode::resolve` is the single shared mode resolver: an absent
+    // setting resolves to `Managed`, a present-but-unrecognized value is a hard
+    // error. The resolved mode is threaded explicitly into the IPC server and
+    // from there into `AppState::with_mode`; nothing downstream defaults it.
+    let mode =
+        crate::models::config::DaemonMode::resolve(plugin_config.mode.as_deref()).map_err(|e| {
+            EngramError::Config(crate::errors::ConfigError::InvalidValue {
+                key: "mode".to_owned(),
+                reason: e.to_string(),
+            })
+        })?;
+    info!(mode = %mode, "daemon mode resolved");
+
     // ── 3b. Resolve idle timeout (env var overrides config for test harness) ──
     let idle_timeout = std::env::var("ENGRAM_IDLE_TIMEOUT_MS")
         .ok()
@@ -205,6 +220,7 @@ pub async fn run(workspace: &str) -> Result<(), EngramError> {
     info!("startup step 8: entering IPC accept loop (bind happens inside run_with_shutdown_v2)");
     ipc_server::run_with_shutdown_v2(
         workspace,
+        mode,
         Arc::clone(&ttl),
         Arc::clone(&shutdown_tx),
         shutdown_rx,

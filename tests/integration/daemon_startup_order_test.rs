@@ -21,6 +21,7 @@ use tokio::sync::watch;
 use engram::daemon::ipc_server::run_with_shutdown_v2;
 use engram::daemon::ttl::TtlTimer;
 use engram::daemon::watcher::WatcherConfig;
+use engram::models::config::DaemonMode;
 
 // ── 025.002-T harness ─────────────────────────────────────────────────────────
 
@@ -78,6 +79,7 @@ async fn run_with_shutdown_v2_exits_cleanly_on_ttl_expiry() {
         Duration::from_secs(30),
         run_with_shutdown_v2(
             &workspace_str,
+            DaemonMode::Managed,
             ttl,
             Arc::new(shutdown_tx),
             shutdown_rx,

@@ -33,13 +33,15 @@ use tokio::sync::{mpsc, watch};
 use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
 
+use crate::config::StaleStrategy;
 use crate::daemon::protocol::IpcResponse;
 use crate::daemon::ttl::TtlTimer;
 use crate::daemon::watcher::{WatcherConfig, start_watcher};
 use crate::daemon::{lifecycle_policy, request_entry, startup_activation};
 use crate::db::workspace::daemon_key_for_workspace;
-use crate::errors::{EngramError, IpcError as DomainIpcError};
+use crate::errors::{ConfigError, EngramError, IpcError as DomainIpcError};
 use crate::models::WatcherEvent;
+use crate::models::config::{DaemonMode, PluginConfig};
 use crate::server::state::{AppState, SharedState};
 
 // ── Endpoint naming ──────────────────────────────────────────────────────────
@@ -358,12 +360,18 @@ fn emit_response_frame_result(connection_id: &str, response_id: &Value, outcome:
 /// batches events and triggers [`crate::services::code_graph::sync_workspace`]
 /// after a 2-second quiet window.
 ///
+/// `mode` is the already-resolved [`DaemonMode`] for this daemon process. It is
+/// supplied by the caller — which owns config resolution via
+/// [`DaemonMode::resolve`] — and is handed straight to
+/// [`AppState::with_mode`]. There is no default applied here.
+///
 /// # Errors
 ///
 /// Returns [`EngramError`] if path validation, lock acquisition, or listener
 /// binding fails.
 pub async fn run_with_shutdown(
     workspace: &str,
+    mode: DaemonMode,
     ttl: Arc<TtlTimer>,
     shutdown_tx: Arc<watch::Sender<bool>>,
     shutdown_rx: watch::Receiver<bool>,
@@ -388,7 +396,7 @@ pub async fn run_with_shutdown(
     // Lock is already acquired by `daemon::mod::run()` which holds it for the
     // daemon's entire lifetime. No re-acquisition needed here.
 
-    let state: SharedState = Arc::new(AppState::new(1));
+    let state: SharedState = Arc::new(AppState::with_mode(mode, 1, StaleStrategy::Warn, 20, 60));
 
     // ── Bind the IPC endpoint BEFORE hydrating the workspace ─────────────────
     //
@@ -492,18 +500,54 @@ pub async fn run_with_shutdown(
 /// Delegates to [`run_with_shutdown`] with a no-op TTL and a one-time
 /// Ctrl-C shutdown. New code should call [`run_with_shutdown`] directly.
 ///
+/// This entry point takes no `mode` argument because it has no caller-supplied
+/// mode context. Rather than defaulting silently, it resolves the mode from the
+/// workspace's own `.engram/config.toml` through [`PluginConfig::load`] and
+/// [`DaemonMode::resolve`] — the single shared mode resolver — exactly as
+/// [`crate::daemon::run`] does. A present-but-unrecognized `mode` setting is a
+/// hard error here, never a fallback to managed.
+///
 /// # Errors
 ///
-/// Returns [`EngramError`] if path validation, lock acquisition, or listener
-/// binding fails.
+/// Returns [`EngramError`] if path validation, mode resolution, lock
+/// acquisition, or listener binding fails.
 pub async fn run(workspace: &str) -> Result<(), EngramError> {
+    let workspace_path = std::fs::canonicalize(workspace).map_err(|e| {
+        EngramError::Ipc(DomainIpcError::ConnectionFailed {
+            address: workspace.to_owned(),
+            reason: format!("cannot canonicalize workspace path: {e}"),
+        })
+    })?;
+    let mode = resolve_daemon_mode(&workspace_path)?;
+
     let ttl = TtlTimer::new(std::time::Duration::ZERO); // no auto-shutdown
     let (tx, rx) = watch::channel(false);
     // Legacy callers have no file watcher; pass a channel that is immediately
     // closed so the auto-sync loop in run_with_shutdown exits cleanly.
     let (event_tx, event_rx) = mpsc::unbounded_channel::<WatcherEvent>();
     drop(event_tx);
-    run_with_shutdown(workspace, ttl, Arc::new(tx), rx, event_rx).await
+    run_with_shutdown(workspace, mode, ttl, Arc::new(tx), rx, event_rx).await
+}
+
+/// Resolve the daemon mode for `workspace_path` from its persisted config.
+///
+/// Loads `.engram/config.toml` via [`PluginConfig::load`] and hands the raw
+/// `mode` setting to [`DaemonMode::resolve`]. An absent setting resolves to
+/// [`DaemonMode::Managed`]; a present-but-unrecognized value is a hard
+/// [`ConfigError::InvalidValue`].
+///
+/// # Errors
+///
+/// Returns [`EngramError::Config`] when the configured `mode` value is present
+/// but unrecognized.
+pub fn resolve_daemon_mode(workspace_path: &Path) -> Result<DaemonMode, EngramError> {
+    let plugin_config = PluginConfig::load(workspace_path);
+    DaemonMode::resolve(plugin_config.mode.as_deref()).map_err(|e| {
+        EngramError::Config(ConfigError::InvalidValue {
+            key: "mode".to_owned(),
+            reason: e.to_string(),
+        })
+    })
 }
 
 // ── Accept loop ──────────────────────────────────────────────────────────────
@@ -591,12 +635,18 @@ async fn accept_loop(
 /// (Windows) or `inotify_add_watch` (Linux) registration from delaying the
 /// moment the shim can send its first health probe.
 ///
+/// `mode` is the already-resolved [`DaemonMode`] for this daemon process,
+/// supplied by [`crate::daemon::run`] from `.engram/config.toml` via
+/// [`DaemonMode::resolve`]. It is handed straight to [`AppState::with_mode`];
+/// no default is applied here.
+///
 /// # Errors
 ///
 /// Returns [`EngramError`] if path validation, run-directory creation, or
 /// listener binding fails.
 pub async fn run_with_shutdown_v2(
     workspace: &str,
+    mode: DaemonMode,
     ttl: Arc<TtlTimer>,
     shutdown_tx: Arc<watch::Sender<bool>>,
     shutdown_rx: watch::Receiver<bool>,
@@ -623,7 +673,7 @@ pub async fn run_with_shutdown_v2(
     // Lock is already acquired by `daemon::mod::run()` which holds it for the
     // daemon's entire lifetime. No re-acquisition needed here.
 
-    let state: SharedState = Arc::new(AppState::new(1));
+    let state: SharedState = Arc::new(AppState::with_mode(mode, 1, StaleStrategy::Warn, 20, 60));
 
     // ── Bind the IPC endpoint BEFORE starting the file watcher ───────────────
     //
@@ -955,7 +1005,13 @@ mod tests {
         .expect("write git HEAD");
         let endpoint = ipc_endpoint(workspace.path()).expect("IPC endpoint");
         let listener = bind_listener(&endpoint).expect("bind IPC listener");
-        let state = Arc::new(AppState::new(1));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            1,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         let ttl = TtlTimer::new(Duration::ZERO);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let shutdown_tx = Arc::new(shutdown_tx);
@@ -1035,7 +1091,13 @@ mod tests {
         .expect("write git HEAD");
         let endpoint = ipc_endpoint(workspace.path()).expect("IPC endpoint");
         let listener = bind_listener(&endpoint).expect("bind IPC listener");
-        let state = Arc::new(AppState::new(1));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            1,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         let ttl = TtlTimer::new(Duration::ZERO);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let shutdown_tx = Arc::new(shutdown_tx);
