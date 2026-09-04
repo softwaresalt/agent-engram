@@ -130,6 +130,35 @@ fn registry_covers_exactly_the_reachable_surface() {
     );
 }
 
+/// Under the `git-graph` feature, the two feature-gated dispatch tools this
+/// registry declares must actually be present.
+///
+/// `tools_catalog::all_tools()` deliberately never lists `query_changes` or
+/// `index_git_history` under any build (see that module's own doc comment),
+/// so `every_mcp_catalog_tool_has_a_descriptor`'s catalog-driven scan can
+/// never exercise a missing descriptor for either name, and
+/// `registry_covers_exactly_the_reachable_surface` only checks
+/// `declared - expected` (surplus), not `expected - declared` (missing) for
+/// entries that are `expected` but absent from the default-build catalog.
+/// Together those two gaps mean deleting either descriptor left this entire
+/// completeness suite green under a `git-graph` build. This test is the only
+/// thing that goes RED for that deletion.
+#[cfg(feature = "git-graph")]
+#[test]
+fn feature_gated_git_graph_tools_have_descriptors() {
+    let declared = descriptor_names();
+    let missing: Vec<&str> = FEATURE_GATED_MCP_TOOLS
+        .iter()
+        .copied()
+        .filter(|name| !declared.contains(*name))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "feature-gated git-graph tools must have descriptors under this build; \
+         missing: {missing:?}"
+    );
+}
+
 /// Names are unique — a duplicated declaration would make lookups ambiguous.
 #[test]
 fn descriptor_names_are_unique() {
