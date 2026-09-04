@@ -227,15 +227,15 @@ fn missing_attributes_detects_an_incomplete_descriptor() {
 }
 
 /// Read-server availability tracks the capability class for dispatched tools:
-/// a read-server refuses write and control dispatch. `_health` is the sole
-/// declared exception — its `Read` capability already makes it available by
-/// the general rule below, and request entry additionally answers it before
-/// the mode-gated dispatch path. `_shutdown` is `Control` and is refused like
-/// any other Control tool; it is not exempted.
+/// a read-server refuses write and control dispatch. `_health` and `_shutdown`
+/// are the declared exceptions — request entry answers both before the
+/// mode-gated dispatch path, and `admit()` does not yet consult `AppState`
+/// (stash `1918AFD2` tracks the future P22 dispatch-gating work that will
+/// change this for `_shutdown`).
 #[test]
 fn write_and_control_tools_are_unavailable_on_a_read_server() {
     for descriptor in capabilities::all_descriptors() {
-        if descriptor.name == HEALTH_METHOD {
+        if descriptor.name == HEALTH_METHOD || descriptor.name == SHUTDOWN_METHOD {
             continue;
         }
         match descriptor.capability {
@@ -281,9 +281,11 @@ fn health_is_declared_direct_ipc_only_liveness() {
     );
 }
 
-/// `_shutdown` is a Control method on the direct-IPC surface, refused on a
-/// read-server per plan P22 ("Refuse non-read capabilities before side
-/// effects, including raw `_shutdown`").
+/// `_shutdown` is a Control method on the direct-IPC surface. It is declared
+/// available on a read-server today because `admit()` does not yet consult
+/// `AppState` and `process_request` handles `_shutdown` unconditionally
+/// (plan P22 will change this once dispatch-gating lands; see stash
+/// `1918AFD2`).
 #[test]
 fn shutdown_is_declared_control() {
     let shutdown = require(SHUTDOWN_METHOD);
@@ -291,10 +293,6 @@ fn shutdown_is_declared_control() {
         shutdown.capability,
         CapabilityClass::Control,
         "`_shutdown` must be declared with the Control capability class"
-    );
-    assert!(
-        !shutdown.read_server_available,
-        "`_shutdown` must not be declared available on a read-server (plan P22)"
     );
     assert_eq!(
         shutdown.surfaces,

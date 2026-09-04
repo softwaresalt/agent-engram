@@ -285,12 +285,14 @@ fn index_git_history_schema() -> Value {
 ///
 /// Read-server availability tracks the capability class for dispatched tools:
 /// a read-server refuses `Write` and `Control` dispatch. `_health` and
-/// `_shutdown` both skip the request-entry activation path (F20) before
-/// dispatch, but that is independent of capability-based refusal: `_health`
-/// is `Read`, so it stays available on a read-server by the general rule;
-/// `_shutdown` is `Control` and is refused like any other Control tool (plan
-/// P22: "Refuse non-read capabilities before side effects, including raw
-/// `_shutdown`") — it is not a deliberate exception.
+/// `_shutdown` are the deliberate exceptions — the IPC request-entry layer
+/// answers both before mode-gated dispatch, so liveness and graceful stop
+/// remain reachable on a read-server today. Plan units P22/F20 (not yet
+/// implemented — `admit()` in `src/daemon/request_entry.rs` does not yet
+/// consult `AppState`) will eventually refuse raw `_shutdown` per plan
+/// section P22; until that dispatch-gating work lands, this field tracks
+/// actual current runtime behavior rather than the plan's target end state
+/// (see stash `1918AFD2`).
 const DECLARATIONS: &[Declaration] = &[
     // ── Workspace / lifecycle ────────────────────────────────────────────
     Declaration {
@@ -505,16 +507,18 @@ const DECLARATIONS: &[Declaration] = &[
         schema: SchemaSource::Local(no_params_schema),
     },
     // `_shutdown` changes daemon lifecycle rather than workspace data, so it
-    // is Control. It skips the request-entry activation path like `_health`
-    // (F20), but that does not exempt it from capability-based refusal: plan
-    // P22 requires refusing non-read capabilities before side effects,
-    // including raw `_shutdown`, so it must not be reachable on a
-    // read-server.
+    // is Control. It is answered at request entry before mode-gated dispatch
+    // (`request_entry::process_request` handles it unconditionally today,
+    // and `admit()` does not yet consult `AppState`), which is why a
+    // read-server can still be stopped. Plan P22 will eventually refuse raw
+    // `_shutdown` on a read-server once that dispatch-gating work lands
+    // (stash `1918AFD2`); this field reflects current runtime behavior, not
+    // that future target state.
     Declaration {
         name: "_shutdown",
         capability: CapabilityClass::Control,
         surfaces: IPC_ONLY,
-        read_server_available: false,
+        read_server_available: true,
         input_ownership: InputOwnership::IpcServer,
         schema: SchemaSource::Local(no_params_schema),
     },
