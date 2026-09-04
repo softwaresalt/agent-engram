@@ -1,3 +1,5 @@
+use engram::config::StaleStrategy;
+use engram::models::config::DaemonMode;
 use std::sync::Arc;
 
 use serde_json::json;
@@ -26,7 +28,13 @@ fn ws(id: &str) -> WorkspaceSnapshot {
 /// `map_code` must require workspace to be set.
 #[test]
 async fn map_code_requires_workspace() {
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let params = Some(json!({ "symbol_name": "my_function" }));
 
     let err = tools::dispatch(state, "map_code", params)
@@ -41,7 +49,13 @@ async fn map_code_requires_workspace() {
 /// `map_code` output must contain the `CodeGraphNeighborhood` fields.
 #[test]
 async fn map_code_output_schema_is_backward_compatible() {
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     state
         .set_workspace(ws("mc_schema"))
         .await
@@ -72,7 +86,13 @@ async fn map_code_output_schema_is_backward_compatible() {
 /// `map_code` with `fallback_used=true` returns `matches` array for disambiguation.
 #[test]
 async fn map_code_fallback_returns_matches_array() {
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     state
         .set_workspace(ws("mc_fallback"))
         .await
@@ -99,7 +119,13 @@ async fn map_code_fallback_returns_matches_array() {
 /// `impact_analysis` must require workspace to be set.
 #[test]
 async fn impact_analysis_requires_workspace() {
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let params = Some(json!({ "symbol_name": "my_function" }));
 
     let err = tools::dispatch(state, "impact_analysis", params)
@@ -112,7 +138,13 @@ async fn impact_analysis_requires_workspace() {
 /// `impact_analysis` must return `SYMBOL_NOT_FOUND` when symbol doesn't exist.
 #[test]
 async fn impact_analysis_returns_symbol_not_found() {
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     state
         .set_workspace(ws("ia_not_found"))
         .await
@@ -131,7 +163,13 @@ async fn impact_analysis_returns_symbol_not_found() {
 /// `impact_analysis` output must contain the expected schema fields.
 #[test]
 async fn impact_analysis_output_schema_is_backward_compatible() {
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     state
         .set_workspace(ws("ia_schema"))
         .await

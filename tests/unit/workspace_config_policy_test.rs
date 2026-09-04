@@ -7,6 +7,8 @@
 //! - `AppState::policy_config()` returns the cached `PolicyConfig` when workspace config is set
 //! - `parse_config` falls back gracefully when the `[policy]` section has invalid values
 
+use engram::config::StaleStrategy;
+use engram::models::config::DaemonMode;
 use std::sync::Arc;
 
 use engram::models::config::WorkspaceConfig;
@@ -158,7 +160,13 @@ fn parse_config_no_policy_section_succeeds() {
 /// THEN it returns `None`.
 #[tokio::test]
 async fn appstate_policy_config_returns_none_when_no_config() {
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
 
     let result = state.policy_config().await;
 
@@ -173,7 +181,13 @@ async fn appstate_policy_config_returns_none_when_no_config() {
 /// THEN it returns `Some(policy)` matching the loaded config.
 #[tokio::test]
 async fn appstate_policy_config_returns_cached_config() {
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
 
     let policy = PolicyConfig {
         enabled: true,
@@ -209,7 +223,13 @@ async fn appstate_policy_config_returns_cached_config() {
 /// THEN it returns `None`.
 #[tokio::test]
 async fn appstate_policy_config_returns_none_after_config_cleared() {
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
 
     state
         .set_workspace_config(Some(WorkspaceConfig::default()))
@@ -229,7 +249,13 @@ async fn appstate_policy_config_returns_none_after_config_cleared() {
 /// THEN it returns `Some(PolicyConfig { enabled: false, ... })`.
 #[tokio::test]
 async fn appstate_policy_config_returns_default_disabled_policy() {
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
 
     state
         .set_workspace_config(Some(WorkspaceConfig::default()))

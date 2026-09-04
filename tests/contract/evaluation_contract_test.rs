@@ -6,6 +6,8 @@
 #[path = "../helpers/mod.rs"]
 mod helpers;
 
+use engram::config::StaleStrategy;
+use engram::models::config::DaemonMode;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
@@ -26,7 +28,13 @@ async fn setup_workspace_with_events(events: &[UsageEvent]) -> (Arc<AppState>, t
     fs::create_dir_all(&git_dir).expect("create .git");
     fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").expect("write HEAD");
 
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     helpers::bind_isolated_workspace(&state, workspace.path(), "main", WorkspaceConfig::default())
         .await;
 
@@ -179,7 +187,13 @@ async fn c017_03_agents_have_required_subfields() {
 /// error code 1003 `WorkspaceNotSet`.
 #[test]
 async fn c017_04_no_workspace_returns_workspace_not_set() {
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
 
     let err = tools::dispatch(state.clone(), "get_evaluation_report", Some(json!({})))
         .await

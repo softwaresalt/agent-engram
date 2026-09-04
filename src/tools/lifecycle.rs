@@ -1046,10 +1046,11 @@ mod tests {
         background_db_hydration, drive_transferred_sync, get_daemon_status, set_hydration_progress,
         set_workspace, set_workspace_after_metrics_replacement, set_workspace_after_precheck,
     };
+    use crate::config::StaleStrategy;
     use crate::db::connect_db;
     use crate::db::queries::CodeGraphQueries;
     use crate::errors::{EngramError, WorkspaceError};
-    use crate::models::config::{CodeGraphConfig, WorkspaceConfig};
+    use crate::models::config::{CodeGraphConfig, DaemonMode, WorkspaceConfig};
     use crate::models::health::ScanProgress;
     use crate::server::state::{
         AppState, CompletionOutcome, CoordinatorCell, DispatchSnapshot, DriverTaskGuard, OwnerKind,
@@ -1356,7 +1357,13 @@ mod tests {
             .expect("canonical replacement")
             .display()
             .to_string();
-        let state = Arc::new(AppState::new(2));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            2,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
 
         crate::tools::dispatch(
             Arc::clone(&state),
@@ -1431,7 +1438,13 @@ mod tests {
             "nonpublished-replacement",
             "[metrics]\nenabled = true\n",
         );
-        let state = Arc::new(AppState::new(2));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            2,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         set_workspace(Arc::clone(&state), original.display().to_string())
             .await
             .expect("bind original workspace");
@@ -1535,7 +1548,13 @@ mod tests {
             "branch-refresh-replacement",
             "[metrics]\nenabled = true\nbuffer_size = 3\n",
         );
-        let state = Arc::new(AppState::new(2));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            2,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         set_workspace(Arc::clone(&state), original.display().to_string())
             .await
             .expect("bind original workspace");
@@ -1681,7 +1700,13 @@ mod tests {
                 .expect("write source");
         }
 
-        let state = Arc::new(AppState::new(1));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            1,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         let (first_passed_tx, first_passed_rx) = tokio::sync::oneshot::channel();
         let (resume_first_tx, resume_first_rx) = tokio::sync::oneshot::channel();
         let first_state = Arc::clone(&state);
@@ -1756,7 +1781,13 @@ mod tests {
             "failed-initialize-replacement",
             "[metrics]\nenabled = true\nbuffer_size = 3\n",
         );
-        let state = Arc::new(AppState::new(2));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            2,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         set_workspace(Arc::clone(&state), original.display().to_string())
             .await
             .expect("bind original workspace");
@@ -1794,7 +1825,13 @@ mod tests {
             "initialize-replacement",
             "[metrics]\nenabled = true\nbuffer_size = 3\n",
         );
-        let state = Arc::new(AppState::new(2));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            2,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         set_workspace(Arc::clone(&state), original.display().to_string())
             .await
             .expect("bind original workspace");
@@ -1844,7 +1881,13 @@ mod tests {
             "rollback-replacement",
             "[metrics]\nenabled = true\nbuffer_size = 3\n",
         );
-        let state = Arc::new(AppState::new(2));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            2,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         set_workspace(Arc::clone(&state), original.display().to_string())
             .await
             .expect("bind original workspace");
@@ -1906,7 +1949,13 @@ mod tests {
             "replacement",
             "[metrics]\nenabled = true\nbuffer_size = 3\n",
         );
-        let state = Arc::new(AppState::new(2));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            2,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         set_workspace(Arc::clone(&state), original.display().to_string())
             .await
             .expect("bind original workspace");
@@ -1987,7 +2036,13 @@ mod tests {
             "replacement-enabled",
             "[metrics]\nenabled = true\nbuffer_size = 3\n",
         );
-        let state = Arc::new(AppState::new(2));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            2,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         set_workspace(Arc::clone(&state), original.display().to_string())
             .await
             .expect("bind original workspace");
@@ -2053,7 +2108,13 @@ mod tests {
     async fn hydration_waiting_and_stale_admission_never_reaches_io() {
         let _metrics_guard = crate::services::metrics::test_writer_guard().await;
         for held_owner in [true, false] {
-            let state = Arc::new(AppState::new(2));
+            let state = Arc::new(AppState::with_mode(
+                DaemonMode::Managed,
+                2,
+                StaleStrategy::Warn,
+                20,
+                60,
+            ));
             let old_snapshot = coordinator_snapshot("old", "old");
             let _ = publish_test_binding(&state, old_snapshot.clone()).await;
             let owner = held_owner.then(|| {
@@ -2102,7 +2163,13 @@ mod tests {
 
     #[tokio::test]
     async fn hydration_progress_rejects_retired_owner_after_rebind() {
-        let state = Arc::new(AppState::new(2));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            2,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         let _ = publish_test_binding(&state, coordinator_snapshot("old", "old")).await;
         let permit = acquired(
             request_empty(&state, OwnerKind::Hydration)
@@ -2143,7 +2210,13 @@ mod tests {
             "ref: refs/heads/main\n",
         )
         .expect("write git HEAD");
-        let state = Arc::new(AppState::new(2));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            2,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         let mut stale_snapshot = coordinator_snapshot("hydration-branch", "stale-id");
         stale_snapshot.workspace_uuid = "uuid-worktree".to_owned();
         stale_snapshot.path = workspace_path.to_string_lossy().into_owned();
@@ -2189,7 +2262,13 @@ mod tests {
         for (same_binding, abort_task) in
             [(true, false), (true, true), (false, false), (false, true)]
         {
-            let state = Arc::new(AppState::new(2));
+            let state = Arc::new(AppState::with_mode(
+                DaemonMode::Managed,
+                2,
+                StaleStrategy::Warn,
+                20,
+                60,
+            ));
             let old_snapshot = coordinator_snapshot("old", "old");
             let _ = publish_test_binding_with_disabled_metrics(
                 &state,
@@ -2254,7 +2333,13 @@ mod tests {
             HydrationProbeExit::DbFailure,
             HydrationProbeExit::EarlyReturn,
         ] {
-            let state = Arc::new(AppState::new(1));
+            let state = Arc::new(AppState::with_mode(
+                DaemonMode::Managed,
+                1,
+                StaleStrategy::Warn,
+                20,
+                60,
+            ));
             let snapshot = coordinator_snapshot("terminal", "terminal");
             let _ = publish_test_binding_with_disabled_metrics(
                 &state,
@@ -2291,7 +2376,13 @@ mod tests {
     #[tokio::test]
     async fn transferred_full_mask_executes_once_under_one_successor() {
         let metrics_guard = crate::services::metrics::test_writer_guard().await;
-        let state = Arc::new(AppState::new(1));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            1,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         let _ = publish_test_binding_with_disabled_metrics(
             &state,
             coordinator_snapshot("handoff", "handoff"),
@@ -2325,7 +2416,13 @@ mod tests {
         let invalid_data_dir = temp.path().join("not-a-directory");
         std::fs::write(&invalid_data_dir, b"file blocks database directory")
             .expect("create invalid data path");
-        let state = Arc::new(AppState::new(1));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            1,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         let _ = publish_test_binding_with_disabled_metrics(
             &state,
             WorkspaceSnapshot {
@@ -2362,7 +2459,13 @@ mod tests {
         let data_dir = temp.path().join("data");
         std::fs::create_dir_all(&workspace).expect("create workspace");
         std::fs::write(workspace.join("broken.py"), [0xff]).expect("write invalid UTF-8 fixture");
-        let state = Arc::new(AppState::new(1));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            1,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         let _ = publish_test_binding_with_disabled_metrics(
             &state,
             WorkspaceSnapshot {
@@ -2398,7 +2501,13 @@ mod tests {
         let workspace = temp.path().join("workspace");
         let data_dir = temp.path().join("data");
         std::fs::create_dir_all(&workspace).expect("create workspace");
-        let state = Arc::new(AppState::new(1));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            1,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         let _ = publish_test_binding_with_disabled_metrics(
             &state,
             WorkspaceSnapshot {
@@ -2446,7 +2555,13 @@ mod tests {
             HandoffProbeExit::AwaitCancellation,
             HandoffProbeExit::Handled,
         ] {
-            let state = Arc::new(AppState::new(1));
+            let state = Arc::new(AppState::with_mode(
+                DaemonMode::Managed,
+                1,
+                StaleStrategy::Warn,
+                20,
+                60,
+            ));
             let _ = publish_test_binding_with_disabled_metrics(
                 &state,
                 coordinator_snapshot("handoff-loss", "handoff-loss"),
@@ -2566,7 +2681,13 @@ mod tests {
         }
 
         // Bind the workspace + config so the drain enters its real sync branch.
-        let state = Arc::new(AppState::new(1));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            1,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         state
             .set_workspace(WorkspaceSnapshot {
                 workspace_id: "test-ws".to_owned(),
@@ -2639,7 +2760,7 @@ mod tests {
     /// magnitude.
     #[tokio::test]
     async fn daemon_status_memory_reflects_process_not_system() {
-        let state = AppState::new(10);
+        let state = AppState::with_mode(DaemonMode::Managed, 10, StaleStrategy::Warn, 20, 60);
         let status = get_daemon_status(&state)
             .await
             .expect("get_daemon_status should succeed");

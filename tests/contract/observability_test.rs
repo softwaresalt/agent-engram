@@ -2,6 +2,8 @@
 //!
 //! Scenarios: S056–S060 from SCENARIOS.md.
 
+use engram::config::StaleStrategy;
+use engram::models::config::DaemonMode;
 use std::sync::Arc;
 
 use engram::server::state::AppState;
@@ -11,7 +13,13 @@ use engram::server::state::AppState;
 /// S057: Tool call latency is recorded and percentiles are computable.
 #[tokio::test]
 async fn t027_latency_tracking() {
-    let state = Arc::new(AppState::new(1));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        1,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
 
     // Record 10 synthetic latency samples (microseconds).
     for micros in [100_u64, 200, 300, 400, 500, 600, 700, 800, 900, 1_000] {
@@ -34,7 +42,13 @@ async fn t027_latency_tracking() {
 /// S056: `get_health_report` returns all expected metrics fields.
 #[tokio::test]
 async fn t028_health_report_has_required_fields() {
-    let state = Arc::new(AppState::new(1));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        1,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
 
     let result = engram::tools::read::get_health_report(state, None)
         .await
@@ -85,7 +99,13 @@ async fn t028_health_report_has_required_fields() {
 #[tokio::test]
 async fn t029_health_report_no_workspace_required() {
     // No `set_workspace` called — must still succeed.
-    let state = Arc::new(AppState::new(1));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        1,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
 
     let result = engram::tools::read::get_health_report(state, None).await;
     assert!(

@@ -3,7 +3,8 @@
 //! Ranges: 1xxx workspace, 2xxx hydration, 4xxx query,
 //! 5xxx system, 6xxx config, 7xxx code graph, 8xxx IPC/daemon,
 //! 9xxx installer, 10xxx registry, 11xxx ingestion, 12xxx git graph,
-//! 13xxx metrics, 14xxx policy.
+//! 13xxx metrics, 14xxx policy, 15xxx shim startup, 16xxx read-server
+//! refusal, 17xxx generation-activation availability.
 
 /// Workspace error codes
 pub const WORKSPACE_NOT_FOUND: u16 = 1001;
@@ -94,6 +95,24 @@ pub const METRICS_PARSE_ERROR: u16 = 13_003;
 /// Policy engine error codes (14xxx)
 pub const POLICY_DENIED: u16 = 14_001;
 pub const POLICY_CONFIG_INVALID: u16 = 14_002;
+
+/// Read-server refusal error codes (16xxx).
+///
+/// Reserved by plan unit F38 (142.003-T / 134-S) for consumers that must
+/// refuse an operation because the daemon is running in `ReadServer` mode.
+/// F11, F17, F20, F21, F44 and F45 consume these named codes rather than
+/// minting local ad-hoc refusal errors.
+pub const READ_SERVER_WRITE_CONTROL_REFUSED: u16 = 16_001;
+pub const DIRECT_SYNC_REFUSED: u16 = 16_002;
+pub const WORKSPACE_RETARGET_REFUSED: u16 = 16_003;
+
+/// Generation-activation availability error codes (17xxx).
+///
+/// Reserved by plan unit F38 (142.003-T / 134-S) for consumers that must
+/// report an activation-availability failure for a read-server generation.
+pub const GENERATION_NOT_YET_ACTIVATED: u16 = 17_001;
+pub const ACTIVATION_DEADLINE_EXCEEDED: u16 = 17_002;
+pub const TRANSIENT_ACTIVATION_FAILURE: u16 = 17_003;
 
 /// Shim startup contract error codes (15xxx).
 ///

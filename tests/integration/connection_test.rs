@@ -3,6 +3,8 @@
 // feature is enabled.  Default builds use the IPC transport exclusively.
 #![cfg(feature = "legacy-sse")]
 
+use engram::config::StaleStrategy;
+use engram::models::config::DaemonMode;
 use std::sync::Arc;
 
 use axum::body::{Body, to_bytes};
@@ -17,7 +19,13 @@ use engram::server::{router::build_router, state::AppState};
 async fn sse_connection_lifecycle_accepts_and_times_out() {
     time::pause();
 
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let app = build_router(state.clone());
 
     // Drive the SSE stream by advancing simulated time while reading the body.
@@ -60,7 +68,13 @@ async fn sse_connection_lifecycle_accepts_and_times_out() {
 
 #[test]
 async fn health_endpoint_reports_daemon_status() {
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let app = build_router(state.clone());
 
     let response = app

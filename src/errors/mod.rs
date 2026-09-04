@@ -262,6 +262,49 @@ pub enum PolicyError {
     ConfigInvalid { reason: String },
 }
 
+/// Typed refusal errors for operations rejected because the daemon is
+/// running in `ReadServer` mode (plan unit F38, 142.003-T / 134-S).
+///
+/// Reserved for F11, F17, F20, F21, F44 and F45 to consume instead of
+/// minting a local ad-hoc refusal error. This unit only reserves the typed
+/// envelope and stable codes; wiring a producer to actually raise these
+/// variants is out of scope here and belongs to the consuming unit.
+#[derive(Debug, Error)]
+pub enum ReadServerRefusalError {
+    /// A write or control operation was attempted while the daemon is
+    /// running in read-server mode.
+    #[error("operation '{operation}' refused: daemon is running in read-server mode")]
+    WriteControlRefused { operation: String },
+    /// A direct-sync operation was attempted while the daemon is running in
+    /// read-server mode.
+    #[error("direct-sync operation '{operation}' refused: daemon is running in read-server mode")]
+    DirectSyncRefused { operation: String },
+    /// A workspace-retarget operation was attempted while the daemon is
+    /// running in read-server mode.
+    #[error(
+        "workspace retarget to '{requested_workspace}' refused: daemon is running in read-server mode"
+    )]
+    WorkspaceRetargetRefused { requested_workspace: String },
+}
+
+/// Typed availability errors for a read-server generation that is not yet
+/// (or is no longer) usable (plan unit F38, 142.003-T / 134-S).
+///
+/// Reserved for F11, F17, F20, F21, F44 and F45 to consume instead of
+/// minting a local ad-hoc availability error.
+#[derive(Debug, Error)]
+pub enum ActivationError {
+    /// The requested generation exists but has not yet been activated.
+    #[error("generation '{generation_id}' is not yet activated")]
+    GenerationNotYetActivated { generation_id: String },
+    /// The activation deadline elapsed before a generation became available.
+    #[error("activation deadline of {deadline_ms}ms exceeded")]
+    ActivationDeadlineExceeded { deadline_ms: u64 },
+    /// Activation failed for a transient reason and may succeed on retry.
+    #[error("transient activation failure: {reason}")]
+    TransientActivationFailure { reason: String },
+}
+
 /// Classifies why the shim's deferred startup preconditions (workspace
 /// admission, daemon readiness, IPC endpoint derivation) or the MCP stdio
 /// transport itself failed (124-F, stash 870B1AFF).
@@ -415,6 +458,10 @@ pub enum EngramError {
     Metrics(#[from] MetricsError),
     #[error(transparent)]
     Policy(#[from] PolicyError),
+    #[error(transparent)]
+    ReadServerRefusal(#[from] ReadServerRefusalError),
+    #[error(transparent)]
+    Activation(#[from] ActivationError),
     #[error(transparent)]
     ShimStartup(#[from] ShimStartupError),
 }
@@ -860,6 +907,48 @@ impl EngramError {
                     Some(json!({ "reason": reason })),
                 ),
             },
+            EngramError::ReadServerRefusal(inner) => match inner {
+                ReadServerRefusalError::WriteControlRefused { operation } => (
+                    READ_SERVER_WRITE_CONTROL_REFUSED,
+                    "ReadServerWriteControlRefused",
+                    inner.to_string(),
+                    Some(json!({ "operation": operation })),
+                ),
+                ReadServerRefusalError::DirectSyncRefused { operation } => (
+                    DIRECT_SYNC_REFUSED,
+                    "DirectSyncRefused",
+                    inner.to_string(),
+                    Some(json!({ "operation": operation })),
+                ),
+                ReadServerRefusalError::WorkspaceRetargetRefused {
+                    requested_workspace,
+                } => (
+                    WORKSPACE_RETARGET_REFUSED,
+                    "WorkspaceRetargetRefused",
+                    inner.to_string(),
+                    Some(json!({ "requested_workspace": requested_workspace })),
+                ),
+            },
+            EngramError::Activation(inner) => match inner {
+                ActivationError::GenerationNotYetActivated { generation_id } => (
+                    GENERATION_NOT_YET_ACTIVATED,
+                    "GenerationNotYetActivated",
+                    inner.to_string(),
+                    Some(json!({ "generation_id": generation_id })),
+                ),
+                ActivationError::ActivationDeadlineExceeded { deadline_ms } => (
+                    ACTIVATION_DEADLINE_EXCEEDED,
+                    "ActivationDeadlineExceeded",
+                    inner.to_string(),
+                    Some(json!({ "deadline_ms": deadline_ms })),
+                ),
+                ActivationError::TransientActivationFailure { reason } => (
+                    TRANSIENT_ACTIVATION_FAILURE,
+                    "TransientActivationFailure",
+                    inner.to_string(),
+                    Some(json!({ "reason": reason })),
+                ),
+            },
             EngramError::ShimStartup(inner) => (
                 inner.class.wire_code(),
                 "ShimStartupFailed",
@@ -891,6 +980,69 @@ mod tests {
         let payload = err.to_response();
         assert_eq!(payload.error.code, WORKSPACE_NOT_FOUND);
         assert_eq!(payload.error.name, "WorkspaceNotFound");
+    }
+
+    #[test]
+    fn maps_read_server_write_control_refused() {
+        let err = EngramError::from(ReadServerRefusalError::WriteControlRefused {
+            operation: "write_memory".into(),
+        });
+        let payload = err.to_response();
+        assert_eq!(payload.error.code, READ_SERVER_WRITE_CONTROL_REFUSED);
+        assert_eq!(payload.error.name, "ReadServerWriteControlRefused");
+        assert_eq!(
+            payload.error.details,
+            Some(json!({ "operation": "write_memory" }))
+        );
+    }
+
+    #[test]
+    fn maps_direct_sync_refused() {
+        let err = EngramError::from(ReadServerRefusalError::DirectSyncRefused {
+            operation: "sync_workspace".into(),
+        });
+        let payload = err.to_response();
+        assert_eq!(payload.error.code, DIRECT_SYNC_REFUSED);
+        assert_eq!(payload.error.name, "DirectSyncRefused");
+    }
+
+    #[test]
+    fn maps_workspace_retarget_refused() {
+        let err = EngramError::from(ReadServerRefusalError::WorkspaceRetargetRefused {
+            requested_workspace: "/other/workspace".into(),
+        });
+        let payload = err.to_response();
+        assert_eq!(payload.error.code, WORKSPACE_RETARGET_REFUSED);
+        assert_eq!(payload.error.name, "WorkspaceRetargetRefused");
+    }
+
+    #[test]
+    fn maps_generation_not_yet_activated() {
+        let err = EngramError::from(ActivationError::GenerationNotYetActivated {
+            generation_id: "gen-1".into(),
+        });
+        let payload = err.to_response();
+        assert_eq!(payload.error.code, GENERATION_NOT_YET_ACTIVATED);
+        assert_eq!(payload.error.name, "GenerationNotYetActivated");
+    }
+
+    #[test]
+    fn maps_activation_deadline_exceeded() {
+        let err =
+            EngramError::from(ActivationError::ActivationDeadlineExceeded { deadline_ms: 5000 });
+        let payload = err.to_response();
+        assert_eq!(payload.error.code, ACTIVATION_DEADLINE_EXCEEDED);
+        assert_eq!(payload.error.name, "ActivationDeadlineExceeded");
+    }
+
+    #[test]
+    fn maps_transient_activation_failure() {
+        let err = EngramError::from(ActivationError::TransientActivationFailure {
+            reason: "database unavailable".into(),
+        });
+        let payload = err.to_response();
+        assert_eq!(payload.error.code, TRANSIENT_ACTIVATION_FAILURE);
+        assert_eq!(payload.error.name, "TransientActivationFailure");
     }
 
     #[test]

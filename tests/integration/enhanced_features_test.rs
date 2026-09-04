@@ -3,6 +3,8 @@
 //! Most tests in this file called deleted tools (Phase 1 cleanup).
 //! Only config rehydration tests remain.
 
+use engram::config::StaleStrategy;
+use engram::models::config::DaemonMode;
 use std::sync::Arc;
 
 use serde_json::json;
@@ -32,7 +34,13 @@ max_size = 10
     )
     .expect("write initial config");
 
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let path = workspace.path().to_string_lossy().to_string();
 
     tools::dispatch(
@@ -63,7 +71,13 @@ max_size = 20
     .expect("write updated config");
 
     // Re-bind to pick up changes
-    let state2 = Arc::new(AppState::new(10));
+    let state2 = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     tools::dispatch(
         state2.clone(),
         "set_workspace",
@@ -84,7 +98,13 @@ max_size = 20
     // Part 2: Remove config.toml, re-bind, defaults should apply
     std::fs::remove_file(engram_dir.join("config.toml")).expect("remove config.toml");
 
-    let state3 = Arc::new(AppState::new(10));
+    let state3 = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     tools::dispatch(
         state3.clone(),
         "set_workspace",

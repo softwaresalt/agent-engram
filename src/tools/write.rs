@@ -1351,9 +1351,10 @@ mod tests {
         indexing_started_progress, running_scan_progress, spawn_scan_progress_updater,
         sync_workspace,
     };
+    use crate::config::StaleStrategy;
     use crate::db::connect_db;
     use crate::db::queries::CodeGraphQueries;
-    use crate::models::config::{CodeGraphConfig, WorkspaceConfig};
+    use crate::models::config::{CodeGraphConfig, DaemonMode, WorkspaceConfig};
     use crate::server::state::{
         AppState, CompletionOutcome, CoordinatorCell, DispatchSnapshot, DriverTaskGuard, OwnerKind,
         OwnerPermit, RequestOutcome, WorkMask, WorkspaceSnapshot,
@@ -1555,7 +1556,13 @@ mod tests {
 
     #[tokio::test]
     async fn finalize_indexing_request_keeps_progress_running_until_pending_sync_drains() {
-        let state = Arc::new(AppState::new(1));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            1,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         state
             .set_scan_progress(Some(indexing_started_progress(None)))
             .await;
@@ -1607,7 +1614,13 @@ mod tests {
                     WriteExit::CallerAbort,
                 ] {
                     let temp = tempfile::tempdir().expect("tempdir");
-                    let state = Arc::new(AppState::new(2));
+                    let state = Arc::new(AppState::with_mode(
+                        DaemonMode::Managed,
+                        2,
+                        StaleStrategy::Warn,
+                        20,
+                        60,
+                    ));
                     publish(
                         &state,
                         snapshot(
@@ -1719,7 +1732,13 @@ mod tests {
 
     #[tokio::test]
     async fn delayed_progress_update_is_rejected_after_owner_terminal() {
-        let state = Arc::new(AppState::new(1));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            1,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         let permit = acquired(request(
             &state,
             WorkMask::from_bits(0b001),
@@ -1760,7 +1779,13 @@ mod tests {
 
     #[tokio::test]
     async fn parent_progress_updates_are_rejected_after_owner_terminal() {
-        let state = Arc::new(AppState::new(1));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            1,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         let permit = acquired(request(
             &state,
             WorkMask::from_bits(0b001),
@@ -1799,7 +1824,13 @@ mod tests {
         let invalid_data_dir = temp.path().join("not-a-directory");
         std::fs::write(&invalid_data_dir, b"file blocks database directory")
             .expect("create invalid data path");
-        let state = Arc::new(AppState::new(1));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            1,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         publish_with_disabled_metrics(
             &state,
             snapshot(
@@ -1853,7 +1884,13 @@ mod tests {
         .expect("write git HEAD");
         std::fs::write(workspace.join("app.py"), "def run():\n    return 1\n")
             .expect("write source");
-        let state = Arc::new(AppState::new(1));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            1,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         let mut stale_snapshot = snapshot(
             "pending-index-branch",
             "uuid-pending-index-branch",
@@ -1924,7 +1961,13 @@ mod tests {
             "ref: refs/heads/main\n",
         )
         .expect("write git HEAD");
-        let state = Arc::new(AppState::new(1));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            1,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         let mut stale_snapshot = snapshot(
             "pending-sync-branch",
             "uuid-pending-sync-branch",
@@ -2000,7 +2043,13 @@ mod tests {
         .expect("write git HEAD");
         std::fs::write(workspace.join("app.py"), "def run():\n    return 1\n")
             .expect("write source");
-        let state = Arc::new(AppState::new(1));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            1,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         let mut stale_snapshot = snapshot(
             "timeout-index-branch",
             "uuid-timeout-index-branch",
@@ -2132,7 +2181,13 @@ mod tests {
         .expect("write git HEAD");
         std::fs::write(workspace.join("app.py"), "def run():\n    return 1\n")
             .expect("write source");
-        let state = Arc::new(AppState::new(1));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            1,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         let mut stale_snapshot = snapshot(
             "cancel-sync-branch",
             "uuid-cancel-sync-branch",
@@ -2249,7 +2304,13 @@ mod tests {
         .expect("write git HEAD");
         std::fs::write(workspace.join("app.py"), "def run():\n    return 1\n")
             .expect("write source");
-        let state = Arc::new(AppState::new(1));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            1,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         let mut stale_snapshot = snapshot(
             "closed-metrics-branch",
             "uuid-closed-metrics-branch",
@@ -2406,7 +2467,13 @@ mod tests {
                 .expect("reset extraction marker");
         }
 
-        let state = Arc::new(AppState::new(1));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            1,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         publish_with_disabled_metrics(
             &state,
             snapshot(
@@ -2451,7 +2518,13 @@ mod tests {
             "ref: refs/heads/main\n",
         )
         .expect("write git HEAD");
-        let state = Arc::new(AppState::new(1));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            1,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         let mut stale_snapshot = snapshot(
             "branch-refresh",
             "uuid-branch-refresh",
@@ -2531,7 +2604,13 @@ mod tests {
         .expect("write git HEAD");
         std::fs::write(workspace.join("app.py"), "def run():\n    return 1\n")
             .expect("write source");
-        let state = Arc::new(AppState::new(1));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            1,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         let mut stale_snapshot = snapshot(
             "index-branch-refresh",
             "uuid-index-branch-refresh",
@@ -2621,7 +2700,13 @@ mod tests {
         std::fs::create_dir_all(&workspace).expect("create workspace");
         std::fs::write(workspace.join("lib.rs"), "pub fn unchanged() {}\n").expect("write source");
 
-        let state = Arc::new(AppState::new(1));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            1,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         publish_with_disabled_metrics(
             &state,
             snapshot(
@@ -2678,7 +2763,13 @@ mod tests {
                 .expect("reset code-graph marker");
         }
 
-        let state = Arc::new(AppState::new(1));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            1,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         publish_with_disabled_metrics(
             &state,
             snapshot(
@@ -2730,7 +2821,13 @@ mod tests {
         std::fs::create_dir_all(&workspace).expect("create workspace");
         std::fs::write(workspace.join("invalid.py"), [0xff]).expect("write invalid UTF-8 source");
 
-        let state = Arc::new(AppState::new(1));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            1,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         publish_with_disabled_metrics(
             &state,
             snapshot(
@@ -2769,7 +2866,13 @@ mod tests {
         std::fs::create_dir_all(&workspace).expect("create workspace");
         std::fs::write(workspace.join("invalid.py"), [0xff]).expect("write invalid UTF-8 source");
 
-        let state = Arc::new(AppState::new(1));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            1,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         publish_with_disabled_metrics(
             &state,
             snapshot(
@@ -2812,7 +2915,13 @@ mod tests {
         )
         .expect("write git HEAD");
 
-        let state = Arc::new(AppState::new(1));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            1,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         let mut stale_snapshot = snapshot(
             "transferred-branch",
             "uuid-transferred-branch",
@@ -2889,7 +2998,13 @@ mod tests {
         std::fs::write(&invalid_data_dir, b"blocks database directory")
             .expect("write invalid data path");
 
-        let state = Arc::new(AppState::new(1));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            1,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         let mut stale_snapshot = snapshot(
             "failed-branch",
             "uuid-failed-branch",

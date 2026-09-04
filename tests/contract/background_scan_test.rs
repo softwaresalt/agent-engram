@@ -8,6 +8,8 @@
 //! - `get_workspace_status` includes `scan_status` field
 //! - `scan_status` reflects an active or completed scan after `set_workspace`
 
+use engram::config::StaleStrategy;
+use engram::models::config::DaemonMode;
 use std::fs;
 use std::sync::Arc;
 use std::time::Instant;
@@ -27,7 +29,13 @@ use engram::tools;
 async fn contract_set_workspace_returns_pending_scan_field() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let path = workspace.path().to_string_lossy().to_string();
 
     let result = tools::dispatch(
@@ -55,7 +63,13 @@ async fn contract_set_workspace_pending_scan_true_when_offline_changes_exist() {
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
     // Write a file that constitutes an offline change
     fs::write(workspace.path().join("main.rs"), b"fn main() {}").expect("write file");
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let path = workspace.path().to_string_lossy().to_string();
 
     let result = tools::dispatch(
@@ -94,7 +108,13 @@ async fn contract_set_workspace_returns_within_bind_sla() {
 
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let path = workspace.path().to_string_lossy().to_string();
 
     let start = Instant::now();
@@ -124,7 +144,13 @@ async fn contract_set_workspace_returns_within_bind_sla() {
 async fn contract_get_workspace_status_includes_scan_status_field() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let path = workspace.path().to_string_lossy().to_string();
 
     tools::dispatch(
@@ -159,7 +185,13 @@ async fn contract_get_workspace_status_scan_status_reflects_queued_scan() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
     fs::write(workspace.path().join("main.rs"), b"fn main() {}").expect("write file");
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let path = workspace.path().to_string_lossy().to_string();
 
     tools::dispatch(

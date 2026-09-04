@@ -6,6 +6,8 @@
 //!
 //! Scenarios: S061–S064 from `SCENARIOS.md`.
 
+use engram::config::StaleStrategy;
+use engram::models::config::DaemonMode;
 use std::sync::Arc;
 
 use engram::server::state::AppState;
@@ -16,7 +18,13 @@ use engram::server::state::AppState;
 /// The total count must equal exactly 300 with no torn writes or lost updates.
 #[tokio::test]
 async fn t037_concurrent_tool_calls_without_corruption() {
-    let state = Arc::new(AppState::new(5));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        5,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let mut handles = Vec::new();
 
     for i in 0u64..3 {
@@ -49,7 +57,13 @@ async fn t037_concurrent_tool_calls_without_corruption() {
 /// data structure.
 #[tokio::test]
 async fn t038_concurrent_reads_during_write_consistency() {
-    let state = Arc::new(AppState::new(5));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        5,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
 
     // Writer: push 500 strictly-ascending latency values.
     let writer = {
@@ -89,7 +103,13 @@ async fn t038_concurrent_reads_during_write_consistency() {
 /// corrupt state for the others.
 #[tokio::test]
 async fn t039_watcher_event_tracking_concurrent() {
-    let state = Arc::new(AppState::new(1));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        1,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
 
     let handles: Vec<_> = (0..10)
         .map(|_| {
@@ -120,7 +140,13 @@ async fn t039_watcher_event_tracking_concurrent() {
 /// remains exact even if a task is cancelled after writing its samples.
 #[tokio::test]
 async fn t040_state_consistent_after_increments() {
-    let state = Arc::new(AppState::new(5));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        5,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
 
     let handles: Vec<_> = (0..20)
         .map(|_| {

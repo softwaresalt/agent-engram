@@ -5,6 +5,8 @@
 //! - Tool responds with the expected schema (`retry_count`, `last_retry_at`).
 //! - Initial `retry_count` value is a non-negative integer (zero or greater).
 
+use engram::config::StaleStrategy;
+use engram::models::config::DaemonMode;
 use std::sync::Arc;
 
 use engram::server::state::AppState;
@@ -25,7 +27,13 @@ fn contract_get_mutable_script_retry_metrics_in_catalog() {
 /// AC: Tool response includes a `retry_count` field with a u64-compatible value.
 #[tokio::test]
 async fn contract_get_mutable_script_retry_metrics_has_retry_count() {
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
 
     let result = tools::dispatch(state, "get_mutable_script_retry_metrics", None)
         .await
@@ -45,7 +53,13 @@ async fn contract_get_mutable_script_retry_metrics_has_retry_count() {
 /// AC: Tool response `last_retry_at` field is null or a string (RFC-3339 timestamp).
 #[tokio::test]
 async fn contract_get_mutable_script_retry_metrics_last_retry_at_schema() {
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
 
     let result = tools::dispatch(state, "get_mutable_script_retry_metrics", None)
         .await

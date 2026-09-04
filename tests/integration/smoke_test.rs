@@ -16,6 +16,8 @@
 //! This validates the daemon is not just alive but correctly serving the
 //! full MCP tool surface — the "Reliability Gate" from the backlog.
 
+use engram::config::StaleStrategy;
+use engram::models::config::DaemonMode;
 use std::time::Duration;
 
 use engram::daemon::protocol::IpcRequest;
@@ -209,7 +211,13 @@ use std::{fs, sync::Arc};
 /// is bound; it must propagate a `WorkspaceError::NotSet` through the tool.
 #[tokio::test]
 async fn s073_status_before_workspace_set_returns_error() {
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let result = tools::dispatch(state, "get_workspace_status", None).await;
     assert!(
         result.is_err(),
@@ -236,7 +244,13 @@ async fn s071_full_workspace_status_response() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
 
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let path = workspace.path().to_string_lossy().to_string();
 
     tools::dispatch(
@@ -344,7 +358,13 @@ pub fn use_widget() -> Widget {
         index.functions_indexed
     );
 
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     helpers::bind_isolated_workspace(&state, &canonical, branch, WorkspaceConfig::default()).await;
 
     let result = tools::dispatch(state.clone(), "get_workspace_status", None)
@@ -385,7 +405,13 @@ async fn s078_all_subsystems_active_together() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
 
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let path = workspace.path().to_string_lossy().to_string();
 
     tools::dispatch(

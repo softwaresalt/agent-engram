@@ -1,8 +1,17 @@
-//! Daemon IPC server: newline-delimited JSON-RPC over a local socket.
+//! Daemon IPC composition root: newline-delimited JSON-RPC over a local socket.
 //!
-//! Listens on the workspace-scoped IPC endpoint (Unix domain socket on Linux/macOS,
-//! Windows named pipe on Windows), reads exactly one JSON-RPC request per
-//! connection, dispatches to [`crate::tools::dispatch`], and writes the response.
+//! This module owns framing and the accept loop only. It listens on the
+//! workspace-scoped IPC endpoint (Unix domain socket on Linux/macOS, Windows
+//! named pipe on Windows), reads exactly one request line per connection, and
+//! writes the response frame. Every decision beyond framing is delegated to a
+//! named seam:
+//!
+//! | Seam | Module |
+//! |------|--------|
+//! | Startup gate and readiness | [`crate::daemon::startup_activation`] |
+//! | Request admission and entry | [`crate::daemon::request_entry`] |
+//! | Domain-error to wire conversion | [`crate::daemon::error_transport`] |
+//! | Start and shutdown lifecycle | [`crate::daemon::lifecycle_policy`] |
 //!
 //! # Endpoint naming
 //!
@@ -13,34 +22,27 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 
-use chrono::Utc;
 use interprocess::local_socket::{
     ListenerOptions,
     tokio::{Listener, Stream, prelude::*},
 };
-use serde_json::{Value, json};
+use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
 
-use crate::daemon::protocol::{HealthCheckResult, IpcError as WireError, IpcRequest, IpcResponse};
+use crate::config::StaleStrategy;
+use crate::daemon::protocol::IpcResponse;
 use crate::daemon::ttl::TtlTimer;
 use crate::daemon::watcher::{WatcherConfig, start_watcher};
+use crate::daemon::{lifecycle_policy, request_entry, startup_activation};
 use crate::db::workspace::daemon_key_for_workspace;
-use crate::errors::{EngramError, IpcError as DomainIpcError};
+use crate::errors::{ConfigError, EngramError, IpcError as DomainIpcError};
 use crate::models::WatcherEvent;
-use crate::models::config::WorkspaceConfig;
-use crate::models::health::ScanProgress;
-use crate::server::state::{
-    AppState, CompletionOutcome, CoordinatorCell, DispatchSnapshot, DriverTaskGuard, OwnerKind,
-    OwnerPermit, OwnerProgressScope, SharedState, WorkspaceSnapshot,
-};
-use crate::shim::version::{ENGRAM_BUILD_HASH, ENGRAM_PROTOCOL_VERSION};
-use crate::tools;
+use crate::models::config::{DaemonMode, PluginConfig};
+use crate::server::state::{AppState, SharedState};
 
 // ── Endpoint naming ──────────────────────────────────────────────────────────
 
@@ -262,7 +264,7 @@ async fn handle_connection(
             IpcResponse::parse_error(format!("request exceeds {MAX_REQUEST_BYTES} byte limit")),
             false,
         ),
-        Ok(_) => process_request(&line, &state).await,
+        Ok(_) => request_entry::process_request(&line, &state).await,
         Err(e) => {
             warn!(error = %e, "failed to read IPC request line");
             debug!(connection_id = %connection_id, "ipc_connection_closed");
@@ -340,220 +342,7 @@ fn emit_response_frame_result(connection_id: &str, response_id: &Value, outcome:
     }
 }
 
-/// Deserialize and dispatch a single raw request line, returning an [`IpcResponse`].
-async fn process_request(line: &str, state: &SharedState) -> (IpcResponse, bool) {
-    let request = match IpcRequest::from_line(line.trim()) {
-        Ok(r) => r,
-        Err(err_response) => return (err_response, false),
-    };
-
-    if let Err(err_response) = request.validate() {
-        return (err_response, false);
-    }
-
-    // Safe to unwrap: validate() ensures id is Some.
-    let id = request.id.clone().unwrap_or(Value::Null);
-
-    match request.method.as_str() {
-        "_health" => {
-            // Return "starting" while workspace hydration is in progress so
-            // the shim keeps polling rather than treating the daemon as healthy
-            // before it can serve real tool calls.
-            let snapshot = state.snapshot_workspace().await;
-            let status = if snapshot.is_some() && state.is_hydration_ready() {
-                "ready"
-            } else {
-                "starting"
-            };
-            (
-                IpcResponse::success(
-                    id,
-                    json!(HealthCheckResult {
-                        status: status.to_owned(),
-                        uptime_seconds: state.uptime_seconds(),
-                        workspace: snapshot.map(|s| s.path),
-                        active_connections: state.active_connections(),
-                        protocol_version: ENGRAM_PROTOCOL_VERSION,
-                        build_hash: ENGRAM_BUILD_HASH.to_owned(),
-                    }),
-                ),
-                false,
-            )
-        }
-        // T052: `_shutdown` is signalled by `handle_connection` only after
-        // this response has been written and flushed (S022, S037).
-        "_shutdown" => {
-            info!("daemon received _shutdown IPC request — initiating graceful shutdown");
-            (
-                IpcResponse::success(
-                    id,
-                    json!({ "status": "shutting_down", "flush_started": true }),
-                ),
-                true,
-            )
-        }
-        method => (
-            match tools::dispatch(Arc::clone(state), method, request.params).await {
-                Ok(result) => IpcResponse::success(id, result),
-                Err(e) => {
-                    let resp = e.to_response();
-                    IpcResponse::error(
-                        id,
-                        WireError {
-                            code: -32_603,
-                            message: resp.error.message,
-                            data: Some(json!({ "engram_code": resp.error.code })),
-                        },
-                    )
-                }
-            },
-            false,
-        ),
-    }
-}
-
 // ── Daemon entry point ───────────────────────────────────────────────────────
-
-/// Atomically snapshot a daemon driver's immutable payload and admission guard.
-///
-/// This is the single acquisition seam shared by the auto-sync and file-watcher
-/// closures in [`run_with_shutdown`] and [`run_with_shutdown_v2`] (092.003-T).
-/// Routing all four sites through one helper keeps the atomicity guarantee
-/// testable: [`AppState::guarded_workspace_and_config`] holds both read locks
-/// together, so a concurrent [`AppState::set_workspace_and_config`] cannot yield
-/// a torn `(workspace_i, config_j)` pair. Reverting this body to two separate
-/// reads would reopen that window — the `daemon_sync_context_never_tears_pair`
-/// unit test guards against exactly that regression.
-async fn guarded_daemon_sync_context(
-    state: &AppState,
-) -> Option<(
-    crate::server::state::AdmissionGuard,
-    WorkspaceSnapshot,
-    WorkspaceConfig,
-)> {
-    state.guarded_workspace_and_config().await
-}
-
-fn same_workspace_instance(left: &WorkspaceSnapshot, right: &WorkspaceSnapshot) -> bool {
-    left.workspace_uuid == right.workspace_uuid && left.path == right.path
-}
-
-impl AppState {
-    async fn prepare_daemon_mutation(
-        self: &Arc<Self>,
-        permit: OwnerPermit,
-        context: DispatchSnapshot,
-        kind: OwnerKind,
-    ) -> Result<Option<(OwnerPermit, DispatchSnapshot)>, EngramError> {
-        crate::tools::write::prepare_branch_owner(self, permit, context, kind).await
-    }
-}
-
-async fn flush_daemon_snapshot(snapshot: &WorkspaceSnapshot) -> Result<(), EngramError> {
-    let _guard = crate::services::dehydration::acquire_flush_lock().await;
-    let db = crate::db::connect_db(&snapshot.data_dir, &snapshot.branch).await?;
-    let queries = crate::db::queries::CodeGraphQueries::new(db);
-    crate::services::dehydration::dehydrate_code_graph(
-        &queries,
-        &snapshot.data_dir,
-        &snapshot.branch,
-    )
-    .await?;
-    if let Err(error) = crate::services::metrics::compute_and_write_summary(
-        std::path::Path::new(&snapshot.path),
-        &snapshot.branch,
-    )
-    .await
-    {
-        if !matches!(
-            error,
-            EngramError::Metrics(crate::errors::MetricsError::NotFound { .. })
-        ) {
-            warn!(
-                %error,
-                branch = %snapshot.branch,
-                "metrics summary write failed during flush"
-            );
-        }
-    }
-    Ok(())
-}
-
-fn spawn_daemon_driver<F>(future: F) -> DriverTaskGuard
-where
-    F: std::future::Future<Output = ()> + Send + 'static,
-{
-    DriverTaskGuard {
-        task: Some(tokio::spawn(future)),
-    }
-}
-
-async fn join_retained_hydration(state: &AppState) -> Result<(), EngramError> {
-    if let Some(driver) = state.take_hydration_driver() {
-        driver.join().await.map_err(|error| {
-            EngramError::System(crate::errors::SystemError::DatabaseError {
-                reason: format!("retained hydration failed before safe terminal: {error}"),
-            })
-        })?;
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-static SHUTDOWN_FLUSH_CALLS: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-
-async fn flush_all_workspaces_for_shutdown(state: &SharedState) -> Result<(), EngramError> {
-    #[cfg(test)]
-    SHUTDOWN_FLUSH_CALLS.fetch_add(1, Ordering::SeqCst);
-    crate::services::dehydration::flush_all_workspaces(state).await
-}
-
-const SHUTDOWN_ERROR_EVIDENCE_BYTES: usize = 512;
-
-fn bounded_shutdown_error_evidence(error: &EngramError) -> String {
-    let mut evidence = error.to_string();
-    if evidence.len() <= SHUTDOWN_ERROR_EVIDENCE_BYTES {
-        return evidence;
-    }
-
-    let mut end = SHUTDOWN_ERROR_EVIDENCE_BYTES - 3;
-    while !evidence.is_char_boundary(end) {
-        end -= 1;
-    }
-    evidence.truncate(end);
-    evidence.push_str("...");
-    evidence
-}
-
-fn combine_shutdown_results(
-    metrics_result: Result<(), EngramError>,
-    flush_result: Result<(), EngramError>,
-) -> Result<(), EngramError> {
-    match (metrics_result, flush_result) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Err(metrics_error), Ok(())) => Err(metrics_error),
-        (Ok(()), Err(flush_error)) => Err(flush_error),
-        (Err(metrics_error), Err(flush_error)) => {
-            let durable_evidence = bounded_shutdown_error_evidence(&flush_error);
-            let metrics_evidence = bounded_shutdown_error_evidence(&metrics_error);
-            Err(EngramError::System(
-                crate::errors::SystemError::FlushFailed {
-                    path: format!(
-                        "shutdown cleanup: durable workspace flush failed: {durable_evidence}; \
-                         metrics teardown also failed: {metrics_evidence}"
-                    ),
-                },
-            ))
-        }
-    }
-}
-
-async fn shutdown_services(state: &SharedState) -> Result<(), EngramError> {
-    let metrics_result = crate::services::metrics::shutdown().await;
-    let flush_result = flush_all_workspaces_for_shutdown(state).await;
-    combine_shutdown_results(metrics_result, flush_result)
-}
 
 /// Run the daemon accept loop with graceful shutdown support.
 ///
@@ -571,12 +360,18 @@ async fn shutdown_services(state: &SharedState) -> Result<(), EngramError> {
 /// batches events and triggers [`crate::services::code_graph::sync_workspace`]
 /// after a 2-second quiet window.
 ///
+/// `mode` is the already-resolved [`DaemonMode`] for this daemon process. It is
+/// supplied by the caller — which owns config resolution via
+/// [`DaemonMode::resolve`] — and is handed straight to
+/// [`AppState::with_mode`]. There is no default applied here.
+///
 /// # Errors
 ///
 /// Returns [`EngramError`] if path validation, lock acquisition, or listener
 /// binding fails.
 pub async fn run_with_shutdown(
     workspace: &str,
+    mode: DaemonMode,
     ttl: Arc<TtlTimer>,
     shutdown_tx: Arc<watch::Sender<bool>>,
     shutdown_rx: watch::Receiver<bool>,
@@ -601,7 +396,7 @@ pub async fn run_with_shutdown(
     // Lock is already acquired by `daemon::mod::run()` which holds it for the
     // daemon's entire lifetime. No re-acquisition needed here.
 
-    let state: SharedState = Arc::new(AppState::new(1));
+    let state: SharedState = Arc::new(AppState::with_mode(mode, 1, StaleStrategy::Warn, 20, 60));
 
     // ── Bind the IPC endpoint BEFORE hydrating the workspace ─────────────────
     //
@@ -614,6 +409,7 @@ pub async fn run_with_shutdown(
     let endpoint = ipc_endpoint(&workspace_path)?;
     let listener = bind_listener(&endpoint)?;
     info!(endpoint = %endpoint, "IPC listener bound");
+    lifecycle_policy::on_start(&state);
 
     // T077 / S097: Set Unix socket permissions to 0o600 (owner read/write only).
     // Windows named pipes inherit the creating user's security context via OS ACL —
@@ -647,9 +443,9 @@ pub async fn run_with_shutdown(
     let startup_workspace = workspace.to_owned();
     let startup_ttl = Arc::clone(&ttl);
     let startup_tx = Arc::clone(&shutdown_tx);
-    let startup_driver = spawn_daemon_driver(async move {
+    let startup_driver = lifecycle_policy::spawn_daemon_driver(async move {
         tokio::select! {
-            () = run_startup_driver(
+            () = startup_activation::run_startup_driver(
                 startup_state,
                 startup_workspace,
                 startup_ttl,
@@ -671,9 +467,9 @@ pub async fn run_with_shutdown(
     let mut watcher_shutdown = shutdown_rx.clone();
     let watcher_state = Arc::clone(&state);
     let watcher_ttl = Arc::clone(&ttl);
-    let watcher_driver = spawn_daemon_driver(async move {
+    let watcher_driver = lifecycle_policy::spawn_daemon_driver(async move {
         tokio::select! {
-            () = run_watcher_driver(watcher_state, watcher_ttl, event_rx, false) => {}
+            () = lifecycle_policy::run_watcher_driver(watcher_state, watcher_ttl, event_rx, false) => {}
             () = async {
                 if *watcher_shutdown.borrow() {
                     return;
@@ -688,14 +484,15 @@ pub async fn run_with_shutdown(
     });
 
     accept_loop(listener, Arc::clone(&state), ttl, shutdown_tx, shutdown_rx).await;
+    lifecycle_policy::on_shutdown(&state);
     if let Err(error) = startup_driver.join().await {
         warn!(%error, "startup driver join failed");
     }
     if let Err(error) = watcher_driver.join().await {
         warn!(%error, "legacy watcher driver join failed");
     }
-    join_retained_hydration(&state).await?;
-    shutdown_services(&state).await
+    lifecycle_policy::join_retained_hydration(&state).await?;
+    lifecycle_policy::shutdown_services(&state).await
 }
 
 /// Run the daemon accept loop for the given workspace path (legacy API).
@@ -703,18 +500,98 @@ pub async fn run_with_shutdown(
 /// Delegates to [`run_with_shutdown`] with a no-op TTL and a one-time
 /// Ctrl-C shutdown. New code should call [`run_with_shutdown`] directly.
 ///
+/// This entry point takes no `mode` argument because it has no caller-supplied
+/// mode context. Rather than defaulting silently, it resolves the mode from the
+/// workspace's own `.engram/config.toml` through [`PluginConfig::load`] and
+/// [`DaemonMode::resolve`] — the single shared mode resolver — exactly as
+/// [`crate::daemon::run`] does. A present-but-unrecognized `mode` setting is a
+/// hard error here, never a fallback to managed.
+///
 /// # Errors
 ///
-/// Returns [`EngramError`] if path validation, lock acquisition, or listener
-/// binding fails.
+/// Returns [`EngramError`] if path validation, mode resolution, lock
+/// acquisition, or listener binding fails.
 pub async fn run(workspace: &str) -> Result<(), EngramError> {
+    let workspace_path = std::fs::canonicalize(workspace).map_err(|e| {
+        EngramError::Ipc(DomainIpcError::ConnectionFailed {
+            address: workspace.to_owned(),
+            reason: format!("cannot canonicalize workspace path: {e}"),
+        })
+    })?;
+    let mode = resolve_daemon_mode(&workspace_path)?;
+
     let ttl = TtlTimer::new(std::time::Duration::ZERO); // no auto-shutdown
     let (tx, rx) = watch::channel(false);
     // Legacy callers have no file watcher; pass a channel that is immediately
     // closed so the auto-sync loop in run_with_shutdown exits cleanly.
     let (event_tx, event_rx) = mpsc::unbounded_channel::<WatcherEvent>();
     drop(event_tx);
-    run_with_shutdown(workspace, ttl, Arc::new(tx), rx, event_rx).await
+    run_with_shutdown(workspace, mode, ttl, Arc::new(tx), rx, event_rx).await
+}
+
+/// Resolve the daemon mode for `workspace_path` from its persisted config.
+///
+/// Loads `.engram/config.toml` via [`PluginConfig::load`] and hands the raw
+/// `mode` setting to [`DaemonMode::resolve`]. An absent setting resolves to
+/// [`DaemonMode::Managed`]; a present-but-unrecognized value is a hard
+/// [`ConfigError::InvalidValue`].
+///
+/// [`PluginConfig::load`] is deliberately lenient for every *other* config
+/// field: a TOML parse failure anywhere in the file falls back to
+/// [`PluginConfig::default`] so unrelated daemon settings degrade gracefully.
+/// Mode selection is a safety boundary rather than a convenience setting, so
+/// that same fallback must not silently discard an explicitly configured
+/// `mode = "read_server"` merely because some unrelated field in the same
+/// file is malformed, or because the file could not be read at all. This
+/// function therefore independently re-reads and re-parses the raw file
+/// first and fails closed on any parse error *or* any read error other than
+/// "the file does not exist" (a missing file is the legitimate case that
+/// falls through to [`DaemonMode::resolve`]'s own absent-setting default),
+/// before ever consulting the (possibly-defaulted) [`PluginConfig::load`]
+/// result.
+///
+/// # Errors
+///
+/// Returns [`EngramError::Config`] when `config.toml` exists but fails to be
+/// read or fails to parse, or when the configured `mode` value is present
+/// but unrecognized.
+pub fn resolve_daemon_mode(workspace_path: &Path) -> Result<DaemonMode, EngramError> {
+    let config_path = workspace_path.join(".engram").join("config.toml");
+    match std::fs::read_to_string(&config_path) {
+        Ok(content) => {
+            if let Err(parse_error) = toml::from_str::<PluginConfig>(&content) {
+                return Err(EngramError::Config(ConfigError::InvalidValue {
+                    key: "config.toml".to_owned(),
+                    reason: format!(
+                        "{path} failed to parse: {parse_error}",
+                        path = config_path.display()
+                    ),
+                }));
+            }
+        }
+        Err(read_error) if read_error.kind() == std::io::ErrorKind::NotFound => {
+            // No config file at all: fall through to `DaemonMode::resolve`'s
+            // own absent-setting default (`Managed`), the same as
+            // `PluginConfig::load` would apply below.
+        }
+        Err(read_error) => {
+            return Err(EngramError::Config(ConfigError::InvalidValue {
+                key: "config.toml".to_owned(),
+                reason: format!(
+                    "{path} could not be read: {read_error}",
+                    path = config_path.display()
+                ),
+            }));
+        }
+    }
+
+    let plugin_config = PluginConfig::load(workspace_path);
+    DaemonMode::resolve(plugin_config.mode.as_deref()).map_err(|e| {
+        EngramError::Config(ConfigError::InvalidValue {
+            key: "mode".to_owned(),
+            reason: e.to_string(),
+        })
+    })
 }
 
 // ── Accept loop ──────────────────────────────────────────────────────────────
@@ -802,12 +679,18 @@ async fn accept_loop(
 /// (Windows) or `inotify_add_watch` (Linux) registration from delaying the
 /// moment the shim can send its first health probe.
 ///
+/// `mode` is the already-resolved [`DaemonMode`] for this daemon process,
+/// supplied by [`crate::daemon::run`] from `.engram/config.toml` via
+/// [`DaemonMode::resolve`]. It is handed straight to [`AppState::with_mode`];
+/// no default is applied here.
+///
 /// # Errors
 ///
 /// Returns [`EngramError`] if path validation, run-directory creation, or
 /// listener binding fails.
 pub async fn run_with_shutdown_v2(
     workspace: &str,
+    mode: DaemonMode,
     ttl: Arc<TtlTimer>,
     shutdown_tx: Arc<watch::Sender<bool>>,
     shutdown_rx: watch::Receiver<bool>,
@@ -834,7 +717,7 @@ pub async fn run_with_shutdown_v2(
     // Lock is already acquired by `daemon::mod::run()` which holds it for the
     // daemon's entire lifetime. No re-acquisition needed here.
 
-    let state: SharedState = Arc::new(AppState::new(1));
+    let state: SharedState = Arc::new(AppState::with_mode(mode, 1, StaleStrategy::Warn, 20, 60));
 
     // ── Bind the IPC endpoint BEFORE starting the file watcher ───────────────
     //
@@ -848,6 +731,7 @@ pub async fn run_with_shutdown_v2(
     let endpoint = ipc_endpoint(&workspace_path)?;
     let listener = bind_listener(&endpoint)?;
     info!(endpoint = %endpoint, "IPC listener bound");
+    lifecycle_policy::on_start(&state);
 
     // T077 / S097: Set Unix socket permissions to 0o600 (owner read/write only).
     #[cfg(unix)]
@@ -876,9 +760,9 @@ pub async fn run_with_shutdown_v2(
     let startup_workspace = workspace.to_owned();
     let startup_ttl = Arc::clone(&ttl);
     let startup_tx = Arc::clone(&shutdown_tx);
-    let startup_driver = spawn_daemon_driver(async move {
+    let startup_driver = lifecycle_policy::spawn_daemon_driver(async move {
         tokio::select! {
-            () = run_startup_driver(
+            () = startup_activation::run_startup_driver(
                 startup_state,
                 startup_workspace,
                 startup_ttl,
@@ -924,7 +808,7 @@ pub async fn run_with_shutdown_v2(
     let mut watcher_shutdown = shutdown_rx.clone();
     let watcher_state = Arc::clone(&state);
     let watcher_ttl = Arc::clone(&ttl);
-    let watcher_driver = spawn_daemon_driver(async move {
+    let watcher_driver = lifecycle_policy::spawn_daemon_driver(async move {
         let watcher_init = match watcher_init_handle.await {
             Ok(watcher_init) => watcher_init,
             Err(join_error) => {
@@ -937,7 +821,7 @@ pub async fn run_with_shutdown_v2(
         };
         if let Some((_watcher_handle, event_rx)) = watcher_init {
             tokio::select! {
-                () = run_watcher_driver(watcher_state, watcher_ttl, event_rx, true) => {}
+                () = lifecycle_policy::run_watcher_driver(watcher_state, watcher_ttl, event_rx, true) => {}
                 () = async {
                     if *watcher_shutdown.borrow() {
                         return;
@@ -953,582 +837,26 @@ pub async fn run_with_shutdown_v2(
     });
 
     accept_loop(listener, Arc::clone(&state), ttl, shutdown_tx, shutdown_rx).await;
+    lifecycle_policy::on_shutdown(&state);
     if let Err(error) = startup_driver.join().await {
         warn!(%error, "startup driver join failed");
     }
     if let Err(error) = watcher_driver.join().await {
         warn!(%error, "v2 watcher driver join failed");
     }
-    join_retained_hydration(&state).await?;
-    shutdown_services(&state).await
-}
-
-async fn run_startup_driver(
-    state: SharedState,
-    workspace: String,
-    ttl: Arc<TtlTimer>,
-    shutdown_tx: Arc<watch::Sender<bool>>,
-) {
-    #[cfg(debug_assertions)]
-    if let Some(delay_ms) = std::env::var("ENGRAM_TEST_STARTUP_DELAY_MS")
-        .ok()
-        .and_then(|raw| raw.parse::<u64>().ok())
-    {
-        debug!(delay_ms, "applying test-only daemon startup delay");
-        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-    }
-
-    if let Err(error) = crate::tools::lifecycle::set_workspace(Arc::clone(&state), workspace).await
-    {
-        error!(%error, "workspace hydration failed — initiating shutdown");
-        let _ = shutdown_tx.send(true);
-        return;
-    }
-
-    info!("workspace binding published; background database hydration started");
-    ttl.reset();
-    let ttl_task = Arc::clone(&ttl);
-    tokio::spawn(async move {
-        ttl_task.run_until_expired(shutdown_tx).await;
-    });
-
-    let Some((admission, snapshot, workspace_config)) = guarded_daemon_sync_context(&state).await
-    else {
-        return;
-    };
-    let permit = match admission.acquire_background(OwnerKind::Startup).await {
-        Ok(Some(permit)) => permit,
-        Ok(None) => return,
-        Err(error) => {
-            error!(%error, "startup coordinator admission failed");
-            return;
-        }
-    };
-    let context = DispatchSnapshot {
-        workspace: snapshot,
-        config: workspace_config,
-    };
-    let Some((mut permit, context)) = (match state
-        .prepare_daemon_mutation(permit, context, OwnerKind::Startup)
-        .await
-    {
-        Ok(prepared) => prepared,
-        Err(error) => {
-            error!(%error, "startup branch preparation failed");
-            return;
-        }
-    }) else {
-        return;
-    };
-    let snapshot = context.workspace;
-    let workspace_config = context.config;
-    let Some(progress_scope) = permit.progress_scope() else {
-        error!("startup permit lost ownership before progress relay creation");
-        return;
-    };
-    let (mut backfill_progress, progress_tx) =
-        StartupBackfillProgressRelay::spawn(Arc::clone(&state), progress_scope.clone());
-
-    let operation = async {
-        let mut backfill_result = None;
-        let workspace_path = std::path::PathBuf::from(&snapshot.path);
-        let should_flush = match crate::services::code_graph::sync_workspace(
-            &workspace_path,
-            &snapshot.data_dir,
-            &snapshot.branch,
-            &workspace_config.code_graph,
-        )
-        .await
-        {
-            Ok(result) => {
-                info!(
-                    files_added = result.files_added,
-                    files_modified = result.files_modified,
-                    files_unchanged = result.files_unchanged,
-                    "startup auto-sync complete"
-                );
-                true
-            }
-            Err(error) => {
-                warn!(%error, "startup auto-sync failed");
-                false
-            }
-        };
-
-        match crate::db::connect_db(&snapshot.data_dir, &snapshot.branch).await {
-            Ok(db) => {
-                let queries = crate::db::queries::CodeGraphQueries::new(db);
-                let registry_path = workspace_path.join(".engram").join("registry.yaml");
-                match crate::services::registry::load_registry(&registry_path) {
-                    Ok(Some(mut config)) => {
-                        let _ = crate::services::registry::validate_sources(
-                            &mut config,
-                            &workspace_path,
-                        );
-                        match crate::services::ingestion::ingest_all_sources(
-                            &config,
-                            &workspace_path,
-                            &queries,
-                        )
-                        .await
-                        {
-                            Ok(summary) => {
-                                info!(
-                                    ingested = summary.ingested,
-                                    unchanged = summary.unchanged,
-                                    total = summary.total_files,
-                                    "startup registry ingestion complete"
-                                );
-                            }
-                            Err(error) => {
-                                warn!(%error, "startup registry ingestion failed");
-                            }
-                        }
-                    }
-                    Ok(None) => {
-                        debug!("no registry.yaml — skipping content ingestion");
-                    }
-                    Err(error) => {
-                        warn!(%error, "startup registry load failed");
-                    }
-                }
-
-                backfill_result = Some(backfill_with_scan_progress(&queries, &progress_tx).await);
-            }
-            Err(error) => {
-                warn!(%error, "startup ingestion: failed to connect to database");
-            }
-        }
-
-        if should_flush {
-            if let Err(error) = flush_daemon_snapshot(&snapshot).await {
-                warn!(%error, "startup auto-flush failed");
-            }
-        }
-        backfill_result
-    };
-
-    let backfill_result = permit.run_until_cancelled(operation).await;
-    // The cancellable future owns a producer clone. Close it before joining so
-    // normal completion cannot wait forever for its own progress channel.
-    drop(progress_tx);
-    if backfill_result.is_none() {
-        backfill_progress.abort_and_join().await;
-        return;
-    }
-    backfill_progress.join().await;
-    if let Some(result) = backfill_result.flatten() {
-        match result {
-            Ok(updated) => {
-                if let Some(snapshot) = backfill_completion_snapshot(
-                    backfill_progress.relayed_running(),
-                    updated,
-                    Utc::now().to_rfc3339(),
-                ) {
-                    let _ = state
-                        .set_scan_progress_for_owner(&progress_scope, Some(snapshot))
-                        .await;
-                }
-                if updated != 0 {
-                    info!(updated, "startup content embedding backfill complete");
-                }
-            }
-            Err(error) => {
-                warn!(%error, "startup content embedding backfill failed");
-            }
-        }
-    }
-    let transferred = match CoordinatorCell::complete(permit) {
-        CompletionOutcome::Transferred(successor) => Some(successor),
-        CompletionOutcome::Released
-        | CompletionOutcome::RetirementAcknowledged
-        | CompletionOutcome::SequenceExhausted(_)
-        | CompletionOutcome::Stale => None,
-    };
-    if let Some(successor) = transferred {
-        drive_daemon_transferred_syncs(
-            &state,
-            &snapshot,
-            &workspace_config,
-            successor,
-            "startup",
-            #[cfg(test)]
-            None,
-        )
-        .await;
-    }
-}
-
-async fn drive_daemon_transferred_syncs(
-    state: &SharedState,
-    snapshot: &WorkspaceSnapshot,
-    workspace_config: &WorkspaceConfig,
-    successor: crate::server::state::OwnerPermit,
-    driver: &'static str,
-    #[cfg(test)] operation_reached: Option<&AtomicBool>,
-) {
-    let mut successor = successor;
-    let mut current_ctx = crate::server::state::DispatchSnapshot {
-        workspace: snapshot.clone(),
-        config: workspace_config.clone(),
-    };
-    loop {
-        let prepared =
-            crate::tools::write::prepare_transferred_sync(state, successor, current_ctx).await;
-        let Some((prepared_successor, prepared_ctx)) = (match prepared {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                warn!(%error, driver, "daemon transferred branch preparation failed");
-                return;
-            }
-        }) else {
-            return;
-        };
-        successor = prepared_successor;
-        current_ctx = prepared_ctx;
-        let work_bits = successor.work_bits();
-        let operation = async {
-            #[cfg(test)]
-            if let Some(operation_reached) = operation_reached {
-                operation_reached.store(true, Ordering::SeqCst);
-            }
-            let workspace_path = std::path::PathBuf::from(&current_ctx.workspace.path);
-            let result = crate::services::code_graph::sync_workspace_with_progress(
-                &workspace_path,
-                &current_ctx.workspace.data_dir,
-                &current_ctx.workspace.branch,
-                &current_ctx.config.code_graph,
-                work_bits & 0b100 != 0,
-                work_bits & 0b010 != 0,
-                None,
-            )
-            .await;
-            match &result {
-                Ok(result) => {
-                    let unfulfilled_work_bits =
-                        crate::tools::write::unfulfilled_work_bits(&result.errors, work_bits);
-                    info!(
-                        driver,
-                        files_added = result.files_added,
-                        files_modified = result.files_modified,
-                        unfulfilled_work_bits,
-                        "daemon transferred sync complete"
-                    );
-                    if let Err(error) = flush_daemon_snapshot(&current_ctx.workspace).await {
-                        warn!(%error, driver, "daemon transferred flush failed");
-                    }
-                    unfulfilled_work_bits == 0
-                }
-                Err(error) => {
-                    warn!(%error, driver, "daemon transferred sync failed");
-                    false
-                }
-            }
-        };
-        if !matches!(successor.run_until_cancelled(operation).await, Some(true)) {
-            return;
-        }
-        let _ = state.set_hydration_ready_for_permit(&successor);
-        successor = match CoordinatorCell::complete(successor) {
-            CompletionOutcome::Transferred(next) => next,
-            CompletionOutcome::Released
-            | CompletionOutcome::RetirementAcknowledged
-            | CompletionOutcome::SequenceExhausted(_)
-            | CompletionOutcome::Stale => return,
-        };
-    }
-}
-
-async fn run_watcher_driver(
-    state: SharedState,
-    ttl: Arc<TtlTimer>,
-    mut event_rx: mpsc::UnboundedReceiver<WatcherEvent>,
-    reactive_markdown: bool,
-) {
-    while let Some(event) = event_rx.recv().await {
-        ttl.reset();
-        let Some((mut admission, mut snapshot, mut workspace_config)) =
-            guarded_daemon_sync_context(&state).await
-        else {
-            continue;
-        };
-        let mut pending_reingest = std::collections::BTreeSet::new();
-        let mut pending_reindex = match crate::daemon::debounce::adapt_event(&event) {
-            crate::daemon::debounce::ServiceAction::ReindexFile { .. } => true,
-            crate::daemon::debounce::ServiceAction::ReingestContent { path }
-                if reactive_markdown =>
-            {
-                pending_reingest.insert(path);
-                false
-            }
-            crate::daemon::debounce::ServiceAction::ReingestContent { .. }
-            | crate::daemon::debounce::ServiceAction::Skip => false,
-        };
-
-        while let Ok(Some(event)) =
-            tokio::time::timeout(Duration::from_secs(2), event_rx.recv()).await
-        {
-            ttl.reset();
-            match crate::daemon::debounce::adapt_event(&event) {
-                crate::daemon::debounce::ServiceAction::ReindexFile { .. } => {
-                    pending_reindex = true;
-                }
-                crate::daemon::debounce::ServiceAction::ReingestContent { path }
-                    if reactive_markdown =>
-                {
-                    pending_reingest.insert(path);
-                }
-                crate::daemon::debounce::ServiceAction::ReingestContent { .. }
-                | crate::daemon::debounce::ServiceAction::Skip => {}
-            }
-        }
-        if !pending_reindex && pending_reingest.is_empty() {
-            continue;
-        }
-
-        'reconcile_batch: loop {
-            let mut permit = match admission.acquire_background(OwnerKind::Watcher).await {
-                Ok(Some(permit)) => permit,
-                Ok(None) => {
-                    let Some((next_admission, next_snapshot, next_config)) =
-                        guarded_daemon_sync_context(&state).await
-                    else {
-                        break 'reconcile_batch;
-                    };
-                    if !same_workspace_instance(&snapshot, &next_snapshot) {
-                        break 'reconcile_batch;
-                    }
-                    admission = next_admission;
-                    snapshot = next_snapshot;
-                    workspace_config = next_config;
-                    continue 'reconcile_batch;
-                }
-                Err(error) => {
-                    error!(%error, "watcher coordinator admission failed");
-                    break 'reconcile_batch;
-                }
-            };
-            let context = DispatchSnapshot {
-                workspace: snapshot,
-                config: workspace_config,
-            };
-            let Some((prepared_permit, context)) = (match state
-                .prepare_daemon_mutation(permit, context, OwnerKind::Watcher)
-                .await
-            {
-                Ok(prepared) => prepared,
-                Err(error) => {
-                    error!(%error, "watcher branch preparation failed");
-                    break 'reconcile_batch;
-                }
-            }) else {
-                break 'reconcile_batch;
-            };
-            permit = prepared_permit;
-            snapshot = context.workspace;
-            workspace_config = context.config;
-            let operation = async {
-                let workspace_path = std::path::PathBuf::from(&snapshot.path);
-                let should_flush = if pending_reindex {
-                    match crate::services::code_graph::sync_workspace(
-                        &workspace_path,
-                        &snapshot.data_dir,
-                        &snapshot.branch,
-                        &workspace_config.code_graph,
-                    )
-                    .await
-                    {
-                        Ok(result) => {
-                            info!(
-                                files_added = result.files_added,
-                                files_modified = result.files_modified,
-                                "file-change auto-sync complete"
-                            );
-                            true
-                        }
-                        Err(error) => {
-                            warn!(%error, "file-change auto-sync failed");
-                            false
-                        }
-                    }
-                } else {
-                    false
-                };
-
-                if !pending_reingest.is_empty() {
-                    crate::services::reactive_sync::reingest_pending_markdown(
-                        &workspace_path,
-                        &snapshot.data_dir,
-                        &snapshot.branch,
-                        &pending_reingest,
-                    )
-                    .await;
-                }
-
-                if should_flush {
-                    if let Err(error) = flush_daemon_snapshot(&snapshot).await {
-                        warn!(%error, "file-change auto-flush failed");
-                    }
-                }
-            };
-            if permit.run_until_cancelled(operation).await.is_none() {
-                drop(permit);
-                let Some((next_admission, next_snapshot, next_config)) =
-                    guarded_daemon_sync_context(&state).await
-                else {
-                    break 'reconcile_batch;
-                };
-                if !same_workspace_instance(&snapshot, &next_snapshot) {
-                    break 'reconcile_batch;
-                }
-                admission = next_admission;
-                snapshot = next_snapshot;
-                workspace_config = next_config;
-                continue 'reconcile_batch;
-            }
-
-            if let CompletionOutcome::Transferred(successor) = CoordinatorCell::complete(permit) {
-                drive_daemon_transferred_syncs(
-                    &state,
-                    &snapshot,
-                    &workspace_config,
-                    successor,
-                    "watcher",
-                    #[cfg(test)]
-                    None,
-                )
-                .await;
-            }
-            break 'reconcile_batch;
-        }
-    }
-}
-
-/// Build a `running` scan-status snapshot reflecting embedding-backfill progress.
-fn backfill_running_progress(done: usize, total: usize) -> ScanProgress {
-    ScanProgress {
-        running: true,
-        files_scanned: done as u64,
-        files_total: total as u64,
-        last_completed_at: None,
-    }
-}
-
-/// Build a completed scan-status snapshot for a finished embedding backfill.
-fn backfill_completed_progress(done: usize, completed_at: String) -> ScanProgress {
-    ScanProgress {
-        running: false,
-        files_scanned: done as u64,
-        files_total: done as u64,
-        last_completed_at: Some(completed_at),
-    }
-}
-
-/// Decide the `scan_status` snapshot to write once the backfill finishes.
-///
-/// Returns a `running: false` completed snapshot whenever any `running`
-/// progress was relayed — even if `embedded == 0` (model unavailable or every
-/// write-back failed). This clears a `running: true` status that would
-/// otherwise persist forever, since owner completion does not touch
-/// `scan_progress`. Returns `None` when no running progress was relayed (there
-/// was nothing to clear).
-fn backfill_completion_snapshot(
-    relayed_running: bool,
-    embedded: usize,
-    completed_at: String,
-) -> Option<ScanProgress> {
-    if relayed_running {
-        Some(backfill_completed_progress(embedded, completed_at))
-    } else {
-        None
-    }
-}
-
-/// Run the content-embedding backfill using the startup owner's progress relay.
-async fn backfill_with_scan_progress(
-    queries: &crate::db::queries::CodeGraphQueries,
-    progress_tx: &mpsc::UnboundedSender<crate::services::ingestion::BackfillProgress>,
-) -> Result<usize, EngramError> {
-    crate::services::ingestion::backfill_content_embeddings(queries, Some(progress_tx)).await
-}
-
-/// Parent-owned progress child for the startup embedding phase.
-///
-/// The relay is created outside the cancellable startup future so cancellation
-/// can abort and join it before the startup permit acknowledges retirement.
-/// Every publication is fenced to the exact startup owner.
-struct StartupBackfillProgressRelay {
-    tx: Option<mpsc::UnboundedSender<crate::services::ingestion::BackfillProgress>>,
-    relayed_running: Arc<AtomicBool>,
-    child: Option<DriverTaskGuard>,
-}
-
-impl StartupBackfillProgressRelay {
-    fn spawn(
-        state: SharedState,
-        scope: OwnerProgressScope,
-    ) -> (
-        Self,
-        mpsc::UnboundedSender<crate::services::ingestion::BackfillProgress>,
-    ) {
-        let (tx, mut rx) =
-            mpsc::unbounded_channel::<crate::services::ingestion::BackfillProgress>();
-        let relayed_running = Arc::new(AtomicBool::new(false));
-        let relayed_for_updater = Arc::clone(&relayed_running);
-        let child = tokio::spawn(async move {
-            while let Some(progress) = rx.recv().await {
-                if state
-                    .set_scan_progress_for_owner(
-                        &scope,
-                        Some(backfill_running_progress(progress.done, progress.total)),
-                    )
-                    .await
-                {
-                    relayed_for_updater.store(true, Ordering::Relaxed);
-                }
-            }
-        });
-        let producer = tx.clone();
-        (
-            Self {
-                tx: Some(tx),
-                relayed_running,
-                child: Some(DriverTaskGuard { task: Some(child) }),
-            },
-            producer,
-        )
-    }
-
-    fn relayed_running(&self) -> bool {
-        self.relayed_running.load(Ordering::Relaxed)
-    }
-
-    async fn join(&mut self) {
-        let _ = self.tx.take();
-        if let Some(child) = self.child.take() {
-            if let Err(error) = child.join().await {
-                warn!(%error, "startup backfill progress updater failed");
-            }
-        }
-    }
-
-    async fn abort_and_join(&mut self) {
-        let _ = self.tx.take();
-        if let Some(child) = self.child.take() {
-            let _ = child.abort_and_join().await;
-        }
-    }
+    lifecycle_policy::join_retained_hydration(&state).await?;
+    lifecycle_policy::shutdown_services(&state).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::server::state::{
-        AppState, CoordinatorCell, DispatchSnapshot, OwnerKind, RequestOutcome, WorkMask,
-    };
+    use crate::server::state::AppState;
+    use serde_json::json;
     #[cfg(unix)]
     use std::path::{Path, PathBuf};
     use std::sync::Mutex;
+    use std::time::Duration;
 
     #[derive(Clone, Default)]
     struct CapturedJson(Arc<Mutex<Vec<u8>>>);
@@ -1609,131 +937,6 @@ mod tests {
             .to_ns_name::<GenericNamespaced>()
             .expect("convert test pipe name");
         Stream::connect(name).await.expect("connect test pipe")
-    }
-
-    fn coordinator_snapshot(
-        workspace_id: &str,
-        workspace_uuid: &str,
-        path: &std::path::Path,
-        data_dir: std::path::PathBuf,
-    ) -> WorkspaceSnapshot {
-        WorkspaceSnapshot {
-            workspace_id: workspace_id.to_owned(),
-            workspace_uuid: workspace_uuid.to_owned(),
-            branch: "main".to_owned(),
-            data_dir,
-            path: path.display().to_string(),
-            last_flush: None,
-            stale_files: false,
-            connection_count: 0,
-            file_mtimes: std::collections::HashMap::new(),
-        }
-    }
-
-    /// 092.003-T: the shared daemon `(workspace, config)` acquisition seam must
-    /// never expose a torn pair to a background-sync closure while a concurrent
-    /// bind is flipping the active workspace. This is the regression guard for
-    /// [`snapshot_daemon_sync_context`]: reverting its body to two separate
-    /// reads reopens the tear window and makes this test fail.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn daemon_sync_context_never_tears_pair() {
-        use crate::models::config::CodeGraphConfig;
-        use std::collections::HashMap;
-        use std::sync::atomic::{AtomicBool, Ordering};
-
-        const LARGE: u64 = 8_000_000;
-        const SMALL: u64 = 1_024;
-
-        fn snapshot_for(path: &str) -> WorkspaceSnapshot {
-            WorkspaceSnapshot {
-                workspace_id: format!("ws-{path}"),
-                workspace_uuid: format!("uuid-{path}"),
-                branch: "main".to_owned(),
-                data_dir: std::path::PathBuf::from("unused"),
-                path: path.to_owned(),
-                last_flush: None,
-                stale_files: false,
-                connection_count: 0,
-                file_mtimes: HashMap::new(),
-            }
-        }
-        fn config_with(max_file_size_bytes: u64) -> WorkspaceConfig {
-            WorkspaceConfig {
-                code_graph: CodeGraphConfig {
-                    max_file_size_bytes,
-                    ..CodeGraphConfig::default()
-                },
-                ..WorkspaceConfig::default()
-            }
-        }
-
-        // Two internally-consistent (workspace, config) states. A torn read
-        // pairs one state's `path` with the other's `max_file_size_bytes`.
-        let snapshot_a = snapshot_for("/ws/a");
-        let snapshot_b = snapshot_for("/ws/b");
-        let config_a = config_with(LARGE);
-        let config_b = config_with(SMALL);
-
-        let state = Arc::new(AppState::new(10));
-        state
-            .set_workspace_and_config(snapshot_a.clone(), Some(config_a.clone()))
-            .await
-            .expect("seed bind A");
-
-        let stop = Arc::new(AtomicBool::new(false));
-        let writer_state = state.clone();
-        let writer_stop = stop.clone();
-        let writer = tokio::spawn(async move {
-            while !writer_stop.load(Ordering::Relaxed) {
-                writer_state
-                    .set_workspace_and_config(snapshot_b.clone(), Some(config_b.clone()))
-                    .await
-                    .expect("bind B");
-                tokio::task::yield_now().await;
-                writer_state
-                    .set_workspace_and_config(snapshot_a.clone(), Some(config_a.clone()))
-                    .await
-                    .expect("bind A");
-                tokio::task::yield_now().await;
-            }
-        });
-
-        let mut torn = 0u32;
-        let mut observed_a = 0u32;
-        let mut observed_b = 0u32;
-        let mut iterations = 0u32;
-        while (iterations < 2_000 || observed_a == 0 || observed_b == 0) && iterations < 50_000 {
-            iterations += 1;
-            let Some((_admission, snap, cfg)) = guarded_daemon_sync_context(&state).await else {
-                continue;
-            };
-            let max = cfg.code_graph.max_file_size_bytes;
-            if snap.path == "/ws/a" {
-                observed_a += 1;
-                if max != LARGE {
-                    torn += 1;
-                }
-            } else if snap.path == "/ws/b" {
-                observed_b += 1;
-                if max != SMALL {
-                    torn += 1;
-                }
-            }
-            tokio::task::yield_now().await;
-        }
-
-        stop.store(true, Ordering::Relaxed);
-        writer.await.expect("writer task joins");
-
-        assert!(
-            observed_a > 0 && observed_b > 0,
-            "vacuous test: must observe both bound states (A={observed_a}, B={observed_b})"
-        );
-        assert_eq!(
-            torn, 0,
-            "daemon sync context tore {torn} (workspace, config) pair(s) across \
-             {iterations} samples (A={observed_a}, B={observed_b})"
-        );
     }
 
     #[cfg(unix)]
@@ -1834,321 +1037,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn daemon_driver_handle_loss_cannot_detach_mutation() {
-        struct Termination(Option<tokio::sync::oneshot::Sender<()>>);
-
-        impl Drop for Termination {
-            fn drop(&mut self) {
-                if let Some(terminated) = self.0.take() {
-                    let _ = terminated.send(());
-                }
-            }
-        }
-
-        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
-        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-        let (terminated_tx, terminated_rx) = tokio::sync::oneshot::channel();
-        let writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let writes_for_driver = Arc::clone(&writes);
-        let driver = spawn_daemon_driver(async move {
-            let _termination = Termination(Some(terminated_tx));
-            let _ = entered_tx.send(());
-            let _ = release_rx.await;
-            writes_for_driver.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        });
-
-        entered_rx.await.expect("driver should enter");
-        drop(driver);
-        let _ = release_tx.send(());
-        terminated_rx.await.expect("driver should terminate");
-        assert_eq!(
-            writes.load(std::sync::atomic::Ordering::SeqCst),
-            0,
-            "a lost parent handle must abort before later mutation"
-        );
-    }
-
-    #[tokio::test]
-    async fn normal_shutdown_joins_retained_hydration_to_its_safe_terminal() {
-        let state = AppState::new(1);
-        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
-        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-        let reached_terminal = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let terminal_for_driver = Arc::clone(&reached_terminal);
-        let driver = spawn_daemon_driver(async move {
-            let _ = entered_tx.send(());
-            let _ = release_rx.await;
-            terminal_for_driver.store(true, std::sync::atomic::Ordering::SeqCst);
-        });
-        assert!(state.retain_hydration_driver(1, driver).is_none());
-        entered_rx.await.expect("hydration should enter");
-        let releaser = tokio::spawn(async move {
-            let _ = release_tx.send(());
-        });
-
-        join_retained_hydration(&state)
-            .await
-            .expect("hydration should reach its safe terminal");
-
-        releaser.await.expect("hydration releaser should join");
-        assert!(
-            reached_terminal.load(std::sync::atomic::Ordering::SeqCst),
-            "normal shutdown must not abort hydration before its safe terminal"
-        );
-        assert!(state.take_hydration_driver().is_none());
-    }
-
-    async fn state_with_flush_failure() -> (tempfile::TempDir, SharedState) {
-        let temp = tempfile::tempdir().expect("shutdown cleanup tempdir");
-        let workspace = temp.path().join("workspace");
-        std::fs::create_dir_all(&workspace).expect("create shutdown cleanup workspace");
-        let blocked_data_dir = temp.path().join("blocked-data-dir");
-        std::fs::write(&blocked_data_dir, "not a directory")
-            .expect("create blocked shutdown data directory");
-        let state = Arc::new(AppState::new(1));
-        let snapshot = coordinator_snapshot(
-            "shutdown-cleanup",
-            "shutdown-cleanup-uuid",
-            &workspace,
-            blocked_data_dir,
-        );
-        let _ = state
-            .publish_workspace_generation(snapshot, Some(WorkspaceConfig::default()))
-            .await
-            .expect("publish shutdown cleanup workspace");
-        (temp, state)
-    }
-
-    #[tokio::test]
-    async fn shutdown_cleanup_preserves_success_and_invokes_flush() {
-        let _metrics_guard = crate::services::metrics::test_writer_guard().await;
-        crate::services::metrics::shutdown()
-            .await
-            .expect("reset metrics writer");
-        let state = Arc::new(AppState::new(1));
-        let flush_calls_before = SHUTDOWN_FLUSH_CALLS.load(Ordering::SeqCst);
-
-        shutdown_services(&state)
-            .await
-            .expect("clean shutdown cleanup");
-
-        assert_eq!(
-            SHUTDOWN_FLUSH_CALLS.load(Ordering::SeqCst),
-            flush_calls_before + 1
-        );
-    }
-
-    #[tokio::test]
-    async fn shutdown_cleanup_attempts_flush_after_stalled_metrics_failure() {
-        let metrics_guard = crate::services::metrics::test_writer_guard().await;
-        crate::services::metrics::shutdown()
-            .await
-            .expect("reset metrics writer");
-        let stalled = crate::services::metrics::configure_test_stalled_shutdown_writer(
-            &metrics_guard,
-            Path::new("stalled-shutdown-writer"),
-            "main",
-        )
-        .expect("configure stalled metrics shutdown");
-        let state = Arc::new(AppState::new(1));
-        let flush_calls_before = SHUTDOWN_FLUSH_CALLS.load(Ordering::SeqCst);
-
-        let error = shutdown_services(&state)
-            .await
-            .expect_err("metrics-only cleanup failure");
-        drop(stalled);
-
-        assert_eq!(
-            SHUTDOWN_FLUSH_CALLS.load(Ordering::SeqCst),
-            flush_calls_before + 1,
-            "durable flush must still be attempted after metrics teardown aborts"
-        );
-        assert!(
-            matches!(
-                &error,
-                EngramError::Metrics(crate::errors::MetricsError::WriteFailed { reason })
-                    if reason.contains("shutdown timed out")
-            ),
-            "metrics-only failure must be preserved: {error}"
-        );
-    }
-
-    #[tokio::test]
-    async fn shutdown_cleanup_returns_flush_only_failure() {
-        let _metrics_guard = crate::services::metrics::test_writer_guard().await;
-        crate::services::metrics::shutdown()
-            .await
-            .expect("reset metrics writer");
-        let (_temp, state) = state_with_flush_failure().await;
-        let flush_calls_before = SHUTDOWN_FLUSH_CALLS.load(Ordering::SeqCst);
-
-        let error = shutdown_services(&state)
-            .await
-            .expect_err("flush-only cleanup failure");
-
-        assert_eq!(
-            SHUTDOWN_FLUSH_CALLS.load(Ordering::SeqCst),
-            flush_calls_before + 1
-        );
-        assert!(
-            matches!(
-                &error,
-                EngramError::System(crate::errors::SystemError::DatabaseError { .. })
-            ),
-            "flush-only failure must be returned unchanged: {error}"
-        );
-    }
-
-    #[tokio::test]
-    async fn shutdown_cleanup_combines_both_failures_with_durable_evidence_first() {
-        let metrics_guard = crate::services::metrics::test_writer_guard().await;
-        crate::services::metrics::shutdown()
-            .await
-            .expect("reset metrics writer");
-        let stalled = crate::services::metrics::configure_test_stalled_shutdown_writer(
-            &metrics_guard,
-            Path::new("stalled-shutdown-writer"),
-            "main",
-        )
-        .expect("configure stalled metrics shutdown");
-        let (_temp, state) = state_with_flush_failure().await;
-        let flush_calls_before = SHUTDOWN_FLUSH_CALLS.load(Ordering::SeqCst);
-
-        let error = shutdown_services(&state)
-            .await
-            .expect_err("combined cleanup failure");
-        drop(stalled);
-        let message = error.to_string();
-        let durable_position = message
-            .find("durable workspace flush")
-            .expect("combined error must retain durable flush evidence");
-        let metrics_position = message
-            .find("metrics teardown")
-            .expect("combined error must retain metrics teardown evidence");
-
-        assert_eq!(
-            SHUTDOWN_FLUSH_CALLS.load(Ordering::SeqCst),
-            flush_calls_before + 1,
-            "durable flush must be attempted when metrics teardown fails"
-        );
-        assert!(
-            matches!(
-                error,
-                EngramError::System(crate::errors::SystemError::FlushFailed { .. })
-            ),
-            "combined failure must retain durable flush classification"
-        );
-        assert!(
-            durable_position < metrics_position,
-            "durable evidence must precede optional metrics evidence: {message}"
-        );
-        assert!(
-            message.contains("Database operation failed"),
-            "combined error must retain the durable failure: {message}"
-        );
-        assert!(
-            message.contains("metrics writer shutdown timed out"),
-            "combined error must retain the metrics failure: {message}"
-        );
-        assert!(
-            message.len() <= 1_200,
-            "combined shutdown error must remain bounded: {} bytes",
-            message.len()
-        );
-
-        let oversized = combine_shutdown_results(
-            Err(EngramError::Metrics(
-                crate::errors::MetricsError::WriteFailed {
-                    reason: "metrics".repeat(400),
-                },
-            )),
-            Err(EngramError::System(
-                crate::errors::SystemError::DatabaseError {
-                    reason: "durable".repeat(400),
-                },
-            )),
-        )
-        .expect_err("oversized failures must remain errors")
-        .to_string();
-        assert!(
-            oversized.len() <= 1_200,
-            "oversized combined evidence must be truncated: {} bytes",
-            oversized.len()
-        );
-        assert!(
-            oversized.matches("...").count() >= 2,
-            "both oversized error excerpts must show truncation: {oversized}"
-        );
-    }
-
-    #[tokio::test]
-    async fn startup_prepares_current_head_before_database_or_file_mutation() {
-        let metrics_guard = crate::services::metrics::test_writer_guard().await;
-        let temp = tempfile::tempdir().expect("tempdir");
-        let workspace = temp.path().join("workspace");
-        std::fs::create_dir_all(workspace.join(".git")).expect("create git metadata");
-        std::fs::write(
-            workspace.join(".git").join("HEAD"),
-            "ref: refs/heads/main\n",
-        )
-        .expect("write git HEAD");
-        let state = Arc::new(AppState::new(1));
-        let mut stale_snapshot = coordinator_snapshot(
-            "id-stale",
-            "uuid-worktree",
-            &workspace,
-            temp.path().join("data"),
-        );
-        stale_snapshot.branch = "captured-before-checkout".to_owned();
-        crate::services::metrics::configure_test_disabled_writer(
-            &metrics_guard,
-            &workspace,
-            &stale_snapshot.branch,
-        )
-        .await
-        .expect("configure disabled startup metrics");
-        let _ = state
-            .publish_workspace_generation(stale_snapshot, Some(WorkspaceConfig::default()))
-            .await
-            .expect("publish stale capture");
-        let (admission, workspace, config) = guarded_daemon_sync_context(&state)
-            .await
-            .expect("guarded startup context");
-        let permit = admission
-            .acquire_background(OwnerKind::Startup)
-            .await
-            .expect("startup admission")
-            .expect("startup permit");
-
-        let (_, prepared) = state
-            .prepare_daemon_mutation(
-                permit,
-                DispatchSnapshot { workspace, config },
-                OwnerKind::Startup,
-            )
-            .await
-            .expect("prepare startup mutation")
-            .expect("same worktree remains active");
-
-        assert_eq!(
-            prepared.workspace.branch, "main",
-            "startup must refresh HEAD before its first DB/file mutation"
-        );
-        assert_eq!(
-            state
-                .snapshot_workspace()
-                .await
-                .expect("published workspace")
-                .branch,
-            "main",
-            "the refreshed branch must be coherently published"
-        );
-        crate::services::metrics::shutdown()
-            .await
-            .expect("reset startup metrics");
-    }
-
-    #[tokio::test]
     async fn shared_accept_loop_quiesces_accepted_handlers_before_returning() {
         let workspace = tempfile::tempdir().expect("workspace tempdir");
         std::fs::create_dir_all(workspace.path().join(".git")).expect("create git metadata");
@@ -2161,7 +1049,13 @@ mod tests {
         .expect("write git HEAD");
         let endpoint = ipc_endpoint(workspace.path()).expect("IPC endpoint");
         let listener = bind_listener(&endpoint).expect("bind IPC listener");
-        let state = Arc::new(AppState::new(1));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            1,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         let ttl = TtlTimer::new(Duration::ZERO);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let shutdown_tx = Arc::new(shutdown_tx);
@@ -2241,7 +1135,13 @@ mod tests {
         .expect("write git HEAD");
         let endpoint = ipc_endpoint(workspace.path()).expect("IPC endpoint");
         let listener = bind_listener(&endpoint).expect("bind IPC listener");
-        let state = Arc::new(AppState::new(1));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            1,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         let ttl = TtlTimer::new(Duration::ZERO);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let shutdown_tx = Arc::new(shutdown_tx);
@@ -2286,355 +1186,69 @@ mod tests {
         assert!(*shutdown_tx.borrow());
     }
 
-    #[tokio::test]
-    async fn daemon_transferred_failure_recovers_full_mask() {
-        let metrics_guard = crate::services::metrics::test_writer_guard().await;
-        crate::services::metrics::shutdown()
-            .await
-            .expect("reset metrics writer");
-        let temp = tempfile::tempdir().expect("tempdir");
-        let workspace = temp.path().join("workspace");
-        std::fs::create_dir_all(&workspace).expect("create workspace");
-        let invalid_data_dir = temp.path().join("not-a-directory");
-        std::fs::write(&invalid_data_dir, b"file blocks database directory")
-            .expect("create invalid data path");
-        let snapshot =
-            coordinator_snapshot("id-transfer", "uuid-transfer", &workspace, invalid_data_dir);
-        crate::services::metrics::configure_test_disabled_writer(
-            &metrics_guard,
-            &workspace,
-            &snapshot.branch,
-        )
-        .await
-        .expect("configure fixture metrics writer");
-        let config = WorkspaceConfig::default();
-        let state = Arc::new(AppState::new(1));
-        let _ = state
-            .publish_workspace_generation(snapshot.clone(), Some(config.clone()))
-            .await
-            .expect("publish binding");
-        let owner = match CoordinatorCell::request(
-            state.coordinator.admission(),
-            WorkMask::default(),
-            OwnerKind::Startup,
-        )
-        .expect("request startup owner")
-        {
-            RequestOutcome::Acquired(permit) => permit,
-            RequestOutcome::Waiting(_) | RequestOutcome::Enqueued | RequestOutcome::Stale => {
-                panic!("startup owner should acquire")
-            }
-        };
-        assert!(matches!(
-            CoordinatorCell::request(
-                state.coordinator.admission(),
-                WorkMask::from_bits(0b111),
-                OwnerKind::Sync,
-            ),
-            Ok(RequestOutcome::Enqueued)
-        ));
-        let successor = match CoordinatorCell::complete(owner) {
-            CompletionOutcome::Transferred(successor) => successor,
-            CompletionOutcome::Released
-            | CompletionOutcome::RetirementAcknowledged
-            | CompletionOutcome::SequenceExhausted(_)
-            | CompletionOutcome::Stale => panic!("full mask should transfer"),
-        };
-        let operation_reached = AtomicBool::new(false);
-
-        drive_daemon_transferred_syncs(
-            &state,
-            &snapshot,
-            &config,
-            successor,
-            "test",
-            Some(&operation_reached),
-        )
-        .await;
-
-        let operation_was_reached = operation_reached.load(Ordering::SeqCst);
-        let coordinator_is_idle = state.coordinator.test_is_idle();
-        let pending_bits = state.coordinator.test_pending_bits();
-        crate::services::metrics::shutdown()
-            .await
-            .expect("clean fixture metrics writer");
-
-        assert!(
-            operation_was_reached,
-            "fixture must reach the intended database failure"
-        );
-        assert!(coordinator_is_idle);
-        assert_eq!(pending_bits, 0b111);
-    }
-
-    #[tokio::test]
-    async fn daemon_transferred_partial_file_errors_recover_full_mask() {
-        let metrics_guard = crate::services::metrics::test_writer_guard().await;
-        crate::services::metrics::shutdown()
-            .await
-            .expect("reset metrics writer");
-        let temp = tempfile::tempdir().expect("tempdir");
-        let workspace = temp.path().join("workspace");
-        let data_dir = temp.path().join("data");
-        std::fs::create_dir_all(&workspace).expect("create workspace");
-        std::fs::write(workspace.join("broken.py"), [0xff]).expect("write invalid UTF-8 fixture");
-        let snapshot = coordinator_snapshot(
-            "id-transfer-partial",
-            "uuid-transfer-partial",
-            &workspace,
-            data_dir,
-        );
-        crate::services::metrics::configure_test_disabled_writer(
-            &metrics_guard,
-            &workspace,
-            &snapshot.branch,
-        )
-        .await
-        .expect("configure fixture metrics writer");
-        let config = WorkspaceConfig::default();
-        let state = Arc::new(AppState::new(1));
-        let _ = state
-            .publish_workspace_generation(snapshot.clone(), Some(config.clone()))
-            .await
-            .expect("publish binding");
-        let owner = match CoordinatorCell::request(
-            state.coordinator.admission(),
-            WorkMask::default(),
-            OwnerKind::Startup,
-        )
-        .expect("request startup owner")
-        {
-            RequestOutcome::Acquired(permit) => permit,
-            RequestOutcome::Waiting(_) | RequestOutcome::Enqueued | RequestOutcome::Stale => {
-                panic!("startup owner should acquire")
-            }
-        };
-        assert!(matches!(
-            CoordinatorCell::request(
-                state.coordinator.admission(),
-                WorkMask::from_bits(0b111),
-                OwnerKind::Sync,
-            ),
-            Ok(RequestOutcome::Enqueued)
-        ));
-        let successor = match CoordinatorCell::complete(owner) {
-            CompletionOutcome::Transferred(successor) => successor,
-            CompletionOutcome::Released
-            | CompletionOutcome::RetirementAcknowledged
-            | CompletionOutcome::SequenceExhausted(_)
-            | CompletionOutcome::Stale => panic!("full mask should transfer"),
-        };
-        let operation_reached = AtomicBool::new(false);
-
-        drive_daemon_transferred_syncs(
-            &state,
-            &snapshot,
-            &config,
-            successor,
-            "test",
-            Some(&operation_reached),
-        )
-        .await;
-
-        let operation_was_reached = operation_reached.load(Ordering::SeqCst);
-        let coordinator_is_idle = state.coordinator.test_is_idle();
-        let pending_bits = state.coordinator.test_pending_bits();
-        crate::services::metrics::shutdown()
-            .await
-            .expect("clean fixture metrics writer");
-
-        assert!(
-            operation_was_reached,
-            "fixture must reach the intended per-file failure"
-        );
-        assert!(coordinator_is_idle);
-        assert_eq!(
-            pending_bits, 0b111,
-            "a partial daemon transfer must retain heavy work for retry"
-        );
-    }
-
     #[test]
-    fn watcher_batch_retries_only_for_same_worktree_path_and_uuid() {
-        let root = std::path::Path::new("C:/workspace");
-        let original = coordinator_snapshot(
-            "id-original",
-            "uuid-original",
-            root,
-            std::path::PathBuf::from("data/original"),
-        );
-        let mut checked_out_branch = original.clone();
-        checked_out_branch.branch = "feature".to_owned();
-        checked_out_branch.workspace_id = "id-feature".to_owned();
-        let mut different_path = checked_out_branch.clone();
-        different_path.path = "C:/workspace/rebound".to_owned();
-        let mut different_uuid = checked_out_branch.clone();
-        different_uuid.workspace_uuid = "uuid-replacement".to_owned();
-
-        assert!(same_workspace_instance(&original, &checked_out_branch));
-        assert!(!same_workspace_instance(&original, &different_path));
-        assert!(!same_workspace_instance(&original, &different_uuid));
-    }
-
-    #[test]
-    fn backfill_running_progress_marks_scan_active_with_counts() {
-        let progress = backfill_running_progress(128, 2441);
-        assert!(progress.running, "backfill in flight must report running");
-        assert_eq!(progress.files_scanned, 128);
-        assert_eq!(progress.files_total, 2441);
-        assert!(
-            progress.last_completed_at.is_none(),
-            "an in-flight backfill has no completion timestamp"
-        );
-    }
-
-    #[test]
-    fn backfill_completed_progress_marks_scan_finished() {
-        let progress = backfill_completed_progress(2441, "2026-07-06T07:28:21Z".to_owned());
-        assert!(!progress.running, "finished backfill must clear running");
-        assert_eq!(progress.files_scanned, 2441);
-        assert_eq!(
-            progress.files_total, progress.files_scanned,
-            "completed snapshot reports the embedded record count as the total"
-        );
-        assert_eq!(
-            progress.last_completed_at.as_deref(),
-            Some("2026-07-06T07:28:21Z")
-        );
-    }
-
-    #[test]
-    fn backfill_completion_snapshot_clears_running_even_when_nothing_embedded() {
-        // Regression: when running progress was relayed but the model was
-        // unavailable (embedded == 0), status must still be cleared to
-        // `running: false` — otherwise it reports indexing forever.
-        let snapshot = backfill_completion_snapshot(true, 0, "2026-07-06T07:28:21Z".to_owned())
-            .expect("relayed progress must yield a completion snapshot");
-        assert!(!snapshot.running, "status must be cleared to not-running");
-        assert_eq!(snapshot.files_scanned, 0);
-    }
-
-    #[test]
-    fn backfill_completion_snapshot_reports_embedded_count() {
-        let snapshot = backfill_completion_snapshot(true, 42, "2026-07-06T07:28:21Z".to_owned())
-            .expect("relayed progress must yield a completion snapshot");
-        assert!(!snapshot.running);
-        assert_eq!(snapshot.files_scanned, 42);
-    }
-
-    #[test]
-    fn backfill_completion_snapshot_is_none_when_no_progress_relayed() {
-        // Nothing was set to running (no pending records), so there is nothing
-        // to clear and the existing scan_status must be left untouched.
-        assert!(
-            backfill_completion_snapshot(false, 0, "2026-07-06T07:28:21Z".to_owned()).is_none(),
-            "no relayed progress means no completion snapshot"
-        );
-    }
-
-    #[tokio::test]
-    async fn backfill_progress_relay_updates_scan_status() {
-        let state: SharedState = Arc::new(AppState::new(1));
+    fn resolve_daemon_mode_hard_fails_on_malformed_config_toml() {
         let workspace = tempfile::tempdir().expect("workspace tempdir");
-        let data = tempfile::tempdir().expect("data tempdir");
-        std::fs::create_dir_all(workspace.path().join(".git")).expect("create git metadata");
+        std::fs::create_dir_all(workspace.path().join(".engram")).expect(".engram dir");
+        // A syntactically invalid TOML file: an unterminated string value.
+        // `PluginConfig::load` would silently swallow this and return
+        // defaults (`Managed`); `resolve_daemon_mode` must hard-fail instead,
+        // even though `mode` itself is not the malformed field.
         std::fs::write(
-            workspace.path().join(".git").join("HEAD"),
-            "ref: refs/heads/main\n",
+            workspace.path().join(".engram").join("config.toml"),
+            "mode = \"read_server\"\nwatch_patterns = [\"unterminated\n",
         )
-        .expect("write git HEAD");
-        let _ = state
-            .publish_workspace_generation(
-                coordinator_snapshot(
-                    "id-main",
-                    "uuid-worktree",
-                    workspace.path(),
-                    data.path().to_path_buf(),
-                ),
-                Some(WorkspaceConfig::default()),
-            )
-            .await
-            .expect("publish workspace");
-        let (admission, _, _) = guarded_daemon_sync_context(&state)
-            .await
-            .expect("guarded startup context");
-        let permit = admission
-            .acquire_background(OwnerKind::Startup)
-            .await
-            .expect("startup admission")
-            .expect("startup permit");
-        let scope = permit.progress_scope().expect("progress scope");
-        let (mut relay, sender) = StartupBackfillProgressRelay::spawn(Arc::clone(&state), scope);
+        .expect("write malformed config.toml");
 
-        sender
-            .send(crate::services::ingestion::BackfillProgress {
-                done: 256,
-                total: 1000,
-            })
-            .expect("send progress");
-        drop(sender);
-        relay.join().await;
-
-        let snapshot = state
-            .scan_progress_snapshot()
-            .await
-            .expect("scan status populated by relay");
-        assert!(snapshot.running);
-        assert_eq!(snapshot.files_scanned, 256);
-        assert_eq!(snapshot.files_total, 1000);
+        let result = resolve_daemon_mode(workspace.path());
+        assert!(
+            result.is_err(),
+            "a malformed config.toml must hard-fail mode resolution, not silently default to Managed"
+        );
+        let message = result.expect_err("must be an error").to_string();
+        assert!(
+            message.contains("config.toml"),
+            "error must identify config.toml as the source: {message}"
+        );
     }
 
-    #[tokio::test]
-    async fn cancelled_backfill_progress_relay_quiesces_and_rejects_stale_writes() {
-        let state: SharedState = Arc::new(AppState::new(1));
+    #[test]
+    fn resolve_daemon_mode_falls_through_to_default_when_config_toml_absent() {
         let workspace = tempfile::tempdir().expect("workspace tempdir");
-        let data = tempfile::tempdir().expect("data tempdir");
-        std::fs::create_dir_all(workspace.path().join(".git")).expect("create git metadata");
-        std::fs::write(
-            workspace.path().join(".git").join("HEAD"),
-            "ref: refs/heads/main\n",
-        )
-        .expect("write git HEAD");
-        let _ = state
-            .publish_workspace_generation(
-                coordinator_snapshot(
-                    "id-main",
-                    "uuid-worktree",
-                    workspace.path(),
-                    data.path().to_path_buf(),
-                ),
-                Some(WorkspaceConfig::default()),
-            )
-            .await
-            .expect("publish workspace");
-        let (admission, _, _) = guarded_daemon_sync_context(&state)
-            .await
-            .expect("guarded startup context");
-        let permit = admission
-            .acquire_background(OwnerKind::Startup)
-            .await
-            .expect("startup admission")
-            .expect("startup permit");
-        let scope = permit.progress_scope().expect("progress scope");
-        let (mut relay, sender) = StartupBackfillProgressRelay::spawn(Arc::clone(&state), scope);
-
-        relay.abort_and_join().await;
-        assert!(
-            sender
-                .send(crate::services::ingestion::BackfillProgress {
-                    done: 999,
-                    total: 1000,
-                })
-                .is_err(),
-            "joined cancellation must close the progress receiver"
+        std::fs::create_dir_all(workspace.path().join(".engram")).expect(".engram dir");
+        // No config.toml written at all: this is the legitimate default case
+        // and must resolve to Managed, not be treated as a read failure.
+        assert_eq!(
+            resolve_daemon_mode(workspace.path()).expect("absent config.toml must resolve"),
+            DaemonMode::Managed
         );
-        assert!(matches!(
-            CoordinatorCell::complete(permit),
-            CompletionOutcome::Released
-        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_daemon_mode_hard_fails_when_config_toml_is_unreadable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        std::fs::create_dir_all(workspace.path().join(".engram")).expect(".engram dir");
+        let config_path = workspace.path().join(".engram").join("config.toml");
+        std::fs::write(&config_path, "mode = \"read_server\"\n").expect("write config.toml");
+        // Remove all read permission so `read_to_string` fails with a
+        // non-`NotFound` I/O error rather than parsing successfully.
+        std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o000))
+            .expect("chmod config.toml unreadable");
+
+        let result = resolve_daemon_mode(workspace.path());
+
+        // Restore permissions so the tempdir can be cleaned up regardless of
+        // assertion outcome.
+        std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o644))
+            .expect("restore config.toml permissions");
+
         assert!(
-            state.scan_progress_snapshot().await.is_none(),
-            "a quiesced stale child must not publish progress after retirement"
+            result.is_err(),
+            "an unreadable config.toml must hard-fail mode resolution, not silently \
+             fall through to PluginConfig::load's lenient default"
         );
     }
 }

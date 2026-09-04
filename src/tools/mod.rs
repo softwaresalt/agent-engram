@@ -14,6 +14,7 @@ use crate::models::metrics::{CoarseParams, UsageEvent};
 use crate::server::state::{AppState, DispatchSnapshot, SharedState};
 use crate::services::{metrics, policy};
 
+pub mod capabilities;
 pub mod doctor;
 pub mod lifecycle;
 pub mod lint;

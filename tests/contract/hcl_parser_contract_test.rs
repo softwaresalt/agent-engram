@@ -1,5 +1,7 @@
 //! RED contract harness for HCL-family MCP and IPC graph responses (121.001-T).
 
+use engram::config::StaleStrategy;
+use engram::models::config::DaemonMode;
 use std::sync::Arc;
 
 use engram::daemon::protocol::IpcResponse;
@@ -68,7 +70,13 @@ service "api" {
         .await
         .expect("mixed HCL indexing must return its bounded result");
 
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     state
         .set_workspace_and_config(
             WorkspaceSnapshot {

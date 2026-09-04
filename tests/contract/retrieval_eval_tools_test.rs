@@ -11,6 +11,8 @@
 //! 3. `get_retrieval_eval_report` before any run → empty report.
 //! 4. Unknown params are tolerated.
 
+use engram::config::StaleStrategy;
+use engram::models::config::DaemonMode;
 use std::fs;
 use std::sync::Arc;
 
@@ -28,7 +30,13 @@ async fn setup_workspace(config: WorkspaceConfig) -> (Arc<AppState>, tempfile::T
     fs::create_dir_all(&git_dir).expect("create .git");
     fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").expect("write HEAD");
 
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let path = workspace.path().to_string_lossy().to_string();
 
     tools::dispatch(

@@ -15,6 +15,8 @@
 //!
 //! Tests: S085–S088.
 
+use engram::config::StaleStrategy;
+use engram::models::config::DaemonMode;
 use std::fs;
 use std::sync::Arc;
 
@@ -46,7 +48,13 @@ async fn bind_git_workspace(files: &[(&str, &str)]) -> (TempDir, Arc<AppState>) 
         fs::write(&abs, content).expect("write source file");
     }
 
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let path = ws.path().to_string_lossy().to_string();
     tools::dispatch(
         state.clone(),

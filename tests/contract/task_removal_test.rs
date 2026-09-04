@@ -1,8 +1,10 @@
+use engram::config::StaleStrategy;
 /// Harness for agent-engram-gsa Phase 1: Remove Tool Dispatch and Tool Functions.
 ///
 /// These tests verify that all 26 task management tools (24 task management +
 /// 2 task-code bridge tools) have been removed from the dispatch table and return
 /// a "not implemented" error rather than a workspace or task error.
+use engram::models::config::DaemonMode;
 use std::sync::Arc;
 
 use serde_json::json;
@@ -51,7 +53,13 @@ const TASK_MANAGEMENT_TOOLS: &[&str] = &[
 /// After Phase 1 implementation: these tools hit `_` and return "not implemented".
 #[test]
 async fn task_management_tools_not_in_dispatch() {
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
 
     for tool in TASK_MANAGEMENT_TOOLS {
         let result = tools::dispatch(state.clone(), tool, Some(json!({}))).await;

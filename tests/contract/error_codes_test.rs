@@ -66,6 +66,27 @@ fn policy_error_codes_match_contract() {
     assert_eq!(POLICY_CONFIG_INVALID, 14_002);
 }
 
+/// Verify read-server refusal (16xxx) and activation-availability (17xxx)
+/// error codes match the contract (F38, `142.003-T` / `134-S`).
+///
+/// These ranges are reserved so that downstream consumers (F11, F17, F20,
+/// F21, F44, F45) can rely on stable numeric codes rather than minting local
+/// ad-hoc refusal errors. Unlike every other range above, the mapping unit
+/// tests in `src/errors/mod.rs` assert `payload.error.code` against the
+/// *named constant* it maps from, which cannot detect a regression where the
+/// constant's own literal value drifts (e.g. an accidental reassignment).
+/// This test pins each constant against its independently-hardcoded literal,
+/// matching the pattern every other range above already uses.
+#[test]
+fn read_server_and_activation_error_codes_match_contract() {
+    assert_eq!(READ_SERVER_WRITE_CONTROL_REFUSED, 16_001);
+    assert_eq!(DIRECT_SYNC_REFUSED, 16_002);
+    assert_eq!(WORKSPACE_RETARGET_REFUSED, 16_003);
+    assert_eq!(GENERATION_NOT_YET_ACTIVATED, 17_001);
+    assert_eq!(ACTIVATION_DEADLINE_EXCEEDED, 17_002);
+    assert_eq!(TRANSIENT_ACTIVATION_FAILURE, 17_003);
+}
+
 /// Verify error-to-response mapping produces the correct code for each variant.
 #[test]
 #[allow(clippy::too_many_lines)]
