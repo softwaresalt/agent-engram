@@ -11,6 +11,8 @@
 
 #![cfg(feature = "cozo-backend")]
 
+use engram::config::StaleStrategy;
+use engram::models::config::DaemonMode;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -226,7 +228,13 @@ async fn build_harness(inject_function: Option<&str>) -> Harness {
     // Release the DB handle so the tool dispatch reconnects cleanly.
     drop(queries);
 
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     state
         .set_workspace(snapshot(
             data_dir,

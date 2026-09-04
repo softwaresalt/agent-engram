@@ -1,5 +1,7 @@
 //! Contract tests for dispatch metrics instrumentation (TASK-010.03).
 
+use engram::config::StaleStrategy;
+use engram::models::config::DaemonMode;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -31,7 +33,13 @@ async fn bind_test_workspace(state: &Arc<AppState>, path: &std::path::Path, bran
 #[serial]
 async fn t010_03_dispatch_records_usage_event_for_read_tools() {
     // GIVEN a minimal AppState with a workspace bound
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let workspace = tempfile::tempdir().unwrap_or_else(|e| panic!("tempdir failed: {e}"));
     bind_test_workspace(&state, workspace.path(), "main").await;
     engram::services::metrics::clear_recent_events();
@@ -67,7 +75,13 @@ async fn t010_03_dispatch_records_usage_event_for_read_tools() {
 #[serial]
 async fn t010_03_dispatch_records_usage_event_for_workspace_tools() {
     // GIVEN a minimal AppState
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let workspace = tempfile::tempdir().unwrap_or_else(|e| panic!("tempdir failed: {e}"));
     bind_test_workspace(&state, workspace.path(), "main").await;
     engram::services::metrics::clear_recent_events();
@@ -130,7 +144,13 @@ async fn t010_03_dispatch_records_usage_event_for_workspace_tools() {
 #[serial]
 async fn t010_03_estimated_tokens_equals_bytes_div_4() {
     // GIVEN a tool response of known byte size
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let workspace = tempfile::tempdir().unwrap_or_else(|e| panic!("tempdir failed: {e}"));
     bind_test_workspace(&state, workspace.path(), "main").await;
     engram::services::metrics::clear_recent_events();
@@ -152,7 +172,13 @@ async fn t010_03_estimated_tokens_equals_bytes_div_4() {
 #[serial]
 async fn t010_03_health_report_records_section_counts() {
     // GIVEN a minimal AppState with a workspace bound
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let workspace = tempfile::tempdir().unwrap_or_else(|e| panic!("tempdir failed: {e}"));
     bind_test_workspace(&state, workspace.path(), "main").await;
     engram::services::metrics::clear_recent_events();

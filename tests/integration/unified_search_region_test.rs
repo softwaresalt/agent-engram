@@ -8,6 +8,8 @@
 //! the `bge-small-en-v1.5` model, and code symbols are embedded during indexing.
 #![cfg(all(feature = "cozo-backend", feature = "embeddings"))]
 
+use engram::config::StaleStrategy;
+use engram::models::config::DaemonMode;
 use std::sync::Arc;
 
 use engram::db::connect_db;
@@ -95,7 +97,13 @@ async fn unified_search_region_code_excludes_content() {
     .await;
     drop(queries);
 
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     tools::dispatch(
         state.clone(),
         "set_workspace",

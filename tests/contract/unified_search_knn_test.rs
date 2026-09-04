@@ -1,3 +1,5 @@
+use engram::config::StaleStrategy;
+use engram::models::config::DaemonMode;
 use std::sync::Arc;
 
 use serde_json::json;
@@ -27,7 +29,13 @@ fn ws(id: &str) -> WorkspaceSnapshot {
 #[test]
 async fn unified_search_requires_workspace() {
     // GIVEN no workspace set
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let params = Some(json!({ "query": "authentication" }));
 
     // WHEN dispatching unified_search without a workspace
@@ -44,7 +52,13 @@ async fn unified_search_requires_workspace() {
 #[test]
 async fn unified_search_rejects_empty_query() {
     // GIVEN workspace set, empty query
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     state
         .set_workspace(ws("ufs_empty"))
         .await
@@ -65,7 +79,13 @@ async fn unified_search_rejects_empty_query() {
 #[test]
 async fn unified_search_rejects_query_too_long() {
     // GIVEN workspace set, oversized query
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     state
         .set_workspace(ws("ufs_long"))
         .await
@@ -90,7 +110,13 @@ async fn unified_search_rejects_query_too_long() {
 #[test]
 async fn unified_search_output_contains_results_array() {
     // GIVEN workspace set
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     state
         .set_workspace(ws("ufs_output"))
         .await
@@ -128,7 +154,13 @@ async fn unified_search_output_contains_results_array() {
 #[test]
 async fn unified_search_result_items_have_required_fields() {
     // GIVEN workspace set (empty DB — keyword matches only)
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     state
         .set_workspace(ws("ufs_fields"))
         .await
@@ -173,7 +205,13 @@ async fn unified_search_result_items_have_required_fields() {
 #[test]
 async fn unified_search_respects_limit_parameter() {
     // GIVEN workspace set, limit = 3
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     state
         .set_workspace(ws("ufs_limit"))
         .await

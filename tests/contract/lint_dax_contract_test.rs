@@ -8,6 +8,8 @@
 //!
 //! Tests: S-LINTDAX-01 through S-LINTDAX-06.
 
+use engram::config::StaleStrategy;
+use engram::models::config::DaemonMode;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -98,7 +100,13 @@ async fn lint_dax_is_registered_in_catalog() {
 /// S-LINTDAX-03: `lint_dax` requires a bound workspace.
 #[test]
 async fn lint_dax_requires_workspace() {
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let err = tools::dispatch(state, "lint_dax", None)
         .await
         .expect_err("expected workspace-not-set error");
@@ -112,7 +120,13 @@ async fn lint_dax_requires_workspace() {
 #[test]
 async fn lint_dax_returns_conformant_findings_schema() {
     let (_root, snapshot) = bound_workspace();
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     state.set_workspace(snapshot).await.expect("set workspace");
 
     let value = tools::dispatch(state, "lint_dax", None)
@@ -164,7 +178,13 @@ async fn lint_dax_returns_conformant_findings_schema() {
 #[test]
 async fn lint_dax_model_path_selector_targets_one_model() {
     let (_root, snapshot) = bound_workspace();
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     state.set_workspace(snapshot).await.expect("set workspace");
 
     let params = json!({
@@ -192,7 +212,13 @@ async fn lint_dax_model_path_selector_targets_one_model() {
 #[test]
 async fn lint_dax_unindexed_model_path_is_error() {
     let (_root, snapshot) = bound_workspace();
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     state.set_workspace(snapshot).await.expect("set workspace");
 
     let params = json!({

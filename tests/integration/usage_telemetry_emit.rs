@@ -16,6 +16,8 @@
 //! singleton usage is consolidated into a single test to avoid cross-test races
 //! on the process-global writer.
 
+use engram::config::StaleStrategy;
+use engram::models::config::DaemonMode;
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
@@ -78,7 +80,13 @@ async fn t067_004_dual_source_correlation_id_emits_records() {
     init_git(&ws);
     let path = ws.to_string_lossy().to_string();
 
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
 
     // Bind once: no record (pre-bind snapshot is None) but the metrics writer is
     // now initialized against this workspace.

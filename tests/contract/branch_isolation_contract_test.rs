@@ -9,6 +9,8 @@
 //!
 //! Tests: C009-01 through C009-03.
 
+use engram::config::StaleStrategy;
+use engram::models::config::DaemonMode;
 use std::fs;
 use std::sync::Arc;
 
@@ -33,7 +35,13 @@ async fn c009_01_set_workspace_returns_valid_workspace_id() {
     fs::create_dir_all(&git_dir).expect("create .git");
     fs::write(git_dir.join("HEAD"), "ref: refs/heads/feature-branch\n").expect("write HEAD");
 
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let path = workspace.path().to_string_lossy().to_string();
 
     // WHEN set_workspace is called
@@ -77,7 +85,13 @@ async fn c009_02_get_workspace_status_branch_matches_git_head() {
     fs::create_dir_all(&git_dir).expect("create .git");
     fs::write(git_dir.join("HEAD"), "ref: refs/heads/my-branch\n").expect("write HEAD");
 
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let path = workspace.path().to_string_lossy().to_string();
 
     tools::dispatch(
@@ -121,7 +135,13 @@ async fn c009_03_workspace_id_differs_across_branches() {
 
     // WHEN bound on branch "alpha"
     fs::write(git_dir.join("HEAD"), "ref: refs/heads/alpha\n").expect("write HEAD alpha");
-    let state_a = Arc::new(AppState::new(10));
+    let state_a = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let result_a = tools::dispatch(
         state_a,
         "set_workspace",
@@ -137,7 +157,13 @@ async fn c009_03_workspace_id_differs_across_branches() {
 
     // AND bound on branch "beta"
     fs::write(git_dir.join("HEAD"), "ref: refs/heads/beta\n").expect("write HEAD beta");
-    let state_b = Arc::new(AppState::new(10));
+    let state_b = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let result_b = tools::dispatch(state_b, "set_workspace", Some(json!({ "path": path })))
         .await
         .expect("set_workspace beta");

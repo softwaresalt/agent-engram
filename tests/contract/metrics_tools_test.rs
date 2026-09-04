@@ -3,6 +3,8 @@
 //! Validates `get_branch_metrics`, `get_token_savings_report`, and
 //! health report `metrics_summary` extension.
 
+use engram::config::StaleStrategy;
+use engram::models::config::DaemonMode;
 use std::collections::HashMap;
 use std::io::Write;
 use std::sync::Arc;
@@ -95,7 +97,13 @@ fn append_usage_events_with_correlation(
 #[tokio::test]
 async fn t010_05_get_branch_metrics_returns_summary() {
     // GIVEN a workspace with recorded metrics
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let workspace = tempfile::tempdir().unwrap_or_else(|e| panic!("tempdir failed: {e}"));
     bind_workspace(&state, workspace.path(), "main").await;
     write_usage_events(workspace.path(), "main", "map_code", 3);
@@ -115,7 +123,13 @@ async fn t010_05_get_branch_metrics_returns_summary() {
 #[tokio::test]
 async fn t010_05_get_branch_metrics_not_found() {
     // GIVEN a workspace with no metrics for branch "nonexistent__branch"
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let workspace = tempfile::tempdir().unwrap_or_else(|e| panic!("tempdir failed: {e}"));
     bind_workspace(&state, workspace.path(), "main").await;
     write_usage_events(workspace.path(), "main", "map_code", 1);
@@ -141,7 +155,13 @@ async fn t010_05_get_branch_metrics_not_found() {
 #[tokio::test]
 async fn t010_05_get_branch_metrics_no_workspace() {
     // GIVEN no workspace bound
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
 
     // WHEN dispatching get_branch_metrics
     let result = tools::dispatch(state.clone(), "get_branch_metrics", None).await;
@@ -159,7 +179,13 @@ async fn t010_05_get_branch_metrics_no_workspace() {
 #[tokio::test]
 async fn t010_05_get_branch_metrics_compare() {
     // GIVEN a workspace with metrics on two branches
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let workspace = tempfile::tempdir().unwrap_or_else(|e| panic!("tempdir failed: {e}"));
     bind_workspace(&state, workspace.path(), "main").await;
     write_usage_events(workspace.path(), "main", "map_code", 3);
@@ -190,7 +216,13 @@ async fn t010_05_get_branch_metrics_compare() {
 #[tokio::test]
 async fn t010_05_get_token_savings_report() {
     // GIVEN a workspace with recorded metrics
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let workspace = tempfile::tempdir().unwrap_or_else(|e| panic!("tempdir failed: {e}"));
     bind_workspace(&state, workspace.path(), "main").await;
     write_usage_events(workspace.path(), "main", "impact_analysis", 2);
@@ -212,7 +244,13 @@ async fn t010_05_get_token_savings_report() {
 #[tokio::test]
 async fn t075_token_savings_report_includes_adoption_metrics() {
     // GIVEN a workspace whose usage.jsonl spans two harness tasks.
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let workspace = tempfile::tempdir().unwrap_or_else(|e| panic!("tempdir failed: {e}"));
     bind_workspace(&state, workspace.path(), "main").await;
     append_usage_events_with_correlation(workspace.path(), "main", "map_code", "task-A", 2);
@@ -243,7 +281,13 @@ async fn t075_token_savings_report_includes_adoption_metrics() {
 #[tokio::test]
 async fn t010_05_health_report_includes_metrics() {
     // GIVEN a running daemon state
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let workspace = tempfile::tempdir().unwrap_or_else(|e| panic!("tempdir failed: {e}"));
     bind_workspace(&state, workspace.path(), "main").await;
     write_usage_events(workspace.path(), "main", "map_code", 1);

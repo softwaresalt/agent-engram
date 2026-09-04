@@ -1,3 +1,5 @@
+use engram::config::StaleStrategy;
+use engram::models::config::DaemonMode;
 use std::fs;
 use std::sync::Arc;
 
@@ -15,7 +17,13 @@ async fn contract_set_workspace_returns_hydrated_flag() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
 
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let path = workspace.path().to_string_lossy().to_string();
 
     let result = tools::dispatch(
@@ -38,7 +46,13 @@ async fn contract_set_workspace_returns_hydrated_flag() {
 async fn contract_get_daemon_status_reports_counts() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let path = workspace.path().to_string_lossy().to_string();
 
     tools::dispatch(
@@ -95,7 +109,13 @@ async fn version_handshake_returns_typed_mismatch_error() {
 async fn contract_get_workspace_status_reports_state() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let path = workspace.path().to_string_lossy().to_string();
     let canonical_path = engram::db::workspace::canonicalize_workspace(&path)
         .expect("canonicalize_workspace should succeed")
@@ -133,7 +153,13 @@ async fn contract_set_workspace_enforces_limit() {
     fs::create_dir(first.path().join(".git")).expect("create first .git");
     fs::create_dir(second.path().join(".git")).expect("create second .git");
 
-    let state = Arc::new(AppState::new(1));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        1,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let first_path = first.path().to_string_lossy().to_string();
     let second_path = second.path().to_string_lossy().to_string();
 
@@ -174,12 +200,17 @@ async fn contract_rate_limiting_rejects_excess_connections() {
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
 
-    use engram::config::StaleStrategy;
     use engram::errors::codes::RATE_LIMITED;
     use engram::server::router::build_router;
 
     // Rate limit of 2 connections per 60s window for testing
-    let state = Arc::new(AppState::with_options(10, StaleStrategy::Warn, 2, 60));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        2,
+        60,
+    ));
     let app = build_router(state);
 
     let make_request = || {
@@ -248,7 +279,13 @@ async fn contract_no_config_toml_uses_defaults() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
 
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let path = workspace.path().to_string_lossy().to_string();
 
     let result = tools::dispatch(
@@ -285,7 +322,13 @@ max_size = 50
     )
     .expect("write config.toml");
 
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let path = workspace.path().to_string_lossy().to_string();
 
     tools::dispatch(
@@ -310,7 +353,13 @@ async fn contract_toml_parse_error_uses_defaults_with_warning() {
     fs::create_dir_all(&engram_dir).expect("create .engram dir");
     fs::write(engram_dir.join("config.toml"), "{{invalid toml").expect("write bad config");
 
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let path = workspace.path().to_string_lossy().to_string();
 
     // Should still succeed — falls back to defaults
@@ -349,7 +398,13 @@ max_size = 0
     )
     .expect("write config with invalid batch size");
 
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let path = workspace.path().to_string_lossy().to_string();
 
     // set_workspace should fail with CONFIG_INVALID_VALUE

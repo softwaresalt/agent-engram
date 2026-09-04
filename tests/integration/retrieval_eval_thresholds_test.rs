@@ -17,6 +17,8 @@
 #[path = "../helpers/mod.rs"]
 mod helpers;
 
+use engram::config::StaleStrategy;
+use engram::models::config::DaemonMode;
 use std::fs;
 use std::sync::Arc;
 use std::time::Duration;
@@ -66,7 +68,13 @@ async fn setup_workspace(config: WorkspaceConfig) -> (Arc<AppState>, tempfile::T
     fs::create_dir_all(&git_dir).expect("create .git");
     fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").expect("write HEAD");
 
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     helpers::bind_isolated_workspace_with_disabled_metrics(
         &state,
         workspace.path(),

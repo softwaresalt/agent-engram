@@ -6,6 +6,8 @@
 //! Note: thresholds are relaxed for debug-build CI; production targets
 //! assume `--release` builds.
 
+use engram::config::StaleStrategy;
+use engram::models::config::DaemonMode;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -21,7 +23,13 @@ async fn perf_setup() -> Arc<AppState> {
     let engram_dir = workspace.path().join(".engram");
     std::fs::create_dir_all(&engram_dir).expect(".engram");
 
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let path = workspace.path().to_string_lossy().to_string();
     tools::dispatch(
         state.clone(),

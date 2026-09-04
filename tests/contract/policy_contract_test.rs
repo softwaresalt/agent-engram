@@ -4,6 +4,8 @@
 //! pipeline: denied calls return error code 14001, allowed calls proceed,
 //! and disabled policy permits everything.
 
+use engram::config::StaleStrategy;
+use engram::models::config::DaemonMode;
 use std::fs;
 use std::sync::Arc;
 
@@ -26,7 +28,13 @@ async fn setup_workspace_with_policy(policy: PolicyConfig) -> (Arc<AppState>, te
     fs::create_dir_all(&git_dir).expect("create .git");
     fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").expect("write HEAD");
 
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let path = workspace.path().to_string_lossy().to_string();
 
     tools::dispatch(

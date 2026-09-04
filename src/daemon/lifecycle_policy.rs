@@ -450,6 +450,8 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+    use crate::config::StaleStrategy;
+    use crate::models::config::DaemonMode;
     use crate::server::state::{RequestOutcome, WorkMask};
 
     fn coordinator_snapshot(
@@ -514,7 +516,13 @@ mod tests {
         let config_a = config_with(LARGE);
         let config_b = config_with(SMALL);
 
-        let state = Arc::new(AppState::new(10));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            10,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         state
             .set_workspace_and_config(snapshot_a.clone(), Some(config_a.clone()))
             .await
@@ -613,7 +621,7 @@ mod tests {
 
     #[tokio::test]
     async fn normal_shutdown_joins_retained_hydration_to_its_safe_terminal() {
-        let state = AppState::new(1);
+        let state = AppState::with_mode(DaemonMode::Managed, 1, StaleStrategy::Warn, 20, 60);
         let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = tokio::sync::oneshot::channel();
         let reached_terminal = Arc::new(AtomicBool::new(false));
@@ -648,7 +656,13 @@ mod tests {
         let blocked_data_dir = temp.path().join("blocked-data-dir");
         std::fs::write(&blocked_data_dir, "not a directory")
             .expect("create blocked shutdown data directory");
-        let state = Arc::new(AppState::new(1));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            1,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         let snapshot = coordinator_snapshot(
             "shutdown-cleanup",
             "shutdown-cleanup-uuid",
@@ -668,7 +682,13 @@ mod tests {
         crate::services::metrics::shutdown()
             .await
             .expect("reset metrics writer");
-        let state = Arc::new(AppState::new(1));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            1,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         let flush_calls_before = SHUTDOWN_FLUSH_CALLS.load(Ordering::SeqCst);
 
         shutdown_services(&state)
@@ -693,7 +713,13 @@ mod tests {
             "main",
         )
         .expect("configure stalled metrics shutdown");
-        let state = Arc::new(AppState::new(1));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            1,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         let flush_calls_before = SHUTDOWN_FLUSH_CALLS.load(Ordering::SeqCst);
 
         let error = shutdown_services(&state)
@@ -846,7 +872,13 @@ mod tests {
         .await
         .expect("configure fixture metrics writer");
         let config = WorkspaceConfig::default();
-        let state = Arc::new(AppState::new(1));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            1,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         let _ = state
             .publish_workspace_generation(snapshot.clone(), Some(config.clone()))
             .await
@@ -930,7 +962,13 @@ mod tests {
         .await
         .expect("configure fixture metrics writer");
         let config = WorkspaceConfig::default();
-        let state = Arc::new(AppState::new(1));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            1,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         let _ = state
             .publish_workspace_generation(snapshot.clone(), Some(config.clone()))
             .await

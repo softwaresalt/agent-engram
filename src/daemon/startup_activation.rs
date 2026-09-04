@@ -395,7 +395,8 @@ impl StartupBackfillProgressRelay {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::config::WorkspaceConfig;
+    use crate::config::StaleStrategy;
+    use crate::models::config::{DaemonMode, WorkspaceConfig};
     use crate::server::state::WorkspaceSnapshot;
 
     fn coordinator_snapshot(
@@ -419,7 +420,7 @@ mod tests {
 
     #[tokio::test]
     async fn initial_gate_reports_pending_until_hydration_is_ready() {
-        let state = AppState::new(1);
+        let state = AppState::with_mode(DaemonMode::Managed, 1, StaleStrategy::Warn, 20, 60);
 
         assert_eq!(run_initial_gate(&state), StartupOutcome::Pending);
         assert!(
@@ -439,7 +440,13 @@ mod tests {
             "ref: refs/heads/main\n",
         )
         .expect("write git HEAD");
-        let state = Arc::new(AppState::new(1));
+        let state = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            1,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         let mut stale_snapshot = coordinator_snapshot(
             "id-stale",
             "uuid-worktree",
@@ -553,7 +560,13 @@ mod tests {
 
     #[tokio::test]
     async fn backfill_progress_relay_updates_scan_status() {
-        let state: SharedState = Arc::new(AppState::new(1));
+        let state: SharedState = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            1,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         let workspace = tempfile::tempdir().expect("workspace tempdir");
         let data = tempfile::tempdir().expect("data tempdir");
         std::fs::create_dir_all(workspace.path().join(".git")).expect("create git metadata");
@@ -605,7 +618,13 @@ mod tests {
 
     #[tokio::test]
     async fn cancelled_backfill_progress_relay_quiesces_and_rejects_stale_writes() {
-        let state: SharedState = Arc::new(AppState::new(1));
+        let state: SharedState = Arc::new(AppState::with_mode(
+            DaemonMode::Managed,
+            1,
+            StaleStrategy::Warn,
+            20,
+            60,
+        ));
         let workspace = tempfile::tempdir().expect("workspace tempdir");
         let data = tempfile::tempdir().expect("data tempdir");
         std::fs::create_dir_all(workspace.path().join(".git")).expect("create git metadata");

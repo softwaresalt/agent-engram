@@ -6,6 +6,8 @@
 //! - Each tool returns `WORKSPACE_NOT_SET` (1003) when called without a bound workspace
 //! - The `ModelLoadFailed` error (FR-154) produces the correct response shape
 
+use engram::config::StaleStrategy;
+use engram::models::config::DaemonMode;
 use std::sync::Arc;
 
 use serde_json::{Value, json};
@@ -40,7 +42,13 @@ async fn assert_tool_exists(state: Arc<AppState>, method: &str, params: Option<V
 /// when no workspace is bound.
 #[test]
 async fn t071_all_quickstart_tools_exist_in_dispatch() {
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
 
     // US1: Indexing
     assert_tool_exists(
@@ -84,7 +92,13 @@ async fn t071_all_quickstart_tools_exist_in_dispatch() {
 /// Existing lifecycle and task tools from 001/002 specs also exist.
 #[test]
 async fn t071_core_tools_also_registered() {
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
 
     // Lifecycle tools (don't need workspace — test differently)
     let daemon_status = tools::dispatch(state.clone(), "get_daemon_status", None)
@@ -101,7 +115,13 @@ async fn t071_core_tools_also_registered() {
 /// A tool name NOT in the dispatch table returns `InvalidParams` (5005).
 #[test]
 async fn t071_unknown_tool_returns_not_implemented() {
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let result = tools::dispatch(state, "nonexistent_tool", None).await;
     let err = result.expect_err("unknown tool should error");
     let resp = err.to_response();

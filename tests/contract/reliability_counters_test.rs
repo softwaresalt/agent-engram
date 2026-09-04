@@ -5,6 +5,8 @@
 //! - `telemetry` contains the four reliability counter fields.
 //! - All counter values start at zero for a fresh daemon state.
 
+use engram::config::StaleStrategy;
+use engram::models::config::DaemonMode;
 use std::sync::Arc;
 
 use engram::server::state::AppState;
@@ -14,7 +16,13 @@ use serde_json::json;
 /// `get_daemon_status` response must include a `telemetry` object.
 #[tokio::test]
 async fn contract_get_daemon_status_has_telemetry_object() {
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
 
     let result = tools::dispatch(state, "get_daemon_status", None)
         .await
@@ -34,7 +42,13 @@ async fn contract_get_daemon_status_has_telemetry_object() {
 /// `telemetry` must contain `stale_pid_recovered` counter starting at 0.
 #[tokio::test]
 async fn contract_telemetry_has_stale_pid_recovered_counter() {
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
 
     let result = tools::dispatch(state, "get_daemon_status", None)
         .await
@@ -56,7 +70,13 @@ async fn contract_telemetry_has_stale_pid_recovered_counter() {
 /// `telemetry` must contain `version_mismatch_respawn` counter starting at 0.
 #[tokio::test]
 async fn contract_telemetry_has_version_mismatch_respawn_counter() {
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
 
     let result = tools::dispatch(state, "get_daemon_status", None)
         .await
@@ -78,7 +98,13 @@ async fn contract_telemetry_has_version_mismatch_respawn_counter() {
 /// `telemetry` must contain `registry_validation_failures` counter starting at 0.
 #[tokio::test]
 async fn contract_telemetry_has_registry_validation_failures_counter() {
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
 
     let result = tools::dispatch(state, "get_daemon_status", None)
         .await
@@ -100,7 +126,13 @@ async fn contract_telemetry_has_registry_validation_failures_counter() {
 /// `telemetry` must contain `duplicate_daemon_detected` counter starting at 0.
 #[tokio::test]
 async fn contract_telemetry_has_duplicate_daemon_detected_counter() {
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
 
     let result = tools::dispatch(state, "get_daemon_status", None)
         .await
@@ -142,7 +174,13 @@ async fn contract_broken_registry_increments_validation_failure_counter() {
     )
     .expect("write registry.yaml");
 
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
 
     let _ = tools::dispatch(
         Arc::clone(&state),

@@ -3,13 +3,21 @@
 //! These tests measure latency and resource usage against the targets defined in
 //! the feature specification. Results are printed to stdout for recording.
 
+use engram::config::StaleStrategy;
+use engram::models::config::DaemonMode;
 use std::sync::Arc;
 use std::time::Instant;
 
 use engram::server::state::AppState;
 
 fn fresh_state() -> Arc<AppState> {
-    Arc::new(AppState::new(10))
+    Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ))
 }
 
 fn make_candidate(

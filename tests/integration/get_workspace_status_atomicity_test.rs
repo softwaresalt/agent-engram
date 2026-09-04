@@ -21,6 +21,8 @@
 
 #![allow(clippy::doc_markdown)]
 
+use engram::config::StaleStrategy;
+use engram::models::config::DaemonMode;
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::Path;
@@ -129,7 +131,13 @@ async fn snapshot_workspace_and_config_never_tears_reader_side_pair() {
     let path_a = dir_a.path().to_string_lossy().into_owned();
     let path_b = dir_b.path().to_string_lossy().into_owned();
 
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let snap_a = make_snapshot("ws-a", &path_a, &data_dir);
     let snap_b = make_snapshot("ws-b", &path_b, &data_dir);
     let cfg_a = config_with_eval(true);
@@ -208,7 +216,7 @@ async fn snapshot_workspace_and_config_returns_none_when_config_absent() {
     let dir_a = TempDir::new().expect("workspace A tempdir");
     let path_a = dir_a.path().to_string_lossy().into_owned();
 
-    let state = AppState::new(10);
+    let state = AppState::with_mode(DaemonMode::Managed, 10, StaleStrategy::Warn, 20, 60);
     state
         .set_workspace(make_snapshot("ws-a", &path_a, &data_dir))
         .await
@@ -238,7 +246,7 @@ async fn snapshot_dispatch_context_default_substitutes_absent_config() {
     let dir_a = TempDir::new().expect("workspace A tempdir");
     let path_a = dir_a.path().to_string_lossy().into_owned();
 
-    let state = AppState::new(10);
+    let state = AppState::with_mode(DaemonMode::Managed, 10, StaleStrategy::Warn, 20, 60);
     state
         .set_workspace(make_snapshot("ws-a", &path_a, &data_dir))
         .await
@@ -271,7 +279,13 @@ async fn get_workspace_status_never_tears_workspace_and_config() {
     let path_b = dir_b.path().to_string_lossy().into_owned();
     let path_n = dir_n.path().to_string_lossy().into_owned();
 
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
 
     // Consistent pairs: A ⇔ enabled=true, B ⇔ enabled=false. `N` is a neutral
     // binding the reader does not assert on; the writer flips the config ONLY
@@ -377,7 +391,13 @@ async fn snapshot_dispatch_context_never_observes_writer_side_torn_publish() {
     let path_a = dir_a.path().to_string_lossy().into_owned();
     let path_b = dir_b.path().to_string_lossy().into_owned();
 
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let snap_a = make_snapshot("ws-a", &path_a, &data_dir);
     let snap_b = make_snapshot("ws-b", &path_b, &data_dir);
     let cfg_a = config_with_eval(true);
@@ -498,7 +518,13 @@ async fn map_code_handler_never_observes_torn_pair() {
         .await
         .expect("index workspace B");
 
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let snap_a = make_snapshot("ws-a", &path_a, &data_dir_a);
     let snap_b = make_snapshot("ws-b", &path_b, &data_dir_b);
     let cfg_a = WorkspaceConfig {
@@ -597,7 +623,7 @@ async fn map_code_handler_never_observes_torn_pair() {
 /// each graph handler's pre-migration early-error contract.
 #[tokio::test]
 async fn graph_handler_seam_errors_not_set_when_unbound() {
-    let state = AppState::new(10);
+    let state = AppState::with_mode(DaemonMode::Managed, 10, StaleStrategy::Warn, 20, 60);
     let err = tools::snapshot_graph_handler_context(&state)
         .await
         .expect_err("unbound workspace must error");
@@ -616,7 +642,7 @@ async fn set_workspace_and_config_limit_reached_leaves_state_unchanged() {
     let path_a = dir_a.path().to_string_lossy().into_owned();
     let path_b = dir_b.path().to_string_lossy().into_owned();
 
-    let state = AppState::new(1);
+    let state = AppState::with_mode(DaemonMode::Managed, 1, StaleStrategy::Warn, 20, 60);
     let snap_a = make_snapshot("ws-a", &path_a, &data_dir);
     let snap_b = make_snapshot("ws-b", &path_b, &data_dir);
 

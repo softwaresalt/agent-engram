@@ -17,6 +17,8 @@
 //! 4. a seeded regression in the count path fails the tier (the tier has teeth);
 //! 5. the baseline JSON round-trips through serde.
 
+use engram::config::StaleStrategy;
+use engram::models::config::DaemonMode;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
@@ -446,7 +448,13 @@ async fn real_path_via_run_retrieval_eval_dispatch_matches_ground_truth() {
     fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").expect("write HEAD");
     write_fixture(workspace.path());
 
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let path = workspace.path().to_string_lossy().to_string();
     tools::dispatch(
         state.clone(),

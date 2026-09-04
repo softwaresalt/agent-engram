@@ -1,6 +1,8 @@
 #[path = "../helpers/mod.rs"]
 mod helpers;
 
+use engram::config::StaleStrategy;
+use engram::models::config::DaemonMode;
 use std::fs;
 use std::sync::Arc;
 
@@ -19,7 +21,13 @@ use engram::tools;
 
 #[test]
 async fn contract_flush_state_requires_workspace() {
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
 
     let err = tools::dispatch(state, "flush_state", None)
         .await
@@ -36,7 +44,13 @@ async fn contract_flush_state_response_shape() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     std::fs::create_dir(workspace.path().join(".git")).expect("create .git");
 
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let path = workspace.path().to_string_lossy().to_string();
 
     // Bind workspace
@@ -86,7 +100,13 @@ async fn contract_flush_state_response_shape() {
 
 #[test]
 async fn contract_index_workspace_requires_workspace() {
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let params = Some(json!({}));
 
     let err = tools::dispatch(state, "index_workspace", params)
@@ -114,7 +134,13 @@ async fn contract_busy_writes_preserve_public_responses_and_complete_mask() {
     fs::write(engram_dir.join("tasks.md"), "").expect("write tasks.md");
     fs::write(engram_dir.join(".version"), SCHEMA_VERSION).expect("write .version");
 
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     helpers::bind_isolated_workspace_with_disabled_metrics(
         &state,
         workspace.path(),
@@ -235,7 +261,13 @@ async fn contract_busy_writes_preserve_public_responses_and_complete_mask() {
 
 #[test]
 async fn contract_sync_workspace_requires_workspace() {
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let params = Some(json!({}));
 
     let err = tools::dispatch(state, "sync_workspace", params)

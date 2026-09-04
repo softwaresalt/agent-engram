@@ -3,6 +3,8 @@
 //! Tests file-level ingestion behavior using temp directories.
 //! Validates scenarios: S017, S020, S021-S023, S025.
 
+use engram::config::StaleStrategy;
+use engram::models::config::DaemonMode;
 use std::fs;
 use tempfile::TempDir;
 
@@ -132,7 +134,13 @@ async fn markdown_query_memory_returns_chunk_provenance() {
         .await
         .expect("ingest_all_sources");
 
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     state
         .set_workspace(WorkspaceSnapshot {
             workspace_id: "markdown-query-memory".to_string(),
@@ -209,7 +217,13 @@ async fn markdown_query_memory_exposes_fallback_lint_guardrails() {
         .await
         .expect("ingest_all_sources");
 
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     state
         .set_workspace(WorkspaceSnapshot {
             workspace_id: "markdown-query-memory-fallback".to_string(),

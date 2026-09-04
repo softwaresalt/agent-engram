@@ -7,6 +7,8 @@
 #[path = "../helpers/mod.rs"]
 mod helpers;
 
+use engram::config::StaleStrategy;
+use engram::models::config::DaemonMode;
 use std::sync::Arc;
 
 use engram::errors::codes::INDEX_IN_PROGRESS;
@@ -28,7 +30,13 @@ fn make_workspace() -> (tempfile::TempDir, Arc<AppState>) {
     let engram_dir = dir.path().join(".engram");
     std::fs::create_dir_all(&engram_dir).expect(".engram");
     std::fs::write(engram_dir.join(".version"), SCHEMA_VERSION).expect(".version");
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     (dir, state)
 }
 

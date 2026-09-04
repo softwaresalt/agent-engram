@@ -3,11 +3,15 @@
 //! Covers:
 //! - `AppState::with_mode` requires an explicit `DaemonMode` at construction
 //! - `AppState::mode()` reads back the exact mode supplied at construction
-//! - `AppState::new` / `with_stale_strategy` / `with_options` (the pre-F04
-//!   constructors) resolve to `DaemonMode::Managed`, so managed-mode
-//!   behavior is unchanged
 //! - `AppState` exposes no mutation API for `mode` (no setter method exists;
 //!   this is asserted by construction — see module doc below)
+//!
+//! F04 (142.009-T) removed the `AppState::new` / `with_stale_strategy` /
+//! `with_options` convenience constructors, so the three tests that
+//! characterized their implicit resolution to `DaemonMode::Managed` were
+//! deleted: there is no longer an implicit path to characterize, and explicit
+//! `with_mode(DaemonMode::Managed, …)` preservation is already covered by
+//! `with_mode_requires_and_preserves_explicit_mode_managed` below.
 //!
 //! See docs/exec-plans/2026-09-02-separate-indexer-read-server-plan.md.
 
@@ -32,36 +36,6 @@ fn with_mode_requires_and_preserves_explicit_mode_managed() {
 fn with_mode_requires_and_preserves_explicit_mode_read_server() {
     let state = AppState::with_mode(DaemonMode::ReadServer, 10, StaleStrategy::Warn, 20, 60);
     assert_eq!(state.mode(), DaemonMode::ReadServer);
-}
-
-/// GIVEN the pre-existing `AppState::new` constructor (no mode parameter)
-/// WHEN the resulting state's `mode()` is read
-/// THEN it resolves to `DaemonMode::Managed`, proving managed-mode behavior
-/// is unchanged by the introduction of the `mode` field.
-#[test]
-fn new_constructor_resolves_to_managed_mode() {
-    let state = AppState::new(10);
-    assert_eq!(state.mode(), DaemonMode::Managed);
-}
-
-/// GIVEN the pre-existing `AppState::with_stale_strategy` constructor
-/// WHEN the resulting state's `mode()` is read
-/// THEN it resolves to `DaemonMode::Managed`, proving managed-mode behavior
-/// is unchanged by the introduction of the `mode` field.
-#[test]
-fn with_stale_strategy_constructor_resolves_to_managed_mode() {
-    let state = AppState::with_stale_strategy(10, StaleStrategy::Fail);
-    assert_eq!(state.mode(), DaemonMode::Managed);
-}
-
-/// GIVEN the pre-existing `AppState::with_options` constructor
-/// WHEN the resulting state's `mode()` is read
-/// THEN it resolves to `DaemonMode::Managed`, proving managed-mode behavior
-/// is unchanged by the introduction of the `mode` field.
-#[test]
-fn with_options_constructor_resolves_to_managed_mode() {
-    let state = AppState::with_options(10, StaleStrategy::Warn, 5, 30);
-    assert_eq!(state.mode(), DaemonMode::Managed);
 }
 
 /// GIVEN two `AppState` instances constructed with different modes

@@ -5,6 +5,8 @@
 //! 2. A concurrent `set_workspace_config` call cannot change policy mid-dispatch
 //! 3. Policy-denied calls are recorded in metrics with `outcome=denied`
 
+use engram::config::StaleStrategy;
+use engram::models::config::DaemonMode;
 use std::fs;
 use std::sync::Arc;
 
@@ -32,7 +34,13 @@ async fn setup_workspace_with_policy(policy: PolicyConfig) -> (Arc<AppState>, te
     fs::create_dir_all(&git_dir).expect("create .git");
     fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").expect("write HEAD");
 
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let path = workspace.path().to_string_lossy().to_string();
 
     tools::dispatch(
@@ -99,7 +107,13 @@ async fn c018_01_snapshot_captures_workspace_and_config_atomically() {
 #[test]
 async fn c018_02_snapshot_returns_none_without_workspace() {
     // GIVEN an AppState with no workspace bound but config set
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     state
         .set_workspace_config(Some(WorkspaceConfig {
             policy: deny_all_policy(),
@@ -129,7 +143,13 @@ async fn c018_03_snapshot_uses_default_config_when_none_set() {
     fs::create_dir_all(&git_dir).expect("create .git");
     fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").expect("write HEAD");
 
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     tools::dispatch(
         state.clone(),
         "set_workspace",

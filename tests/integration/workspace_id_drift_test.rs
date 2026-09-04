@@ -1,3 +1,5 @@
+use engram::config::StaleStrategy;
+use engram::models::config::DaemonMode;
 use std::fs;
 use std::sync::Arc;
 
@@ -43,7 +45,13 @@ async fn conflicting_workspace_id_returns_ambiguous_bind() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
 
-    let state = Arc::new(AppState::new(1));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        1,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let path = workspace.path().to_string_lossy().to_string();
     let initial = tools::dispatch(
         state.clone(),

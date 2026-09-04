@@ -1,5 +1,7 @@
 //! Integration tests for notebook search ingestion (063.003-T, 063.004-T, 063.002-T).
 
+use engram::config::StaleStrategy;
+use engram::models::config::DaemonMode;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -136,7 +138,13 @@ async fn query_memory_returns_notebook_language_provenance() {
         .await
         .expect("ingest notebook source");
 
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     state
         .set_workspace(WorkspaceSnapshot {
             workspace_id: "notebook-query-memory".to_string(),

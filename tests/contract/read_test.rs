@@ -1,6 +1,8 @@
 #[path = "../helpers/mod.rs"]
 mod helpers;
 
+use engram::config::StaleStrategy;
+use engram::models::config::DaemonMode;
 use std::sync::Arc;
 
 use serde_json::json;
@@ -28,7 +30,13 @@ fn test_snapshot(id: &str) -> WorkspaceSnapshot {
 
 #[test]
 async fn contract_query_memory_requires_workspace() {
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let params = Some(json!({
         "query": "user authentication",
     }));
@@ -44,7 +52,13 @@ async fn contract_query_memory_requires_workspace() {
 #[test]
 async fn contract_query_memory_rejects_long_query() {
     // Build a state with workspace set so we get past the workspace check.
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let snapshot = engram::server::state::WorkspaceSnapshot {
         workspace_id: "test_ws".to_string(),
         workspace_uuid: "uuid-test_ws".to_string(),
@@ -76,7 +90,13 @@ async fn contract_query_memory_rejects_long_query() {
 async fn contract_query_memory_returns_results_array() {
     // With an active workspace (even empty), query_memory should return
     // a JSON object with a `results` array.
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let snapshot = engram::server::state::WorkspaceSnapshot {
         workspace_id: "test_ws_results".to_string(),
         workspace_uuid: "uuid-test_ws_results".to_string(),
@@ -117,7 +137,13 @@ async fn contract_query_memory_returns_results_array() {
 
 #[test]
 async fn contract_get_workspace_statistics_requires_workspace() {
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let params = Some(json!({}));
 
     let err = tools::dispatch(state, "get_workspace_statistics", params)
@@ -132,7 +158,13 @@ async fn contract_get_workspace_statistics_requires_workspace() {
 
 #[test]
 async fn contract_map_code_requires_workspace() {
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let params = Some(json!({
         "symbol_name": "my_function",
     }));
@@ -149,7 +181,13 @@ async fn contract_map_code_requires_workspace() {
 async fn contract_map_code_empty_graph_uses_fallback() {
     // With an active workspace but no indexed code, map_code should
     // fall back to vector search and return an empty result set (not an error).
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     state
         .set_workspace(test_snapshot("map_code_empty"))
         .await
@@ -178,7 +216,13 @@ async fn contract_map_code_empty_graph_uses_fallback() {
 
 #[test]
 async fn contract_list_symbols_requires_workspace() {
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let params = Some(json!({}));
 
     let err = tools::dispatch(state, "list_symbols", params)
@@ -193,7 +237,13 @@ async fn contract_list_symbols_requires_workspace() {
 async fn contract_list_symbols_empty_graph_returns_error() {
     use engram::errors::codes::SYMBOL_NOT_FOUND;
 
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     state
         .set_workspace(test_snapshot("list_symbols_empty"))
         .await
@@ -213,7 +263,13 @@ async fn contract_list_symbols_empty_graph_returns_error() {
 
 #[test]
 async fn contract_unified_search_requires_workspace() {
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let params = Some(json!({ "query": "billing logic" }));
 
     let err = tools::dispatch(state, "unified_search", params)
@@ -226,7 +282,13 @@ async fn contract_unified_search_requires_workspace() {
 
 #[test]
 async fn contract_unified_search_rejects_empty_query() {
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     state
         .set_workspace(test_snapshot("unified_search_empty"))
         .await
@@ -258,7 +320,13 @@ async fn contract_unified_search_rejects_empty_query() {
 async fn contract_impact_analysis_requires_workspace() {
     use engram::errors::codes::WORKSPACE_NOT_SET;
 
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let params = Some(json!({ "symbol_name": "EngramError" }));
 
     let err = tools::dispatch(state, "impact_analysis", params)
@@ -273,7 +341,13 @@ async fn contract_impact_analysis_requires_workspace() {
 async fn contract_impact_analysis_symbol_not_found() {
     use engram::errors::codes::SYMBOL_NOT_FOUND;
 
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     state
         .set_workspace(test_snapshot("impact_analysis_not_found"))
         .await
@@ -297,7 +371,13 @@ async fn contract_impact_analysis_symbol_not_found() {
 #[test]
 #[serial_test::serial(metrics_writer)]
 async fn contract_read_tools_remain_available_during_public_sync() {
-    let state = Arc::new(AppState::new(10));
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::Managed,
+        10,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
     let snapshot = test_snapshot("reads_during_sync");
     helpers::configure_disabled_metrics_writer(
         std::path::Path::new(&snapshot.path),
