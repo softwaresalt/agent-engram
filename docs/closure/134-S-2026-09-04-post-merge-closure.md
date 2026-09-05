@@ -401,3 +401,49 @@ both predecessors as closed. `branch_ownership` reports
 a post-merge closure branch, not a `135-S` feature/chore branch).
 `135-S` was **not** claimed this session — this check verifies eligibility
 only, per the operator's explicit scope limitation.
+
+## PR #382 Copilot Review Round 1 (this session)
+
+Copilot's automated review of PR #382 (commit `03e66399`) posted two
+findings, both addressed on this branch before re-requesting readiness:
+
+1. **`archived_status: done` vs. canonical `shipped`** (thread
+   `PRRT_kwDORJEduc6fgA3D`, `.backlogit/archive/134-S.md`): Copilot
+   correctly observed that backlogit's shipment status schema only
+   enumerates `queued`/`active`/`shipped`/`abandoned`, not `done`. This
+   session verified directly against the CLI that `backlogit move 134-S
+   --status shipped` is **unconditionally rejected**
+   (`ErrShipmentShippedRequiresEnvelope`: "shipment must be shipped via
+   ShipShipment, not a direct status update", no `--force` bypass). The
+   only path to a canonical `shipped` status is the cascade
+   `backlogit shipment ship` operation, which is the exact
+   P-015 shared-parent cascade-hazard operation the operator explicitly
+   forbade for this closure (would force-requeue/detach the 77
+   `142-F` descendants outside this shipment's 12-item manifest). This is
+   a **known, previously-documented, workspace-wide constraint** — not a
+   new finding — already captured in stash `F9D1C495` (original
+   133-S-cycle discovery of the CLI hard-block) and corrected/generalized
+   in stash `F9767C12` ("continue using the manual safe-close path... for
+   every one of the ten 142-F-covering shipments" including `134-S` by
+   name), so no new deferred-scope stash entry was captured (C2 reuse:
+   positively confirmed same expansion, same contract surface). This
+   session's transient attempt to force `shipped` anyway
+   (`move --status active` → `move --status shipped`) was correctly
+   rejected by the CLI guard, was reverted via the same official `move`
+   seam back through `active` → `done` → `archive`, and the working
+   directory now byte-matches the pre-attempt state except for
+   `updated_at`. `archived_status: done` remains the deliberate,
+   operator-authorized, non-cascading terminal status for this closure.
+   The review thread was replied to and resolved with this rationale and
+   the stash citations; no code/data fix was made beyond restoring the
+   original correct value.
+2. **Stale Local Review Readiness HEAD** (thread
+   `PRRT_kwDORJEduc6fgA3W`, this file): the PR body's readiness block
+   still cited the pre-PR-number-update commit `cc0c9a40` after a
+   subsequent commit (`03e66399`) advanced HEAD. This was a legitimate,
+   in-scope finding (same contract surface: keeping the readiness gate's
+   reviewed-HEAD assertion accurate for the artifact already produced this
+   session) and was fixed by re-running local review over the full branch
+   diff and updating the PR body to the true final HEAD after all Round 1
+   fixes landed. See PR #382 for the updated Local Review Readiness block
+   and final reviewed HEAD.

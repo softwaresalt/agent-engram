@@ -145,3 +145,33 @@ out of this session's authorized scope.
    once the PR number is assigned.
 2. A future session may claim `135-S` once the operator authorizes that
    separately.
+
+## Addendum: PR #382 Copilot Review Round 1 (post-report correction cycle)
+
+Copilot posted two findings against commit 03e66399:
+
+1. "archived_status: done" flagged as non-canonical (schema only defines
+   queued/active/shipped/abandoned for shipments). Verified directly:
+   "backlogit move 134-S --status shipped" is unconditionally rejected by
+   the CLI (ErrShipmentShippedRequiresEnvelope) because canonical
+   "shipped" is reachable only via the forbidden "backlogit shipment ship"
+   cascade (P-015 hazard for this shared-parent 142-F case). Attempted
+   the transition anyway to confirm (move --status active -> move
+   --status shipped -> rejected), then fully reverted via the same
+   official move seam back to active -> done -> archive, restoring
+   archived_status: done exactly (diff vs. pre-attempt state is only
+   updated_at). This exact constraint was already captured in stash
+   F9D1C495 and generalized/corrected in stash F9767C12 (names 134-S
+   explicitly as one of the ten 142-F-covering shipments requiring the
+   same manual-safe-close workaround) -- reused via C2 discovery, no new
+   stash entry created. Replied to and resolved review thread
+   PRRT_kwDORJEduc6fgA3D citing this rationale and both stash IDs.
+2. Stale Local Review Readiness HEAD (cc0c9a40 cited after HEAD
+   advanced to 03e66399). Legitimate in-scope fix: re-ran local review
+   over the full branch diff and updated the PR body to the true final
+   HEAD. Replied to and resolved review thread
+   PRRT_kwDORJEduc6fgA3W.
+
+No new mutations beyond restoring the correct archived_status: done and
+updating documentation/PR-body bookkeeping. 142-F, all 59 children, and
+all 65 future items remain unchanged (re-verified after the revert).
