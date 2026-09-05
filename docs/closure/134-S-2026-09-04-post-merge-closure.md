@@ -12,7 +12,7 @@ releasability: "READY"
 compaction_status: "done"
 pr_number: 379
 closure_pr_number: 380
-manual_closure_pr_number: "pending — assigned on PR creation for post-merge/134-s-manual-shipment-archival; see Manual Closure Performed This Session section for commit-level evidence"
+manual_closure_pr_number: 382
 merge_commit: "760b44752a0f00704bd1a6f88fb78f91bd4e997d"
 closure_pr_merge_commit: null
 head_commit_merged: "7562c29152b6f53a7551b330a1de1adaebf97084"
