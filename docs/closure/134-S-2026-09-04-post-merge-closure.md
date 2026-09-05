@@ -25,6 +25,7 @@ follow_up_stash:
   - "F95653D1"
   - "AA5698E3"
   - "C1EFF21F"
+  - "B9CC92AC"
 blocking_stash: null
 shipment_record_status: "archived (archived_status: done) — manual safe-close performed 2026-09-04 on post-merge/134-s-manual-shipment-archival"
 ---
@@ -447,3 +448,39 @@ findings, both addressed on this branch before re-requesting readiness:
    diff and updating the PR body to the true final HEAD after all Round 1
    fixes landed. See PR #382 for the updated Local Review Readiness block
    and final reviewed HEAD.
+
+## PR #382 Copilot Review Round 2 (this session)
+
+A second Copilot review round (triggered automatically after the Round 1
+push) raised one further finding on commit `ab6cc332` (thread
+`PRRT_kwDORJEduc6fgFdD`, this file, line 203): that Ship Step 6 requires
+invoking the `shipment-reconcile` skill (`mode: pre` -> the authoritative
+`mode: safe-close` -> `mode: post`) rather than direct CLI mutations, and
+that manual invariant checks cannot substitute for that fail-closed
+contract.
+
+Verified directly: the installed `shipment-reconcile` skill
+(`.github/skills/shipment-reconcile/SKILL.md`) documents **only**
+`mode: pre` and `mode: post` — there is no `mode: safe-close`
+implementation anywhere, and the skill's own stated scope is to verify
+manifests "before or after `backlogit_ship_shipment` runs," i.e. it exists
+solely to gate the cascade ship path. Because `backlogit shipment ship`
+is P-015-forbidden for the entire `142-F`-covering shipment family
+(`134-S` and its nine siblings `135-S`-`142-S`/`133-S` — see stash
+`F9D1C495`/`F9767C12`), there is no cascade call for this skill to gate
+in the first place, so its `pre`/`post` modes do not apply here and its
+referenced `mode: safe-close` cannot be invoked because it does not
+exist. Direct CLI mutation (the same 15-step sequence documented above)
+was used instead, matching the established `133-S` precedent and the
+operator's explicit authorization of "the already-documented
+high/destructive targeted manual safe-close."
+
+This is a genuine, previously-uncaptured tooling/agent-template gap
+(the `_ship.agent.md` Step 6 prose references a skill mode that was
+never implemented) — captured per P-021 C2 as deferred-scope stash
+`B9CC92AC` (new entry; no prior reusable match found) for Stage's
+disposition (either implement `mode: safe-close` in the skill, or amend
+the Step 6 prose to document the direct-CLI path as canonical for
+shared-parent-covering-feature shipments). Fixing the underlying gap
+itself is outside this session's exact authorized scope. The thread was
+replied to with this rationale and the stash citation, then resolved.
