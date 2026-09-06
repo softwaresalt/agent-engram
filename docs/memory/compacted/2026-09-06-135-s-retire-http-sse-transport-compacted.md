@@ -113,6 +113,9 @@ safe-close (see decisions below).
 | `20FDC0A7` | high | **Post-merge**: `backlogit shipment ship` timeout/performance symptom (root cause unconfirmed), worked around via manual safe-close. |
 | `77A4E71C` | medium | **Post-merge (PR #384 review)**: verify `137-S` dependency-eligibility against `135-S`'s `archived_status: done`. |
 | `86873C54` | medium | **Post-merge (PR #384 review), supplemental to `20FDC0A7`**: corrects `20FDC0A7`'s framing — timeout symptom established, traversal root cause remains unconfirmed. |
+| `B2E3C372` | high | **Post-merge (PR #384 review)**: whether recording 3 actual invocations of the P-015-prohibited `backlogit shipment ship` cascade is a reportable P-015 policy deviation, and whether the compound doc's framing needs correcting. |
+| `C4A1F9E2` | medium | **Post-merge (PR #384 review), supplemental to `77A4E71C`**: compliant per-field source-ref record (task=N/A, feature=142-F, shipment=135-S). |
+| `7D5B6A03` | medium | **Post-merge (PR #384 review), supplemental to `B2E3C372`**: corrected review-thread provenance (archive-file thread `PRRT_kwDORJEduc6fufGO`, compound-doc thread `PRRT_kwDORJEduc6fufGj`). |
 
 ## Outcome
 
