@@ -1,6 +1,6 @@
 # ADR-0016: Feature-gate HTTP/SSE transport layer behind `legacy-sse`
 
-**Status**: Accepted  
+**Status**: Superseded — see "Supersession" below
 **Date**: 2026-03-08  
 **Phase**: 004-refactor-engram-server-as-plugin / Phase 8 (T091)
 
@@ -63,3 +63,20 @@ architecture rather than the old HTTP/SSE model.
   are feature-gated. Making them optional dependencies was considered but
   deferred: the complexity of `dep:` prefixed optional dependencies outweighed
   the binary-size benefit for a `publish = false` crate.
+
+## Supersession
+
+**Superseded by**: the transport retirement decision (135-S — "Retire HTTP
+and SSE transport surfaces"), plan units F46–F49 of
+`docs/exec-plans/2026-09-02-separate-indexer-read-server-plan.md`.
+
+The `legacy-sse` feature-gate compromise described above (retain the code,
+gate it behind a feature flag) was superseded by a decision to remove the
+HTTP/SSE transport layer entirely rather than keep it feature-gated. The
+`server/router.rs`, `server/mcp.rs`, and `server/sse.rs` modules were deleted;
+the `legacy-sse` Cargo feature and its now-unused dependencies (`axum`,
+`tower`, `tower-http`, `tokio-stream`) were removed. `sysinfo` was retained —
+it has remaining users outside the retired transport. Engram's supported
+transport surfaces are direct daemon IPC, the `engram` CLI, and stdio MCP via
+`engram shim`. This ADR is preserved for historical context; do not
+re-implement the `legacy-sse` feature gate based on this decision.
