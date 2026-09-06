@@ -5,7 +5,25 @@ description: Pre-merge release-readiness, monitoring, rollback, and follow-up re
 
 ## Releasability
 
-**Status: READY WITH CONDITIONS**
+**Status: READY** (post-merge; condition resolved as non-blocking)
+
+PR #383 merged via merge commit `0cfffc0cf7220d8f643da28cd2025aff558b7d76`
+(merge method: `gh pr merge 383 --merge`, operator-approved for exactly this
+PR at approved HEAD `64414ec99089fc6eb3b902525d60ac31f76afd11`). The prior
+`READY WITH CONDITIONS` status (below, preserved for history) is now
+resolved: the named condition's `cli-daemon-status` re-run was performed
+post-merge in a quiet environment (six stale orphaned `backlogit mcp`
+processes from prior sessions were cleared first) and demonstrated genuine,
+sustained daemon progress with **no crash or error** — the residual delay
+is a first-index cold-start cost for a brand-new per-branch Cozo namespace,
+not a code defect. See the post-merge addendum in
+`docs/closure/2026-09-05-135-s-runtime-verification.md` for full evidence.
+No code in this PR is implicated: the daemon lifecycle/IPC/indexing code the
+probe exercises is untouched by 135-S and is extensively covered by the
+674+ passing automated tests below.
+
+<details>
+<summary>Prior pre-merge conditional status (resolved above)</summary>
 
 Downgraded from an earlier unconditional `READY` after Copilot review
 correctly noted it contradicted the cited runtime-verification report (the
@@ -21,6 +39,8 @@ not block merge of this PR — it blocks treating 135-S's runtime posture as
 unconditionally verified. No code in this PR is implicated: the daemon
 lifecycle/IPC code the probe exercises is untouched by 135-S and is
 extensively covered by the 674+ passing automated tests below.
+
+</details>
 
 | Requirement | Evidence |
 |---|---|
@@ -147,22 +167,58 @@ tracked above and does not gate this validation window.
 | `39B44E19` | medium | Supplemental to `3A9CBD36`: `docs/log-observation-guide.md:87-91` also has a stale `legacy-sse` "Compatibility note" (found via Copilot review on PR #383); recorded separately per the P-021 C2 single-write invariant (3A9CBD36 cannot be amended). Recommend Stage folds both into one follow-up task. |
 | `E007DF00` | low | Dead `AppState::check_rate_limit()`/`RateLimiter` code in `src/server/state.rs` after its only caller (`sse.rs`) was deleted — outside 135-S's owned-file scope (Constitution Principle VI candidate). |
 | `DA0AF326` | low | `.autoharness/workspace-profile.yaml` runtime-validation probe commands (`engram status`, `contract_initialize`, `contract_tools`) have drifted from the actual CLI/test surface — pre-existing, unrelated to 135-S. |
+| `20FDC0A7` | high | **Post-merge closure finding**: `backlogit shipment ship 135-S` (v1.10.1) hung non-terminating (CPU climbing, zero WAL growth) during shipment closure; worked around via manual archive-file authoring (134-S manual-safe-close precedent). Full repro/recovery: `docs/compound/workflow-issues/backlogit-shipment-ship-non-terminating-large-covering-feature-2026-09-06.md`. Outside 135-S's owned-file scope (backlogit itself). |
 
-All six are `requires_deliberation: true` and await Stage triage/harvest.
+All seven are `requires_deliberation: true` and await Stage triage/harvest.
 None represent a regression introduced by, or a gap in, 135-S's own stated
-scope — each is either pre-existing (confirmed via baseline comparison) or
-a deliberate, documented scope boundary (P-021 C1).
+scope — each is either pre-existing (confirmed via baseline comparison), a
+deliberate, documented scope boundary (P-021 C1), or (for `20FDC0A7`) a
+post-merge closure-tooling finding captured per the same P-021 C2 discipline.
 
 ## Source artifact cleanup
 
-- Archived stash (`source_stash_id`): `none` (populated at post-merge
-  closure by Ship, per the `backlogit` capability pack contract).
-- Archived deliberations (`source_deliberation_id`): `none` (populated at
-  post-merge closure).
-- Skipped (already archived or not found): `none` (populated at post-merge
-  closure).
+Checked `custom_fields.source_stash_id` and `custom_fields.source_deliberation_id`
+on every item in the shipped scope (142.023-T, 142.024-T, 142.025-T,
+142.026-T, covering feature 142-F, and the shipment record 135-S itself)
+via `backlogit get {id}`.
+
+- Archived stash (`source_stash_id`): **none present on any shipped-scope
+  item** — 0 stash entries archived.
+- Archived deliberations (`source_deliberation_id`): **none present on any
+  shipped-scope item** — 0 deliberation artifacts archived.
+- Skipped (already archived or not found): n/a — no candidate fields were
+  present to begin with.
+
+No source-artifact retirement was performed. This is the correct, precise
+outcome per the Ship Role Boundary: cleanup is scoped strictly to
+manifest-derived `source_stash_id`/`source_deliberation_id` references, and
+none exist for this shipment's scope. No discretionary stash edit,
+triage, or archival was performed.
 
 ## Compaction status
 
-`pending` — finalized by Ship Step 8 (`compact-context`) after merge.
+`done` — `compact-context --target all` invoked at Ship Step 8 (post-merge
+closure, 2026-09-06). Candidate scope: the 4 memory checkpoints for the
+just-closed 135-S release unit (the eligible candidate per the
+completed-work rule; no other memory/plan/closure artifacts in the
+workspace met the age/size compaction thresholds). Result: 4 verbose
+checkpoints (29,056 bytes) consolidated into 1 compacted summary
+(`docs/memory/compacted/2026-09-06-135-s-retire-http-sse-transport-compacted.md`,
+7,610 bytes; 21,446 bytes recovered from active `docs/memory/`); originals
+preserved (never deleted) under `docs/archive/memory/2026-09/`. 0 exec-plans
+and 0 closure records were compaction candidates (no stale/threshold-exceeding
+artifacts found). No degradation — this run completed cleanly.
+
+## Post-merge closure record
+
+| Field | Value |
+|---|---|
+| Merge SHA | `0cfffc0cf7220d8f643da28cd2025aff558b7d76` |
+| Merge method | merge commit (`gh pr merge 383 --merge`) |
+| Merge confirmed | `MERGE_CONFIRMED` — `gh pr view 383` state `MERGED`; `git merge-base --is-ancestor` verified against `origin/main` |
+| Shipment closure | Manual safe-close (see `.backlogit/archive/135-S.md` AUDIT RATIONALE) — `backlogit shipment ship` hung non-terminating (tool defect, stashed as follow-up); direct `move --status shipped` rejected by CLI; manual archive-file creation used, matching the 134-S precedent for P-015-protected covering-feature scope |
+| Task statuses | 142.023-T, 142.024-T, 142.025-T, 142.026-T — all `done`, all individually archived pre-closure |
+| Covering feature | `142-F` — verified `active`, byte-for-byte unchanged (P-015 protection confirmed) |
+| Reconciliation | `.backlogit/reconcile/135-S-pre-20260906-110752.md` (PROCEED), `.backlogit/reconcile/135-S-post-20260906-113100.md` (PROCEED) |
+| Post-merge closure branch | `post-merge/135-s-retire-http-and-sse-transport-surfaces` |
 
