@@ -178,8 +178,9 @@ tracked above and does not gate this validation window.
 | `20FDC0A7` | high | **Post-merge closure finding**: `backlogit shipment ship 135-S` (v1.10.1) did not complete within any of three bounded observation windows (up to ~5.5 minutes; CPU climbing, zero WAL growth — root cause unconfirmed) during shipment closure; worked around via manual archive-file authoring (134-S manual-safe-close precedent). Full repro/recovery: `docs/compound/workflow-issues/backlogit-shipment-ship-non-terminating-large-covering-feature-2026-09-06.md`. Outside 135-S's owned-file scope (backlogit itself). |
 | `77A4E71C` | medium | **PR #384 review follow-up**: verify `137-S` dependency-eligibility against `135-S`'s manual-safe-close `archived_status: done` (matches the `133-S`/`134-S` precedent) rather than `archived_status: shipped`; raised by Copilot review on this closure PR. Outside this closure PR's own scope (P-021 C1). |
 | `86873C54` | medium | **PR #384 review follow-up, supplemental to `20FDC0A7`**: corrects `20FDC0A7`'s framing (per the P-021 C2 single-write invariant, `20FDC0A7` cannot be amended) — the timeout symptom is established, but the traversal root cause remains unconfirmed pending profiling or a completed control run. |
+| `B2E3C372` | high | **PR #384 review follow-up**: whether recording 3 actual invocations of the P-015-prohibited `backlogit shipment ship` cascade for this partial-feature shipment is a reportable P-015 policy deviation requiring operator disposition, and whether the compound doc's Prevention/Escalation framing (prefers vs. forbids the cascade) needs correcting. Design/decision work, out of this closure PR's scope (P-021 C1). |
 
-All ten are `requires_deliberation: true` and await Stage triage/harvest.
+All eleven are `requires_deliberation: true` and await Stage triage/harvest.
 None represent a regression introduced by, or a gap in, 135-S's own stated
 scope — each is either pre-existing (confirmed via baseline comparison), a
 deliberate, documented scope boundary (P-021 C1), or (for `20FDC0A7`) a

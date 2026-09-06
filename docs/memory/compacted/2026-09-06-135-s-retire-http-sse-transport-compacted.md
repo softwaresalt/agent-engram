@@ -112,6 +112,7 @@ safe-close (see decisions below).
 | `F58ECAA8` | low | Pre-existing hosted-runner CI timing flake. |
 | `20FDC0A7` | high | **Post-merge**: `backlogit shipment ship` timeout/performance symptom (root cause unconfirmed), worked around via manual safe-close. |
 | `77A4E71C` | medium | **Post-merge (PR #384 review)**: verify `137-S` dependency-eligibility against `135-S`'s `archived_status: done`. |
+| `86873C54` | medium | **Post-merge (PR #384 review), supplemental to `20FDC0A7`**: corrects `20FDC0A7`'s framing — timeout symptom established, traversal root cause remains unconfirmed. |
 
 ## Outcome
 
