@@ -569,7 +569,8 @@ async fn install_no_duplicate_gitignore_entries() {
 // - S065: existing file without markers → appended with markers
 // - S066: re-install → replaces only marker content, preserves surrounding
 // - S067: --hooks-only skips .engram/ data file creation
-// - S068: custom port substituted into hook file URLs
+// - S068: custom port is accepted but never rendered into hook file content
+//   (the legacy HTTP endpoint it used to be substituted into was retired)
 // - S069: --no-hooks skips hook generation entirely
 
 /// S064: A fresh install creates hook files for all 3 supported platforms.
@@ -782,7 +783,7 @@ async fn s067_hooks_only_skips_data_files() {
 /// `InstallOptions.port`. The `legacy-sse` HTTP/SSE transport was retired
 /// (135-S); Engram's supported surfaces are direct IPC, CLI, and stdio MCP.
 #[tokio::test]
-async fn s068_custom_port_in_hook_urls() {
+async fn s068_custom_port_no_longer_rendered_in_hook_urls() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let workspace = tmp.path();
 

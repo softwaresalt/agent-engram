@@ -90,7 +90,7 @@ below.
   `docs/adrs/0003-sliding-window-rate-limiter.md` both carry accurate,
   well-written **"Supersession"** sections without deleting original content.
 - `tests/integration/installer_test.rs` `s064_fresh_install_creates_hook_files`
-  and `s068_custom_port_in_hook_urls` were confirmed rewritten with real,
+  and `s068_custom_port_no_longer_rendered_in_hook_urls` were confirmed rewritten with real,
   non-tautological assertions (`!contains("http://")`, both default- and
   custom-port cases checked, `stdio MCP` presence asserted).
 - `.github/workflows/ci.yml` has no residual `legacy-sse` feature reference in
@@ -198,21 +198,20 @@ a nonexistent feature and implies untested coverage that doesn't exist.
 
 ## Majority findings (confidence: MEDIUM — flagged by 2 of 3 reviewers)
 
-### 7. `tests/integration/installer_test.rs` — stale scenario-index comment contradicts the rewritten test
+### 7. `tests/integration/installer_test.rs` — stale scenario-index comment contradicted the rewritten test (FIXED)
 **Severity: MINOR | Confidence: MEDIUM (2/3 — Reviewer-B, Reviewer-C) | P2**
 
-The `// ── US5 Agent Hook Tests (T043) ──` block (~line 571) still lists
-`"S068: custom port substituted into hook file URLs"`. 142.025-T inverted the
-actual `s068_custom_port_in_hook_urls` test to assert the **opposite** — that
-no port/URL is ever rendered. The scenario index and the test's own (updated,
-correct) docstring a few lines below now describe contradictory contracts in
-the same file the commit touched. The function name itself
-(`s068_custom_port_in_hook_urls`) is also now a misnomer.
-
-- **Fix:** Update the bullet to "custom port accepted but never rendered into
-  hook content (no HTTP endpoint advertised)"; consider renaming the test
-  function to `s068_custom_port_not_rendered_in_hooks` in a follow-up (out of
-  scope to force a rename in this pass, but worth tracking).
+**Update**: independently confirmed and fixed after Copilot's automated
+review on PR #383 raised the same point with additional precision (PR
+comment 3943133764). Fixed in commit following `796717e2`: the scenario
+index bullet now reads "custom port is accepted but never rendered into
+hook file content (the legacy HTTP endpoint it used to be substituted into
+was retired)", and the test function itself was renamed from
+`s068_custom_port_in_hook_urls` to
+`s068_custom_port_no_longer_rendered_in_hook_urls` so the function name,
+docstring, and scenario index all agree with what the test actually
+asserts. No manifest, coverage-oracle, or other cross-reference to the old
+name existed (verified via repo-wide grep before renaming).
 
 ### 8. `src/server/state.rs` — SSE-era `RateLimiter` left as dead code after its only caller was deleted
 **Severity: MINOR (per both reviewers; see note) | Confidence: MEDIUM (2/3 — Reviewer-B, Reviewer-C) | P2**
