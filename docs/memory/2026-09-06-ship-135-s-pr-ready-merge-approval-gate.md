@@ -9,6 +9,21 @@
 `admin_fallback_pre_authorized=false`. Run scope: 135-S → 142-S (this
 invocation owns only 135-S).
 
+> **SUPERSEDED (Copilot review comment 3943313719 on PR #383, correctly
+> flagged)**: `2bb97bd3` was **not** the live HEAD when this file's later
+> "gates green" claims were recorded. A subsequent continuity commit
+> (`a11296f7`) and two further Copilot-remediation rounds (`c22303fe` for
+> round 5, plus additional round-6 fixes) landed after this checkpoint's
+> "Final HEAD" was written, so the gate/CI claims below do **not** cover
+> the commit that would actually be merged. Every push resets the P-018
+> review clock, so this file's HEAD and gate status are a point-in-time
+> snapshot, not a live invariant. Do not rely on this file's "Final HEAD" or
+> gate table for merge decisions — see the newer checkpoint written at the
+> end of the review-remediation session that produced `c22303fe` and later
+> commits (`docs/memory/` entries dated on or after 2026-09-06, filenamed
+> for the copilot-review-remediation round) for the actual final HEAD and
+> re-verified gate state.
+
 ## Operator approval (recorded, applied)
 
 Verbatim: *"Approve the destructive deletion scope for 142.023-T and resume

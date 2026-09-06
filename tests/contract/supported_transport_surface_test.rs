@@ -2,11 +2,18 @@
 //! 142.024-T).
 //!
 //! Engram supports exactly three agent-facing transport surfaces: direct
-//! daemon IPC, the `engram` CLI (itself routed over IPC), and stdio MCP via
+//! daemon IPC, the `engram` CLI (normally routed over IPC via
+//! `cli::runner`, except the `sync --direct` / `index --direct` daemonless
+//! mode, which bypasses IPC — see `src/cli/direct.rs`), and stdio MCP via
 //! `engram shim`. The legacy HTTP/SSE transport (`legacy-sse` feature, the
 //! axum router, MCP HTTP handler, and SSE handler) was retired in 135-S.
 //! See ADR-0016 and ADR-0003 (both superseded), and
 //! docs/exec-plans/2026-09-02-separate-indexer-read-server-plan.md (P15).
+//!
+//! The tests below prove `cli::runner`'s IPC-only behavior; they do not
+//! cover the `--direct` daemonless bypass, which is exercised separately by
+//! `tests/integration/cli_direct_test.rs` and
+//! `tests/integration/direct_sync_mode_test.rs`.
 
 use std::sync::Weak;
 use std::time::Duration;
