@@ -233,11 +233,6 @@ name = "contract_write"
 path = "tests/contract/write_test.rs"
 
 [[test]]
-name = "integration_connection"
-path = "tests/integration/connection_test.rs"
-required-features = ["legacy-sse"]
-
-[[test]]
 name = "unit_proptest"
 path = "tests/unit/proptest_models.rs"
 
