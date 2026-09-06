@@ -47,8 +47,20 @@ the probes above.
 
 ## Overall
 
+**Verdict: `PASS WITH FOLLOW-UP`** (`PASS_WITH_FOLLOW_UP`)
+
 CLI-version and MCP-protocol (initialize + tools-catalog) surfaces verified
-GREEN via substitute real commands. Daemon-status manual probe is
-inconclusive-but-not-regressed, with strong substitute automated-test
-evidence. No runtime regression identified from the 135-S transport
-retirement.
+GREEN via substitute real commands. The `cli-daemon-status` probe is
+**BLOCKED** (its literal manifest command does not exist, and the closest
+real substitute did not return within a bounded manual budget under this
+session's resource contention — see "Blocked prerequisites" above). This is
+not treated as a hard `FAIL` because: (1) the blocking cause is
+session-environment contention plus pre-existing validator-manifest drift,
+neither of which 135-S introduced; (2) 674+ automated tests exercising the
+exact same daemon-lifecycle/IPC code paths (`src/daemon/`) — none of which
+135-S touched — passed in this session's `cargo dev-test` runs. The blocked
+prerequisite and its substitute evidence are carried into
+`docs/closure/2026-09-05-135-s-operational-closure.md` as a named
+releasability condition, per the runtime-verification skill's contract that
+blocked verification must be recorded as a condition, not silently
+upgraded to an unconditional pass.

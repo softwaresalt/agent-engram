@@ -445,7 +445,9 @@ async fn stop_daemon(workspace: &Path) {
 /// - `opts.hooks_only = true`: skips `.engram/` data file creation and generates
 ///   only agent hook files.
 /// - `opts.no_hooks = true`: skips agent hook file generation.
-/// - `opts.port`: substituted into MCP endpoint URLs in hook files.
+/// - `opts.port`: retained for compatibility; no longer rendered into
+///   generated hook content (Engram's supported surfaces are direct daemon
+///   IPC, the `engram` CLI, and stdio MCP — see ADR-0016, superseded).
 ///
 /// # Errors
 ///

@@ -622,6 +622,14 @@ async fn s064_fresh_install_creates_hook_files() {
         claude_content.contains("set_workspace"),
         "claude hook must mention set_workspace tool"
     );
+    assert!(
+        claude_content.contains("stdio MCP"),
+        "claude hook must state the stdio MCP transport surface"
+    );
+    assert!(
+        !claude_content.contains("http://"),
+        "claude hook must not advertise a retired HTTP endpoint"
+    );
 
     // Root .mcp.json hook
     let mcp = workspace.join(".mcp.json");
@@ -805,12 +813,25 @@ async fn s068_custom_port_in_hook_urls() {
         "copilot hook must state the stdio MCP transport surface"
     );
 
-    // Claude hook likewise never advertises an HTTP endpoint.
+    // Claude hook likewise never advertises an HTTP endpoint, for either the
+    // custom or the default port, and states the stdio MCP surface.
     let claude_content = fs::read_to_string(workspace.join(".claude").join("instructions.md"))
         .expect("read claude hook");
     assert!(
         !claude_content.contains("http://127.0.0.1:8090"),
         "claude hook must NOT advertise a retired HTTP endpoint for the custom port"
+    );
+    assert!(
+        !claude_content.contains("http://127.0.0.1:7437"),
+        "claude hook must NOT contain the default port URL either"
+    );
+    assert!(
+        !claude_content.contains("http://"),
+        "claude hook must NOT advertise any HTTP endpoint"
+    );
+    assert!(
+        claude_content.contains("stdio MCP"),
+        "claude hook must state the stdio MCP transport surface"
     );
 }
 

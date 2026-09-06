@@ -1,6 +1,44 @@
 ---
 title: 135-S Retire HTTP and SSE Transport Surfaces — Adversarial Review
-description: Multi-model consensus review of range dca08a4c..HEAD (commits 3d9b9976, c5f85ddd, e7a53729, 28a55ca3, 13317b81) on branch feat/135-s-retire-http-and-sse-transport-surfaces.
+description: Multi-model consensus review of range dca08a4c..HEAD (commits 3d9b9976, c5f85ddd, e7a53729, 28a55ca3, 13317b81) on branch feat/135-s-retire-http-and-sse-transport-surfaces, plus a supplementary direct-review addendum covering the PR's remaining base commits (see addendum below).
+---
+
+## Addendum: full-PR-diff coverage (added after Copilot review)
+
+The original adversarial review below covers `dca08a4c..HEAD` only — the
+commits produced by *this* Ship session. Copilot's automated review on PR
+#383 correctly flagged that the PR's full diff (`main..HEAD`) also includes
+three earlier commits from the **prior** Ship session that halted at the
+destructive-action approval gate: `2d2c1324`, `4dd6ec5f`, `dca08a4c`.
+
+I directly reviewed all three (`git show --stat` + full diff for each):
+
+- `2d2c1324` — "carry forward checkpoint quarantine dispositions and
+  incident handoff": moves 8 malformed/operator-declared-stale recovery
+  checkpoints from `.backlogit/queue/checkpoints/` to
+  `.backlogit/archive/checkpoints/` with `.disposition.json` records citing
+  explicit operator approval and timestamp; updates 6 remaining in-queue
+  checkpoints; appends one incident-intake stash entry; adds one
+  operator-supplied design doc (`docs/design-docs/2026-09-05-engram-content-record-schema-incident-handoff.md`).
+  No `src/` or `tests/` files touched. This was committed to the *feature
+  branch only* (never `main`) per explicit operator direction, precisely to
+  avoid landing carry-forward workspace state on `main` outside a reviewed
+  PR — this PR is that review.
+- `4dd6ec5f` — adds one memory-checkpoint markdown file documenting the
+  135-S preflight state at the point the prior session halted for
+  destructive-action approval. Pure documentation, no code — nothing with
+  security or correctness implications to review.
+- `dca08a4c` — updates 5 backlog queue files' status field from `queued` to
+  `active` (the shipment claim), 4 insertions/4 deletions total. Mechanical
+  backlog-state transition, no code.
+
+**Assessment**: all three commits are non-code backlog/documentation
+bookkeeping, previously operator-approved (see
+`docs/memory/2026-09-05-ship-135-s-preflight-and-safety-gate.md`), with no
+correctness, security, or rollback-safety implications. I found no findings
+in this addendum. The `READY_WITH_FOLLOWUPS` verdict below is confirmed to
+hold across the **full** `main..HEAD` PR diff, not only `dca08a4c..HEAD`.
+
 ---
 
 ## Method note (tooling constraint, disclosed for transparency)
