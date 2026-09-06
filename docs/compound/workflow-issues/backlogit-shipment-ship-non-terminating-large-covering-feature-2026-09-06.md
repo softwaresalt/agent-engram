@@ -1,10 +1,10 @@
 ---
-title: "backlogit shipment ship hangs non-terminating against a large covering-feature roster"
-description: "backlogit shipment ship (v1.10.1) never returns for a shipment whose manifest excludes a large covering feature (59-unit roster); CPU climbs steadily with zero WAL growth, indicating a non-terminating traversal, not lock contention"
-problem_type: "shipment closure non-termination"
+title: "backlogit shipment ship does not complete within a bounded observation window against a large covering-feature roster"
+description: "backlogit shipment ship (v1.10.1) did not return within any of three observation windows (up to ~5.5 minutes) for a shipment whose manifest excludes a large covering feature (59-unit roster); CPU climbs steadily with zero WAL growth, ruling out lock contention, but true indefinite non-termination is unconfirmed — only a timeout/performance symptom is established"
+problem_type: "shipment closure timeout/performance symptom (root cause unconfirmed)"
 category: "workflow-issues"
 component: "backlogit shipment closure"
-root_cause: "backlogit shipment ship appears to perform an unbounded or exponential traversal of the covering feature's full descendant tree (likely as part of a protected-set/provenance proof) when the manifest is a small subset of a large covering feature's roster; this traversal did not complete within an observed 5.5+ minute window with steadily climbing CPU and zero WAL/database growth"
+root_cause: "UNCONFIRMED. The only established fact is that backlogit shipment ship did not complete within an observed 5.5+ minute window, with steadily climbing CPU and zero WAL/database growth (ruling out lock contention and slow-but-real progress). A plausible hypothesis is an unbounded or exponential traversal of the covering feature's full descendant tree (possibly as part of a protected-set/provenance proof) when the manifest is a small subset of a large covering feature's roster, but this has not been confirmed via profiling or a completed control run; treat as a timeout/performance symptom, not a proven algorithmic defect, until such evidence exists"
 resolution_type: "workaround"
 severity: "high"
 message: "backlogit shipment ship 135-S never returned; CPU climbed from 0 to 211s+ over 5.5 minutes wall time with the WAL file size unchanged throughout, confirming no forward write progress"
@@ -57,10 +57,11 @@ own description). This is the same shape of workspace that motivated the
 Ship-agent P-015 exception logic (a shipment manifest that does NOT fully
 cover its parent feature's descendant set must use safe-close, never the
 cascade `shipment ship` path) — but here the tool itself, not just the
-policy layer, appears to attempt some form of full-tree evaluation (likely
+policy layer, may be attempting some form of full-tree evaluation (possibly
 the "protected set" / provenance proof described in the Ship agent template's
-P-015 exception commentary) that scales poorly against a large roster and
-never completes.
+P-015 exception commentary) that scales poorly against a large roster. This
+hypothesis is unconfirmed: the only established fact is that the command
+did not complete within any of three observed windows (up to ~5.5 minutes).
 
 This is consistent with, but distinct from, the previously documented
 `shipment ship` defects:
@@ -72,9 +73,12 @@ This is consistent with, but distinct from, the previously documented
 * `ship-shipment-overscoped-manifest-2026-04-20.md` — archives unbuilt items
   (a *correctness* bug)
 
-This entry documents a fourth, distinct failure mode: **non-termination**
-(a *liveness* bug), specifically triggered by a large covering-feature
-roster disjoint from a small manifest.
+This entry documents a fourth, distinct symptom: a **timeout/performance
+symptom** — the command exceeding a bounded observation budget with no
+forward write progress — whose root cause (possibly a *liveness* bug) is
+unconfirmed pending profiling or a completed control run, specifically
+observed against a large covering-feature roster disjoint from a small
+manifest.
 
 ## Workaround (proven, 135-S)
 
@@ -134,7 +138,10 @@ feature has a large roster not fully covered by the manifest:
 * Recommend a bounded timeout (e.g., 60–90s) around any `backlogit shipment
   ship` invocation in agent tooling, with automatic fallback to the manual
   safe-close procedure above on timeout, rather than an agent needing to
-  discover this ad hoc.
+  discover this ad hoc. This is offered as a pragmatic mitigation for the
+  observed timeout/performance symptom, not as confirmation of the traversal
+  hypothesis above; the underlying algorithmic cause remains unconfirmed
+  pending profiling or a completed control run.
 * Upstream issue candidate: `backlogit shipment ship` needs either (a) a
   documented, bounded-complexity provenance-proof algorithm that does not
   scale with the full covering-feature roster size, or (b) an explicit,

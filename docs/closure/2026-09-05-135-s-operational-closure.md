@@ -5,22 +5,29 @@ description: Pre-merge release-readiness, monitoring, rollback, and follow-up re
 
 ## Releasability
 
-**Status: READY** (post-merge; condition resolved as non-blocking)
+**Status: READY WITH CONDITIONS** (post-merge; named probe condition still
+not conclusively satisfied — see below)
 
 PR #383 merged via merge commit `0cfffc0cf7220d8f643da28cd2025aff558b7d76`
 (merge method: `gh pr merge 383 --merge`, operator-approved for exactly this
 PR at approved HEAD `64414ec99089fc6eb3b902525d60ac31f76afd11`). The prior
-`READY WITH CONDITIONS` status (below, preserved for history) is now
-resolved: the named condition's `cli-daemon-status` re-run was performed
+`READY WITH CONDITIONS` status (below, preserved for history) remains in
+effect: the named condition's `cli-daemon-status` re-run was performed
 post-merge in a quiet environment (six stale orphaned `backlogit mcp`
 processes from prior sessions were cleared first) and demonstrated genuine,
-sustained daemon progress with **no crash or error** — the residual delay
-is a first-index cold-start cost for a brand-new per-branch Cozo namespace,
-not a code defect. See the post-merge addendum in
-`docs/closure/2026-09-05-135-s-runtime-verification.md` for full evidence.
-No code in this PR is implicated: the daemon lifecycle/IPC/indexing code the
-probe exercises is untouched by 135-S and is extensively covered by the
-674+ passing automated tests below.
+sustained daemon progress with **no crash or error**, but the process was
+stopped after ~15 minutes without reaching `Ready` — the condition (a
+successful probe) was not met, only reasoned as non-blocking. The residual
+gap is assessed as a first-index cold-start cost for a brand-new per-branch
+Cozo namespace, not a code defect, but this assessment is not itself a
+substitute for the successful probe the condition requires. See the
+post-merge addendum in `docs/closure/2026-09-05-135-s-runtime-verification.md`
+for full evidence; that document's own verdict remains `PASS WITH
+FOLLOW-UP`, consistent with keeping releasability at `READY WITH
+CONDITIONS` here rather than upgrading to an unconditional `READY`. No code
+in this PR is implicated: the daemon lifecycle/IPC/indexing code the probe
+exercises is untouched by 135-S and is extensively covered by the 674+
+passing automated tests below.
 
 <details>
 <summary>Prior pre-merge conditional status (resolved above)</summary>
