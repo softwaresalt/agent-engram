@@ -622,6 +622,8 @@ shipment.
 
 ## Compatibility note
 
-The repository still carries a `legacy-sse` feature for compatibility-oriented
-HTTP/SSE transport. That path is optional and should be treated as secondary.
-The default runtime and the recommended docs path are shim plus daemon over IPC.
+Engram supports exactly three transport surfaces: direct daemon IPC, the
+`engram` CLI (which itself talks to the daemon over IPC), and stdio MCP via
+`engram shim`. The legacy HTTP/SSE transport (`legacy-sse` feature, axum
+router) has been fully retired — its modules, feature flag, and dependencies
+were removed (135-S). See ADR-0016 and ADR-0003 (both superseded).

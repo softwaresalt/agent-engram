@@ -602,8 +602,12 @@ async fn s064_fresh_install_creates_hook_files() {
         "copilot hook must mention query_memory tool"
     );
     assert!(
-        copilot_content.contains("http://127.0.0.1:7437/mcp"),
-        "copilot hook must contain default MCP endpoint URL"
+        copilot_content.contains("stdio MCP"),
+        "copilot hook must state the stdio MCP transport surface"
+    );
+    assert!(
+        !copilot_content.contains("http://"),
+        "copilot hook must not advertise a retired HTTP endpoint"
     );
 
     // Claude Code hook
@@ -765,7 +769,10 @@ async fn s067_hooks_only_skips_data_files() {
     );
 }
 
-/// S068: Custom port is substituted into hook file MCP endpoint URLs.
+/// S068: Custom `port` value is accepted but no longer rendered into hook
+/// content — hook files never advertise an HTTP endpoint, regardless of
+/// `InstallOptions.port`. The `legacy-sse` HTTP/SSE transport was retired
+/// (135-S); Engram's supported surfaces are direct IPC, CLI, and stdio MCP.
 #[tokio::test]
 async fn s068_custom_port_in_hook_urls() {
     let tmp = tempfile::tempdir().expect("temp dir");
@@ -781,25 +788,29 @@ async fn s068_custom_port_in_hook_urls() {
         .await
         .expect("install with custom port should succeed");
 
-    // Copilot hook must use custom port.
+    // Neither hook file advertises an HTTP endpoint for the custom port.
     let copilot_content =
         fs::read_to_string(workspace.join(".github").join("copilot-instructions.md"))
             .expect("read copilot hook");
     assert!(
-        copilot_content.contains("http://127.0.0.1:8090/mcp"),
-        "copilot hook must use custom port 8090"
+        !copilot_content.contains("http://127.0.0.1:8090"),
+        "copilot hook must NOT advertise a retired HTTP endpoint for the custom port"
     );
     assert!(
-        !copilot_content.contains("http://127.0.0.1:7437/mcp"),
-        "copilot hook must NOT contain default port when custom port is set"
+        !copilot_content.contains("http://127.0.0.1:7437"),
+        "copilot hook must NOT contain the default port URL either"
+    );
+    assert!(
+        copilot_content.contains("stdio MCP"),
+        "copilot hook must state the stdio MCP transport surface"
     );
 
-    // Claude hook must use custom port.
+    // Claude hook likewise never advertises an HTTP endpoint.
     let claude_content = fs::read_to_string(workspace.join(".claude").join("instructions.md"))
         .expect("read claude hook");
     assert!(
-        claude_content.contains("http://127.0.0.1:8090/mcp"),
-        "claude hook must use custom port 8090"
+        !claude_content.contains("http://127.0.0.1:8090"),
+        "claude hook must NOT advertise a retired HTTP endpoint for the custom port"
     );
 }
 
