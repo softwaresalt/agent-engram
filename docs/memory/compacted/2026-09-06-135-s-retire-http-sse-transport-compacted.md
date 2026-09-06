@@ -85,8 +85,10 @@ safe-close (see decisions below).
      the new branch namespace, but did not reach `Ready` within the
      session budget. Reclassified from "inconclusive/contention" to
      "confirmed non-blocking first-index cold-start cost, no code
-     defect." Releasability upgraded from `READY WITH CONDITIONS` to
-     `READY`.
+     defect" — but the probe itself still never succeeded, so
+     releasability correctly remains `READY WITH CONDITIONS` (a PR #384
+     Copilot review round corrected an earlier draft that had incorrectly
+     upgraded this to unconditional `READY`).
    - Source artifact cleanup: checked `source_stash_id` /
      `source_deliberation_id` on all 6 shipped-scope items (4 tasks + 142-F
      + 135-S) — **none present anywhere**; nothing retired (correct,

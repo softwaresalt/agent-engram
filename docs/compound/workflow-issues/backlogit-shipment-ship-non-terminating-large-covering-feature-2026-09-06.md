@@ -90,8 +90,12 @@ feature has a large roster not fully covered by the manifest:
    apart, that CPU time is climbing (ruling out a simple hang/deadlock) —
    and confirm via `Get-Item .backlogit/backlogit.db-wal | Select Length`
    sampled the same way that the WAL size is **not** growing (ruling out
-   slow-but-real progress). Both together indicate non-termination, not
-   merely slowness.
+   slow-but-real write progress). Both together establish CPU-intensive
+   work with no database-write progress during the observed window — they
+   do not, by themselves, prove indefinite non-termination as opposed to
+   bounded-but-extreme slowness (computation can proceed for a long time
+   before producing a write). Treat this as a strong signal to apply the
+   workaround below regardless of which explanation turns out to be true.
 2. Terminate the process by PID (`Stop-Process -Id {pid} -Force`). Verify no
    partial state was written: the shipment's `status` (via `backlogit get
    {id}`) is unchanged, and `.backlogit/archive/{id}.md` does not exist.

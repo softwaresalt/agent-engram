@@ -30,7 +30,7 @@ exercises is untouched by 135-S and is extensively covered by the 674+
 passing automated tests below.
 
 <details>
-<summary>Prior pre-merge conditional status (resolved above)</summary>
+<summary>Prior pre-merge conditional status (superseded text below, condition remains open)</summary>
 
 Downgraded from an earlier unconditional `READY` after Copilot review
 correctly noted it contradicted the cited runtime-verification report (the
@@ -174,9 +174,11 @@ tracked above and does not gate this validation window.
 | `39B44E19` | medium | Supplemental to `3A9CBD36`: `docs/log-observation-guide.md:87-91` also has a stale `legacy-sse` "Compatibility note" (found via Copilot review on PR #383); recorded separately per the P-021 C2 single-write invariant (3A9CBD36 cannot be amended). Recommend Stage folds both into one follow-up task. |
 | `E007DF00` | low | Dead `AppState::check_rate_limit()`/`RateLimiter` code in `src/server/state.rs` after its only caller (`sse.rs`) was deleted — outside 135-S's owned-file scope (Constitution Principle VI candidate). |
 | `DA0AF326` | low | `.autoharness/workspace-profile.yaml` runtime-validation probe commands (`engram status`, `contract_initialize`, `contract_tools`) have drifted from the actual CLI/test surface — pre-existing, unrelated to 135-S. |
+| `F58ECAA8` | low | Pre-existing hosted-runner CI timing flake, captured in the compacted 135-S session memory (`docs/memory/compacted/2026-09-06-135-s-retire-http-sse-transport-compacted.md`) — unrelated to 135-S. |
 | `20FDC0A7` | high | **Post-merge closure finding**: `backlogit shipment ship 135-S` (v1.10.1) hung non-terminating (CPU climbing, zero WAL growth) during shipment closure; worked around via manual archive-file authoring (134-S manual-safe-close precedent). Full repro/recovery: `docs/compound/workflow-issues/backlogit-shipment-ship-non-terminating-large-covering-feature-2026-09-06.md`. Outside 135-S's owned-file scope (backlogit itself). |
+| `77A4E71C` | medium | **PR #384 review follow-up**: verify `137-S` dependency-eligibility against `135-S`'s manual-safe-close `archived_status: done` (matches the `133-S`/`134-S` precedent) rather than `archived_status: shipped`; raised by Copilot review on this closure PR. Outside this closure PR's own scope (P-021 C1). |
 
-All seven are `requires_deliberation: true` and await Stage triage/harvest.
+All nine are `requires_deliberation: true` and await Stage triage/harvest.
 None represent a regression introduced by, or a gap in, 135-S's own stated
 scope — each is either pre-existing (confirmed via baseline comparison), a
 deliberate, documented scope boundary (P-021 C1), or (for `20FDC0A7`) a
