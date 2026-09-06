@@ -175,10 +175,11 @@ tracked above and does not gate this validation window.
 | `E007DF00` | low | Dead `AppState::check_rate_limit()`/`RateLimiter` code in `src/server/state.rs` after its only caller (`sse.rs`) was deleted — outside 135-S's owned-file scope (Constitution Principle VI candidate). |
 | `DA0AF326` | low | `.autoharness/workspace-profile.yaml` runtime-validation probe commands (`engram status`, `contract_initialize`, `contract_tools`) have drifted from the actual CLI/test surface — pre-existing, unrelated to 135-S. |
 | `F58ECAA8` | low | Pre-existing hosted-runner CI timing flake, captured in the compacted 135-S session memory (`docs/memory/compacted/2026-09-06-135-s-retire-http-sse-transport-compacted.md`) — unrelated to 135-S. |
-| `20FDC0A7` | high | **Post-merge closure finding**: `backlogit shipment ship 135-S` (v1.10.1) hung non-terminating (CPU climbing, zero WAL growth) during shipment closure; worked around via manual archive-file authoring (134-S manual-safe-close precedent). Full repro/recovery: `docs/compound/workflow-issues/backlogit-shipment-ship-non-terminating-large-covering-feature-2026-09-06.md`. Outside 135-S's owned-file scope (backlogit itself). |
+| `20FDC0A7` | high | **Post-merge closure finding**: `backlogit shipment ship 135-S` (v1.10.1) did not complete within any of three bounded observation windows (up to ~5.5 minutes; CPU climbing, zero WAL growth — root cause unconfirmed) during shipment closure; worked around via manual archive-file authoring (134-S manual-safe-close precedent). Full repro/recovery: `docs/compound/workflow-issues/backlogit-shipment-ship-non-terminating-large-covering-feature-2026-09-06.md`. Outside 135-S's owned-file scope (backlogit itself). |
 | `77A4E71C` | medium | **PR #384 review follow-up**: verify `137-S` dependency-eligibility against `135-S`'s manual-safe-close `archived_status: done` (matches the `133-S`/`134-S` precedent) rather than `archived_status: shipped`; raised by Copilot review on this closure PR. Outside this closure PR's own scope (P-021 C1). |
+| `86873C54` | medium | **PR #384 review follow-up, supplemental to `20FDC0A7`**: corrects `20FDC0A7`'s framing (per the P-021 C2 single-write invariant, `20FDC0A7` cannot be amended) — the timeout symptom is established, but the traversal root cause remains unconfirmed pending profiling or a completed control run. |
 
-All nine are `requires_deliberation: true` and await Stage triage/harvest.
+All ten are `requires_deliberation: true` and await Stage triage/harvest.
 None represent a regression introduced by, or a gap in, 135-S's own stated
 scope — each is either pre-existing (confirmed via baseline comparison), a
 deliberate, documented scope boundary (P-021 C1), or (for `20FDC0A7`) a
@@ -225,7 +226,7 @@ artifacts found). No degradation — this run completed cleanly.
 | Merge SHA | `0cfffc0cf7220d8f643da28cd2025aff558b7d76` |
 | Merge method | merge commit (`gh pr merge 383 --merge`) |
 | Merge confirmed | `MERGE_CONFIRMED` — `gh pr view 383` state `MERGED`; `git merge-base --is-ancestor` verified against `origin/main` |
-| Shipment closure | Manual safe-close (see `.backlogit/archive/135-S.md` AUDIT RATIONALE) — `backlogit shipment ship` hung non-terminating (tool defect, stashed as follow-up); direct `move --status shipped` rejected by CLI; manual archive-file creation used, matching the 134-S precedent for P-015-protected covering-feature scope |
+| Shipment closure | Manual safe-close (see `.backlogit/archive/135-S.md` AUDIT RATIONALE) — `backlogit shipment ship` did not complete within any of three bounded observation windows (tool timeout symptom, root cause unconfirmed, stashed as follow-up `20FDC0A7`); direct `move --status shipped` rejected by CLI; manual archive-file creation used, matching the 134-S precedent for P-015-protected covering-feature scope |
 | Task statuses | 142.023-T, 142.024-T, 142.025-T, 142.026-T — all `done`, all individually archived pre-closure |
 | Covering feature | `142-F` — verified `active`, byte-for-byte unchanged (P-015 protection confirmed) |
 | Reconciliation | `.backlogit/reconcile/135-S-pre-20260906-110752.md` (PROCEED), `.backlogit/reconcile/135-S-post-20260906-113100.md` (PROCEED) |

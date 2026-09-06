@@ -64,10 +64,12 @@ safe-close (see decisions below).
      by the merge (pre-self-close reload requirement trivially satisfied).
    - Pre-mode reconciliation: all 4 manifest items `pre-archived`, no
      orphans → `PROCEED`.
-   - **Tool defect discovered and worked around**: `backlogit shipment
-     ship 135-S` hung non-terminating across 3 attempts (CPU climbing,
-     zero WAL growth — confirmed not lock contention after clearing 6
-     stale orphaned `backlogit mcp` processes). Generic `move --status
+   - **Tool timeout symptom discovered and worked around**: `backlogit
+     shipment ship 135-S` did not complete within any of 3 bounded
+     observation windows (up to ~5.5 min; CPU climbing, zero WAL growth —
+     clearing 6 stale orphaned `backlogit mcp` processes first ruled out
+     lock contention as a confound, though it did not by itself establish
+     the true root cause, which remains unconfirmed). Generic `move --status
      shipped` fallback also CLI-blocked. **Resolution**: manual safe-close
      (134-S precedent) — hand-authored `.backlogit/archive/135-S.md`,
      removed the queue file, `backlogit sync` clean. Verified `142-F`
@@ -108,7 +110,8 @@ safe-close (see decisions below).
 | `E007DF00` | low | Dead `RateLimiter` code in `src/server/state.rs`. |
 | `DA0AF326` | low | Validator-manifest command drift. |
 | `F58ECAA8` | low | Pre-existing hosted-runner CI timing flake. |
-| `20FDC0A7` | high | **Post-merge**: `backlogit shipment ship` non-termination tool defect. |
+| `20FDC0A7` | high | **Post-merge**: `backlogit shipment ship` timeout/performance symptom (root cause unconfirmed), worked around via manual safe-close. |
+| `77A4E71C` | medium | **Post-merge (PR #384 review)**: verify `137-S` dependency-eligibility against `135-S`'s `archived_status: done`. |
 
 ## Outcome
 
