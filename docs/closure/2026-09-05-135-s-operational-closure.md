@@ -93,15 +93,27 @@ independently-documented `otlp-export` or `archive_verifier` flakes).
 ## Rollback procedure
 
 Branch-local (pre-merge) or `main`-local (post-merge) `git revert` of this
-PR's full commit range, `main..HEAD`: `2d2c1324`, `4dd6ec5f`, `dca08a4c`,
-`3d9b9976`, `c5f85ddd`, `e7a53729`, `28a55ca3`, `13317b81`, `4e22a892`,
-`82ab5c87`, `796717e2`, `a7ca96b8`, `afa1aff3`. Reverting the full range
-restores the deleted modules, the
-`legacy-sse` feature, prior documentation wording, and the pre-shipment
-backlog/checkpoint state. No production/runtime data is touched by this
-change (source-only deletion, dependency-manifest edit, backlog-state
-bookkeeping, and documentation correction) — rollback carries no
-data-migration risk.
+PR's **transport-shipment-scoped** commit range, `main..HEAD` **excluding**
+`2d2c1324`: `4dd6ec5f`, `dca08a4c`, `3d9b9976`, `c5f85ddd`, `e7a53729`,
+`28a55ca3`, `13317b81`, `4e22a892`, `82ab5c87`, `796717e2`, `a7ca96b8`,
+`afa1aff3`, `2bb97bd3`, `a11296f7`. Reverting this range restores the
+deleted modules, the `legacy-sse` feature, prior documentation wording, and
+the pre-shipment task/manifest bookkeeping for 135-S. No production/runtime
+data is touched by this change (source-only deletion, dependency-manifest
+edit, backlog-state bookkeeping, and documentation correction) — rollback
+carries no data-migration risk.
+
+`2d2c1324` (`chore: carry forward checkpoint quarantine dispositions and
+incident handoff`) is deliberately excluded from this range: per its own
+commit message it carries "No shipment 135-S implementation content,"
+instead recording an unrelated, operator-approved carry-forward of
+checkpoint-quarantine/abandonment dispositions and the critical schema
+incident intake (`0011C2DC`) onto this branch. Reverting it alongside the
+transport-shipment commits would reactivate stale, already-resolved
+recovery-checkpoint state and remove live incident tracking that has
+nothing to do with this transport change. If that carry-forward content
+itself ever needs to be rolled back, do so as an independent, explicitly
+scoped revert of `2d2c1324` — never bundled with this transport rollback.
 
 ## Risky action record
 
