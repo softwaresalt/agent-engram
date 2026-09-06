@@ -41,27 +41,6 @@ fn make_candidate(
     }
 }
 
-/// T097: Benchmark cold start time (target: < 200ms).
-///
-/// Measures time to create `AppState` and build the axum router,
-/// which represents the daemon's cold start path excluding network bind.
-/// Requires the `legacy-sse` feature (axum router only compiled with that flag).
-#[cfg(feature = "legacy-sse")]
-#[test]
-fn t097_cold_start_under_200ms() {
-    let start = Instant::now();
-    let state = fresh_state();
-    let _router = engram::server::router::build_router(state);
-    let elapsed = start.elapsed();
-
-    println!("T097 cold start: {elapsed:?} (target: <200ms)");
-    assert!(
-        elapsed.as_millis() < 200,
-        "cold start took {}ms, target <200ms",
-        elapsed.as_millis()
-    );
-}
-
 /// T101: Profile memory usage idle (target: < 100MB RSS).
 ///
 /// Validates that creating the daemon state does not allocate excessive

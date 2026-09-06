@@ -21,10 +21,7 @@ publish = false
 authors = ["Engram Contributors"]
 
 [dependencies]
-axum = "0.7"
 tokio = { version = "1", features = ["full"] }
-tower = { version = "0.4", features = ["util"] }
-tower-http = { version = "0.5", features = ["trace", "cors"] }
 rmcp = { version = "1.1", features = ["server", "transport-io"] }
 interprocess = { version = "2", features = ["tokio"] }
 fd-lock = "4"
@@ -56,7 +53,6 @@ tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 tracing-appender = "0.2"
 clap = { version = "4", features = ["derive", "env"] }
 dirs = "5"
-tokio-stream = "0.1"
 sha2 = "0.10"
 hex = "0.4"
 sysinfo = "0.30"
@@ -95,10 +91,6 @@ embeddings = ["fastembed", "fastembed/ort-download-binaries-native-tls", "fastem
 cozo-backend = ["cozo"]
 git-graph = ["git2"]
 otlp-export = ["tracing-opentelemetry", "opentelemetry", "opentelemetry_sdk", "opentelemetry-otlp"]
-# Enables the legacy HTTP/SSE transport layer (axum router, MCP HTTP handler, SSE handler).
-# Not required for normal operation; the daemon uses IPC transport by default.
-# See docs/adrs/0016-legacy-sse-feature-gate.md.
-legacy-sse = []
 
 [profile.dev]
 debug = "line-tables-only"
@@ -231,11 +223,6 @@ path = "tests/integration/query_perf_observability_test.rs"
 [[test]]
 name = "contract_write"
 path = "tests/contract/write_test.rs"
-
-[[test]]
-name = "integration_connection"
-path = "tests/integration/connection_test.rs"
-required-features = ["legacy-sse"]
 
 [[test]]
 name = "unit_proptest"

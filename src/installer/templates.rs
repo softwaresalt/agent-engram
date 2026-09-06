@@ -56,21 +56,25 @@ pub fn gitignore_entries() -> &'static str {
 
 /// Generate the GitHub Copilot instructions markdown for `.github/copilot-instructions.md`.
 ///
-/// The content includes the MCP endpoint URL (using `port`), the list of
-/// available Engram tools, and recommended workflow patterns.
+/// The content states the supported transport surfaces and the list of
+/// available Engram tools and recommended workflow patterns. The `port`
+/// parameter is accepted for call-site compatibility but is no longer
+/// rendered: Engram's supported surfaces are direct daemon IPC, the `engram`
+/// CLI, and stdio MCP via `engram shim` (see ADR-0016, superseded).
 ///
 /// # Examples
 ///
 /// ```
 /// let md = engram::installer::templates::copilot_instructions(7437);
-/// assert!(md.contains("http://127.0.0.1:7437/mcp"));
+/// assert!(md.contains("stdio MCP"));
 /// assert!(md.contains("query_memory"));
 /// ```
-pub fn copilot_instructions(port: u16) -> String {
-    format!(
-        r#"## Engram Agent Memory — GitHub Copilot Integration
+pub fn copilot_instructions(_port: u16) -> String {
+    r#"## Engram Agent Memory — GitHub Copilot Integration
 
-Engram is running as an MCP server at `http://127.0.0.1:{port}/mcp`.
+Engram is registered as a stdio MCP server (see `.mcp.json`) and is launched
+by the MCP client via `engram shim`. The daemon also exposes a CLI and a
+direct-IPC surface; there is no HTTP endpoint.
 
 ### Available Tools
 
@@ -91,26 +95,30 @@ Engram is running as an MCP server at `http://127.0.0.1:{port}/mcp`.
 3. **Task tracking**: Use `create_task` and `update_task` to record progress.
 4. **Code navigation**: Use `map_code` and `unified_search` for codebase exploration.
 5. **Change history**: Use `query_changes` to understand recent modifications."#
-    )
+        .to_string()
 }
 
 /// Generate the Claude Code instructions markdown for `.claude/instructions.md`.
 ///
-/// The content includes the MCP endpoint URL (using `port`), the list of
-/// available Engram tools, and recommended workflow patterns for Claude.
+/// The content states the supported transport surfaces and the list of
+/// available Engram tools and recommended workflow patterns for Claude. The
+/// `port` parameter is accepted for call-site compatibility but is no longer
+/// rendered: Engram's supported surfaces are direct daemon IPC, the `engram`
+/// CLI, and stdio MCP via `engram shim` (see ADR-0016, superseded).
 ///
 /// # Examples
 ///
 /// ```
 /// let md = engram::installer::templates::claude_instructions(7437);
-/// assert!(md.contains("http://127.0.0.1:7437/mcp"));
+/// assert!(md.contains("stdio MCP"));
 /// assert!(md.contains("set_workspace"));
 /// ```
-pub fn claude_instructions(port: u16) -> String {
-    format!(
-        r#"## Engram Agent Memory — Claude Code Integration
+pub fn claude_instructions(_port: u16) -> String {
+    r#"## Engram Agent Memory — Claude Code Integration
 
-Engram is running as an MCP server at `http://127.0.0.1:{port}/mcp`.
+Engram is registered as a stdio MCP server (see `.mcp.json`) and is launched
+by the MCP client via `engram shim`. The daemon also exposes a CLI and a
+direct-IPC surface; there is no HTTP endpoint.
 
 ### Available Tools
 
@@ -131,5 +139,5 @@ Engram is running as an MCP server at `http://127.0.0.1:{port}/mcp`.
 3. **Task management**: Track all work items with `create_task` and `update_task`.
 4. **Code exploration**: Use `map_code` before navigating unfamiliar modules.
 5. **Change awareness**: Use `query_changes` to understand what changed recently."#
-    )
+        .to_string()
 }

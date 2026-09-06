@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded — see "Supersession" below
 
 ## Context
 
@@ -34,3 +34,18 @@ The rate limit parameters (max connections, window duration) are configurable vi
 ## Date
 
 2026-02-13 — Phase 7, Task T118
+
+## Supersession
+
+**Superseded by**: the transport retirement decision (135-S — "Retire HTTP
+and SSE transport surfaces"), plan units F46–F49 of
+`docs/exec-plans/2026-09-02-separate-indexer-read-server-plan.md`.
+
+The SSE connection surface this rate limiter protected (`server/sse.rs`,
+gated behind the `legacy-sse` feature per ADR-0016) was deleted entirely, and
+the `legacy-sse` feature was removed. This rate limiter's specific
+implementation (`AppState`'s sliding-window connection-rate check) no longer
+has a live call site. Engram's supported transport surfaces are direct daemon
+IPC, the `engram` CLI, and stdio MCP via `engram shim`, none of which accept
+unauthenticated inbound network connections in the sense FR-025 addressed.
+This ADR is preserved for historical context.

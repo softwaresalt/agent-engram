@@ -1,7 +1,9 @@
 <!-- engram:start -->
 ## Engram Agent Memory — Claude Code Integration
 
-Engram is running as an MCP server at `http://127.0.0.1:7437/mcp`.
+Engram is registered as a stdio MCP server (see `.mcp.json`) and is launched
+by the MCP client via `engram shim`. The daemon also exposes a CLI and a
+direct-IPC surface; there is no HTTP endpoint.
 
 ### Available Tools
 

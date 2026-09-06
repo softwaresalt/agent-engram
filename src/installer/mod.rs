@@ -75,7 +75,12 @@ pub const ENGRAM_MARKER_START: &str = "<!-- engram:start -->";
 /// Section marker inserted after engram-managed content in hook files.
 pub const ENGRAM_MARKER_END: &str = "<!-- engram:end -->";
 
-/// Default MCP port used when generating hook file endpoint URLs.
+/// Legacy port value retained for `InstallOptions` compatibility.
+///
+/// Engram's supported transport surfaces are direct daemon IPC, the `engram`
+/// CLI, and stdio MCP via `engram shim` — none of which are HTTP. This value
+/// is no longer rendered into generated hook content. Retained pending a
+/// later removal pass; see ADR-0016 (superseded).
 pub const DEFAULT_PORT: u16 = 7437;
 
 /// Options controlling the behaviour of [`install`].
@@ -86,8 +91,9 @@ pub struct InstallOptions {
     pub hooks_only: bool,
     /// When `true`, skip agent hook file generation entirely.
     pub no_hooks: bool,
-    /// MCP HTTP endpoint port substituted into hook file URLs.
-    /// Defaults to [`DEFAULT_PORT`] (7437).
+    /// Legacy port value, retained for compatibility but no longer used to
+    /// advertise an HTTP endpoint in generated hook content. Defaults to
+    /// [`DEFAULT_PORT`] (7437).
     pub port: u16,
 }
 
@@ -439,7 +445,9 @@ async fn stop_daemon(workspace: &Path) {
 /// - `opts.hooks_only = true`: skips `.engram/` data file creation and generates
 ///   only agent hook files.
 /// - `opts.no_hooks = true`: skips agent hook file generation.
-/// - `opts.port`: substituted into MCP endpoint URLs in hook files.
+/// - `opts.port`: retained for compatibility; no longer rendered into
+///   generated hook content (Engram's supported surfaces are direct daemon
+///   IPC, the `engram` CLI, and stdio MCP — see ADR-0016, superseded).
 ///
 /// # Errors
 ///
