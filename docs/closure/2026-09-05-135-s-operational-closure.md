@@ -25,7 +25,7 @@ extensively covered by the 674+ passing automated tests below.
 | Requirement | Evidence |
 |---|---|
 | Healthy signal | `cargo check --all-targets` (default features) GREEN; `cargo check/clippy/test --no-default-features --features embeddings,cozo-backend,git-graph` (all features except the pre-existing, out-of-scope `otlp-export` break) GREEN; `cargo fmt --all -- --check` clean; `cargo test --doc` GREEN (9/9); `cargo dev-test` 674-675/675 GREEN with 1 confirmed-flaky, confirmed-pre-existing, confirmed-passes-in-isolation test each run (see below). |
-| Review | Adversarial Review (3 reviewers, report-only) — READY_WITH_FOLLOWUPS, now covering the **full PR diff** (`main..HEAD`), not only this session's commits — see the addendum in `docs/closure/2026-09-05-135-s-retire-http-sse-transport-adversarial-review.md`. Plus one full round of Copilot automated review (9 comments), all addressed (fixed in-scope items, deferred out-of-scope items to stash with thread replies). |
+| Review | Adversarial Review (3 reviewers, report-only) — READY_WITH_FOLLOWUPS, covering the **full PR diff** (`main..HEAD`) — see the addendum in `docs/closure/2026-09-05-135-s-retire-http-sse-transport-adversarial-review.md`. Plus **three** rounds of Copilot automated review (9 comments, then 2, then 1 — 12 total), all addressed: fixed in-scope gaps directly (rustdoc correction, test-assertion additions, test rename, doc-content sync, and regenerating this repository's own checked-in `.github/copilot-instructions.md`/`.claude/instructions.md` via the real `engram install --hooks-only` code path), deferred out-of-scope findings to stash with thread replies, and resolved every one of the 12 threads. |
 | Runtime verification | `docs/closure/2026-09-05-135-s-runtime-verification.md` — verdict `PASS WITH FOLLOW-UP`. CLI-version and MCP-protocol (initialize + tools-catalog) probes GREEN via substitute real commands; `cli-daemon-status` probe **BLOCKED** (named condition above). |
 
 ## Invariants to preserve
@@ -95,8 +95,8 @@ independently-documented `otlp-export` or `archive_verifier` flakes).
 Branch-local (pre-merge) or `main`-local (post-merge) `git revert` of this
 PR's full commit range, `main..HEAD`: `2d2c1324`, `4dd6ec5f`, `dca08a4c`,
 `3d9b9976`, `c5f85ddd`, `e7a53729`, `28a55ca3`, `13317b81`, `4e22a892`,
-`82ab5c87`, plus the Copilot-review-remediation commit that follows this
-one. Reverting the full range restores the deleted modules, the
+`82ab5c87`, `796717e2`, `a7ca96b8`, `afa1aff3`. Reverting the full range
+restores the deleted modules, the
 `legacy-sse` feature, prior documentation wording, and the pre-shipment
 backlog/checkpoint state. No production/runtime data is touched by this
 change (source-only deletion, dependency-manifest edit, backlog-state
