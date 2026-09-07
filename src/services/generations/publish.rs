@@ -115,14 +115,77 @@ pub enum PublishError {
         /// The attempted successor revision.
         attempted: GenerationRevision,
     },
+    /// The currently-published manifest could not be read to determine the
+    /// current revision before guarding a new publication attempt.
+    #[error("failed to read current published manifest at {path:?}: {reason}")]
+    CurrentManifestRead {
+        /// The durable manifest destination path.
+        path: PathBuf,
+        /// A human-readable description of the read or parse failure.
+        reason: String,
+    },
+}
+/// Publish a generation manifest through the full F08 transaction: acquire
+/// the cross-process publisher lock, read the currently-published revision
+/// from `destination` (an absent destination is treated as revision `0`,
+/// i.e. a first publish), enforce the checked revision guard, and durably
+/// replace the manifest -- all while the lock is held, so no caller can
+/// observe or exploit a gap between these steps.
+///
+/// This is the only production entry point for publishing a generation
+/// manifest. [`guard_next_revision`] and [`replace_manifest_atomically`]
+/// remain `pub(crate)` for this crate's own tests and internal composition,
+/// but are deliberately not exported so an external caller cannot bypass the
+/// publisher lock or the revision guard by calling them directly.
+///
+/// # Errors
+///
+/// Returns [`PublishError`] when the lock cannot be acquired, the current
+/// manifest cannot be read, the attempted revision does not advance
+/// strictly, or the atomic replacement fails.
+pub fn publish_generation_manifest(
+    root: &Path,
+    destination: &Path,
+    attempted: GenerationRevision,
+    manifest_bytes: &[u8],
+) -> Result<GenerationRevision, PublishError> {
+    let _lock = PublisherLock::acquire(root)?;
+    let current = read_current_manifest_revision(destination)?;
+    let next = guard_next_revision(current, attempted)?;
+    replace_manifest_atomically(destination, manifest_bytes)?;
+    Ok(next)
+}
+fn read_current_manifest_revision(destination: &Path) -> Result<GenerationRevision, PublishError> {
+    match fs::read(destination) {
+        Ok(bytes) => {
+            let manifest: super::GenerationManifest =
+                serde_json::from_slice(&bytes).map_err(|source| {
+                    PublishError::CurrentManifestRead {
+                        path: destination.to_path_buf(),
+                        reason: source.to_string(),
+                    }
+                })?;
+            Ok(manifest.revision())
+        }
+        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(GenerationRevision::new(0)),
+        Err(source) => Err(PublishError::CurrentManifestRead {
+            path: destination.to_path_buf(),
+            reason: source.to_string(),
+        }),
+    }
 }
 /// Validate that `attempted` advances strictly beyond `current`.
+///
+/// Deliberately `pub(crate)`, not `pub`: external callers must go through
+/// [`publish_generation_manifest`], which composes this guard with the
+/// publisher lock and the atomic replacement so the three steps cannot be
+/// split apart and individually bypassed.
 ///
 /// # Errors
 ///
 /// Returns [`PublishError::RevisionGuard`] when `attempted` is not strictly
 /// greater than `current`.
-pub fn guard_next_revision(
+pub(crate) fn guard_next_revision(
     current: GenerationRevision,
     attempted: GenerationRevision,
 ) -> Result<GenerationRevision, PublishError> {
@@ -133,11 +196,16 @@ pub fn guard_next_revision(
 /// The replacement file is staged in the destination's parent directory so the
 /// final `rename` is atomic on both Unix and Windows.
 ///
+/// Deliberately `pub(crate)`, not `pub`: external callers must go through
+/// [`publish_generation_manifest`] so a caller cannot durably replace the
+/// manifest without first passing through the publisher lock and the
+/// revision guard.
+///
 /// # Errors
 ///
 /// Returns [`PublishError::AtomicReplace`] when the staging path cannot be
 /// prepared or the replacement cannot be committed durably.
-pub fn replace_manifest_atomically(
+pub(crate) fn replace_manifest_atomically(
     destination: &Path,
     contents: &[u8],
 ) -> Result<(), PublishError> {

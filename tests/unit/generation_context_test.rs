@@ -13,7 +13,7 @@ use engram::{
     db::cozo_backend::{
         ExistingDbLocation, OpenedGeneration, open_existing_generation_via_runtime_copy,
     },
-    services::generations::{GenerationId, GenerationReadContext},
+    services::generations::GenerationReadContext,
 };
 use tempfile::TempDir;
 
@@ -47,14 +47,14 @@ fn open_generation_context(generation_id: &str) -> (GenerationReadContext, TempD
     let published_db_path = published_dir.path().join("engram.db");
     create_seeded_db(&published_db_path);
 
-    let location = ExistingDbLocation::new(published_db_path);
+    let location =
+        ExistingDbLocation::new(published_db_path).expect("published database path must validate");
     let opened: OpenedGeneration =
         open_existing_generation_via_runtime_copy(&location, runtime_root.path(), generation_id)
             .expect("open runtime copy");
-    let generation_id = GenerationId::new(generation_id).expect("valid generation id");
 
     (
-        GenerationReadContext::new(generation_id, opened),
+        GenerationReadContext::new(opened).expect("runtime copy generation id must be valid"),
         published_dir,
         runtime_root,
     )
@@ -76,6 +76,23 @@ fn constructs_context_from_real_opened_generation() {
     assert!(context.opened_generation().runtime_copy().path().exists());
 
     drop(context);
+}
+
+#[test]
+fn generation_id_is_always_derived_from_the_opened_generation_itself() {
+    // The context's identifier must come from `opened.runtime_copy().generation_id()`,
+    // never from an independently supplied parameter -- otherwise a caller
+    // could pair a `GenerationId` with an unrelated `OpenedGeneration`. Prove
+    // this by opening two DIFFERENT generations and confirming each
+    // context's reported ID exactly matches the ID it was actually opened
+    // with; there is no code path left for the two to diverge since the
+    // constructor no longer accepts an identifier argument at all.
+    let (context_a, _published_a, _runtime_a) = open_generation_context("generation-alpha");
+    let (context_b, _published_b, _runtime_b) = open_generation_context("generation-beta");
+
+    assert_eq!(context_a.generation_id().as_str(), "generation-alpha");
+    assert_eq!(context_b.generation_id().as_str(), "generation-beta");
+    assert_ne!(context_a.generation_id(), context_b.generation_id());
 }
 
 #[test]

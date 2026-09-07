@@ -6,7 +6,7 @@ use engram::services::generations::{
 
 #[test]
 fn generation_id_rejects_invalid_components() {
-    for invalid in ["", "nested/id", r"nested\\id", "alpha..beta"] {
+    for invalid in ["", "nested/id", r"nested\\id", "alpha..beta", "."] {
         assert!(
             GenerationId::new(invalid).is_err(),
             "expected {invalid:?} to be rejected"

@@ -261,7 +261,17 @@ fn connect_db_open_lock(db_path: &Path) -> DbOpenLock {
 
 const RUNTIME_COPY_DB_FILE_NAME: &str = "engram.db";
 
-/// Sealed location of an existing published generation database on disk.
+/// Location of an existing published generation database on disk, validated
+/// at construction time.
+///
+/// Construction canonicalizes `published_db_path` and confirms it resolves to
+/// an existing regular file, closing the gap where an arbitrary,
+/// non-existent, or non-file path could otherwise be wrapped and handed to
+/// [`open_existing_generation_via_runtime_copy`] uninspected. This module
+/// cannot import `GenerationStore`/`IndexTarget` (the store-level sealing
+/// primitive) without violating this task's own no-generation-service-import
+/// layering rule, so this constructor performs the equivalent canonical
+/// containment check locally instead.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExistingDbLocation {
     published_db_path: PathBuf,
@@ -270,11 +280,37 @@ pub struct ExistingDbLocation {
 impl ExistingDbLocation {
     /// Wrap the published generation database path that must be opened via a
     /// private runtime copy.
-    #[must_use]
-    pub fn new(published_db_path: impl Into<PathBuf>) -> Self {
-        Self {
-            published_db_path: published_db_path.into(),
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngramError`] when `published_db_path` cannot be
+    /// canonicalized or does not resolve to an existing regular file.
+    pub fn new(published_db_path: impl Into<PathBuf>) -> Result<Self, EngramError> {
+        let requested_path = published_db_path.into();
+        let canonical_path = requested_path.canonicalize().map_err(|source| {
+            map_runtime_copy_io_error(
+                "canonicalize published database path",
+                &requested_path,
+                source,
+            )
+        })?;
+        let metadata = std::fs::metadata(&canonical_path).map_err(|source| {
+            map_runtime_copy_io_error(
+                "read metadata for published database path",
+                &canonical_path,
+                source,
+            )
+        })?;
+        if !metadata.is_file() {
+            return Err(map_db_err(format!(
+                "published database path {} must be a regular file",
+                canonical_path.display()
+            )));
         }
+
+        Ok(Self {
+            published_db_path: canonical_path,
+        })
     }
 
     /// Return the published generation database path.
@@ -288,17 +324,31 @@ impl ExistingDbLocation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeCopy {
     path: PathBuf,
+    generation_id: String,
 }
 
 impl RuntimeCopy {
-    fn new(path: PathBuf) -> Self {
-        Self { path }
+    fn new(path: PathBuf, generation_id: String) -> Self {
+        Self {
+            path,
+            generation_id,
+        }
     }
 
     /// Return the sealed runtime copy path.
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Return the generation identifier this runtime copy was opened for.
+    ///
+    /// Carried alongside the path (rather than supplied independently by a
+    /// caller) so a [`GenerationReadContext`](crate::services::generations::GenerationReadContext)
+    /// built from this copy cannot be paired with an unrelated identifier.
+    #[must_use]
+    pub fn generation_id(&self) -> &str {
+        &self.generation_id
     }
 }
 
@@ -409,7 +459,8 @@ pub fn open_existing_generation_via_runtime_copy(
         std::thread::sleep(Duration::from_millis(50));
     };
 
-    let runtime_copy = publish_runtime_copy(location.published_db_path(), &final_path)?;
+    let runtime_copy =
+        publish_runtime_copy(location.published_db_path(), &final_path, generation_id)?;
     let final_path_str = runtime_copy
         .path()
         .to_str()
@@ -465,6 +516,7 @@ fn runtime_copy_destination_path(runtime_root: &Path, generation_id: &str) -> Pa
 fn publish_runtime_copy(
     published_db_path: &Path,
     final_path: &Path,
+    generation_id: &str,
 ) -> Result<RuntimeCopy, EngramError> {
     let parent = final_path.parent().ok_or_else(|| {
         map_db_err(format!(
@@ -512,7 +564,10 @@ fn publish_runtime_copy(
         map_runtime_copy_io_error("fsync runtime copy directory", final_path, error)
     })?;
 
-    Ok(RuntimeCopy::new(final_path.to_path_buf()))
+    Ok(RuntimeCopy::new(
+        final_path.to_path_buf(),
+        generation_id.to_owned(),
+    ))
 }
 
 fn sync_runtime_copy_staging(staging_path: &Path) -> std::io::Result<()> {

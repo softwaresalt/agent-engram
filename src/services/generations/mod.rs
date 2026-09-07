@@ -20,8 +20,8 @@ pub use self::manifest::{
     WorkspaceIdentity,
 };
 pub use self::publish::{
-    PublishError, PublisherLock, PublisherLockGuard, guard_next_revision,
-    list_orphaned_staging_files, replace_manifest_atomically,
+    PublishError, PublisherLock, PublisherLockGuard, list_orphaned_staging_files,
+    publish_generation_manifest,
 };
 pub use self::store::{GenerationStore, IndexTarget, IndexTargetKind, StoreError};
 
@@ -172,7 +172,7 @@ fn validate_generation_id(value: &str) -> Result<(), GenerationIdError> {
         return Err(GenerationIdError::Empty);
     }
 
-    if value.contains('/') || value.contains('\\') || value.contains("..") {
+    if value == "." || value.contains('/') || value.contains('\\') || value.contains("..") {
         return Err(GenerationIdError::InvalidComponent {
             value: value.to_owned(),
         });

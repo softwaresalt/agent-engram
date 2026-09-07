@@ -53,7 +53,8 @@ fn fresh_open_creates_runtime_copy_under_runtime_root() {
     let runtime_root = tempfile::tempdir().expect("tempdir");
     let published_db_path = published_dir.path().join("engram.db");
     let published_bytes = create_seeded_db(&published_db_path);
-    let location = ExistingDbLocation::new(published_db_path.clone());
+    let location = ExistingDbLocation::new(published_db_path.clone())
+        .expect("published database path must validate");
 
     let opened =
         open_existing_generation_via_runtime_copy(&location, runtime_root.path(), "generation-001")
@@ -83,7 +84,8 @@ fn mutating_runtime_copy_never_changes_published_db_bytes() {
     let runtime_root = tempfile::tempdir().expect("tempdir");
     let published_db_path = published_dir.path().join("engram.db");
     let published_bytes_before = create_seeded_db(&published_db_path);
-    let location = ExistingDbLocation::new(published_db_path.clone());
+    let location = ExistingDbLocation::new(published_db_path.clone())
+        .expect("published database path must validate");
 
     let opened = open_existing_generation_via_runtime_copy(
         &location,
@@ -112,7 +114,8 @@ fn reopening_same_generation_replaces_existing_runtime_copy() {
     let runtime_root = tempfile::tempdir().expect("tempdir");
     let published_db_path = published_dir.path().join("engram.db");
     let published_bytes = create_seeded_db(&published_db_path);
-    let location = ExistingDbLocation::new(published_db_path.clone());
+    let location = ExistingDbLocation::new(published_db_path.clone())
+        .expect("published database path must validate");
 
     let first_open = open_existing_generation_via_runtime_copy(
         &location,
