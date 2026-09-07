@@ -163,7 +163,47 @@ pub fn replace_manifest_atomically(
         Ok(())
     }
 }
+/// List orphaned staging files left beside `destination` by interrupted publishes.
+///
+/// The returned paths match this module's `"<file-name>.tmp-*"` staging
+/// naming convention and are discovery-only: callers can inspect or report them,
+/// but this module never promotes or deletes them through this API.
+///
+/// # Errors
+///
+/// Returns [`io::Error`] when `destination` does not name a file or its parent
+/// directory cannot be read.
+pub fn list_orphaned_staging_files(destination: &Path) -> io::Result<Vec<PathBuf>> {
+    let parent = destination
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let prefix = manifest_staging_name_prefix(destination)?;
+    let prefix = prefix.to_string_lossy().into_owned();
+    let mut orphans = Vec::new();
+
+    for entry in fs::read_dir(parent)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+
+        if entry.file_name().to_string_lossy().starts_with(&prefix) {
+            orphans.push(entry.path());
+        }
+    }
+
+    orphans.sort();
+    Ok(orphans)
+}
+
 fn manifest_staging_path(destination: &Path) -> io::Result<PathBuf> {
+    let mut staging_name = manifest_staging_name_prefix(destination)?;
+    staging_name.push(Uuid::new_v4().to_string());
+    Ok(destination.with_file_name(staging_name))
+}
+
+fn manifest_staging_name_prefix(destination: &Path) -> io::Result<std::ffi::OsString> {
     let file_name = destination.file_name().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -171,8 +211,8 @@ fn manifest_staging_path(destination: &Path) -> io::Result<PathBuf> {
         )
     })?;
     let mut staging_name = file_name.to_os_string();
-    staging_name.push(format!(".tmp-{}", Uuid::new_v4()));
-    Ok(destination.with_file_name(staging_name))
+    staging_name.push(".tmp-");
+    Ok(staging_name)
 }
 fn write_staging_manifest(staging: &Path, contents: &[u8]) -> io::Result<()> {
     let mut file = File::create(staging)?;
@@ -269,8 +309,8 @@ fn lock_path(root: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        PublishError, PublisherLock, guard_next_revision, lock_path, manifest_staging_path,
-        replace_manifest_atomically,
+        PublishError, PublisherLock, guard_next_revision, list_orphaned_staging_files, lock_path,
+        manifest_staging_path, replace_manifest_atomically,
     };
     use crate::services::generations::GenerationRevision;
     use fd_lock::RwLock;
@@ -392,6 +432,57 @@ mod tests {
             &replacement[..replacement.len() / 2]
         );
     }
+
+    #[test]
+    fn list_orphaned_staging_files_reports_only_matching_manifest_temporaries() {
+        let temp_dir = TempDir::new().unwrap();
+        let destination = temp_dir.path().join("active.json");
+        let orphan = temp_dir.path().join("active.json.tmp-orphan");
+        let unrelated = temp_dir.path().join("unrelated.tmp-orphan");
+        let sibling_manifest_orphan = temp_dir.path().join("other.json.tmp-orphan");
+        fs::write(&destination, b"published").unwrap();
+        fs::write(&orphan, b"orphaned").unwrap();
+        fs::write(&unrelated, b"ignore-me").unwrap();
+        fs::write(&sibling_manifest_orphan, b"ignore-me-too").unwrap();
+
+        let orphans = list_orphaned_staging_files(&destination).unwrap();
+
+        assert_eq!(orphans, vec![orphan]);
+    }
+
+    #[test]
+    fn orphaned_staging_files_do_not_block_a_subsequent_atomic_replace() {
+        let temp_dir = TempDir::new().unwrap();
+        let destination = temp_dir.path().join("active.json");
+        let orphan = temp_dir.path().join("active.json.tmp-orphan");
+        fs::write(&destination, b"currently-published").unwrap();
+        fs::write(&orphan, b"abandoned-write").unwrap();
+
+        replace_manifest_atomically(&destination, b"fresh-publication").unwrap();
+
+        assert_eq!(fs::read(&destination).unwrap(), b"fresh-publication");
+        assert_eq!(fs::read(&orphan).unwrap(), b"abandoned-write");
+    }
+
+    #[test]
+    fn orphaned_staging_files_are_reported_but_never_promoted_or_deleted() {
+        let temp_dir = TempDir::new().unwrap();
+        let destination = temp_dir.path().join("active.json");
+        let orphan = temp_dir.path().join("active.json.tmp-orphan");
+        let orphan_contents = b"stale-staging-payload";
+        fs::write(&orphan, orphan_contents).unwrap();
+
+        let detected_before_publish = list_orphaned_staging_files(&destination).unwrap();
+        assert_eq!(detected_before_publish, vec![orphan.clone()]);
+
+        replace_manifest_atomically(&destination, b"fresh-manifest").unwrap();
+
+        assert_eq!(fs::read(&destination).unwrap(), b"fresh-manifest");
+        assert_eq!(fs::read(&orphan).unwrap(), orphan_contents);
+        let detected_after_publish = list_orphaned_staging_files(&destination).unwrap();
+        assert_eq!(detected_after_publish, vec![orphan]);
+    }
+
     #[test]
     fn replace_manifest_creates_destination_on_first_publish() {
         let temp_dir = TempDir::new().unwrap();

@@ -19,7 +19,7 @@ pub use self::manifest::{
 };
 pub use self::publish::{
     PublishError, PublisherLock, PublisherLockGuard, guard_next_revision,
-    replace_manifest_atomically,
+    list_orphaned_staging_files, replace_manifest_atomically,
 };
 pub use self::store::{GenerationStore, IndexTarget, IndexTargetKind, StoreError};
 
