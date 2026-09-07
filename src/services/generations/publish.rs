@@ -142,12 +142,21 @@ pub enum PublishError {
 }
 /// Publish a generation manifest through the full F08 transaction: acquire
 /// the cross-process publisher lock, read the currently-published revision
-/// from `destination` (an absent destination is treated as revision `0`,
-/// i.e. a first publish), enforce the checked revision guard, serialize
-/// `manifest`, and durably replace the destination -- all while the lock is
-/// held, so no caller can observe or exploit a gap between these steps.
+/// from the store's active manifest destination (an absent destination is
+/// treated as revision `0`, i.e. a first publish), enforce the checked
+/// revision guard, serialize `manifest`, and durably replace the
+/// destination -- all while the lock is held, so no caller can observe or
+/// exploit a gap between these steps.
 ///
-/// The publisher lock is always derived from `destination`'s own parent
+/// The destination is always `store.active_manifest_path()` -- a sealed path
+/// derived from an already-validated [`GenerationStore`](super::GenerationStore) root, never an
+/// arbitrary caller-chosen path. This closes the gap where a caller could
+/// bypass the store's containment guarantees entirely and publish to any
+/// path the process can write; the ONLY way to obtain a destination this
+/// function will act on is to already hold a `GenerationStore` for the
+/// correct root.
+///
+/// The publisher lock is always derived from the destination's own parent
 /// directory (`<destination-parent>/.publisher.lock`), never from an
 /// independently supplied root: accepting a separate root parameter would
 /// let two callers name different lock files for the very same destination
@@ -167,29 +176,31 @@ pub enum PublishError {
 ///
 /// # Errors
 ///
-/// Returns [`PublishError`] when `destination` has no parent directory, the
-/// lock cannot be acquired, the current manifest cannot be read,
-/// `manifest`'s revision does not advance strictly, the manifest cannot be
-/// serialized, or the atomic replacement fails.
+/// Returns [`PublishError`] when the store's active manifest path has no
+/// parent directory, the lock cannot be acquired, the current manifest
+/// cannot be read, `manifest`'s revision does not advance strictly, the
+/// manifest cannot be serialized, or the atomic replacement fails.
 pub fn publish_generation_manifest(
-    destination: &Path,
+    store: &super::GenerationStore,
     manifest: &super::GenerationManifest,
 ) -> Result<GenerationRevision, PublishError> {
+    let destination = store.active_manifest_path();
     let root = destination
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .ok_or_else(|| PublishError::DestinationHasNoParent {
-            path: destination.to_path_buf(),
-        })?;
-    let _lock = PublisherLock::acquire(root)?;
-    let current = read_current_manifest_revision(destination)?;
+            path: destination.clone(),
+        })?
+        .to_path_buf();
+    let _lock = PublisherLock::acquire(&root)?;
+    let current = read_current_manifest_revision(&destination)?;
     let next = guard_next_revision(current, manifest.revision())?;
     let manifest_bytes =
         serde_json::to_vec(manifest).map_err(|source| PublishError::ManifestSerialization {
-            path: destination.to_path_buf(),
+            path: destination.clone(),
             reason: source.to_string(),
         })?;
-    replace_manifest_atomically(destination, &manifest_bytes)?;
+    replace_manifest_atomically(&destination, &manifest_bytes)?;
     Ok(next)
 }
 fn read_current_manifest_revision(destination: &Path) -> Result<GenerationRevision, PublishError> {

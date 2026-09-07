@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use engram::services::generations::{
     BranchIdentity, GenerationId, GenerationManifest, GenerationProvenance, GenerationRevision,
-    ManifestFileDigest, PublishError, SealedInventory, WorkspaceIdentity,
+    GenerationStore, ManifestFileDigest, PublishError, SealedInventory, WorkspaceIdentity,
     list_orphaned_staging_files, publish_generation_manifest,
 };
 
@@ -13,8 +13,8 @@ use std::sync::{Arc, Barrier};
 use std::thread;
 use tempfile::TempDir;
 
-fn manifest_path(root: &Path) -> PathBuf {
-    root.join("active.json")
+fn store_at(root: &Path) -> GenerationStore {
+    GenerationStore::new(root).expect("generation store must construct over a real directory")
 }
 
 fn fixture_manifest(revision: GenerationRevision, label: &str) -> GenerationManifest {
@@ -70,11 +70,11 @@ fn thread_count_revision(thread_count: usize) -> GenerationRevision {
 /// production function hides "current" behind the publisher lock, so a
 /// caller that does not already know the exact next revision retries with
 /// the value the guard itself reports.
-fn publish_until_success(destination: &Path, label: &str) -> GenerationRevision {
+fn publish_until_success(store: &GenerationStore, label: &str) -> GenerationRevision {
     let mut attempted = GenerationRevision::new(1);
     loop {
         let manifest = fixture_manifest(attempted, label);
-        match publish_generation_manifest(destination, &manifest) {
+        match publish_generation_manifest(store, &manifest) {
             Ok(next) => return next,
             Err(PublishError::RevisionGuard { current, .. }) => {
                 attempted = GenerationRevision::new(
@@ -94,18 +94,19 @@ fn concurrent_publishers_with_same_candidate_choose_exactly_one_winner() {
     const THREADS: usize = 6;
 
     let temp_dir = TempDir::new().expect("temporary generation root");
-    let destination = manifest_path(temp_dir.path());
+    let store = store_at(temp_dir.path());
+    let destination = store.active_manifest_path();
     let start_gate = Arc::new(Barrier::new(THREADS));
 
     let handles = (0..THREADS)
         .map(|thread_index| {
-            let destination = destination.clone();
+            let store = store.clone();
             let start_gate = Arc::clone(&start_gate);
             thread::spawn(move || {
                 start_gate.wait();
                 let label = format!("winner-{thread_index}");
                 let manifest = fixture_manifest(GenerationRevision::new(1), &label);
-                publish_generation_manifest(&destination, &manifest)
+                publish_generation_manifest(&store, &manifest)
             })
         })
         .collect::<Vec<_>>();
@@ -140,7 +141,8 @@ fn concurrent_publishers_serialize_all_monotonic_advances_without_lost_updates()
     const THREADS: usize = 6;
 
     let temp_dir = TempDir::new().expect("temporary generation root");
-    let destination = manifest_path(temp_dir.path());
+    let store = store_at(temp_dir.path());
+    let destination = store.active_manifest_path();
     let initial_bytes = manifest_bytes(GenerationRevision::new(0), "seed");
     fs::write(&destination, &initial_bytes).expect("seed manifest must be written");
 
@@ -148,12 +150,12 @@ fn concurrent_publishers_serialize_all_monotonic_advances_without_lost_updates()
 
     let handles = (0..THREADS)
         .map(|thread_index| {
-            let destination = destination.clone();
+            let store = store.clone();
             let start_gate = Arc::clone(&start_gate);
             thread::spawn(move || {
                 start_gate.wait();
                 let label = format!("advance-{thread_index}");
-                publish_until_success(&destination, &label)
+                publish_until_success(&store, &label)
             })
         })
         .collect::<Vec<_>>();
@@ -177,7 +179,8 @@ fn concurrent_publishers_serialize_all_monotonic_advances_without_lost_updates()
 #[test]
 fn interrupted_publication_never_tears_the_destination_manifest() {
     let temp_dir = TempDir::new().expect("temporary generation root");
-    let destination = manifest_path(temp_dir.path());
+    let store = store_at(temp_dir.path());
+    let destination = store.active_manifest_path();
     let old_bytes = manifest_bytes(GenerationRevision::new(2), "old");
     let new_manifest = fixture_manifest(GenerationRevision::new(3), "new");
     let new_bytes = serde_json::to_vec(&new_manifest).expect("new manifest must serialize");
@@ -192,7 +195,7 @@ fn interrupted_publication_never_tears_the_destination_manifest() {
         old_bytes
     );
 
-    publish_generation_manifest(&destination, &new_manifest)
+    publish_generation_manifest(&store, &new_manifest)
         .expect("subsequent publish after interruption must succeed");
 
     assert_eq!(
@@ -217,7 +220,8 @@ fn staging_write_failure_leaves_a_preexisting_destination_untouched() {
     use std::os::unix::fs::PermissionsExt;
 
     let temp_dir = TempDir::new().expect("temporary generation root");
-    let destination = manifest_path(temp_dir.path());
+    let store = store_at(temp_dir.path());
+    let destination = store.active_manifest_path();
     let old_bytes = manifest_bytes(GenerationRevision::new(5), "old");
     fs::write(&destination, &old_bytes).expect("existing manifest must be written");
 
@@ -238,7 +242,7 @@ fn staging_write_failure_leaves_a_preexisting_destination_untouched() {
         .expect("directory permissions must be restricted for this fault injection");
 
     let new_manifest = fixture_manifest(GenerationRevision::new(6), "new");
-    let result = publish_generation_manifest(&destination, &new_manifest);
+    let result = publish_generation_manifest(&store, &new_manifest);
 
     // Restore write access before any further filesystem interaction so the
     // TempDir can clean itself up on drop.
@@ -271,7 +275,8 @@ fn staging_write_failure_leaves_a_preexisting_destination_untouched() {
 #[test]
 fn rename_failure_onto_a_readonly_destination_leaves_it_untouched() {
     let temp_dir = TempDir::new().expect("temporary generation root");
-    let destination = manifest_path(temp_dir.path());
+    let store = store_at(temp_dir.path());
+    let destination = store.active_manifest_path();
     let old_bytes = manifest_bytes(GenerationRevision::new(5), "old");
     fs::write(&destination, &old_bytes).expect("existing manifest must be written");
 
@@ -283,7 +288,7 @@ fn rename_failure_onto_a_readonly_destination_leaves_it_untouched() {
         .expect("destination must be markable read-only for this fault injection");
 
     let new_manifest = fixture_manifest(GenerationRevision::new(6), "new");
-    let result = publish_generation_manifest(&destination, &new_manifest);
+    let result = publish_generation_manifest(&store, &new_manifest);
 
     // Restore write access before any further filesystem interaction so the
     // TempDir can clean itself up on drop. This function is `#[cfg(windows)]`
@@ -311,7 +316,8 @@ fn rename_failure_onto_a_readonly_destination_leaves_it_untouched() {
 #[test]
 fn orphaned_staging_files_are_reported_and_never_promoted() {
     let temp_dir = TempDir::new().expect("temporary generation root");
-    let destination = manifest_path(temp_dir.path());
+    let store = store_at(temp_dir.path());
+    let destination = store.active_manifest_path();
     let published_bytes = manifest_bytes(GenerationRevision::new(4), "published");
     let replacement_manifest = fixture_manifest(GenerationRevision::new(5), "replacement");
     let replacement_bytes =
@@ -327,7 +333,7 @@ fn orphaned_staging_files_are_reported_and_never_promoted() {
         vec![orphan.clone()]
     );
 
-    publish_generation_manifest(&destination, &replacement_manifest)
+    publish_generation_manifest(&store, &replacement_manifest)
         .expect("legitimate publish must ignore orphan staging siblings");
 
     assert_eq!(
@@ -348,14 +354,15 @@ fn orphaned_staging_files_are_reported_and_never_promoted() {
 #[test]
 fn non_increasing_revisions_are_refused_with_typed_errors() {
     let temp_dir = TempDir::new().expect("temporary generation root");
-    let destination = manifest_path(temp_dir.path());
+    let store = store_at(temp_dir.path());
+    let destination = store.active_manifest_path();
     let seed_bytes = manifest_bytes(GenerationRevision::new(7), "seed");
     fs::write(&destination, &seed_bytes).expect("seed manifest must be written");
 
     for attempted in [GenerationRevision::new(7), GenerationRevision::new(6)] {
         let manifest = fixture_manifest(attempted, "rejected");
         assert!(matches!(
-            publish_generation_manifest(&destination, &manifest),
+            publish_generation_manifest(&store, &manifest),
             Err(PublishError::RevisionGuard {
                 current,
                 attempted: observed_attempted,
@@ -374,27 +381,39 @@ fn manifest_bytes_and_guarded_revision_can_never_diverge() {
     // diverge by construction. Prove the published bytes deserialize back to
     // exactly the manifest that was guarded.
     let temp_dir = TempDir::new().expect("temporary generation root");
-    let destination = manifest_path(temp_dir.path());
+    let store = store_at(temp_dir.path());
+    let destination = store.active_manifest_path();
     let manifest = fixture_manifest(GenerationRevision::new(1), "consistent");
 
     let published_revision =
-        publish_generation_manifest(&destination, &manifest).expect("first publish must succeed");
+        publish_generation_manifest(&store, &manifest).expect("first publish must succeed");
 
     assert_eq!(published_revision, manifest.revision());
     assert_eq!(read_manifest(&destination), manifest);
 }
 
 #[test]
-fn destination_without_a_parent_directory_is_a_typed_refusal() {
-    // A bare relative filename has no meaningful parent component to derive
-    // the publisher lock from; publish_generation_manifest must reject this
-    // explicitly rather than silently locking against the process's current
-    // working directory or panicking.
-    let destination = PathBuf::from("active.json");
-    let manifest = fixture_manifest(GenerationRevision::new(1), "no-parent");
+fn publication_always_targets_the_store_minted_active_manifest_path() {
+    // Regression coverage for the review finding that publish_generation_manifest
+    // previously accepted an arbitrary caller-chosen destination path,
+    // bypassing GenerationStore containment entirely. The function now
+    // takes only a `&GenerationStore` and always publishes to
+    // `store.active_manifest_path()` -- there is no parameter through which
+    // a caller could redirect publication to a different, unsealed path.
+    let temp_dir = TempDir::new().expect("temporary generation root");
+    let store = store_at(temp_dir.path());
+    let manifest = fixture_manifest(GenerationRevision::new(1), "sealed-destination");
 
-    assert!(matches!(
-        publish_generation_manifest(&destination, &manifest),
-        Err(PublishError::DestinationHasNoParent { path }) if path == destination
-    ));
+    publish_generation_manifest(&store, &manifest).expect("publish must succeed");
+
+    let expected_destination = temp_dir
+        .path()
+        .canonicalize()
+        .expect("temp dir must canonicalize")
+        .join("active.json");
+    assert_eq!(store.active_manifest_path(), expected_destination);
+    assert!(
+        expected_destination.exists(),
+        "publication must land exactly at the store-minted active manifest path"
+    );
 }

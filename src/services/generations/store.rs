@@ -15,6 +15,12 @@ use thiserror::Error;
 
 use super::GenerationId;
 
+/// Filename of the durable active-generation manifest within a
+/// [`GenerationStore`]'s root. This is the ONLY destination
+/// `publish_generation_manifest` accepts (via [`GenerationStore::active_manifest_path`]),
+/// so publication can never target an arbitrary, unsealed path.
+const ACTIVE_MANIFEST_FILE_NAME: &str = "active.json";
+
 /// Canonical generation-root wrapper that seals contained indexing targets.
 #[derive(Debug, Clone)]
 pub struct GenerationStore {
@@ -47,6 +53,18 @@ impl GenerationStore {
         Ok(Self {
             root: canonical_root,
         })
+    }
+
+    /// Return the canonical path to the durable active-generation manifest
+    /// within this store's root.
+    ///
+    /// This is the sole sealed destination `publish_generation_manifest`
+    /// accepts: a publication caller obtains it only by holding a
+    /// `GenerationStore` for the correct, already-validated root, so
+    /// publication can never target an arbitrary, unsealed path.
+    #[must_use]
+    pub fn active_manifest_path(&self) -> PathBuf {
+        self.root.join(ACTIVE_MANIFEST_FILE_NAME)
     }
 
     /// Seal an existing regular file inside the configured generation root.
