@@ -48,19 +48,41 @@ execution (matches stash `0443D844` from 135-S closure). Passes in isolation.
 Not a regression from this session's work. No action taken (out of 136-S
 scope per P-021 C1).
 
+## Update: F08 (142.013-T + 4 subtasks) complete
+
+All four F08 subtasks plus the parent task are `done` and archived:
+`142.013.001-ST` (`c69b6640` feat, `99e81073` done — publisher lock +
+revision guard, `fd-lock`-backed, worker-thread RAII guard, no `unsafe`),
+`142.013.002-ST` (`22d67649` feat, `4b992f2b` done — durable atomic replace
+using the exact F01-proven primitive), `142.013.003-ST` (`a1de14a4` feat,
+`f4ca8a21` done — orphan detection, read-only, no promotion/deletion),
+`142.013.004-ST` (`f23eb50e` test, `48a58e39` done — closing concurrency +
+crash-recovery integration harness), `142.013-T` (`07fa6e39` done).
+
+Two independent code-review passes (report-only) ran across F08: one
+clean (`READY` for subtasks 1-3 individually as implemented), one closing
+review at the full-unit level returned `READY_WITH_FOLLOWUPS` — flagged
+that the "exactly one winner" concurrency test used an in-memory `Mutex`
+oracle for "current revision" that gave the test **zero discriminating
+power** over `PublisherLock` itself (it would pass identically with a
+no-op lock). This was an in-scope, same-file completion fix (P-021 C1) —
+fixed directly before commit: the test now reads "current" from the
+on-disk manifest under the real lock, so it genuinely proves serialization.
+Verified 5+ consecutive green runs after the fix. A second P3 finding (no
+true cross-process/multi-OS-process harness, only same-process threads)
+was accepted as non-blocking per the reviewer's own assessment (the
+unit-level `independent_handles_use_the_same_os_lockfile` test plus
+`fd-lock`'s documented cross-process guarantees already cover this
+adequately for this shipment's scope).
+
+Full-suite `cargo dev-test` was NOT re-run after F08 (deferred to the
+final pre-PR quality gate pass, per efficiency — targeted tests + clippy +
+fmt were run after every subtask).
+
 ## Remaining queue (dependency order)
 
-1. `142.013.001-ST` — cross-process publisher lock + checked revision guard
-2. `142.013.002-ST` — durable atomic replacement (F01 primitive: `std::fs::rename`
-   + fsync staging file + `sync_parent_dir` POSIX-only directory durability;
-   see `tests/integration/generation_storage_probe_test.rs` for the proven
-   primitives — no `unsafe`, no new dependency)
-3. `142.013.003-ST` — ignore-never-promote orphaned temporaries
-4. `142.013.004-ST` — concurrency + crash-recovery harness (closing evidence
-   for F08)
-5. `142.013-T` — parent task, mark done after all four subtasks land
-6. `142.014-T` — F09 database-owned runtime copy open (`src/db/cozo_backend/mod.rs`)
-7. `142.017-T` — F16a generation read context domain type
+1. `142.014-T` — F09 database-owned runtime copy open (`src/db/cozo_backend/mod.rs`)
+2. `142.017-T` — F16a generation read context domain type
 
 ## Risk classification (recorded per operator directive #7, this session)
 
