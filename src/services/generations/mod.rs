@@ -5,6 +5,7 @@
 //! sibling generation services.
 
 mod manifest;
+mod store;
 
 use std::fmt;
 
@@ -15,6 +16,7 @@ pub use self::manifest::{
     BranchIdentity, GenerationManifest, GenerationProvenance, ManifestFileDigest, SealedInventory,
     WorkspaceIdentity,
 };
+pub use self::store::{GenerationStore, IndexTarget, IndexTargetKind, StoreError};
 
 /// Strict single-component identifier for a published generation.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
