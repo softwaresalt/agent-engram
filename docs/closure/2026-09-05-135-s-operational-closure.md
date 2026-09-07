@@ -234,4 +234,13 @@ artifacts found). No degradation — this run completed cleanly.
 | Covering feature | `142-F` — verified `active`, byte-for-byte unchanged (P-015 protection confirmed) |
 | Reconciliation | `.backlogit/reconcile/135-S-pre-20260906-110752.md` (PROCEED), `.backlogit/reconcile/135-S-post-20260906-113100.md` (PROCEED) |
 | Post-merge closure branch | `post-merge/135-s-retire-http-and-sse-transport-surfaces` |
+| Post-merge closure PR | #384, "chore: post-merge closure for 135-S — Retire HTTP and SSE transport surfaces", head SHA `c8cd297902b2ad4a6abd9c872e04fe1cc8cba384`, merge commit `1c100d8213d5364bedd2dc7a4d9e2f383f3b1711`, state `MERGED`, merged at `2026-09-06T22:59:23Z` |
+
+Post-merge closure for 135-S is now fully confirmed complete: the feature
+PR (#383, merge commit `0cfffc0cf7220d8f643da28cd2025aff558b7d76`) and the
+post-merge closure PR (#384, merge commit
+`1c100d8213d5364bedd2dc7a4d9e2f383f3b1711`) are both `MERGED` and present in
+`main`/`origin/main` history. See
+[`docs/closure/135-S-2026-09-06-post-merge-closure.md`](135-S-2026-09-06-post-merge-closure.md)
+for the canonical, gate-discoverable evidence record.
 
