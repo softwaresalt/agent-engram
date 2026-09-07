@@ -264,14 +264,18 @@ const RUNTIME_COPY_DB_FILE_NAME: &str = "engram.db";
 /// Location of an existing published generation database on disk, validated
 /// at construction time.
 ///
-/// Construction canonicalizes `published_db_path` and confirms it resolves to
-/// an existing regular file, closing the gap where an arbitrary,
-/// non-existent, or non-file path could otherwise be wrapped and handed to
+/// Construction canonicalizes `published_db_path`, confirms it resolves to an
+/// existing regular file, AND confirms it is canonically contained under a
+/// caller-supplied `generation_root` -- closing the gap where an arbitrary
+/// readable file located anywhere else on disk (not just a non-existent or
+/// non-file path) could otherwise be wrapped and handed to
 /// [`open_existing_generation_via_runtime_copy`] uninspected. This module
 /// cannot import `GenerationStore`/`IndexTarget` (the store-level sealing
 /// primitive) without violating this task's own no-generation-service-import
 /// layering rule, so this constructor performs the equivalent canonical
-/// containment check locally instead.
+/// containment check locally instead, mirroring
+/// `services::generations::store::GenerationStore`'s
+/// canonicalize-then-`starts_with` pattern.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExistingDbLocation {
     published_db_path: PathBuf,
@@ -283,9 +287,14 @@ impl ExistingDbLocation {
     ///
     /// # Errors
     ///
-    /// Returns [`EngramError`] when `published_db_path` cannot be
-    /// canonicalized or does not resolve to an existing regular file.
-    pub fn new(published_db_path: impl Into<PathBuf>) -> Result<Self, EngramError> {
+    /// Returns [`EngramError`] when `generation_root` or `published_db_path`
+    /// cannot be canonicalized, `published_db_path` does not resolve to an
+    /// existing regular file, or the canonicalized path escapes
+    /// `generation_root`.
+    pub fn new(
+        generation_root: &Path,
+        published_db_path: impl Into<PathBuf>,
+    ) -> Result<Self, EngramError> {
         let requested_path = published_db_path.into();
         let canonical_path = requested_path.canonicalize().map_err(|source| {
             map_runtime_copy_io_error(
@@ -294,6 +303,16 @@ impl ExistingDbLocation {
                 source,
             )
         })?;
+        let canonical_root = generation_root.canonicalize().map_err(|source| {
+            map_runtime_copy_io_error("canonicalize generation root", generation_root, source)
+        })?;
+        if !canonical_path.starts_with(&canonical_root) {
+            return Err(map_db_err(format!(
+                "published database path {} escapes generation root {}",
+                canonical_path.display(),
+                canonical_root.display()
+            )));
+        }
         let metadata = std::fs::metadata(&canonical_path).map_err(|source| {
             map_runtime_copy_io_error(
                 "read metadata for published database path",

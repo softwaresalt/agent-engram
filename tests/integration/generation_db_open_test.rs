@@ -53,7 +53,7 @@ fn fresh_open_creates_runtime_copy_under_runtime_root() {
     let runtime_root = tempfile::tempdir().expect("tempdir");
     let published_db_path = published_dir.path().join("engram.db");
     let published_bytes = create_seeded_db(&published_db_path);
-    let location = ExistingDbLocation::new(published_db_path.clone())
+    let location = ExistingDbLocation::new(published_dir.path(), published_db_path.clone())
         .expect("published database path must validate");
 
     let opened =
@@ -78,13 +78,39 @@ fn fresh_open_creates_runtime_copy_under_runtime_root() {
     );
 }
 
+/// GIVEN a published database that genuinely exists and is a regular file
+/// WHEN it is located OUTSIDE the supplied `generation_root` (a sibling
+/// directory, not an ancestor-contained path)
+/// THEN `ExistingDbLocation::new` must still reject it -- this is the
+/// specific containment guarantee a Copilot review round flagged as
+/// missing when the constructor only checked existence/regular-file-ness.
+/// Regression coverage so a future refactor that weakens the
+/// `starts_with` containment check fails this test instead of silently
+/// reintroducing the gap.
+#[test]
+fn existing_db_location_rejects_a_path_outside_the_generation_root() {
+    let generation_root = tempfile::tempdir().expect("tempdir");
+    let outside_dir = tempfile::tempdir().expect("tempdir");
+    let outside_db_path = outside_dir.path().join("engram.db");
+    create_seeded_db(&outside_db_path);
+
+    let error = ExistingDbLocation::new(generation_root.path(), outside_db_path)
+        .expect_err("a database path outside generation_root must be rejected");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("escapes generation root"),
+        "expected a containment-escape error, got: {message}"
+    );
+}
+
 #[test]
 fn mutating_runtime_copy_never_changes_published_db_bytes() {
     let published_dir = tempfile::tempdir().expect("tempdir");
     let runtime_root = tempfile::tempdir().expect("tempdir");
     let published_db_path = published_dir.path().join("engram.db");
     let published_bytes_before = create_seeded_db(&published_db_path);
-    let location = ExistingDbLocation::new(published_db_path.clone())
+    let location = ExistingDbLocation::new(published_dir.path(), published_db_path.clone())
         .expect("published database path must validate");
 
     let opened = open_existing_generation_via_runtime_copy(
@@ -114,7 +140,7 @@ fn reopening_same_generation_replaces_existing_runtime_copy() {
     let runtime_root = tempfile::tempdir().expect("tempdir");
     let published_db_path = published_dir.path().join("engram.db");
     let published_bytes = create_seeded_db(&published_db_path);
-    let location = ExistingDbLocation::new(published_db_path.clone())
+    let location = ExistingDbLocation::new(published_dir.path(), published_db_path.clone())
         .expect("published database path must validate");
 
     let first_open = open_existing_generation_via_runtime_copy(

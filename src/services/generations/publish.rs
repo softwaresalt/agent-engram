@@ -1,8 +1,9 @@
 //! Publication locking and revision guards for generation snapshots.
 //!
-//! Publication serializes on `<generation-root>\.publisher.lock`, a dedicated
-//! advisory lock file separate from the manifest paths that later publish
-//! stages will replace atomically.
+//! Publication serializes on `<destination-parent>\.publisher.lock`, a
+//! dedicated advisory lock file derived from the manifest destination's own
+//! parent directory (never an independently supplied root) so one
+//! destination always maps to exactly one lock.
 use super::{GenerationRevision, RevisionError};
 use fd_lock::RwLock;
 use std::fs::{self, File, OpenOptions};
@@ -124,13 +125,39 @@ pub enum PublishError {
         /// A human-readable description of the read or parse failure.
         reason: String,
     },
+    /// The manifest to publish could not be serialized.
+    #[error("failed to serialize generation manifest for {path:?}: {reason}")]
+    ManifestSerialization {
+        /// The durable manifest destination path.
+        path: PathBuf,
+        /// A human-readable description of the serialization failure.
+        reason: String,
+    },
+    /// `destination` has no parent directory to derive the publisher lock from.
+    #[error("manifest destination {path:?} must have a parent directory")]
+    DestinationHasNoParent {
+        /// The rejected destination path.
+        path: PathBuf,
+    },
 }
 /// Publish a generation manifest through the full F08 transaction: acquire
 /// the cross-process publisher lock, read the currently-published revision
 /// from `destination` (an absent destination is treated as revision `0`,
-/// i.e. a first publish), enforce the checked revision guard, and durably
-/// replace the manifest -- all while the lock is held, so no caller can
-/// observe or exploit a gap between these steps.
+/// i.e. a first publish), enforce the checked revision guard, serialize
+/// `manifest`, and durably replace the destination -- all while the lock is
+/// held, so no caller can observe or exploit a gap between these steps.
+///
+/// The publisher lock is always derived from `destination`'s own parent
+/// directory (`<destination-parent>/.publisher.lock`), never from an
+/// independently supplied root: accepting a separate root parameter would
+/// let two callers name different lock files for the very same destination
+/// and defeat serialization entirely.
+///
+/// `manifest.revision()` is the single source of truth for the guarded
+/// revision -- there is no separate `attempted` parameter that could name a
+/// different revision than the one actually serialized into the durable
+/// bytes, and the caller cannot supply arbitrary unparsed bytes that bypass
+/// the manifest's own typed shape.
 ///
 /// This is the only production entry point for publishing a generation
 /// manifest. [`guard_next_revision`] and [`replace_manifest_atomically`]
@@ -140,19 +167,29 @@ pub enum PublishError {
 ///
 /// # Errors
 ///
-/// Returns [`PublishError`] when the lock cannot be acquired, the current
-/// manifest cannot be read, the attempted revision does not advance
-/// strictly, or the atomic replacement fails.
+/// Returns [`PublishError`] when `destination` has no parent directory, the
+/// lock cannot be acquired, the current manifest cannot be read,
+/// `manifest`'s revision does not advance strictly, the manifest cannot be
+/// serialized, or the atomic replacement fails.
 pub fn publish_generation_manifest(
-    root: &Path,
     destination: &Path,
-    attempted: GenerationRevision,
-    manifest_bytes: &[u8],
+    manifest: &super::GenerationManifest,
 ) -> Result<GenerationRevision, PublishError> {
+    let root = destination
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| PublishError::DestinationHasNoParent {
+            path: destination.to_path_buf(),
+        })?;
     let _lock = PublisherLock::acquire(root)?;
     let current = read_current_manifest_revision(destination)?;
-    let next = guard_next_revision(current, attempted)?;
-    replace_manifest_atomically(destination, manifest_bytes)?;
+    let next = guard_next_revision(current, manifest.revision())?;
+    let manifest_bytes =
+        serde_json::to_vec(manifest).map_err(|source| PublishError::ManifestSerialization {
+            path: destination.to_path_buf(),
+            reason: source.to_string(),
+        })?;
+    replace_manifest_atomically(destination, &manifest_bytes)?;
     Ok(next)
 }
 fn read_current_manifest_revision(destination: &Path) -> Result<GenerationRevision, PublishError> {

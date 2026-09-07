@@ -47,8 +47,8 @@ fn open_generation_context(generation_id: &str) -> (GenerationReadContext, TempD
     let published_db_path = published_dir.path().join("engram.db");
     create_seeded_db(&published_db_path);
 
-    let location =
-        ExistingDbLocation::new(published_db_path).expect("published database path must validate");
+    let location = ExistingDbLocation::new(published_dir.path(), published_db_path)
+        .expect("published database path must validate");
     let opened: OpenedGeneration =
         open_existing_generation_via_runtime_copy(&location, runtime_root.path(), generation_id)
             .expect("open runtime copy");
