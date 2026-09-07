@@ -7,7 +7,8 @@ pub mod schema;
 
 use std::{
     collections::HashMap,
-    path::{Path, PathBuf},
+    path::Path,
+    path::PathBuf,
     sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
 };
@@ -132,6 +133,25 @@ pub async fn connect_db(data_dir: &Path, branch: &str) -> Result<Db, EngramError
         .ok_or_else(|| map_db_err("CozoDB path is not valid UTF-8"))?
         .to_owned();
 
+    // Acquire an in-process mutex and a process-level advisory file lock before
+    // opening CozoDB, then hold them through schema bootstrap to prevent two
+    // variants of the SQLITE_BUSY unwrap panic in cozo 0.7.x (U015-FLK1):
+    //
+    //   * Multi-process variant: two daemon processes open the same SQLite
+    //     file concurrently — serialised by holding the lock during
+    //     `DbInstance::new`.
+    //
+    //   * Intra-process variant (residual): two concurrent `connect_db`
+    //     calls on the same DB path can bypass POSIX advisory file locking
+    //     because `fcntl` locks are process-scoped — serialised by the
+    //     per-path mutex plus the file lock through bootstrap.
+    //
+    // `spawn_blocking` is required because all locking and DB-open work must
+    // not run on the async executor. Lock order is registry -> per-path mutex
+    // -> file lock. `try_write()` is used in a polling loop with a 30-second
+    // deadline so the task itself enforces the timeout — there is no dangling
+    // background thread after a timeout return. 50 ms polling interval keeps
+    // CPU overhead negligible while bounding the worst-case latency.
     let (cozo_db, timings) =
         tokio::task::spawn_blocking(move || -> Result<(CozoDb, DbStartupTimings), EngramError> {
             let blocking_started = Instant::now();
@@ -153,6 +173,7 @@ pub async fn connect_db(data_dir: &Path, branch: &str) -> Result<Db, EngramError
                 .map_err(|e| map_db_err(format!("cannot open CozoDB lock file: {e}")))?;
             let mut file_lock = fd_lock::RwLock::new(lock_file);
             let deadline = Instant::now() + Duration::from_secs(30);
+            // Poll with try_write so the thread respects the deadline and exits cleanly.
             let _guard = loop {
                 if let Ok(guard) = file_lock.try_write() {
                     break guard;
@@ -165,6 +186,16 @@ pub async fn connect_db(data_dir: &Path, branch: &str) -> Result<Db, EngramError
                 std::thread::sleep(Duration::from_millis(50));
             };
             let file_lock = file_lock_started.elapsed();
+            // Bounded reopen-retry (086.002-T): the serialisation lock above prevents
+            // the CONCURRENT-open panic, but a rapid SEQUENTIAL reopen can still hit a
+            // transient `database is locked` (SQLITE_BUSY) when the OS releases a
+            // just-closed handle's lock lazily (Windows lag). cozo 0.7.x `unwrap()`s
+            // internally, so that transient surfaces as a PANIC, not an Err (U015-FLK1;
+            // docs/compound/concurrency-issues/cozodb-sqlite-lock-panic-2026-05-01.md).
+            // `catch_busy_panic` converts that busy panic into a retryable error so the
+            // bounded back-off (+jitter) can absorb it; non-busy panics are re-raised.
+            // Interim SQLITE_BUSY mitigation — durable fix tracked as 041.002-T
+            // (removable once cozo >= 0.8 handles SQLITE_BUSY gracefully).
             let db_open_started = Instant::now();
             let db = open_db_with_retry(
                 || {
@@ -178,6 +209,8 @@ pub async fn connect_db(data_dir: &Path, branch: &str) -> Result<Db, EngramError
             let cozo_db = CozoDb {
                 inner: Arc::new(db),
             };
+            // Bootstrap runs inside the lock so schema writes are serialised
+            // across concurrent callers (intra-process U015-FLK1 residual fix).
             let schema_started = Instant::now();
             schema::run_schema_bootstrap(&cozo_db)?;
             let schema_bootstrap = schema_started.elapsed();
@@ -191,6 +224,7 @@ pub async fn connect_db(data_dir: &Path, branch: &str) -> Result<Db, EngramError
                     blocking_total: blocking_started.elapsed(),
                 },
             ))
+            // `_guard` dropped here — lock released after open + bootstrap
         })
         .await
         .map_err(|join_err| map_db_err(format!("DB open task panicked: {join_err}")))??;
@@ -222,6 +256,7 @@ fn connect_db_open_lock(db_path: &Path) -> DbOpenLock {
             .or_insert_with(|| Arc::new(Mutex::new(()))),
     )
 }
+
 // ── Existing-generation runtime copies ────────────────────────────────────────
 
 const RUNTIME_COPY_DB_FILE_NAME: &str = "engram.db";
@@ -539,6 +574,7 @@ pub fn map_db_err<E: ToString>(err: E) -> EngramError {
         reason: err.to_string(),
     })
 }
+
 // ── 086.002-T: bounded reopen-retry for transient SQLITE_BUSY ──────────────
 //
 // The intra-process `connect_db_open_lock` mutex plus the advisory file lock
@@ -572,10 +608,12 @@ fn is_retryable_open_error(message: &str) -> bool {
 /// retries both busy AND locked outcomes.
 fn is_sqlite_busy_or_locked_panic(message: &str) -> bool {
     let m = message.to_lowercase();
+    // SQLITE_BUSY variants
     m.contains("database is locked")
         || m.contains("database is busy")
         || m.contains("sqlite_busy")
         || m.contains("databasebusy")
+        // SQLITE_LOCKED variants
         || m.contains("database table is locked")
         || m.contains("sqlite_locked")
         || m.contains("databaselocked")
@@ -589,6 +627,9 @@ fn open_retry_jitter(cap_ms: u64) -> u64 {
         return 0;
     }
     let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+    // Fold in a high-resolution timestamp so successive draws differ even within
+    // the same process seed epoch. A clock error simply yields the seed-only
+    // value; it never panics.
     if let Ok(dur) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
         hasher.write_u128(dur.as_nanos());
     }
@@ -628,6 +669,8 @@ where
             }
         }
     }
+    // The final attempt always returns via the match above, so this is provably
+    // unreachable; surface an error rather than panic to keep the fn total (F3).
     Err(map_db_err(
         "cannot open CozoDB SQLite store: reopen retry budget exhausted",
     ))
@@ -646,6 +689,16 @@ fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
 
 /// Run a CozoDB open, converting a transient `SQLITE_BUSY` PANIC into a
 /// retryable `Err` so the bounded reopen-retry can absorb it.
+///
+/// cozo 0.7.x calls `unwrap()` internally on the SQLite open (U015-FLK1), so a
+/// transient "database is locked" at a rapid sequential reopen surfaces as a
+/// PANIC, not an `Err` (see
+/// `docs/compound/concurrency-issues/cozodb-sqlite-lock-panic-2026-05-01.md`).
+/// This catches that panic and, when its message matches an SQLite-specific busy
+/// or locked marker (via [`is_sqlite_busy_or_locked_panic`], NOT the broader
+/// open-error predicate), returns `Err(message)`. Any OTHER panic is re-raised
+/// unchanged so a genuine bug still propagates (ultimately contained by the
+/// caller's `spawn_blocking`).
 fn catch_busy_panic<T, E, F>(open: F) -> Result<T, String>
 where
     E: std::fmt::Display,
@@ -664,45 +717,85 @@ where
         }
     }
 }
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(all(test, feature = "cozo-backend"))]
 mod tests {
-    use std::{path::PathBuf, sync::Arc};
+    use std::{
+        path::PathBuf,
+        sync::{Arc, mpsc},
+        time::Duration,
+    };
 
     use tempfile::TempDir;
 
     use super::{
         MAX_REOPEN_ATTEMPTS, catch_busy_panic, is_retryable_open_error,
-        is_sqlite_busy_or_locked_panic, open_db_with_retry, open_retry_jitter,
-        panic_payload_message, reopen_backoff,
+        is_sqlite_busy_or_locked_panic, open_db_with_retry, open_retry_jitter, reopen_backoff,
     };
     use super::{connect_db, connect_db_open_lock};
     use crate::errors::EngramError;
 
     /// Verify two concurrent `connect_db` calls to the same path do not panic.
+    ///
+    /// Regression test for U015-FLK1: `cozo` 0.7.x panics via an internal
+    /// `unwrap()` when two processes open the same SQLite file concurrently.
+    ///
+    /// The process-level advisory file lock in `connect_db` serialises the
+    /// `DbInstance::new` calls, ensuring both succeed rather than one panicking.
+    ///
+    /// # RED phase
+    /// Before the fix: running two concurrent opens races on `DbInstance::new`
+    /// and may panic.
+    ///
+    /// # GREEN phase
+    /// After the fix: both calls succeed because the fd-lock serialises the
+    /// `DbInstance::new` invocations.
     #[tokio::test]
     async fn concurrent_connect_db_does_not_panic() {
         let tmpdir = TempDir::new().expect("tempdir");
         let dir1 = tmpdir.path().to_path_buf();
         let dir2 = tmpdir.path().to_path_buf();
 
+        // Issue two concurrent connect_db calls to the same branch path.
         let (r1, r2) = tokio::join!(
             connect_db(&dir1, "test-branch"),
             connect_db(&dir2, "test-branch")
         );
 
+        // Neither call must panic.  Both must succeed because the lock
+        // serialises the opens — the second waits for the first to complete.
         assert!(r1.is_ok(), "first concurrent connect_db failed: {r1:?}");
         assert!(r2.is_ok(), "second concurrent connect_db failed: {r2:?}");
     }
 
     /// Verify that schema bootstrap is also covered by the fd-lock, preventing
     /// the intra-process `SQLITE_BUSY` race (U015-FLK1 residual).
+    ///
+    /// When multiple callers race on `connect_db` for the same DB path, both
+    /// `DbInstance::new` AND `run_schema_bootstrap` must be serialised by the
+    /// advisory file lock.  Without this, two handles can reach schema
+    /// bootstrap concurrently and trigger the cozo 0.7.x unwrap panic on
+    /// `SQLITE_BUSY`.
+    ///
+    /// This test exercises higher concurrency (four simultaneous callers) to
+    /// stress the bootstrap window, and verifies that every handle is usable
+    /// (i.e., schema is consistent) after all opens complete.
+    ///
+    /// # RED phase
+    /// Before the fix: `run_schema_bootstrap` runs outside the lock; four
+    /// concurrent callers can race on schema writes and panic.
+    ///
+    /// # GREEN phase
+    /// After the fix: `run_schema_bootstrap` runs inside the `spawn_blocking`
+    /// closure while the lock is held; callers queue up and all succeed.
     #[tokio::test]
     async fn concurrent_connect_db_schema_bootstrap_does_not_race() {
         let tmpdir = TempDir::new().expect("tempdir");
         let base = tmpdir.path().to_path_buf();
 
+        // Four concurrent callers on the same branch/path.
         let (r1, r2, r3, r4) = tokio::join!(
             connect_db(&base, "schema-race-branch"),
             connect_db(&base, "schema-race-branch"),
@@ -736,6 +829,9 @@ mod tests {
         );
     }
 
+    // ── 086.002-T: bounded reopen-retry driver ──────────────────────────────
+
+    // Only transient busy/locked errors are retryable; other errors are not.
     #[test]
     fn is_retryable_open_error_matches_busy_and_locked() {
         assert!(is_retryable_open_error(
@@ -748,6 +844,7 @@ mod tests {
         assert!(!is_retryable_open_error("disk I/O error"));
     }
 
+    // The back-off stays within the documented capped-exponential envelope.
     #[test]
     fn reopen_backoff_is_bounded_and_capped() {
         for attempt in 0..MAX_REOPEN_ATTEMPTS {
@@ -763,6 +860,7 @@ mod tests {
         }
     }
 
+    // Jitter is bounded by its cap and produces variation (never a constant).
     #[test]
     fn open_retry_jitter_is_bounded_and_varies() {
         assert_eq!(open_retry_jitter(0), 0, "a zero cap must yield zero jitter");
@@ -777,6 +875,7 @@ mod tests {
         assert!(any_nonzero, "jitter must introduce real variation");
     }
 
+    // A transient busy is retried until the open succeeds, within budget.
     #[test]
     fn open_db_with_retry_succeeds_after_transient_busy() {
         let mut attempts = 0u32;
@@ -797,6 +896,7 @@ mod tests {
         assert_eq!(sleeps, 2, "must back off before each retry");
     }
 
+    // A persistent busy is bounded and surfaces a clear EngramError (no panic).
     #[test]
     fn open_db_with_retry_gives_up_after_max_attempts() {
         let mut attempts = 0u32;
@@ -817,6 +917,7 @@ mod tests {
         );
     }
 
+    // A non-busy open error is surfaced immediately without retrying.
     #[test]
     fn open_db_with_retry_surfaces_non_busy_error_immediately() {
         let mut attempts = 0u32;
@@ -830,6 +931,10 @@ mod tests {
         assert!(result.is_err(), "a fatal open error must surface");
         assert_eq!(attempts, 1, "a non-retryable error must not retry");
     }
+
+    // cozo 0.7.x unwraps internally on a transient reopen busy: the "database is
+    // locked" surfaces as a PANIC. catch_busy_panic must convert it to a
+    // retryable Err so the reopen-retry can absorb it (086.002-T F2).
     #[test]
     fn catch_busy_panic_converts_busy_panic_to_retryable_err() {
         let result: Result<u32, String> = catch_busy_panic(|| -> Result<u32, String> {
@@ -846,6 +951,9 @@ mod tests {
         );
     }
 
+    // A transient SQLITE_LOCKED panic (distinct from SQLITE_BUSY) must ALSO be
+    // converted to a retryable Err so it follows the bounded reopen-retry rather
+    // than surfacing as a startup panic (Copilot PR#249).
     #[test]
     fn catch_busy_panic_converts_locked_panic_to_retryable_err() {
         let result: Result<u32, String> = catch_busy_panic(|| -> Result<u32, String> {
@@ -860,37 +968,143 @@ mod tests {
             is_sqlite_busy_or_locked_panic(&message),
             "the converted error must classify as an SQLite busy/locked panic: {message}"
         );
-    }
-
-    #[test]
-    fn panic_payload_message_extracts_string_forms() {
-        let static_payload = Box::new("static panic") as Box<dyn std::any::Any + Send>;
-        assert_eq!(
-            panic_payload_message(static_payload.as_ref()),
-            "static panic"
+        assert!(
+            is_retryable_open_error(&message),
+            "the converted locked error must follow the bounded reopen-retry path: {message}"
         );
-
-        let owned_payload = Box::new(String::from("owned panic")) as Box<dyn std::any::Any + Send>;
-        assert_eq!(panic_payload_message(owned_payload.as_ref()), "owned panic");
     }
 
+    // Ok and non-panic Err values pass through catch_busy_panic unchanged.
     #[test]
-    fn sqlite_busy_panic_classifier_matches_only_sqlite_busy_or_locked_markers() {
+    fn catch_busy_panic_passes_through_results() {
+        let ok: Result<u32, String> = catch_busy_panic(|| Ok::<u32, String>(9));
+        assert_eq!(ok.expect("Ok must pass through"), 9);
+        let err: Result<u32, String> =
+            catch_busy_panic(|| Err::<u32, String>("disk full".to_owned()));
+        assert!(err.is_err(), "a non-panic Err must pass through");
+    }
+
+    // A NON-busy panic must be re-raised unchanged, never swallowed.
+    #[test]
+    #[should_panic(expected = "unrelated invariant")]
+    fn catch_busy_panic_reraises_non_busy_panic() {
+        let _: Result<u32, String> = catch_busy_panic(|| -> Result<u32, String> {
+            panic!("{}", "unrelated invariant violated");
+        });
+    }
+
+    // Copilot review (PR #249): an unrelated panic that merely MENTIONS "busy"
+    // or "locked" must still be RE-RAISED — not misclassified as a retryable
+    // SQLite busy and swallowed, which would mask a genuine bug.
+    #[test]
+    #[should_panic(expected = "worker is busy")]
+    fn catch_busy_panic_reraises_unrelated_busy_panic() {
+        let _: Result<u32, String> = catch_busy_panic(|| -> Result<u32, String> {
+            panic!("{}", "worker is busy after invariant failure");
+        });
+    }
+
+    // is_sqlite_busy_or_locked_panic matches SQLite-specific busy/locked markers
+    // only, so an unrelated "busy"/"locked" panic message is not misclassified.
+    #[test]
+    fn is_sqlite_busy_or_locked_panic_matches_sqlite_markers_only() {
+        // SQLITE_BUSY variants
         assert!(is_sqlite_busy_or_locked_panic(
-            "SqliteFailure(DatabaseBusy, Some(\"database is locked\"))"
+            "called `Result::unwrap()` on an `Err` value: \
+             SqliteFailure(DatabaseBusy, Some(\"database is locked\"))"
         ));
-        assert!(is_sqlite_busy_or_locked_panic("SQLITE_BUSY"));
+        assert!(is_sqlite_busy_or_locked_panic(
+            "SQLITE_BUSY: the database file is busy"
+        ));
+        // SQLITE_LOCKED variants
         assert!(is_sqlite_busy_or_locked_panic(
             "SqliteFailure(DatabaseLocked, Some(\"database table is locked\"))"
         ));
-        assert!(is_sqlite_busy_or_locked_panic("SQLITE_LOCKED"));
-    }
-
-    #[test]
-    fn sqlite_busy_panic_classifier_does_not_match_non_sqlite_lock_panics() {
+        assert!(is_sqlite_busy_or_locked_panic("error code SQLITE_LOCKED"));
+        // Unrelated panics that merely mention busy/locked must NOT match.
+        assert!(
+            !is_sqlite_busy_or_locked_panic("worker is busy after invariant failure"),
+            "an unrelated busy panic must not match"
+        );
         assert!(
             !is_sqlite_busy_or_locked_panic("the connection mutex is locked"),
-            "must not classify arbitrary lock wording as SQLite busy/locked"
+            "an unrelated locked panic must not match"
+        );
+    }
+
+    /// Verify the in-process mutex serializes same-path open attempts.
+    #[tokio::test]
+    async fn connect_db_open_lock_serializes_same_path_callers() {
+        let path = PathBuf::from("serialized-path");
+        let first_lock = connect_db_open_lock(&path);
+        let second_lock = connect_db_open_lock(&path);
+        let (first_acquired_tx, first_acquired_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (second_attempt_tx, second_attempt_rx) = mpsc::channel();
+        let (second_acquired_tx, second_acquired_rx) = mpsc::channel();
+
+        let hold_guard = tokio::task::spawn_blocking(move || {
+            let _guard = match first_lock.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            let _ = first_acquired_tx.send(());
+            let _ = release_rx.recv();
+        });
+
+        assert!(
+            first_acquired_rx
+                .recv_timeout(Duration::from_secs(1))
+                .is_ok(),
+            "first caller must report that it holds the lock"
+        );
+
+        let wait_guard = tokio::task::spawn_blocking(move || {
+            let _ = second_attempt_tx.send(());
+            let _guard = match second_lock.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            let _ = second_acquired_tx.send(());
+        });
+
+        assert!(
+            second_attempt_rx
+                .recv_timeout(Duration::from_secs(1))
+                .is_ok(),
+            "second caller must report that it is attempting the lock"
+        );
+
+        assert!(
+            matches!(
+                second_acquired_rx.recv_timeout(Duration::from_millis(250)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ),
+            "second caller must remain blocked until the first guard is released"
+        );
+
+        assert!(
+            release_tx.send(()).is_ok(),
+            "test must be able to release the first caller"
+        );
+
+        assert!(
+            second_acquired_rx
+                .recv_timeout(Duration::from_secs(1))
+                .is_ok(),
+            "second caller must acquire the lock after the first releases it"
+        );
+
+        let first_result = hold_guard.await;
+        assert!(
+            first_result.is_ok(),
+            "first blocking task must complete without panic: {first_result:?}"
+        );
+
+        let second_result = wait_guard.await;
+        assert!(
+            second_result.is_ok(),
+            "second blocking task must complete without panic: {second_result:?}"
         );
     }
 }
