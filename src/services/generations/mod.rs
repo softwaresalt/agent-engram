@@ -5,6 +5,7 @@
 //! sibling generation services.
 
 mod manifest;
+mod publish;
 mod store;
 
 use std::fmt;
@@ -16,6 +17,7 @@ pub use self::manifest::{
     BranchIdentity, GenerationManifest, GenerationProvenance, ManifestFileDigest, SealedInventory,
     WorkspaceIdentity,
 };
+pub use self::publish::{PublishError, PublisherLock, PublisherLockGuard, guard_next_revision};
 pub use self::store::{GenerationStore, IndexTarget, IndexTargetKind, StoreError};
 
 /// Strict single-component identifier for a published generation.
