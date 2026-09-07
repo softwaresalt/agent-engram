@@ -1,13 +1,18 @@
 ---
-title: 136-S Session Checkpoint — F06/F07 Complete
-description: Mid-session memory checkpoint for shipment 136-S (generation domain, store, atomic publication, database open).
+title: 136-S Session Checkpoint — PR #385 Open, Awaiting Operator Merge Decision
+description: Mid/end-session memory checkpoint for shipment 136-S (generation domain, store, atomic publication, database open).
 ---
+
+## STATUS AS OF THIS CHECKPOINT: PR #385 open, all 9 manifest items done,
+## CI green, 10/13 Copilot Mandatory findings fixed and resolved, 2 remaining
+## findings presented to operator (circuit breaker), merge NOT executed.
 
 ## Session scope
 
 Shipment `136-S`, covering feature `142-F`. Manifest: `142.011-T`, `142.012-T`,
 `142.013-T` (+ `142.013.001-ST`..`142.013.004-ST`), `142.014-T`, `142.017-T`.
 Branch: `feat/136-s-generation-domain-store-atomic-publication-and-database-open`.
+PR: https://github.com/softwaresalt/agent-engram/pull/385
 
 ## Prior-session carry-forward (operator directive, this session)
 
@@ -116,20 +121,98 @@ no repeat of the F09 incident). Review verdict: READY. Commits: `01aa5543`
 `142.011-T`, `142.012-T`, `142.013-T` (+ 4 subtasks), `142.014-T`,
 `142.017-T`.
 
-## Next steps
+## PR #385 lifecycle and Copilot review remediation (post-manifest-completion)
 
-1. Run final full quality gate pass: `cargo check --all-targets`,
-   `cargo clippy --all-targets -- -D warnings -D clippy::pedantic`,
-   `cargo fmt --all -- --check`, full `cargo dev-test`.
-2. Final local review pass (report-only) across the FULL shipment diff
-   (`main..HEAD`).
-3. Prepare PR body with `## Local Review Readiness` block per
-   `.github/instructions/github-pr-automation.instructions.md` §1.9.
-4. Push branch, open PR via pr-lifecycle skill.
-5. Runtime-verification + operational-closure (this shipment touches
-   generation storage/publication/database-open runtime surfaces).
-6. Hold for explicit operator merge approval — do not merge without it
-   (directive #8, merge commits only).
+PR #385 opened against `main` after full quality gates (`cargo check`,
+both clippy invocations, `cargo fmt --check`, full `cargo dev-test` —
+1729 passed, 1 pre-existing unrelated flake) and a final full-shipment
+closing local review (`READY_WITH_FOLLOWUPS`, 2 low-priority deferred
+findings captured to stash `9CB60992`/`96A1197D`) at HEAD `9041866f`.
+
+**Copilot automated review engaged on this PR (P-018 applies).** Four
+review rounds ran; each surfaced new "Mandatory" findings after the
+previous round's fix commit advanced HEAD (Copilot re-arms on every
+push):
+
+- **Round 1** (7 findings, HEAD `df8ba979`): `ExistingDbLocation` unsealed;
+  `GenerationReadContext` could pair an unrelated ID with an
+  `OpenedGeneration`; `GenerationId::new(".")` wrongly accepted; F08's
+  lock/guard/replace primitives could be bypassed by calling them
+  directly; the "interrupted publication" test never actually interrupted
+  the production function; `validate_runtime_root` only checked
+  `is_absolute()`; `GenerationStore` containment has a TOCTOU gap. Fixed
+  5/7 directly (commit `d34a1cab`); the last 2 were genuinely out of
+  142.014-T/142.012-T's own explicit scope (R46 descope, F17/F18-deferred
+  workspace-root resolution) — replied with rationale and captured to
+  stash `341497BC`/`F2A07647`, not fixed as code.
+- **Round 2** (3 findings, HEAD `6bb4cdfa`): `ExistingDbLocation` still
+  didn't check containment against a trusted root (only existence);
+  `publish_generation_manifest`'s independent `root`/`destination`
+  parameters could point two callers at different lock files for the
+  SAME destination; independent `attempted`/`manifest_bytes` parameters
+  could diverge from each other. All 3 fixed (commit `34bdb730`):
+  `ExistingDbLocation::new` gained a `generation_root` containment check;
+  `publish_generation_manifest` now derives the lock from
+  `destination.parent()` only; the function now takes `&GenerationManifest`
+  only and serializes/guards from that single source of truth. Ship's own
+  closing review caught a real bug in the round-2 fix itself (the Unix
+  fault-injection test failed at lock acquisition, not the intended
+  staging-write checkpoint) and fixed it before commit.
+- **Round 3** (1 finding, HEAD `34bdb730`): `publish_generation_manifest`
+  still accepted an arbitrary caller-chosen `destination: &Path`, never
+  going through `GenerationStore` containment. Fixed (commit `50b1f46a`):
+  added `GenerationStore::active_manifest_path()` as the sole sealed
+  destination; `publish_generation_manifest` now takes `&GenerationStore`
+  instead of a raw path.
+- **Round 4** (3 findings, HEAD `50b1f46a`): (a) runtime-copy publication
+  only replaces `engram.db`, not SQLite WAL/SHM sidecars — stale sidecars
+  could survive a crash and be reused; (b) `GenerationStore::seal_candidate`
+  doesn't reserve the `active.json`/`.publisher.lock` namespace, so a
+  candidate could claim a store-reserved path; (c) the PR readiness block
+  was stale (referenced an old HEAD). Fixed (c) directly (PR body updated,
+  thread replied/resolved). **(a) and (b) are UNRESOLVED as of this
+  checkpoint** — per the Ship agent's 3-cycle review-fix circuit breaker
+  (rounds 1-3 already consumed the budget), these are being **presented to
+  the operator for explicit disposition** rather than auto-fixed in a 4th
+  cycle (P-021 C4: reaching the cycle limit does not authorize silent
+  continuation).
+
+**All fixes verified independently by Ship** (not just trusted from the
+implementing pass): `cargo check --all-targets`, `cargo clippy --all-targets
+-- -D warnings -D clippy::pedantic`, the exact CI command
+(`cargo clippy --no-default-features --features cozo-backend,embeddings
+--all-targets -- -D warnings -D clippy::pedantic`), `cargo fmt --all --
+--check`, `cargo test --lib` (685 passed throughout), and 3-4x consecutive
+runs of the full generation test suite for flakiness — all green at every
+step. CI (GitHub Actions `build` + `start-launcher-windows`) green at HEAD
+`50b1f46a`.
+
+**Current blocking state**: `autoharness gate copilot-review 385` reports
+`UNRESOLVED_THREADS` (2 threads: WAL/SHM sidecar isolation,
+candidate-namespace reservation) — P-018 fail-closed, merge blocked
+regardless of CI/operator-approval state until these are resolved.
+
+## Next steps (for this session's continuation or a follow-up session)
+
+1. **Awaiting operator disposition** on the 2 remaining round-4 Copilot
+   findings: (a) WAL/SHM sidecar isolation in
+   `open_existing_generation_via_runtime_copy`/`publish_runtime_copy`
+   (`src/db/cozo_backend/mod.rs`), (b) candidate-namespace reservation in
+   `GenerationStore::seal_candidate` (`src/services/generations/store.rs`).
+   Operator may authorize a 4th fix cycle, request different handling, or
+   direct that these be deferred to stash (P-021) with operator sign-off.
+2. Once resolved (fixed or explicitly deferred with operator authorization),
+   re-run the full quality gate sequence, re-run the P-018 gate to confirm
+   `SATISFIED`, re-run the §1.9 readiness gate (Check 1-5), and re-confirm
+   P-009 (merge-commit-only strategy) before presenting for merge.
+3. Runtime-verification + operational-closure are still pending (this
+   shipment touches generation storage/publication/database-open runtime
+   surfaces, but the new code is not yet wired into any CLI/MCP/background-job
+   caller — F10/F17/F18 are separate, later, out-of-scope shipments; runtime
+   verification should note this dormant-until-wired status honestly rather
+   than fabricate a runtime exercise of unreachable code).
+4. Hold for explicit operator merge approval — do not merge without it
+   (directive #8, merge commits only, P-009/P-014 apply).
 
 ## Risk classification (recorded per operator directive #7, this session)
 
