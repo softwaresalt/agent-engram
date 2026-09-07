@@ -315,7 +315,9 @@ mod tests {
     use crate::services::generations::GenerationRevision;
     use fd_lock::RwLock;
     use std::fs::{self, File, OpenOptions};
-    use std::io::{self, Write};
+    #[cfg(target_os = "windows")]
+    use std::io;
+    use std::io::Write;
     use tempfile::TempDir;
     #[test]
     fn sequential_lock_acquisitions_succeed_after_drop() {
