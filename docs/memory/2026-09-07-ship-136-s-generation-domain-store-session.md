@@ -79,10 +79,57 @@ Full-suite `cargo dev-test` was NOT re-run after F08 (deferred to the
 final pre-PR quality gate pass, per efficiency — targeted tests + clippy +
 fmt were run after every subtask).
 
-## Remaining queue (dependency order)
+## Update: F09 (142.014-T) and F16a (142.017-T) complete — ALL 9 MANIFEST ITEMS DONE
 
-1. `142.014-T` — F09 database-owned runtime copy open (`src/db/cozo_backend/mod.rs`)
-2. `142.017-T` — F16a generation read context domain type
+`142.014-T` (F09, database-owned runtime copy open): implemented in
+`src/db/cozo_backend/mod.rs` (`ExistingDbLocation`, `RuntimeCopy`,
+`OpenedGeneration`, `open_existing_generation_via_runtime_copy`). **Notable
+incident and recovery**: the first implementation commit (`daa37fd1`)
+inadvertently deleted extensive pre-existing doc comments from the
+unrelated `connect_db` function (an unintended side effect of how the
+subagent authored the diff, not a deliberate edit — `connect_db` was
+explicitly out of scope). Caught by a closing code-review pass, root-caused
+by comparing against the pre-task git baseline, and fully repaired in a
+follow-up commit (`26bde3f3`) that reconstructed the file from the
+pre-task baseline plus exactly the new additions, verified via
+`git diff HEAD~2 HEAD -- src/db/cozo_backend/mod.rs` showing **zero
+deletions**. Also recovered 2 test functions that had been silently
+dropped in the same rewrite; module test count restored (36 -> 38,
+matching the correct post-task expectation). Two closing-review findings
+(missing fsync/parent-dir-sync durability parity with the F08 pattern;
+missing cross-process fd-lock reuse for the same cozo SQLITE_BUSY panic
+surface `connect_db` already guards against) were both fixed directly
+before commit — both were in-scope, same-file, same-established-pattern
+completions (P-021 C1), not scope expansion. Final review verdict: READY.
+Commits: `daa37fd1` (feat), `26bde3f3` (fix, regression repair),
+`685617f4` (done).
+
+`142.017-T` (F16a, generation read context): implemented in the NEW file
+`src/services/generations/context.rs` (`GenerationReadContext` wraps
+`Arc<OpenedGeneration>` + `GenerationId`; cheap Clone via Arc bump;
+proven last-holder-release via `Weak`). `mod.rs` touched with only 2
+additive lines (verified via `git diff` before commit — zero deletions,
+no repeat of the F09 incident). Review verdict: READY. Commits: `01aa5543`
+(feat), `9c6e3f5c` (done).
+
+**Shipment 136-S manifest status: ALL 9 ITEMS DONE AND ARCHIVED.**
+`142.011-T`, `142.012-T`, `142.013-T` (+ 4 subtasks), `142.014-T`,
+`142.017-T`.
+
+## Next steps
+
+1. Run final full quality gate pass: `cargo check --all-targets`,
+   `cargo clippy --all-targets -- -D warnings -D clippy::pedantic`,
+   `cargo fmt --all -- --check`, full `cargo dev-test`.
+2. Final local review pass (report-only) across the FULL shipment diff
+   (`main..HEAD`).
+3. Prepare PR body with `## Local Review Readiness` block per
+   `.github/instructions/github-pr-automation.instructions.md` §1.9.
+4. Push branch, open PR via pr-lifecycle skill.
+5. Runtime-verification + operational-closure (this shipment touches
+   generation storage/publication/database-open runtime surfaces).
+6. Hold for explicit operator merge approval — do not merge without it
+   (directive #8, merge commits only).
 
 ## Risk classification (recorded per operator directive #7, this session)
 
