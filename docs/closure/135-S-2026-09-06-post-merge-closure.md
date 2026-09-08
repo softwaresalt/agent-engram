@@ -25,8 +25,14 @@ adversarial_review_report: "docs/closure/2026-09-05-135-s-retire-http-sse-transp
 
 This document repairs a gap in **machine-discoverable** post-merge closure
 evidence for shipment `135-S`. It does not rerun, reinterpret, or supersede
-any release verification, and it does not modify any already-merged or
-already-recorded file.
+any release verification, and it does not alter the previously recorded
+release or shipment disposition (`closure_status`, `releasability`, or
+`compaction_status`) of any already-merged or already-recorded file --
+though this same PR (#385) does additively update
+[`docs/closure/2026-09-05-135-s-operational-closure.md`](2026-09-05-135-s-operational-closure.md)
+with post-merge evidence for PR #384 (see its own "Post-merge closure
+record" section), so the narrower claim above, not a blanket "no file is
+modified" claim, is the accurate one.
 
 `autoharness gate pipeline-topology --mode agent --shipment 136-S --phase
 pre_claim --json` requires a file in `docs/closure/` whose name matches

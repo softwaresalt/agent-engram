@@ -41,10 +41,25 @@ const RESERVED_ROOT_NAMES: &[&str] = &[
 
 /// Whether `name` is one of this store's reserved root-level infrastructure
 /// names (see [`RESERVED_ROOT_NAMES`]).
+///
+/// Compares ASCII case-insensitively: on a case-insensitive, case-preserving
+/// filesystem (the Windows and default-macOS default) a candidate named
+/// `ACTIVE.JSON` or `.Publisher.Lock` resolves to the exact same filesystem
+/// object as the reserved lowercase name at the OS level, so an exact-case
+/// comparison alone would let a differently-cased candidate mint a directory
+/// that aliases the manifest/lock authority path -- reproducing the invalid
+/// store state (a directory occupying `active.json`) this reservation exists
+/// to prevent (PR #385 review thread `PRRT_kwDORJEduc6gF5mI`, stash
+/// `3D2B167C`). `RESERVED_ROOT_NAMES` entries are known-ASCII literals, so
+/// `to_str()` returning `None` for a non-UTF-8 `name` is correctly treated as
+/// "not reserved" -- a non-UTF-8 name cannot case-fold-match an ASCII literal.
 fn is_reserved_root_name(name: &std::ffi::OsStr) -> bool {
+    let Some(name) = name.to_str() else {
+        return false;
+    };
     RESERVED_ROOT_NAMES
         .iter()
-        .any(|reserved| name == std::ffi::OsStr::new(reserved))
+        .any(|reserved| name.eq_ignore_ascii_case(reserved))
 }
 
 /// Canonical generation-root wrapper that seals contained indexing targets.

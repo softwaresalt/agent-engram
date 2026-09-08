@@ -211,6 +211,63 @@ fn seal_candidate_rejects_the_reserved_publisher_lock_name() {
     );
 }
 
+/// GIVEN a candidate relative path that collides with a reserved root name
+/// only after ASCII case-folding (e.g. `ACTIVE.JSON` vs. `active.json`)
+/// WHEN `seal_candidate` is called
+/// THEN it must still be rejected -- on case-insensitive filesystems
+/// (default Windows/macOS) `ACTIVE.JSON` aliases `active.json` at the OS
+/// level, so a case-sensitive-only comparison would let a candidate mint a
+/// directory that occupies the manifest authority path, reproducing the
+/// exact invalid store state the reservation exists to prevent (Copilot
+/// review finding, PR #385 thread `PRRT_kwDORJEduc6gF5mI`, stash `3D2B167C`).
+#[test]
+fn seal_candidate_rejects_the_reserved_active_manifest_name_case_insensitively() {
+    let root = tempfile::tempdir().expect("generation root tempdir");
+    let store = create_store(root.path());
+
+    for variant in ["ACTIVE.JSON", "Active.Json", "aCtIvE.jSoN"] {
+        let result = store.seal_candidate(generation_id(), Path::new(variant));
+        let Err(error) = result else {
+            panic!("candidate {variant:?} must not bypass the reserved active.json name")
+        };
+
+        assert!(
+            matches!(error, StoreError::ReservedName { .. }),
+            "expected StoreError::ReservedName for {variant:?}, got: {error:?}"
+        );
+        assert!(
+            !root.path().join(variant).exists(),
+            "no directory must be minted at the case-variant reserved path {variant:?}"
+        );
+    }
+}
+
+/// GIVEN a candidate relative path that collides with the reserved
+/// `.publisher.lock` name only after ASCII case-folding
+/// WHEN `seal_candidate` is called
+/// THEN it must be rejected for the same reason as the `active.json` case.
+#[test]
+fn seal_candidate_rejects_the_reserved_publisher_lock_name_case_insensitively() {
+    let root = tempfile::tempdir().expect("generation root tempdir");
+    let store = create_store(root.path());
+
+    for variant in [".PUBLISHER.LOCK", ".Publisher.Lock"] {
+        let result = store.seal_candidate(generation_id(), Path::new(variant));
+        let Err(error) = result else {
+            panic!("candidate {variant:?} must not bypass the reserved .publisher.lock name")
+        };
+
+        assert!(
+            matches!(error, StoreError::ReservedName { .. }),
+            "expected StoreError::ReservedName for {variant:?}, got: {error:?}"
+        );
+        assert!(
+            !root.path().join(variant).exists(),
+            "no directory must be minted at the case-variant reserved path {variant:?}"
+        );
+    }
+}
+
 /// GIVEN a candidate relative path that merely happens to end in a reserved
 /// leaf name but is NOT located directly at the generation root (e.g. inside
 /// a nested candidate parent directory)

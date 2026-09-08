@@ -35,7 +35,8 @@ impl GenerationId {
     /// # Errors
     ///
     /// Returns [`GenerationIdError`] when `value` is empty or contains `/`, `\\`,
-    /// or `..`.
+    /// `..`, or `:` (the last rejected so a Windows drive-prefix such as `C:`
+    /// can never be mistaken for a single safe path component).
     pub fn new(value: impl Into<String>) -> Result<Self, GenerationIdError> {
         let value = value.into();
         validate_generation_id(&value)?;
@@ -145,7 +146,7 @@ pub enum GenerationIdError {
     #[error("generation ID must not be empty")]
     Empty,
     /// The identifier was not a strict single path component.
-    #[error("generation ID {value:?} must be a single component without '/', '\\\\', or '..'")]
+    #[error("generation ID {value:?} must be a single component without '/', '\\\\', '..', or ':'")]
     InvalidComponent {
         /// The rejected raw identifier.
         value: String,
@@ -172,7 +173,23 @@ fn validate_generation_id(value: &str) -> Result<(), GenerationIdError> {
         return Err(GenerationIdError::Empty);
     }
 
-    if value == "." || value.contains('/') || value.contains('\\') || value.contains("..") {
+    // `:` is rejected outright rather than relying on `Path::components()` to
+    // catch a Windows drive-prefix like `C:` (`Component::Prefix`, not a
+    // `Component::Normal` component): `Path::components()` parsing is
+    // platform-dependent (e.g. `\\` is a separator only on Windows), so
+    // switching this whole check to a components-based one would silently
+    // change the portable, cross-platform behavior of the existing `/`/`\\`
+    // rejections below. A plain substring check keeps every rejection
+    // identical on every target platform. Generation IDs are simple
+    // identifiers (hashes/UUIDs/slugs) that never legitimately need a colon,
+    // so this is purely additive hardening, not a behavior narrowing for any
+    // legitimate value.
+    if value == "."
+        || value.contains('/')
+        || value.contains('\\')
+        || value.contains("..")
+        || value.contains(':')
+    {
         return Err(GenerationIdError::InvalidComponent {
             value: value.to_owned(),
         });

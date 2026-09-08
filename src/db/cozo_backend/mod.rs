@@ -692,7 +692,7 @@ fn remove_stale_runtime_copy_sidecars(final_path: &Path) -> Result<(), EngramErr
 fn hash_bounded_reader(
     source: &Path,
     expected_len: u64,
-    mut sink: Option<&mut std::fs::File>,
+    mut sink: Option<(&mut dyn Write, &Path)>,
 ) -> Result<[u8; 32], EngramError> {
     let mut reader = std::fs::File::open(source)
         .map_err(|error| map_runtime_copy_io_error("open published database", source, error))?;
@@ -712,10 +712,12 @@ fn hash_bounded_reader(
                 source.display()
             )));
         }
-        if let Some(destination) = sink.as_deref_mut() {
-            destination.write_all(&buf[..read]).map_err(|error| {
-                map_runtime_copy_io_error("write staged runtime copy", source, error)
-            })?;
+        if let Some((destination_writer, destination_path)) = sink.as_mut() {
+            destination_writer
+                .write_all(&buf[..read])
+                .map_err(|error| {
+                    map_runtime_copy_io_error("write staged runtime copy", destination_path, error)
+                })?;
         }
         hasher.update(&buf[..read]);
         copied += read as u64;
@@ -753,7 +755,11 @@ fn copy_bounded_with_digest(
     let mut destination_file = std::fs::File::create(destination).map_err(|error| {
         map_runtime_copy_io_error("create staged runtime copy", destination, error)
     })?;
-    hash_bounded_reader(source, expected_len, Some(&mut destination_file))
+    hash_bounded_reader(
+        source,
+        expected_len,
+        Some((&mut destination_file, destination)),
+    )
 }
 
 /// Compute the SHA-256 digest of exactly `expected_len` bytes read from
@@ -985,7 +991,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        MAX_REOPEN_ATTEMPTS, catch_busy_panic, is_retryable_open_error,
+        MAX_REOPEN_ATTEMPTS, catch_busy_panic, hash_bounded_reader, is_retryable_open_error,
         is_sqlite_busy_or_locked_panic, open_db_with_retry, open_retry_jitter, reopen_backoff,
     };
     use super::{connect_db, connect_db_open_lock};
@@ -1359,6 +1365,55 @@ mod tests {
         assert!(
             second_result.is_ok(),
             "second blocking task must complete without panic: {second_result:?}"
+        );
+    }
+
+    /// Regression test for PR #385 review thread `PRRT_kwDORJEduc6gFv5l`
+    /// (stash `1C8F1150`): a destination-write failure inside
+    /// `hash_bounded_reader` must be attributed to the actual staging/
+    /// destination path being WRITTEN, never to `source` (the file being
+    /// READ) -- the pre-fix code passed `source` into the write-error
+    /// mapping unconditionally. Uses a synthetic always-failing writer so a
+    /// genuine write failure is forced deterministically and portably,
+    /// without relying on OS-specific tricks (permission bits do not
+    /// re-check on already-open handles, and disk-full devices like
+    /// `/dev/full` are Linux-only).
+    #[test]
+    fn hash_bounded_reader_attributes_write_failures_to_the_destination_not_the_source() {
+        struct AlwaysFailWriter;
+        impl std::io::Write for AlwaysFailWriter {
+            fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("synthetic destination write failure"))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let source_dir = TempDir::new().expect("tempdir");
+        let source_path = source_dir.path().join("published.db");
+        std::fs::write(&source_path, b"some published bytes").expect("write source file");
+        let expected_len = std::fs::metadata(&source_path)
+            .expect("read source metadata")
+            .len();
+        let destination_path = PathBuf::from("staged-destination-should-be-named.tmp");
+        let mut writer = AlwaysFailWriter;
+
+        let error = hash_bounded_reader(
+            &source_path,
+            expected_len,
+            Some((&mut writer, destination_path.as_path())),
+        )
+        .expect_err("a destination write failure must surface as an error");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("staged-destination-should-be-named.tmp"),
+            "expected the error to name the destination path, got: {message}"
+        );
+        assert!(
+            !message.contains(&*source_path.to_string_lossy()),
+            "expected the error NOT to name the source path being read, got: {message}"
         );
     }
 }

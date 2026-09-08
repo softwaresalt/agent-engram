@@ -11,24 +11,44 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 use thiserror::Error;
 use uuid::Uuid;
 pub(super) const PUBLISHER_LOCK_FILE_NAME: &str = ".publisher.lock";
+/// Bounded acquisition deadline for the publisher lock, mirroring the proven
+/// `try_write()`-polling pattern already used for the analogous cross-process
+/// database-open locks (`src/db/cozo_backend/mod.rs:153-188` and `:500-527`).
+/// A stalled or crashed process holding `.publisher.lock` must never hang
+/// every future publish forever (PR #385 review thread
+/// `PRRT_kwDORJEduc6gFlo-`, stash `2D86F780`).
+const LOCK_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Poll interval used while waiting for the publisher lock, matching the
+/// 50 ms interval already used by the analogous database-open locks.
+const LOCK_POLL_INTERVAL: Duration = Duration::from_millis(50);
+/// Extra grace period added on top of [`LOCK_ACQUIRE_TIMEOUT`] for the
+/// caller-side readiness receive bound, so a worker thread that is merely
+/// slow to be scheduled (not stuck) is not mistaken for one that hung before
+/// its own bounded acquisition loop could report back.
+const READY_RECEIVE_GRACE: Duration = Duration::from_secs(5);
 /// Filesystem-backed publisher lock namespace.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PublisherLock;
 impl PublisherLock {
     /// Acquire the publisher lock for a generation root.
     ///
-    /// The lock blocks until `<generation-root>\.publisher.lock` becomes
-    /// available, ensuring concurrent publishers serialize across processes.
+    /// Acquisition is bounded: it polls for up to [`LOCK_ACQUIRE_TIMEOUT`]
+    /// (30 s) before giving up, mirroring the same bounded pattern already
+    /// proven for the cross-process database-open locks. A live process that
+    /// stops progressing while holding `<generation-root>\.publisher.lock`
+    /// therefore cannot hang every future publication forever.
     ///
     /// # Errors
     ///
-    /// Returns [`PublishError`] when the lock file cannot be opened or the OS
-    /// advisory lock cannot be acquired.
+    /// Returns [`PublishError`] when the lock file cannot be opened, the OS
+    /// advisory lock cannot be acquired within the deadline, or the worker
+    /// thread cannot be spawned.
     pub fn acquire(root: &Path) -> Result<PublisherLockGuard, PublishError> {
-        PublisherLockGuard::acquire(lock_path(root))
+        PublisherLockGuard::acquire(lock_path(root), LOCK_ACQUIRE_TIMEOUT, LOCK_POLL_INTERVAL)
     }
 }
 /// RAII guard for a held publisher lock.
@@ -44,7 +64,17 @@ pub struct PublisherLockGuard {
     worker: Option<JoinHandle<()>>,
 }
 impl PublisherLockGuard {
-    fn acquire(path: PathBuf) -> Result<Self, PublishError> {
+    /// `timeout`/`poll_interval` are parameterized (rather than always using
+    /// the [`LOCK_ACQUIRE_TIMEOUT`]/[`LOCK_POLL_INTERVAL`] constants
+    /// directly) solely so tests can exercise the bounded-timeout behavior
+    /// itself on a short, fast deadline instead of waiting out the real 30 s
+    /// production bound; [`PublisherLock::acquire`] is the only production
+    /// caller and always passes the real constants.
+    fn acquire(
+        path: PathBuf,
+        timeout: Duration,
+        poll_interval: Duration,
+    ) -> Result<Self, PublishError> {
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let (release_tx, release_rx) = mpsc::sync_channel(1);
         let worker_path = path.clone();
@@ -54,12 +84,14 @@ impl PublisherLockGuard {
         // `PublishError::LockAcquisition` rather than an uncaught panic.
         let worker = thread::Builder::new()
             .name("generation-publisher-lock".to_owned())
-            .spawn(move || run_lock_worker(worker_path, ready_tx, release_rx))
+            .spawn(move || {
+                run_lock_worker(worker_path, ready_tx, release_rx, timeout, poll_interval);
+            })
             .map_err(|source| PublishError::LockAcquisition {
                 path: path.clone(),
                 source,
             })?;
-        match receive_lock_ready(&path, ready_rx) {
+        match receive_lock_ready(&path, ready_rx, timeout + READY_RECEIVE_GRACE) {
             Ok(()) => Ok(Self {
                 path,
                 release_tx: Some(release_tx),
@@ -98,6 +130,21 @@ pub enum PublishError {
         source: io::Error,
     },
     /// The active manifest could not be replaced atomically.
+    ///
+    /// **Durability-uncertain edge case:** if the destination-directory
+    /// `fsync` fails strictly *after* the `rename` that swaps the manifest
+    /// already succeeded (see [`replace_manifest_atomically`]'s doc comment
+    /// and [`sync_parent_dir`]), the manifest swap has already committed and
+    /// is externally observable even though this variant is returned. This
+    /// is a real but narrow, POSIX-only window (the rename itself is always
+    /// atomic; only the follow-up directory-metadata fsync can fail after
+    /// the fact). A caller that retries the same revision after seeing this
+    /// error should first re-read the current published revision (e.g. via
+    /// [`publish_generation_manifest`]'s own internal check) rather than
+    /// assuming the previous attempt never took effect, since a blind retry
+    /// of the same revision will otherwise surface a confusing
+    /// [`PublishError::RevisionGuard`] with no indication that the earlier
+    /// attempt actually committed.
     #[error("failed to replace manifest atomically at {path:?}: {source}")]
     AtomicReplace {
         /// The durable manifest destination path.
@@ -252,7 +299,14 @@ pub(crate) fn guard_next_revision(
 /// # Errors
 ///
 /// Returns [`PublishError::AtomicReplace`] when the staging path cannot be
-/// prepared or the replacement cannot be committed durably.
+/// prepared or the replacement cannot be committed durably. **Note:** on
+/// POSIX platforms this variant can also be returned in a narrow
+/// committed-but-durability-uncertain window -- if `rename` itself succeeds
+/// but the subsequent parent-directory `fsync` (see [`sync_parent_dir`])
+/// fails, the manifest swap has already taken effect even though this
+/// function still returns `Err`. See the doc comment on
+/// [`PublishError::AtomicReplace`] for the caller-facing guidance this
+/// implies.
 pub(crate) fn replace_manifest_atomically(
     destination: &Path,
     contents: &[u8],
@@ -379,21 +433,40 @@ fn map_revision_error(error: RevisionError) -> PublishError {
         }
     }
 }
-fn receive_lock_ready(path: &Path, ready_rx: Receiver<io::Result<()>>) -> Result<(), PublishError> {
-    match ready_rx.recv() {
+fn receive_lock_ready(
+    path: &Path,
+    ready_rx: Receiver<io::Result<()>>,
+    receive_timeout: Duration,
+) -> Result<(), PublishError> {
+    match ready_rx.recv_timeout(receive_timeout) {
         Ok(Ok(())) => Ok(()),
         Ok(Err(source)) => Err(PublishError::LockAcquisition {
             path: path.to_path_buf(),
             source,
         }),
-        Err(_) => Err(PublishError::LockAcquisition {
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(PublishError::LockAcquisition {
+            path: path.to_path_buf(),
+            source: io::Error::new(
+                io::ErrorKind::TimedOut,
+                "publisher lock worker did not report readiness within the acquisition deadline",
+            ),
+        }),
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err(PublishError::LockAcquisition {
             path: path.to_path_buf(),
             source: io::Error::other("publisher lock worker terminated unexpectedly"),
         }),
     }
 }
-fn run_lock_worker(path: PathBuf, ready_tx: SyncSender<io::Result<()>>, release_rx: Receiver<()>) {
-    if let Err(source) = hold_lock_until_release(&path, &ready_tx, release_rx) {
+fn run_lock_worker(
+    path: PathBuf,
+    ready_tx: SyncSender<io::Result<()>>,
+    release_rx: Receiver<()>,
+    timeout: Duration,
+    poll_interval: Duration,
+) {
+    if let Err(source) =
+        hold_lock_until_release(&path, &ready_tx, release_rx, timeout, poll_interval)
+    {
         let _ = ready_tx.send(Err(source));
     }
 }
@@ -401,14 +474,39 @@ fn hold_lock_until_release(
     path: &Path,
     ready_tx: &SyncSender<io::Result<()>>,
     release_rx: Receiver<()>,
+    timeout: Duration,
+    poll_interval: Duration,
 ) -> io::Result<()> {
     let file = open_lock_file(path)?;
     let mut lock = RwLock::new(file);
-    let _guard = lock.write()?;
+    let deadline = Instant::now() + timeout;
+    // Bounded try_write()-polling, mirroring the proven pattern already used
+    // for the analogous cross-process database-open locks
+    // (`src/db/cozo_backend/mod.rs:153-188` and `:500-527`): a live process
+    // that stops progressing while holding this lock file can no longer hang
+    // every future publication forever.
+    let guard = loop {
+        match lock.try_write() {
+            Ok(guard) => break guard,
+            Err(_) if Instant::now() >= deadline => {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!(
+                        "cannot acquire publisher lock at {}: timed out after {} s \
+                         (another process is publishing)",
+                        path.display(),
+                        timeout.as_secs()
+                    ),
+                ));
+            }
+            Err(_) => thread::sleep(poll_interval),
+        }
+    };
     ready_tx.send(Ok(())).map_err(|_| {
         io::Error::other("publisher lock acquisition receiver dropped before readiness")
     })?;
     let _ = release_rx.recv();
+    drop(guard);
     Ok(())
 }
 fn open_lock_file(path: &Path) -> io::Result<File> {
@@ -425,15 +523,15 @@ fn lock_path(root: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        PublishError, PublisherLock, guard_next_revision, list_orphaned_staging_files, lock_path,
-        manifest_staging_path, replace_manifest_atomically,
+        PublishError, PublisherLock, PublisherLockGuard, guard_next_revision,
+        list_orphaned_staging_files, lock_path, manifest_staging_path, replace_manifest_atomically,
     };
     use crate::services::generations::GenerationRevision;
     use fd_lock::RwLock;
     use std::fs::{self, File, OpenOptions};
-    #[cfg(target_os = "windows")]
     use std::io;
     use std::io::Write;
+    use std::time::{Duration, Instant};
     use tempfile::TempDir;
     #[test]
     fn sequential_lock_acquisitions_succeed_after_drop() {
@@ -511,6 +609,89 @@ mod tests {
         fs::write(&file_root, b"sentinel").unwrap();
         let error = PublisherLock::acquire(&file_root).unwrap_err();
         assert!(matches!(error, PublishError::LockAcquisition { .. }));
+    }
+    /// Regression test for PR #385 review thread `PRRT_kwDORJEduc6gFlo-`
+    /// (stash `2D86F780`): acquisition must be bounded, mirroring the proven
+    /// `try_write()`-polling pattern already used by the analogous
+    /// cross-process database-open locks. A lock held by another handle must
+    /// cause acquisition to fail with a typed, `TimedOut` error within the
+    /// configured deadline rather than block forever. Uses a short custom
+    /// deadline (not the real 30 s production constant) so the test itself
+    /// stays fast.
+    #[test]
+    fn acquire_times_out_when_the_lock_is_already_held() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = lock_path(temp_dir.path());
+        fs::write(&path, []).unwrap();
+        let holder_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        let mut holder_lock = RwLock::new(holder_file);
+        let _holder_guard = holder_lock.try_write().unwrap();
+
+        let started = Instant::now();
+        let result = PublisherLockGuard::acquire(
+            path.clone(),
+            Duration::from_millis(200),
+            Duration::from_millis(20),
+        );
+        let elapsed = started.elapsed();
+
+        match result {
+            Err(PublishError::LockAcquisition {
+                path: error_path,
+                source,
+            }) => {
+                assert_eq!(error_path, path);
+                assert_eq!(source.kind(), io::ErrorKind::TimedOut);
+            }
+            other => panic!("expected a bounded LockAcquisition timeout, got: {other:?}"),
+        }
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "acquisition must respect the bounded timeout instead of blocking indefinitely, \
+             took {elapsed:?}"
+        );
+    }
+    /// GIVEN the publisher lock is released between two acquisition attempts
+    /// WHEN a second bounded acquisition is issued
+    /// THEN it must succeed well within the deadline -- the bounded
+    /// `try_write()`-polling loop must not slow down the common, uncontended
+    /// case.
+    #[test]
+    fn acquire_succeeds_promptly_once_the_lock_is_released() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = lock_path(temp_dir.path());
+        fs::write(&path, []).unwrap();
+        {
+            let holder_file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
+                .unwrap();
+            let mut holder_lock = RwLock::new(holder_file);
+            let _holder_guard = holder_lock.try_write().unwrap();
+            // holder_guard drops here, releasing the OS lock before the
+            // bounded acquisition below.
+        }
+
+        let started = Instant::now();
+        let guard = PublisherLockGuard::acquire(
+            path.clone(),
+            Duration::from_secs(2),
+            Duration::from_millis(20),
+        )
+        .expect("acquisition must succeed once the lock is free");
+        let elapsed = started.elapsed();
+
+        assert_eq!(guard.path(), path.as_path());
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "an uncontended acquisition must not be slowed down by the polling loop, \
+             took {elapsed:?}"
+        );
     }
     #[test]
     fn replace_manifest_overwrites_existing_content_without_leaving_staging_files() {
