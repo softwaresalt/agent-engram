@@ -54,10 +54,13 @@ shipment `136-S` / PR #385 at branch
    via `backlogit update --commit`, pushed, replied to and resolved all 4 threads citing
    the fixing commit, then committed the resulting backlog commit-tracking metadata
    (`412511cb129023dd1042987f95eec1a8560cda4d`).
-10. Waited for CI and a fresh Copilot review pass at each pushed HEAD. Final state at HEAD
-    `412511cb`: CI green (`build` 6m18s, `start-launcher-windows` 2m12s),
-    `autoharness gate copilot-review 385` reports `SATISFIED: PASS` (25 threads total, 0
-    unresolved), `mergeStateStatus: CLEAN`, `mergeable: MERGEABLE`.
+10. Waited for CI and a fresh Copilot review pass at each pushed HEAD. Reviewed
+    source/remediation state as of this checkpoint's parent commit, HEAD `412511cb`
+    (this checkpoint commit, `005146869db0441f1caff9fbc6224c1132e8dbc8`, necessarily
+    follows it and intentionally cannot name its own resulting SHA — `412511cb` is not
+    the branch's final/immutable HEAD): CI green (`build` 6m18s, `start-launcher-windows`
+    2m12s), `autoharness gate copilot-review 385` reports `SATISFIED: PASS` (25 threads
+    total, 0 unresolved), `mergeStateStatus: CLEAN`, `mergeable: MERGEABLE`.
 11. Updated the PR body's Deferred follow-ups table and Local Review Readiness / CI Status
     / Merge sections to the exact final HEAD.
 
@@ -76,7 +79,10 @@ shipment `136-S` / PR #385 at branch
 
 * Branch: `feat/136-s-generation-domain-store-atomic-publication-and-database-open`
   (remained on this branch throughout; never checked out `main`).
-* HEAD: `412511cb129023dd1042987f95eec1a8560cda4d`.
+* HEAD as of this checkpoint's parent commit (reviewed source/remediation HEAD):
+  `412511cb129023dd1042987f95eec1a8560cda4d`. This checkpoint commit
+  (`005146869db0441f1caff9fbc6224c1132e8dbc8`) necessarily follows it and intentionally
+  cannot name its own resulting SHA; `412511cb` is not the branch's final/immutable HEAD.
 * Working tree: clean.
 * PR #385: `OPEN`, `mergeStateStatus: CLEAN`, `mergeable: MERGEABLE`, no merge attempted.
 
