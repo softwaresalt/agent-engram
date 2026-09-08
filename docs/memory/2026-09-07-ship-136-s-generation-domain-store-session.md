@@ -371,20 +371,66 @@ isolation — confirmed **not** a regression from this cycle's changes and
 out of this shipment's scope per P-021 C1 (daemon lifecycle IPC is
 untouched by any diff in this cycle).
 
-**New HEAD after this cycle's commit**: the single commit combining these
-4 code fixes with this checkpoint correction (see `git log -1` on this
-branch for the exact SHA — deliberately not hardcoded here, since a
-self-referential hash written into the very commit that produces it would
-be wrong the instant this content is included in that commit's tree).
-**This checkpoint explicitly does NOT assert merge-readiness for that
-HEAD.** Per this cycle's required next steps (executed after this commit,
-not before): push the branch, reply to and resolve all 6 threads above
-referencing this fix commit, wait for CI and a fresh Copilot review pass
-at the exact pushed HEAD, re-run the P-018 `autoharness gate
-copilot-review` check for `SATISFIED`, re-run the §1.9 local-review-
-readiness gate for the exact same HEAD, refresh the PR's
-`## Local Review Readiness` block accordingly, and only then present final
-state to the operator. If that fresh review raises any further finding, a
-5th fix cycle is **not** authorized by this session — it will be reported
-for explicit operator disposition instead (per the operator's own
-instruction bounding this to "this one review-fix cycle").
+**New HEAD after this cycle's commit**: `3541356b3411e0f4c59ec8431a1a0f86594be03a`
+(the single commit combining the 4 code fixes with this checkpoint
+correction). Pushed, CI green, all 6 authorized threads replied-to and
+resolved.
+
+## Update: 4th cycle terminal outcome — 4 further findings captured, NOT fixed
+
+After `3541356b` was pushed, CI passed and a fresh Copilot review pass ran
+against that exact HEAD. As anticipated by this document's own
+self-aware note above, that pass (and each subsequent push) surfaced
+further findings. Per the operator's explicit instruction ("do not start
+a fifth fix cycle... report it for explicit operator disposition"), NONE
+of these were fixed as code/content changes. Each was captured as a P-021
+deferred-scope-expansion stash entry, replied to on its review thread
+citing the stash ID, and its thread deliberately left UNRESOLVED (not
+resolved) so the operator-visible state accurately shows it as
+outstanding:
+
+1. **`2D86F780`** (thread `PRRT_kwDORJEduc6gFlo-`, `publish.rs:408`) —
+   `PublisherLock::acquire`'s readiness rendezvous (`lock.write()` +
+   `ready_rx.recv()`) is fully unbounded, unlike the analogous
+   30s-bounded `try_write()` polling already used by the database-open
+   locks. Surfaced by the review pass against `3541356b`.
+2. **`1C8F1150`** (thread `PRRT_kwDORJEduc6gFv5l`, `cozo_backend/mod.rs:718`)
+   — `hash_bounded_reader`'s destination-write error path misattributes
+   the failing path to `source` instead of the actual staging file.
+   Surfaced by the same pass.
+3. **`B4D1D935`** (thread `PRRT_kwDORJEduc6gFv6O`,
+   `docs/closure/135-S-2026-09-06-post-merge-closure.md:29`) — a
+   carried-forward 135-S closure doc claims no already-recorded file is
+   modified, but this PR also modifies a second closure file. Surfaced by
+   the same pass.
+4. **`3D2B167C`** (thread `PRRT_kwDORJEduc6gF5mI`, `store.rs:48`) —
+   the new `RESERVED_ROOT_NAMES` comparison is case-sensitive, so
+   `ACTIVE.JSON` bypasses the reservation on case-insensitive filesystems
+   (Windows/macOS default). Surfaced by a still-later pass, after the
+   first three findings had already been captured and one round of PR-body
+   bookkeeping (stale HEAD reference; missing follow-up rows — both fixed
+   directly since they are pure PR-description edits, not code/content
+   changes, and do not advance `headRefOid`) had been pushed.
+
+Each capture followed the mandatory single-write invariant: stash entry
+created first, thread replied to citing the exact stash ID, thread left
+unresolved. Two intermediate stash-capture commits (`1571bada`,
+`b7f260b2`) and one final one (`ecb5179b`) were required to persist these
+entries durably — each of those pushes, being new commits, itself
+re-armed Copilot and triggered the next pass, which is how findings 2-4
+were discovered sequentially rather than all at once. This was explicitly
+recognized mid-session as a risk of an unbounded chase (docs-only pushes
+re-arming review indefinitely) and deliberately stopped after `ecb5179b`
+converged to a stable 4-unresolved-thread state across two consecutive
+gate checks with no new findings.
+
+**Final state, HEAD `ecb5179b2f38ab0113a5f0b684df71d1f729b478`**: CI green
+(`build` 6m5s, `start-launcher-windows` 2m12s); `autoharness gate
+copilot-review` reports `UNRESOLVED_THREADS` (4, stable across repeat
+checks); `mergeStateStatus: BLOCKED`, `mergeable: MERGEABLE`; PR body's
+`## Local Review Readiness` block refreshed to this exact HEAD. Merge
+requires BOTH explicit operator merge approval AND explicit operator
+disposition of stash entries `2D86F780`/`1C8F1150`/`B4D1D935`/`3D2B167C`
+(fix in a newly-authorized cycle, or accept/defer via Stage triage) before
+the P-018 gate can pass. No 5th fix cycle was started; no further
+review-triggered pushes are planned without new operator authorization.
