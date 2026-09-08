@@ -16,6 +16,7 @@ pub mod embedding;
 pub mod evaluation;
 pub mod file_tracker;
 pub mod gate;
+pub mod generations;
 #[cfg(feature = "git-graph")]
 pub mod git_graph;
 pub mod hydration;
