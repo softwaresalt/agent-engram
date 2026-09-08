@@ -168,3 +168,28 @@ already tracked by stash `9CB60992`/`96A1197D`).
 Iteration 1 (this pass) applied all fixes above and passed every gate on the first pass; no
 regressions were introduced by the fixes themselves (full test suite green modulo the two
 pre-existing, isolation-confirmed flakes above). Iteration 2 was not required.
+
+## Part 5 — Round 12 finding (post-remediation, operator-authorized single-finding fix)
+
+A further Copilot pass at HEAD `288b359d` opened one new review thread after this
+document's original remediation pass landed (commit `7d9d4d7e`):
+
+| # | Thread | File:line | Issue | Disposition |
+|---|---|---|---|---|
+| 26 | `PRRT_...JLCP` | db/cozo_backend/mod.rs:514-518 | `final_path`'s UTF-8 validation ran only via `runtime_copy.path().to_str()` *after* `publish_runtime_copy` had already copied/sealed the runtime `engram.db` and removed stale sidecars, so a non-UTF-8 `runtime_root` on Unix mutated the runtime directory before the open ultimately failed | **FIXED** — moved the UTF-8 validation of `final_path` to immediately after it is computed, before `create_dir_all`, lock-file creation, or `publish_runtime_copy`; the validated `String` is reused verbatim at the `DbInstance::new` call site instead of re-deriving it from `runtime_copy.path()` |
+
+This is the same **family 9** class captured in the companion compound checklist update
+(validate all fallible conversions before an irreversible mutation) — not a new family in
+its own right, but the first occurrence of it specifically for `final_path`'s UTF-8-ness in
+`open_existing_generation_via_runtime_copy`. Regression coverage:
+`open_rejects_a_non_utf8_runtime_root_before_any_runtime_copy_side_effects`
+(`tests/integration/generation_db_open_test.rs`, `#[cfg(unix)]`; compile-reviewed on
+Windows, executes under Linux CI). Verified: `cargo fmt --all -- --check`, both clippy
+invocations (default features and the exact CI `--no-default-features --features
+cozo-backend,embeddings` command, both `-D warnings -D clippy::pedantic`, zero warnings),
+`cargo test --all-targets --no-fail-fast` (269 binaries; the only failure,
+`hcl_indexing_test::cold_start_lists_and_maps_all_three_hcl_aliases`, passes cleanly in
+isolation — an unrelated, pre-existing full-suite-parallel timing flake, distinct from the
+two flakes recorded in Part 4 above), `cargo audit` (0 new advisories). The broader
+opened-generation lifetime redesign remains out of scope for this fix and stays tracked
+under stash `9108DB24` (Part 1/2 finding F-3).

@@ -15,6 +15,7 @@ citations:
   - "PR #385 review threads PRRT_kwDORJEduc6gFlo-, PRRT_kwDORJEduc6gFv5l, PRRT_kwDORJEduc6gFv6O, PRRT_kwDORJEduc6gF5mI"
   - ".backlogit/stash.jsonl entries 2D86F780, 1C8F1150, B4D1D935, 3D2B167C, 9CB60992, 96A1197D, 341497BC, F2A07647, 9108DB24, 6B624CF6"
   - "local adversarial review, PR #385, 2026-09-07/08 (3-model panel: gpt-5.6-sol, claude-opus-4.6, gemini-3.6-flash)"
+  - "PR #385 review thread PRRT_kwDORJEduc6gJLCP (family 9, round 12, post-remediation)"
 tags:
   - "copilot-review"
   - "review-non-convergence"
@@ -103,6 +104,21 @@ Two compounding causes:
    case-variant reserved names, a concurrent/live-old-handle reopen of the
    same generation, or a synthetic destination-write failure — exactly the
    gaps that let several of the above escape review for multiple rounds.
+9. **Fallible conversion validated after the irreversible mutation it
+   gates.** `open_existing_generation_via_runtime_copy` derived and
+   validated `final_path`'s UTF-8-ness (required by `cozo::DbInstance::new`,
+   which takes `&str`) only via `runtime_copy.path().to_str()` *after*
+   `publish_runtime_copy` had already created the runtime directory, copied
+   and sealed the runtime `engram.db`, and removed stale sidecars. A
+   non-UTF-8 `runtime_root` (constructible on Unix, where `Path`/`OsStr`
+   place no UTF-8 requirement on path bytes) was therefore rejected only
+   *after* mutating the runtime publication state, not before it —
+   discovered as review thread `PRRT_kwDORJEduc6gJLCP` in a 5th review round
+   following this document's own original remediation pass. Fixed by moving
+   the `to_str()` validation to immediately after `final_path` is computed,
+   before any of `create_dir_all`, lock-file creation, or
+   `publish_runtime_copy`, and reusing the validated `String` at the call
+   site instead of re-deriving it afterward.
 
 ## Resolution (this pass)
 
@@ -182,6 +198,15 @@ Before opening or pushing to a PR touching store/publish/runtime-copy code:
    of the families above, capture/update this document rather than letting
    the pattern re-derive itself from scratch on the next generation-store
    PR.
+8. **Order every fallible conversion/validation of an operation's inputs
+   strictly before its first irreversible filesystem mutation.** When a
+   function validates one representation of a value (e.g. a `Path`'s
+   UTF-8-ness) only by re-deriving and checking it from a *result* returned
+   after a copy/rename/delete already ran, a rejected input still leaves
+   mutation side effects behind. Compute and validate every fallible
+   conversion the operation will need up front, before the first
+   `fs::create_dir_all`/`fs::rename`/`fs::remove_file`/equivalent call, and
+   reuse the validated value afterward instead of re-deriving it.
 
 ## Related learnings
 
@@ -193,3 +218,9 @@ Before opening or pushing to a PR touching store/publish/runtime-copy code:
   three related, still-deferred facets of the same F09 runtime-copy
   component; a future F17/F18 integration task should read all three
   together rather than one at a time.
+- PR #385 review thread `PRRT_kwDORJEduc6gJLCP` (family 9, fixed in the
+  round 12 single-finding fix documented in
+  `docs/closure/2026-09-08-136-s-copilot-review-inventory-and-adversarial-review.md`
+  Part 5) is the first concrete instance of family 9 above; re-read
+  alongside families 1-8 when auditing other `db::cozo_backend` or
+  `services::generations` mutation sequences for the same ordering gap.

@@ -471,6 +471,21 @@ pub fn open_existing_generation_via_runtime_copy(
     validate_runtime_root(runtime_root)?;
 
     let final_path = runtime_copy_destination_path(runtime_root, generation_id);
+    // Validate that `final_path` is representable as UTF-8 (required by
+    // `cozo::DbInstance::new`, which takes a `&str` path) *before* any
+    // filesystem mutation below. This must happen ahead of directory
+    // creation, lock-file creation, and `publish_runtime_copy` (which
+    // copies the published database into place, seals it as this
+    // generation's runtime `engram.db`, and removes stale sidecars) so a
+    // rejected non-UTF-8 runtime root never leaves a partially- or
+    // fully-published runtime copy behind (PR #385 review thread
+    // `PRRT_kwDORJEduc6gJLCP`). Reused verbatim below instead of
+    // re-deriving from `runtime_copy.path()` after publishing, since both
+    // strings must name the exact same path.
+    let final_path_str = final_path
+        .to_str()
+        .ok_or_else(|| map_db_err("runtime copy path is not valid UTF-8"))?
+        .to_owned();
     let open_lock = connect_db_open_lock(&final_path);
     let _open_guard = match open_lock.lock() {
         Ok(guard) => guard,
@@ -512,12 +527,12 @@ pub fn open_existing_generation_via_runtime_copy(
     };
 
     let runtime_copy = publish_runtime_copy(location, &final_path, generation_id)?;
-    let final_path_str = runtime_copy
-        .path()
-        .to_str()
-        .ok_or_else(|| map_db_err("runtime copy path is not valid UTF-8"))?;
     let db = open_db_with_retry(
-        || catch_busy_panic(|| cozo::DbInstance::new("sqlite", final_path_str, Default::default())),
+        || {
+            catch_busy_panic(|| {
+                cozo::DbInstance::new("sqlite", &final_path_str, Default::default())
+            })
+        },
         |attempt| std::thread::sleep(reopen_backoff(attempt)),
     )?;
 

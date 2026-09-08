@@ -319,6 +319,72 @@ fn mutating_runtime_copy_never_changes_published_db_bytes() {
     );
 }
 
+/// GIVEN a `runtime_root` whose absolute path contains non-UTF-8 bytes
+/// (constructible on Unix since `OsStr`/`Path` do not require valid UTF-8,
+/// but `CozoDB`'s `sqlite` backend requires a `&str` path)
+/// WHEN a generation is opened via the runtime-copy path
+/// THEN the open must fail with a UTF-8 validation error *before* any
+/// filesystem mutation -- not after `publish_runtime_copy` has already
+/// copied the published database into place, sealed it as the runtime
+/// copy's `engram.db`, and removed any stale sidecars. Regression coverage
+/// for PR #385 review thread `PRRT_kwDORJEduc6gJLCP`: the pre-fix code
+/// validated `final_path`'s UTF-8-ness only via
+/// `runtime_copy.path().to_str()` *after* `publish_runtime_copy` returned,
+/// so a non-UTF-8 runtime root still mutated the runtime directory
+/// (created it, copied/sealed `engram.db`, removed sidecars) before the
+/// open ultimately failed.
+#[cfg(unix)]
+#[test]
+fn open_rejects_a_non_utf8_runtime_root_before_any_runtime_copy_side_effects() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let published_dir = tempfile::tempdir().expect("tempdir");
+    let runtime_root_parent = tempfile::tempdir().expect("tempdir");
+    let published_db_path = published_dir.path().join("engram.db");
+    create_seeded_db(&published_db_path);
+    let location = ExistingDbLocation::new(published_dir.path(), published_db_path.clone())
+        .expect("published database path must validate");
+
+    // Build a runtime root whose final path component is not valid UTF-8.
+    // `Path`/`OsStr` on Unix wrap raw bytes with no UTF-8 requirement, so
+    // this is constructible without `unsafe` and without touching the
+    // filesystem yet.
+    let non_utf8_component = std::ffi::OsStr::from_bytes(b"runtime-root-\xFF\xFE-non-utf8");
+    let runtime_root = runtime_root_parent.path().join(non_utf8_component);
+    assert!(
+        runtime_root.to_str().is_none(),
+        "precondition: the constructed runtime root must not be valid UTF-8"
+    );
+    assert!(
+        !runtime_root.exists(),
+        "precondition: the non-UTF-8 runtime root must not already exist"
+    );
+
+    let generation_id = "generation-non-utf8-root";
+    let expected_final_path = runtime_root.join(generation_id).join("engram.db");
+
+    let error = open_existing_generation_via_runtime_copy(&location, &runtime_root, generation_id)
+        .expect_err("a non-UTF-8 runtime root must be rejected");
+    let message = error.to_string();
+    assert!(
+        message.contains("not valid UTF-8"),
+        "expected a UTF-8 validation error, got: {message}"
+    );
+
+    // The failure must be side-effect-free: rejecting a non-UTF-8 runtime
+    // root before any mutation means the runtime directory tree under it
+    // (including the final engram.db, any sidecars, staging files, and
+    // lock files) must never be created.
+    assert!(
+        !runtime_root.exists(),
+        "rejecting a non-UTF-8 runtime root must not create the runtime directory tree"
+    );
+    assert!(
+        !expected_final_path.exists(),
+        "rejecting a non-UTF-8 runtime root must not create/replace the final engram.db"
+    );
+}
+
 #[test]
 fn reopening_same_generation_replaces_existing_runtime_copy() {
     let published_dir = tempfile::tempdir().expect("tempdir");
