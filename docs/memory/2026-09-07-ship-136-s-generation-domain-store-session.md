@@ -1,11 +1,27 @@
 ---
-title: 136-S Session Checkpoint — PR #385 Open, Awaiting Operator Merge Decision
+title: 136-S Session Checkpoint — PR #385 Open, 4th Review-Fix Cycle Complete, Awaiting Fresh Gates + Operator Merge Decision
 description: Mid/end-session memory checkpoint for shipment 136-S (generation domain, store, atomic publication, database open).
 ---
 
-## STATUS AS OF THIS CHECKPOINT: PR #385 open, all 9 manifest items done,
-## CI green, 10/13 Copilot Mandatory findings fixed and resolved, 2 remaining
-## findings presented to operator (circuit breaker), merge NOT executed.
+## STATUS AS OF THIS CHECKPOINT: PR #385 open, all 9 manifest items done, CI
+## green at the prior HEAD. Across 4 Copilot review rounds prior to this
+## checkpoint's own commit: 14 Mandatory findings total — 10 fixed directly,
+## 2 deferred/resolved to stash (round 1, out of scope), 2 remaining open
+## (round 4a/b) presented to operator at the 3-cycle circuit breaker. A 4th
+## review-fix cycle was then explicitly operator-authorized ("Fourth review
+## fix cycle authorized") and is now COMPLETE at a NEW HEAD — see the
+## "Update: 4th review-fix cycle" section below for the authoritative
+## current state. Merge NOT executed.
+##
+## NOTE ON THIS DOCUMENT'S OWN STALENESS: the version of this checkpoint
+## committed at `afc27fa6` was a docs-only commit layered on top of code
+## HEAD `50b1f46a`, which meant `afc27fa6` itself immediately became a new,
+## not-yet-reviewed HEAD the moment it was pushed — exactly the staleness a
+## later Copilot pass flagged. The corrected tally below (14 findings, not
+## the "10/13" originally written) and the appended 4th-cycle section are
+## this document's self-correction; treat everything above the "Update:
+## 4th review-fix cycle" section as an as-of-`50b1f46a`/`afc27fa6` historical
+## record, superseded by that later section for current state.
 
 ## Session scope
 
@@ -170,12 +186,15 @@ push):
   doesn't reserve the `active.json`/`.publisher.lock` namespace, so a
   candidate could claim a store-reserved path; (c) the PR readiness block
   was stale (referenced an old HEAD). Fixed (c) directly (PR body updated,
-  thread replied/resolved). **(a) and (b) are UNRESOLVED as of this
-  checkpoint** — per the Ship agent's 3-cycle review-fix circuit breaker
-  (rounds 1-3 already consumed the budget), these are being **presented to
-  the operator for explicit disposition** rather than auto-fixed in a 4th
-  cycle (P-021 C4: reaching the cycle limit does not authorize silent
-  continuation).
+  thread replied/resolved). **(a) and (b) were UNRESOLVED as of the
+  `afc27fa6` checkpoint** — per the Ship agent's 3-cycle review-fix circuit
+  breaker (rounds 1-3 already consumed the budget), these were **presented
+  to the operator for explicit disposition** rather than auto-fixed in a
+  4th cycle (P-021 C4: reaching the cycle limit does not authorize silent
+  continuation). **Resolution**: the operator explicitly authorized a 4th
+  cycle ("Fourth review fix cycle authorized"); see the "Update: 4th
+  review-fix cycle" section below for the fix and two additional findings
+  a later Copilot pass surfaced on the same `afc27fa6` HEAD.
 
 **All fixes verified independently by Ship** (not just trusted from the
 implementing pass): `cargo check --all-targets`, `cargo clippy --all-targets
@@ -244,3 +263,128 @@ mark-done pattern established above. After all 9 manifest items are `done`,
 run the final full quality-gate pass, prepare the PR with the
 `## Local Review Readiness` block, and hold for explicit operator merge
 approval per directive #8 (merge commits only, no auto-merge).
+
+## Update: 4th review-fix cycle (operator-authorized) — HEAD `afc27fa6` baseline
+
+**Operator authorization** (exact quote): "Fourth review fix cycle
+authorized." The operator explicitly scoped this as cycle-level
+authorization to address the *complete current-HEAD review set*, correcting
+a prior transfer prompt that had incorrectly narrowed authorization to only
+the 2 findings known at that moment (round 4a/b above).
+
+**Complete authorized finding set (6 threads, all unresolved on
+`afc27fa6`)**:
+
+1. `PRRT_kwDORJEduc6f_iKO` (`src/db/cozo_backend/mod.rs:572`) — round-4a
+   carry-forward: WAL/SHM sidecar isolation.
+2. `PRRT_kwDORJEduc6f_iKy` (`src/services/generations/store.rs:98`) —
+   round-4b carry-forward: candidate-namespace reservation.
+3. `PRRT_kwDORJEduc6f_q5o` (`src/db/cozo_backend/mod.rs:309`) — NEW:
+   non-directory `generation_root` bypasses containment via trivial
+   `starts_with`.
+4. `PRRT_kwDORJEduc6f_q6v` (`src/db/cozo_backend/mod.rs:550`) — NEW:
+   `fs::copy` runtime-copy has no bound/digest revalidation against the
+   expected source size.
+5. `PRRT_kwDORJEduc6f_q6T` (this checkpoint document, ~line 193 at the
+   time) — this document's own readiness block was stale relative to the
+   real current HEAD.
+6. `PRRT_kwDORJEduc6f_q7D` (this checkpoint document, ~line 8 at the time)
+   — the `10/13` finding tally was internally inconsistent (14 findings
+   actually enumerated across 4 rounds).
+
+All 6 were classified as in-scope for this shipment's own contract surface
+(2 carry-forward code findings + 2 new code findings inside the exact
+files/functions this shipment already touches, + 2 findings about this
+shipment's own checkpoint document) — none required P-021 defer-capture.
+
+**Fixes applied (TDD-first: failing test committed alongside each fix)**:
+
+- **Finding 3 (non-directory root)**: `ExistingDbLocation::new` now stats
+  the canonicalized `generation_root` and rejects it with a
+  `"must be a directory"` error *before* the containment check, closing
+  the gap where a same-file root+path pair trivially satisfied
+  `starts_with`. Test:
+  `existing_db_location_rejects_a_non_directory_generation_root`.
+- **Finding 4 (bounded/digest copy revalidation)**: `ExistingDbLocation`
+  now snapshots the published database's length and SHA-256 digest at
+  validation time (`digest_bounded`, reusing a new shared
+  `hash_bounded_reader`). `publish_runtime_copy` copies at most that many
+  bytes via `copy_bounded_with_digest` (bounded read + a 1-byte growth
+  probe) and rejects the copy — before any rename/open — unless the
+  copied bytes' digest matches the validation-time snapshot. This detects
+  and rejects a source that shrank, grew, or was overwritten with
+  different same-length content between validation and copy. Tests:
+  `open_rejects_a_published_database_that_shrank_after_validation`,
+  `open_rejects_a_published_database_that_grew_after_validation`.
+- **Finding 1 (WAL/SHM sidecar isolation)**: `publish_runtime_copy` now
+  calls `remove_stale_runtime_copy_sidecars` immediately after every
+  successful reseal, unconditionally removing any `-wal`/`-shm`/`-journal`
+  sidecar left by a prior runtime copy at the same path before the fresh
+  copy is opened. This is a crash-isolation cleanup at the existing stable
+  runtime-copy path (not a new per-copy directory — the existing
+  `reopening_same_generation_replaces_existing_runtime_copy` contract that
+  a reopen reuses the same final path was preserved), self-healing even if
+  a prior run crashed between reseal and cleanup, since the next reseal's
+  cleanup unconditionally removes whatever sidecars remain. Test:
+  `reopening_removes_stale_wal_and_shm_sidecars_left_by_a_crash` (places
+  synthetic stale sidecars next to an already-sealed runtime copy, then
+  proves a subsequent open removes them and reflects only the freshly
+  copied published snapshot).
+- **Finding 2 (candidate-namespace reservation)**: `GenerationStore` now
+  declares `RESERVED_ROOT_NAMES` (`active.json` sourced from this module's
+  own constant, `.publisher.lock` sourced from `publish::PUBLISHER_LOCK_FILE_NAME`
+  made `pub(super)` for this purpose — never duplicated as a literal, so
+  the reservation cannot drift out of sync with the name each
+  infrastructure path actually writes). Both `seal_candidate` and
+  `seal_legacy_direct` reject a target whose parent is exactly the store
+  root and whose leaf matches a reserved name; a nested occurrence of the
+  same leaf name elsewhere in the tree is unaffected. Tests:
+  `seal_candidate_rejects_the_reserved_active_manifest_name`,
+  `seal_candidate_rejects_the_reserved_publisher_lock_name`,
+  `seal_candidate_permits_a_nested_leaf_matching_a_reserved_name`.
+- **Findings 5 and 6 (this checkpoint document)**: corrected in place
+  above — the status header now states the accurate 14-finding tally
+  (10 fixed / 2 deferred / 2 open, as of the historical `afc27fa6`
+  snapshot) and explicitly flags that a docs-only commit still advances
+  `headRefOid` and therefore still requires fresh review before merge.
+  This section is written to be committed together with the code fixes
+  in the *same* commit specifically so it does not repeat that mistake by
+  itself becoming a new, separately-unreviewed HEAD.
+
+**Verification performed (independently by Ship, not trusted from any
+sub-pass)**: `cargo check --all-targets`; `cargo clippy --all-targets --
+-D warnings -D clippy::pedantic` (clean); the exact CI clippy command
+`cargo clippy --no-default-features --features cozo-backend,embeddings
+--all-targets -- -D warnings -D clippy::pedantic` (clean); `cargo fmt --all
+-- --check` (clean); `cargo test --lib` (685 passed, matching the
+established baseline, 0 failed); all affected integration/unit suites
+green — `integration_generation_db_open` (8 passed, up from 5),
+`integration_generation_store` (9 passed, up from 6),
+`integration_generation_publish` (8 passed, unaffected),
+`unit_generation_context` (4 passed, unaffected); a full `cargo dev-test`
+run whose single failure,
+`t046_s050_daemon_exits_after_idle_timeout_and_restarts`
+(`integration_daemon_lifecycle`), reproduces only under full-suite
+parallel load (a Windows named-pipe daemon-spawn timing wait, unrelated to
+generation storage/publication/database-open code) and passes cleanly in
+isolation — confirmed **not** a regression from this cycle's changes and
+out of this shipment's scope per P-021 C1 (daemon lifecycle IPC is
+untouched by any diff in this cycle).
+
+**New HEAD after this cycle's commit**: the single commit combining these
+4 code fixes with this checkpoint correction (see `git log -1` on this
+branch for the exact SHA — deliberately not hardcoded here, since a
+self-referential hash written into the very commit that produces it would
+be wrong the instant this content is included in that commit's tree).
+**This checkpoint explicitly does NOT assert merge-readiness for that
+HEAD.** Per this cycle's required next steps (executed after this commit,
+not before): push the branch, reply to and resolve all 6 threads above
+referencing this fix commit, wait for CI and a fresh Copilot review pass
+at the exact pushed HEAD, re-run the P-018 `autoharness gate
+copilot-review` check for `SATISFIED`, re-run the §1.9 local-review-
+readiness gate for the exact same HEAD, refresh the PR's
+`## Local Review Readiness` block accordingly, and only then present final
+state to the operator. If that fresh review raises any further finding, a
+5th fix cycle is **not** authorized by this session — it will be reported
+for explicit operator disposition instead (per the operator's own
+instruction bounding this to "this one review-fix cycle").

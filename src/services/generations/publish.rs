@@ -13,7 +13,7 @@ use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread::{self, JoinHandle};
 use thiserror::Error;
 use uuid::Uuid;
-const PUBLISHER_LOCK_FILE_NAME: &str = ".publisher.lock";
+pub(super) const PUBLISHER_LOCK_FILE_NAME: &str = ".publisher.lock";
 /// Filesystem-backed publisher lock namespace.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PublisherLock;

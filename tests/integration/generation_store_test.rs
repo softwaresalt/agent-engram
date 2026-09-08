@@ -161,6 +161,76 @@ fn seal_legacy_direct_rejects_non_regular_files() {
     assert!(matches!(error, StoreError::NonRegularFile { .. }));
 }
 
+/// GIVEN a candidate relative path that collides with the store's own
+/// reserved `active.json` manifest name at the generation root
+/// WHEN `seal_candidate` is called
+/// THEN it must be rejected rather than minting a directory at the manifest
+/// authority path -- Copilot review round 4 flagged that sealing a candidate
+/// named `active.json` would create a directory there, after which every
+/// subsequent publication would fail to read the current manifest (recovery
+/// would require deleting the candidate).
+#[test]
+fn seal_candidate_rejects_the_reserved_active_manifest_name() {
+    let root = tempfile::tempdir().expect("generation root tempdir");
+    let store = create_store(root.path());
+
+    let error = store
+        .seal_candidate(generation_id(), Path::new("active.json"))
+        .expect_err("candidate must not claim the reserved active.json name");
+
+    assert!(
+        matches!(error, StoreError::ReservedName { .. }),
+        "expected StoreError::ReservedName, got: {error:?}"
+    );
+    assert!(
+        !root.path().join("active.json").exists(),
+        "no directory must be minted at the reserved active.json path"
+    );
+}
+
+/// GIVEN a candidate relative path that collides with the store's own
+/// reserved `.publisher.lock` advisory-lock name at the generation root
+/// WHEN `seal_candidate` is called
+/// THEN it must be rejected for the same reason as the `active.json` case.
+#[test]
+fn seal_candidate_rejects_the_reserved_publisher_lock_name() {
+    let root = tempfile::tempdir().expect("generation root tempdir");
+    let store = create_store(root.path());
+
+    let error = store
+        .seal_candidate(generation_id(), Path::new(".publisher.lock"))
+        .expect_err("candidate must not claim the reserved .publisher.lock name");
+
+    assert!(
+        matches!(error, StoreError::ReservedName { .. }),
+        "expected StoreError::ReservedName, got: {error:?}"
+    );
+    assert!(
+        !root.path().join(".publisher.lock").exists(),
+        "no directory must be minted at the reserved .publisher.lock path"
+    );
+}
+
+/// GIVEN a candidate relative path that merely happens to end in a reserved
+/// leaf name but is NOT located directly at the generation root (e.g. inside
+/// a nested candidate parent directory)
+/// WHEN `seal_candidate` is called
+/// THEN it must still succeed -- the reservation only protects the store's
+/// own root-level namespace, not every occurrence of the name anywhere in
+/// the tree.
+#[test]
+fn seal_candidate_permits_a_nested_leaf_matching_a_reserved_name() {
+    let root = tempfile::tempdir().expect("generation root tempdir");
+    fs::create_dir(root.path().join("candidates")).expect("create candidate parent");
+    let store = create_store(root.path());
+
+    let target = store
+        .seal_candidate(generation_id(), Path::new("candidates").join("active.json"))
+        .expect("nested leaf matching a reserved name outside the root is not reserved");
+
+    assert_eq!(target.kind(), IndexTargetKind::Candidate);
+}
+
 #[test]
 fn seal_candidate_refuses_a_second_concurrent_candidate_directory() {
     let root = tempfile::tempdir().expect("generation root tempdir");

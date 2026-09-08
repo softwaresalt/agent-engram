@@ -21,6 +21,32 @@ use super::GenerationId;
 /// so publication can never target an arbitrary, unsealed path.
 const ACTIVE_MANIFEST_FILE_NAME: &str = "active.json";
 
+/// Top-level names within a [`GenerationStore`] root that are exclusively
+/// owned by store/publication infrastructure and can never be claimed by a
+/// candidate directory or resolved as an arbitrary sealed target. Sourced
+/// from the concrete constants that mint each name (this module's own
+/// [`ACTIVE_MANIFEST_FILE_NAME`] and [`super::publish`]'s advisory lock file
+/// name) so the reservation cannot silently drift out of sync with the name
+/// each infrastructure path actually writes.
+///
+/// Copilot review round 4 found that sealing a candidate directory named
+/// `active.json` mints a directory at the manifest authority path, after
+/// which every publication fails to read the current manifest (recovery
+/// would require deleting the invalid candidate). Reserving both names here
+/// closes that gap at the same layer that already enforces containment.
+const RESERVED_ROOT_NAMES: &[&str] = &[
+    ACTIVE_MANIFEST_FILE_NAME,
+    super::publish::PUBLISHER_LOCK_FILE_NAME,
+];
+
+/// Whether `name` is one of this store's reserved root-level infrastructure
+/// names (see [`RESERVED_ROOT_NAMES`]).
+fn is_reserved_root_name(name: &std::ffi::OsStr) -> bool {
+    RESERVED_ROOT_NAMES
+        .iter()
+        .any(|reserved| name == std::ffi::OsStr::new(reserved))
+}
+
 /// Canonical generation-root wrapper that seals contained indexing targets.
 #[derive(Debug, Clone)]
 pub struct GenerationStore {
@@ -103,6 +129,7 @@ impl GenerationStore {
 
         let candidate = self.root.join(relative_path);
         let canonical = self.canonicalize_contained(&candidate)?;
+        self.reject_reserved_root_name(&canonical)?;
         let metadata = fs::metadata(&canonical).map_err(|source| StoreError::Io {
             operation: "read metadata for",
             path: canonical.clone(),
@@ -141,6 +168,11 @@ impl GenerationStore {
         }
 
         let candidate_directory = parent_directory.join(leaf);
+        if parent_directory == self.root && is_reserved_root_name(leaf) {
+            return Err(StoreError::ReservedName {
+                name: leaf.to_string_lossy().into_owned(),
+            });
+        }
         match fs::create_dir(&candidate_directory) {
             Ok(()) => {}
             Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
@@ -176,6 +208,23 @@ impl GenerationStore {
                 path: canonical,
             })
         }
+    }
+
+    /// Reject a canonicalized target whose parent is exactly this store's
+    /// root AND whose file name matches a [`RESERVED_ROOT_NAMES`] entry.
+    ///
+    /// Only root-level occurrences are reserved: a nested file that merely
+    /// shares a leaf name (e.g. `candidates/active.json`) is unaffected.
+    fn reject_reserved_root_name(&self, canonical: &Path) -> Result<(), StoreError> {
+        let (Some(parent), Some(name)) = (canonical.parent(), canonical.file_name()) else {
+            return Ok(());
+        };
+        if parent == self.root && is_reserved_root_name(name) {
+            return Err(StoreError::ReservedName {
+                name: name.to_string_lossy().into_owned(),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -283,6 +332,16 @@ pub enum StoreError {
         generation_id: GenerationId,
         /// The existing candidate directory.
         path: PathBuf,
+    },
+    /// The requested target name collides with a name exclusively owned by
+    /// store/publication infrastructure (e.g. the active manifest or
+    /// publisher lock file) at the generation root.
+    #[error(
+        "generation target name {name:?} is reserved for store/publication infrastructure at the generation root"
+    )]
+    ReservedName {
+        /// The rejected reserved name.
+        name: String,
     },
     /// A filesystem operation failed.
     #[error("failed to {operation} {path:?}: {source}")]

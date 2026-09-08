@@ -7,6 +7,7 @@ pub mod schema;
 
 use std::{
     collections::HashMap,
+    io::{Read, Write},
     path::Path,
     path::PathBuf,
     sync::{Arc, Mutex, OnceLock},
@@ -14,6 +15,7 @@ use std::{
 };
 
 use crate::errors::{EngramError, SystemError};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 // ── Handle types ──────────────────────────────────────────────────────────────
@@ -276,9 +278,18 @@ const RUNTIME_COPY_DB_FILE_NAME: &str = "engram.db";
 /// containment check locally instead, mirroring
 /// `services::generations::store::GenerationStore`'s
 /// canonicalize-then-`starts_with` pattern.
+///
+/// Construction also snapshots the validated file's length and SHA-256
+/// digest. `open_existing_generation_via_runtime_copy` copies at most this
+/// many bytes and rejects the copy unless its digest matches this snapshot,
+/// so a source that grew, shrank, or was overwritten with different content
+/// of the same length between validation and copy is detected and rejected
+/// rather than silently sealed and opened.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExistingDbLocation {
-    published_db_path: PathBuf,
+    path: PathBuf,
+    len: u64,
+    digest: [u8; 32],
 }
 
 impl ExistingDbLocation {
@@ -288,9 +299,11 @@ impl ExistingDbLocation {
     /// # Errors
     ///
     /// Returns [`EngramError`] when `generation_root` or `published_db_path`
-    /// cannot be canonicalized, `published_db_path` does not resolve to an
-    /// existing regular file, or the canonicalized path escapes
-    /// `generation_root`.
+    /// cannot be canonicalized, `generation_root` does not resolve to an
+    /// existing directory, `published_db_path` does not resolve to an
+    /// existing regular file, the canonicalized path escapes
+    /// `generation_root`, or the file cannot be read to compute its
+    /// validation digest.
     pub fn new(
         generation_root: &Path,
         published_db_path: impl Into<PathBuf>,
@@ -306,6 +319,15 @@ impl ExistingDbLocation {
         let canonical_root = generation_root.canonicalize().map_err(|source| {
             map_runtime_copy_io_error("canonicalize generation root", generation_root, source)
         })?;
+        let root_metadata = std::fs::metadata(&canonical_root).map_err(|source| {
+            map_runtime_copy_io_error("read metadata for generation root", &canonical_root, source)
+        })?;
+        if !root_metadata.is_dir() {
+            return Err(map_db_err(format!(
+                "generation root {} must be a directory",
+                canonical_root.display()
+            )));
+        }
         if !canonical_path.starts_with(&canonical_root) {
             return Err(map_db_err(format!(
                 "published database path {} escapes generation root {}",
@@ -326,16 +348,27 @@ impl ExistingDbLocation {
                 canonical_path.display()
             )));
         }
+        let len = metadata.len();
+        let digest = digest_bounded(&canonical_path, len)?;
 
         Ok(Self {
-            published_db_path: canonical_path,
+            path: canonical_path,
+            len,
+            digest,
         })
     }
 
     /// Return the published generation database path.
     #[must_use]
     pub fn published_db_path(&self) -> &Path {
-        &self.published_db_path
+        &self.path
+    }
+
+    /// Return the validated published database length, in bytes, captured
+    /// at construction time.
+    #[must_use]
+    pub fn published_db_len(&self) -> u64 {
+        self.len
     }
 }
 
@@ -478,8 +511,7 @@ pub fn open_existing_generation_via_runtime_copy(
         std::thread::sleep(Duration::from_millis(50));
     };
 
-    let runtime_copy =
-        publish_runtime_copy(location.published_db_path(), &final_path, generation_id)?;
+    let runtime_copy = publish_runtime_copy(location, &final_path, generation_id)?;
     let final_path_str = runtime_copy
         .path()
         .to_str()
@@ -533,10 +565,11 @@ fn runtime_copy_destination_path(runtime_root: &Path, generation_id: &str) -> Pa
 }
 
 fn publish_runtime_copy(
-    published_db_path: &Path,
+    location: &ExistingDbLocation,
     final_path: &Path,
     generation_id: &str,
 ) -> Result<RuntimeCopy, EngramError> {
+    let published_db_path = location.published_db_path();
     let parent = final_path.parent().ok_or_else(|| {
         map_db_err(format!(
             "runtime copy destination {} must have a parent directory",
@@ -547,13 +580,24 @@ fn publish_runtime_copy(
         .map_err(|error| map_runtime_copy_io_error("create runtime directory", parent, error))?;
 
     let staging_path = runtime_copy_staging_path(final_path)?;
-    if let Err(error) = std::fs::copy(published_db_path, &staging_path) {
+    let copy_digest = match copy_bounded_with_digest(
+        published_db_path,
+        &staging_path,
+        location.published_db_len(),
+    ) {
+        Ok(digest) => digest,
+        Err(error) => {
+            cleanup_runtime_copy_staging(&staging_path);
+            return Err(error);
+        }
+    };
+    if copy_digest != location.digest {
         cleanup_runtime_copy_staging(&staging_path);
-        return Err(map_runtime_copy_io_error(
-            "copy published database to staging",
-            &staging_path,
-            error,
-        ));
+        return Err(map_db_err(format!(
+            "published database {} changed since it was validated: refusing to seal or \
+             open an unverified runtime copy",
+            published_db_path.display()
+        )));
     }
 
     // Fsync the staged copy's content before the rename, mirroring the
@@ -578,6 +622,17 @@ fn publish_runtime_copy(
         ));
     }
 
+    // Remove any WAL/SHM/rollback-journal sidecars orphaned by a prior
+    // runtime copy at this same path (e.g. a process that crashed before
+    // checkpointing). SQLite's WAL replay validates a `-wal` file's own
+    // internal header, not the main file's content, so a stale-but-valid
+    // sidecar left over from a PRIOR generation's runtime copy could
+    // otherwise be replayed against this freshly sealed copy and silently
+    // reintroduce stale page state the moment it is opened. Unconditional
+    // and idempotent: a fresh runtime directory with nothing to remove is a
+    // no-op.
+    remove_stale_runtime_copy_sidecars(final_path)?;
+
     #[cfg(unix)]
     sync_runtime_copy_parent_dir(final_path).map_err(|error| {
         map_runtime_copy_io_error("fsync runtime copy directory", final_path, error)
@@ -587,6 +642,131 @@ fn publish_runtime_copy(
         final_path.to_path_buf(),
         generation_id.to_owned(),
     ))
+}
+
+/// Sidecar filename suffixes SQLite may create next to a WAL-mode database
+/// (`-wal`, `-shm`) or a rollback-journal-mode database (`-journal`).
+const RUNTIME_COPY_SIDECAR_SUFFIXES: [&str; 3] = ["-wal", "-shm", "-journal"];
+
+/// Remove stale sidecar files left next to `final_path` by a prior runtime
+/// copy at this same path. See the call site in [`publish_runtime_copy`] for
+/// the crash-isolation rationale. Best-effort against absence: a missing
+/// sidecar is not an error.
+///
+/// # Errors
+///
+/// Returns [`EngramError`] when an existing sidecar file cannot be removed
+/// for a reason other than it already being absent.
+fn remove_stale_runtime_copy_sidecars(final_path: &Path) -> Result<(), EngramError> {
+    let Some(file_name) = final_path.file_name() else {
+        return Ok(());
+    };
+    for suffix in RUNTIME_COPY_SIDECAR_SUFFIXES {
+        let mut sidecar_name = file_name.to_os_string();
+        sidecar_name.push(suffix);
+        let sidecar_path = final_path.with_file_name(sidecar_name);
+        match std::fs::remove_file(&sidecar_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(map_runtime_copy_io_error(
+                    "remove stale runtime copy sidecar",
+                    &sidecar_path,
+                    error,
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Read exactly `expected_len` bytes from `source`, hashing them with
+/// SHA-256, optionally tee-writing them into `sink`. Bounds both directions:
+/// returns a truncation error if `source` yields fewer bytes than
+/// `expected_len` (the source shrank or was deleted/replaced since
+/// `expected_len` was captured), and a growth error if a probe read after
+/// the bound finds any further bytes (the source grew since `expected_len`
+/// was captured). `std::fs::copy` alone enforces neither bound, which is
+/// what let a growing, shrinking, or concurrently rewritten published
+/// database be sealed and opened unverified.
+fn hash_bounded_reader(
+    source: &Path,
+    expected_len: u64,
+    mut sink: Option<&mut std::fs::File>,
+) -> Result<[u8; 32], EngramError> {
+    let mut reader = std::fs::File::open(source)
+        .map_err(|error| map_runtime_copy_io_error("open published database", source, error))?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 8192];
+    let mut copied: u64 = 0;
+    while copied < expected_len {
+        let remaining = expected_len - copied;
+        let want = usize::try_from(remaining.min(buf.len() as u64)).unwrap_or(buf.len());
+        let read = reader
+            .read(&mut buf[..want])
+            .map_err(|error| map_runtime_copy_io_error("read published database", source, error))?;
+        if read == 0 {
+            return Err(map_db_err(format!(
+                "published database {} ended after {copied} byte(s) but expected \
+                 {expected_len} byte(s): the source was truncated since it was validated",
+                source.display()
+            )));
+        }
+        if let Some(destination) = sink.as_deref_mut() {
+            destination.write_all(&buf[..read]).map_err(|error| {
+                map_runtime_copy_io_error("write staged runtime copy", source, error)
+            })?;
+        }
+        hasher.update(&buf[..read]);
+        copied += read as u64;
+    }
+
+    let mut probe = [0u8; 1];
+    let extra = reader
+        .read(&mut probe)
+        .map_err(|error| map_runtime_copy_io_error("probe published database", source, error))?;
+    if extra != 0 {
+        return Err(map_db_err(format!(
+            "published database {} grew beyond the expected {expected_len} byte(s): \
+             the source changed since it was validated",
+            source.display()
+        )));
+    }
+
+    Ok(hasher.finalize().into())
+}
+
+/// Copy at most `expected_len` bytes from `source` into a newly created
+/// `destination`, returning the SHA-256 digest of the copied bytes. See
+/// [`hash_bounded_reader`] for the bound/growth semantics.
+///
+/// # Errors
+///
+/// Returns [`EngramError`] when `source` cannot be opened or read,
+/// `destination` cannot be created or written, `source` yields fewer bytes
+/// than `expected_len`, or `source` has more than `expected_len` bytes.
+fn copy_bounded_with_digest(
+    source: &Path,
+    destination: &Path,
+    expected_len: u64,
+) -> Result<[u8; 32], EngramError> {
+    let mut destination_file = std::fs::File::create(destination).map_err(|error| {
+        map_runtime_copy_io_error("create staged runtime copy", destination, error)
+    })?;
+    hash_bounded_reader(source, expected_len, Some(&mut destination_file))
+}
+
+/// Compute the SHA-256 digest of exactly `expected_len` bytes read from
+/// `source`, without writing a copy. See [`hash_bounded_reader`] for the
+/// bound/growth semantics.
+///
+/// # Errors
+///
+/// Returns [`EngramError`] when `source` cannot be opened or read, `source`
+/// yields fewer bytes than `expected_len`, or `source` has more than
+/// `expected_len` bytes.
+fn digest_bounded(source: &Path, expected_len: u64) -> Result<[u8; 32], EngramError> {
+    hash_bounded_reader(source, expected_len, None)
 }
 
 fn sync_runtime_copy_staging(staging_path: &Path) -> std::io::Result<()> {
