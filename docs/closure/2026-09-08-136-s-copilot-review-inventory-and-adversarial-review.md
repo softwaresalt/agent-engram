@@ -1,5 +1,5 @@
 ---
-title: "136-S / PR #385 — Complete Copilot review inventory and local adversarial review"
+title: "136-S / PR #385 — Copilot review inventory and local adversarial review (scoped through round 12, commit 26868ece)"
 date: "2026-09-08"
 type: "pre-merge-adversarial-review"
 status: "fixes-applied"
@@ -7,10 +7,24 @@ shipment_id: "136-S"
 feature_id: "142-F"
 pr: 385
 reviewed_commit_before_remediation: "c2d8d6f08a75526b232413f0b7168a17b4b8fe97"
+inventory_cutoff_commit: "26868eced9b77c11f9b3a7ff23f3177a9a57e2b2"
 compound_learning: "docs/compound/best-practices/proactive-copilot-review-pattern-checklist-2026-09-08.md"
 ---
 
 **Baseline:** `origin/main...c2d8d6f08a75526b232413f0b7168a17b4b8fe97` (full branch diff)
+
+**Scope and cutoff (added after thread `PRRT_kwDORJEduc6gZNuU`):** This document's thread
+inventory (Parts 1 and 5) is deliberately scoped to review threads opened up through commit
+`26868ece` (round 12, the operator-authorized single-finding fix). Editing this document is
+itself a commit that re-arms Copilot review, which can open further threads *about* this
+document's own thread count — a self-referential loop that cannot converge if this artifact
+tries to stay perpetually complete against a HEAD that keeps advancing as a direct result of
+editing it. Review threads opened after the `26868ece` cutoff (including any about this
+document's own completeness) are tracked instead via the PR body's "Local Review Readiness"
+section (authoritative for current-HEAD status) and, where out of this PR's authorized scope,
+via P-021 deferred-scope stash entries — not by further edits to this artifact's historical
+inventory. See the PR body for the live thread count and resolution status as of the current
+HEAD.
 
 **Trigger:** Operator-directed strategy change — reactive hosted-review cycles were not
 converging after 4 authorized review-fix cycles + 3 further Copilot passes surfaced 4
