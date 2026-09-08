@@ -133,20 +133,27 @@ follow-up disposition table).
   `docs/closure/135-S-2026-09-06-post-merge-closure.md`, a repair document
   for that same class of mistake).
 
-## Next steps
+## Next steps (updated — closure PR opened)
 
-1. Stage the remaining changes, commit, push
-   `post-merge/136-s-generation-domain-store-atomic-publication-and-
-   database-open`.
-2. Run local review over the closure branch diff; record readiness for
-   the current HEAD.
-3. Invoke `pr-lifecycle` to open the closure PR (title: `chore: post-merge
-   closure for 136-S — Generation domain, store, atomic publication and
-   database open`).
-4. **Stop and await explicit operator approval for the closure PR
+1. ~~Stage, commit, push~~ — done (commits `f2fa4bd6`, `0b7c7a70`,
+   `ea62abd7`, `b2062039`; branch pushed to
+   `origin/post-merge/136-s-generation-domain-store-atomic-publication-
+   and-database-open`).
+2. Self-reviewed the docs/backlog-only diff (`P0=0, P1=0`, `READY`);
+   discovered and fixed one self-introduced data corruption (stray
+   backspace byte from a PowerShell backtick escape in the archived
+   `136-S` record's description) before finalizing — commit `b2062039`.
+3. Opened closure PR **#386**: `chore: post-merge closure for 136-S —
+   Generation domain, store, atomic publication and database open`,
+   head `b206203964ca3f03b1a6cbc5f5a0df5cb27d6b59`, base `main`,
+   state `OPEN`, `mergeable: MERGEABLE`, `mergeStateStatus: CLEAN`.
+4. **Stopped here, awaiting explicit operator approval for PR #386
    specifically** — approval for PR #385 does not transfer to this
-   separate PR, per the task's own explicit instruction.
-5. Do **not** start shipment `137-S`. The Orchestrator must re-assess and
-   explicitly route the next shipment only after this closure PR merges
-   and P-020 compaction is confirmed complete (already done this
-   session, recorded in the closure artifact).
+   separate PR. No merge attempted.
+5. Did **not** start shipment `137-S`. The Orchestrator must re-assess and
+   explicitly route the next shipment only after PR #386 merges (P-020
+   compaction is already complete and recorded in the closure artifact
+   as of this session, but the `pipeline-topology` gate's
+   `shipment_readiness` predecessor-closure discovery reads committed
+   `main` content, so it will not observe this evidence until PR #386
+   itself merges).
