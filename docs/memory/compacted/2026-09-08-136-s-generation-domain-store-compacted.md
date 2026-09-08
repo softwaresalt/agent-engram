@@ -4,7 +4,7 @@ date: 2026-09-08
 shipment_id: "136-S"
 feature_id: "142-F"
 pr: 385
-status: "shipped — archived (archived_status: done)"
+status: "archived (archived_status: done)"
 compacted_from:
   - "docs/memory/2026-09-07-ship-136-s-generation-domain-store-session.md"
   - "docs/memory/2026-09-08-ship-136-s-adversarial-review-remediation-session.md"
