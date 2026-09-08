@@ -9,7 +9,7 @@ author: ship
 verdict: "CLOSED — PR #385 merged as a merge commit under explicit operator approval ('PR 385: merge approved'), verified reachable from origin/main; shipment 136-S manually safe-closed (targeted, non-cascading) following the 133-S/134-S/135-S precedent; 142-F verified untouched and remains active for later 142-F-covering shipments."
 closure_status: "READY"
 releasability: "READY_WITH_CONDITIONS"
-compaction_status: "pending"
+compaction_status: "done"
 pr_number: 385
 merge_commit: "7632f8c03b23a5b2da064ca027ed584865cfc74b"
 head_commit_merged: "fd97e8004ab01595aa0f55cfcbf59313e4f1cdf9"
@@ -309,7 +309,17 @@ No new follow-up was identified by this closure session beyond what PR
 
 ## Compaction status (P-020)
 
-**`pending`** at the time this document was created by `operational-closure`
-(Step 6 item 2). Finalized to `done` or `degraded` by Ship Step 6 item 8
-(`compact-context --target all`) — see the "Compaction status" update
-below, appended after that invocation completes.
+**`done`**. `compact-context --target all` was invoked at Ship Step 6 item
+8 (2026-09-08). The three verbose `136-S` session memory files (totaling
+~40.8 KB — `2026-09-07-ship-136-s-generation-domain-store-session.md`
+26,597 bytes, `2026-09-08-ship-136-s-adversarial-review-remediation-session.md`
+7,189 bytes, `2026-09-08-ship-136-s-utf8-fix-and-review-cascade-session.md`
+7,020 bytes) were identified as compaction candidates (shipment now
+archived/done — all manifest tasks complete) and consolidated into one
+dense summary at
+`docs/memory/compacted/2026-09-08-136-s-generation-domain-store-compacted.md`,
+capturing decisions, failed approaches (the rejected `backlogit move
+--status shipped` attempt), outcomes, and the full evidence trail. Verbose
+originals were preserved (not deleted) at
+`docs/archive/memory/2026-09/{same three filenames}`. No degradation
+reported.
