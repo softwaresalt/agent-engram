@@ -169,16 +169,18 @@ Iteration 1 (this pass) applied all fixes above and passed every gate on the fir
 regressions were introduced by the fixes themselves (full test suite green modulo the two
 pre-existing, isolation-confirmed flakes above). Iteration 2 was not required.
 
-## Part 5 — Round 12 finding (post-remediation, operator-authorized single-finding fix)
+## Part 5 — Rounds 6 and 12 findings (post-remediation, closure-evidence correction + operator-authorized single-finding fix)
 
-A further Copilot pass at HEAD `288b359d` opened one new review thread after this
-document's original remediation pass landed (commit `7d9d4d7e`):
+Two further Copilot passes ran after this document's original remediation pass landed
+(commit `7d9d4d7e`), opening two more review threads not yet reflected in Part 1's inventory
+above:
 
-| # | Thread | File:line | Issue | Disposition |
-|---|---|---|---|---|
-| 26 | `PRRT_...JLCP` | db/cozo_backend/mod.rs:514-518 | `final_path`'s UTF-8 validation ran only via `runtime_copy.path().to_str()` *after* `publish_runtime_copy` had already copied/sealed the runtime `engram.db` and removed stale sidecars, so a non-UTF-8 `runtime_root` on Unix mutated the runtime directory before the open ultimately failed | **FIXED** — moved the UTF-8 validation of `final_path` to immediately after it is computed, before `create_dir_all`, lock-file creation, or `publish_runtime_copy`; the validated `String` is reused verbatim at the `DbInstance::new` call site instead of re-deriving it from `runtime_copy.path()` |
+| # | Thread | Round (commit) | File:line | Issue | Disposition |
+|---|---|---|---|---|---|
+| 26 | `PRRT_...I7Ev` | 288b359d (checked against `412511cb`) | docs/memory checkpoint | Checkpoint commit `00514686` called `412511cb` the "final HEAD" while `412511cb` is necessarily that commit's own parent/source state | **FIXED** — corrected the two affected passages in `docs/memory/2026-09-08-ship-136-s-adversarial-review-remediation-session.md` (docs-only commit `288b359d`) to state `412511cb` is the reviewed source/remediation HEAD as of the checkpoint's parent commit |
+| 27 | `PRRT_...JLCP` | 288b359d | db/cozo_backend/mod.rs:514-518 | `final_path`'s UTF-8 validation ran only via `runtime_copy.path().to_str()` *after* `publish_runtime_copy` had already copied/sealed the runtime `engram.db` and removed stale sidecars, so a non-UTF-8 `runtime_root` on Unix mutated the runtime directory before the open ultimately failed | **FIXED** — moved the UTF-8 validation of `final_path` to immediately after it is computed, before `create_dir_all`, lock-file creation, or `publish_runtime_copy`; the validated `String` is reused verbatim at the `DbInstance::new` call site instead of re-deriving it from `runtime_copy.path()` |
 
-This is the same **family 9** class captured in the companion compound checklist update
+Thread 27 (`PRRT_...JLCP`) is the same **family 9** class captured in the companion compound checklist update
 (validate all fallible conversions before an irreversible mutation) — not a new family in
 its own right, but the first occurrence of it specifically for `final_path`'s UTF-8-ness in
 `open_existing_generation_via_runtime_copy`. Regression coverage:
