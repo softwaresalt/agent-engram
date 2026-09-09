@@ -27,7 +27,7 @@ touches `src/services/code_graph.rs`, `src/cli/direct.rs`,
 `src/installer/mod.rs`, `crates/engram-indexer/*`, and
 `.github/workflows/release.yml` — none of which implement daemon
 startup/IPC binding), and is extensively covered by the 688/689 passing
-automated tests below, including 14/14 tests directly exercising this
+automated tests below, including 15/15 tests directly exercising this
 shipment's own six manifest tasks.
 
 **Condition**: the `cli-daemon-status` probe against a live-bound workspace
@@ -39,7 +39,7 @@ unconditional `READY`.
 
 | Requirement | Evidence |
 |---|---|
-| Healthy signal | `cargo check --all-targets` GREEN; `cargo build` GREEN; `cargo fmt --all -- --check` clean; `cargo clippy --all-targets -- -D warnings -D clippy::pedantic` clean; `cargo dev-test` 688/689 GREEN (1 confirmed pre-existing, confirmed-unrelated, confirmed-reproducible-in-isolation flake — see below); 14/14 targeted tests across this shipment's own six manifest tasks (`integration_candidate_indexing_service`, `integration_direct_sync_mode`, `contract_supervisor_workspace_boundary`, `contract_supervisor_release_artifact`, `contract_supervisor_install_exclusion`) GREEN; `cargo test -p engram-indexer` (new supervisor crate) GREEN. |
+| Healthy signal | `cargo check --all-targets` GREEN; `cargo build` GREEN; `cargo fmt --all -- --check` clean; `cargo clippy --all-targets -- -D warnings -D clippy::pedantic` clean; `cargo dev-test` 688/689 GREEN (1 confirmed pre-existing, confirmed-unrelated, confirmed-reproducible-in-isolation flake — see below); 15/15 targeted tests across this shipment's own six manifest tasks (`integration_candidate_indexing_service`, `integration_direct_sync_mode`, `contract_supervisor_workspace_boundary`, `contract_supervisor_release_artifact`, `contract_supervisor_install_exclusion`, plus `cargo test -p engram-indexer`'s own boundary test) GREEN. |
 | Review | Pre-merge: 6 per-task `code-review` (report-only) passes (one after a fix cycle), plus 1 final consolidated full-branch review at the pre-stash-capture HEAD: **READY_WITH_FOLLOWUPS** (single P2 finding — no cross-process write coordination between the new `engram-indexer` supervisor and existing direct-sync/daemon writers — correctly out of scope per P-021 C1, deferred to plan units F16-F18, captured to stash `AF5CE07E`; not implemented). §1.9 local review readiness + P-018 Copilot-review gate both passed for the merged HEAD per the pre-merge session record. |
 | Runtime verification | `docs/closure/2026-09-08-137-s-runtime-verification.md` — verdict `PASS WITH FOLLOW-UP`. CLI-version, MCP-protocol (initialize + tools-catalog), and all six manifest tasks' own harnesses GREEN via substitute/direct real commands; `cli-daemon-status` probe **BLOCKED** (named condition above). |
 
@@ -147,9 +147,9 @@ rollback carries no data-migration risk.
 
 | Field | Value |
 |---|---|
-| `ProposedAction` | N/A — this shipment is purely additive (sealed `IndexTarget` type acceptance, a mode-boundary refusal path, a new non-agent supervisor crate, a release-workflow addition, and an installer exclusion assertion). No deletions, no irreversible operations, no destructive scope was proposed or required. |
-| `ActionRisk` | `standard` (no destructive/high-risk action) |
-| `ActionResult` | N/A |
+| `ProposedAction` | (1) Merge PR #388 to `main`: sealed `IndexTarget` type acceptance, a mode-boundary refusal path, a new non-agent supervisor crate, a release-workflow addition, and an installer exclusion assertion — purely additive to production source, no deletions. (2) Shipment safe-close bookkeeping for `137-S`: delete `.backlogit/queue/137-S.md` and author `.backlogit/archive/137-S.md` (manual safe-close, P-015 partial-feature procedure). |
+| `ActionRisk` | (1) `moderate` — additive-only production source change, no existing behavior removed or changed, no wired production caller of the new sealed-target/supervisor surfaces yet. (2) `destructive` per the strict-safety schema's literal inclusion of "deletes" — `.backlogit/queue/137-S.md` is deleted from the working tree. This is Ship-role-permitted, not independently destructive-approval-gated, bookkeeping: the Role Boundary explicitly allows Ship to "close shipments, archive completed items," post-merge closure (Step 6) is a mandatory, non-discretionary continuation of the same operator-approved merge action (not a fresh, separately-proposed destructive action), the file's full content is preserved verbatim in `.backlogit/archive/137-S.md` (nothing is lost), the change is fully git-reversible, and it lands on a dedicated closure branch/PR (#389) requiring its own separate explicit operator approval before reaching `main`. |
+| `ActionResult` | (1) `applied` — merge completed cleanly via `gh pr merge 388 --merge`; ancestry verified (`git merge-base --is-ancestor`); approval: explicit, PR-scoped operator approval (*"PR 388: Merge approved"*) for the exact reviewed HEAD `653e973e201883790a9862e6ff54ea84efbb902d`. (2) `applied` — verified via live re-read (`status: active` before, `archived_status: done` after), `142-F` verified byte-for-byte unchanged, zero orphans, no unrestored archive deletions (`git status -- ".backlogit/archive/"`). No approval beyond the Role-Boundary authorization above is claimed for this action; it is not retroactively described as separately operator-approved. |
 
 ## Owner
 
@@ -162,7 +162,7 @@ Standard PR review + CI window. No extended bake/soak period is warranted:
 the change adds a sealed-target boundary, a mode-refusal path, and a
 separately-distributed, not-yet-wired supervisor crate with no production
 caller. The full local test suite (688/689, one pre-existing unrelated
-flake) plus 14/14 targeted tests directly covering this shipment's six
+flake) plus 15/15 targeted tests directly covering this shipment's six
 manifest tasks provide direct coverage of the change surface. The one open
 condition (daemon-status probe re-run) is tracked above and does not gate
 this validation window.
@@ -227,4 +227,5 @@ degradation — this run completed cleanly.
 | Covering feature | `142-F` — verified `active`, byte-for-byte unchanged (SHA-256 `59263E8FFB779485E135A7AA41D9DAAC89B4A996B767D128D76A1AD2E70404C3`, 802 bytes; P-015 protection confirmed) |
 | Reconciliation | `.backlogit/reconcile/137-S-pre-20260908T230954Z.md` (PROCEED), `.backlogit/reconcile/137-S-post-20260908T231240Z.md` (PROCEED) |
 | Post-merge closure branch | `post-merge/137-s-candidate-indexing-direct-sync-boundary-and-supervisor-crate-separation` |
-| Post-merge closure PR | *pending — to be created per Step 5/6* |
+| Post-merge closure PR | #389, "chore: post-merge closure for 137-S — Candidate indexing, direct-sync boundary and supervisor crate separation" — open, awaiting its own separate explicit operator approval |
+| Canonical gate-evidence file | `docs/closure/137-S-2026-09-08-post-merge-closure.md` (machine-discoverable frontmatter for the `pipeline-topology` gate's `shipment_readiness` check on `138-S` and later `142-F`-covering shipments) |

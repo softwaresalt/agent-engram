@@ -166,25 +166,28 @@ feature `142-F` verified untouched (still `active`, byte-identical to its
 pre-attempt snapshot); no cascade, no force-release, no orphaned/detached
 descendants.
 
-## Addendum (2026-09-08): second confirmed occurrence, `137-S`
+## Addendum (2026-09-08): reused for `137-S` without re-attempting the command
 
 Shipment `137-S` (manifest: 6 tasks, all already individually `done`/archived)
 closes under the identical shared covering feature `142-F` (same 59-unit
 roster, disjoint small manifest shape) during its own post-merge closure.
-Given this is now a **second independently observed** instance of the exact
-same defect shape documented above, `backlogit shipment ship 137-S` was
-**not attempted at all** for this closure — the manual safe-close procedure
-was applied directly on the strength of this compound entry's existing
-evidence, without re-spending a bounded observation window on a call that
-has twice failed to terminate against this same covering feature. The
-generic `backlogit move 137-S --status shipped` fallback was independently
-re-confirmed rejected outright by the CLI (same message, same exit code 9),
-matching the `135-S` finding exactly. `137-S` closed cleanly via the
-identical manual archive-file procedure (see
-`.backlogit/archive/137-S.md` AUDIT RATIONALE); covering feature `142-F`
-verified untouched (still `active`, byte-identical to its pre-closure
-SHA-256 snapshot). This strengthens the "Prevention / Escalation"
-recommendation above: agents closing any future shipment sharing this same
-covering feature (`138-S` onward) should likewise skip attempting
+`backlogit shipment ship 137-S` was **not attempted at all** for this
+closure — this is *not* a second independently confirmed occurrence of the
+non-termination symptom; the command was deliberately never invoked. The
+manual safe-close procedure was applied directly on the strength of this
+compound entry's existing `135-S` evidence alone, reasoning that
+re-spending a bounded observation window against the identical covering
+feature was unlikely to produce new information given the established
+prior result. The generic `backlogit move 137-S --status shipped` fallback
+*was* independently re-attempted and confirmed rejected outright by the CLI
+(same message, same exit code 9) — that specific sub-finding is genuinely
+re-confirmed for `137-S`; the `shipment ship` non-termination itself is
+reused evidence, not re-observed. `137-S` closed cleanly via the identical
+manual archive-file procedure (see `.backlogit/archive/137-S.md` AUDIT
+RATIONALE); covering feature `142-F` verified untouched (still `active`,
+byte-identical to its pre-closure SHA-256 snapshot). This strengthens the
+"Prevention / Escalation" recommendation above: agents closing any future
+shipment sharing this same covering feature (`138-S` onward) should
+likewise skip attempting
 `backlogit shipment ship` entirely rather than re-discovering the timeout
 symptom each time.

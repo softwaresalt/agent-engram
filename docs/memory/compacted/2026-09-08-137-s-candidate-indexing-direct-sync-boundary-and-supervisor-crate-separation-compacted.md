@@ -1,6 +1,6 @@
 ---
 title: "Compacted memory — 137-S: Candidate indexing, direct-sync boundary and supervisor crate separation"
-description: "Dense consolidated summary of the full 137-S session lifecycle (dark-factory halt → preflight → implementation → merge → post-merge closure), replacing 8 verbose checkpoints"
+description: "Dense consolidated summary of the full 137-S session lifecycle (dark-factory halt → preflight → implementation → merge → post-merge closure), replacing 9 verbose checkpoints"
 ---
 
 ## Release unit
@@ -95,7 +95,7 @@ archived (`archived_status: done`) via manual safe-close.
    * Post-merge closure branch
      `post-merge/137-s-candidate-indexing-direct-sync-boundary-and-supervisor-crate-separation`
      created from fresh `main`.
-   * Runtime verification: 14/14 targeted tests across all six manifest
+   * Runtime verification: 15/15 targeted tests across all six manifest
      tasks GREEN, plus the new `engram-indexer` crate's own boundary test
      GREEN, plus full `cargo dev-test` 688/689 GREEN (build/fmt/clippy all
      clean). The one exception —

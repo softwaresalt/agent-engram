@@ -108,11 +108,11 @@ manifest beyond the probes above.
 
 **Verdict: `PASS WITH FOLLOW-UP`** (`PASS_WITH_FOLLOW_UP`)
 
-All six manifest tasks' own harnesses pass green (14/14 targeted tests
-across `integration_candidate_indexing_service`, `integration_direct_sync_mode`,
-`contract_supervisor_workspace_boundary`, `contract_supervisor_release_artifact`,
-`contract_supervisor_install_exclusion`, plus the new `engram-indexer` crate's
-own boundary test). Build, format, and lint gates are all clean. The full
+All six manifest tasks' own harnesses pass green (15/15 targeted tests
+across `integration_candidate_indexing_service` (3), `integration_direct_sync_mode` (2),
+`contract_supervisor_workspace_boundary` (4), `contract_supervisor_release_artifact` (3),
+`contract_supervisor_install_exclusion` (2), plus the new `engram-indexer` crate's
+own boundary test (1)). Build, format, and lint gates are all clean. The full
 `cargo dev-test` suite passed 688/689 on a clean run, with the single
 exception being the long-documented, pre-existing, out-of-scope
 `archive_verifier_runs_the_unpacked_native_binary` flake (stashed as
