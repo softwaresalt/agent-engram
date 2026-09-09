@@ -180,9 +180,17 @@ jobs:
         if: "!matrix.use_cross"
         run: cargo build --locked --release --target ${{ matrix.target }} --bin engram
 
+      - name: Build supervisor release binaries (cargo)
+        if: "!matrix.use_cross"
+        run: cargo build --locked --release --target ${{ matrix.target }} -p engram-indexer
+
       - name: Build release binaries (cross)
         if: matrix.use_cross
         run: cross build --locked --release --target ${{ matrix.target }} --bin engram
+
+      - name: Build supervisor release binaries (cross)
+        if: matrix.use_cross
+        run: cross build --locked --release --target ${{ matrix.target }} -p engram-indexer
 
       # ── Archive: Unix (.tar.gz) ──────────────────────────────────────────────
       - name: Prepare archive (Unix)
@@ -199,6 +207,21 @@ jobs:
           tar -czf "${ARCHIVE_NAME}" -C "${STAGING}" .
           echo "ASSET=${ARCHIVE_NAME}" >> "$GITHUB_ENV"
 
+      # ── Archive: Supervisor Unix (.tar.gz) ───────────────────────────
+      - name: Prepare supervisor archive (Unix)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          ARCHIVE_NAME="engram-indexer-${TAG}-${{ matrix.target }}.tar.gz"
+          STAGING="staging-indexer-${{ matrix.target }}"
+          mkdir -p "${STAGING}"
+          cp "target/${{ matrix.target }}/release/engram-indexer" "${STAGING}/"
+          cp README.md "${STAGING}/"
+          cp LICENSE "${STAGING}/"
+          tar -czf "${ARCHIVE_NAME}" -C "${STAGING}" .
+          echo "SUPERVISOR_ASSET=${ARCHIVE_NAME}" >> "$GITHUB_ENV"
+
       # ── Archive: Windows (.zip) ──────────────────────────────────────────────
       - name: Prepare archive (Windows)
         if: matrix.archive == 'zip'
@@ -214,11 +237,34 @@ jobs:
           Compress-Archive -Path "$staging\*" -DestinationPath $archiveName
           "ASSET=$archiveName" | Out-File -FilePath $env:GITHUB_ENV -Append
 
+      # ── Archive: Supervisor Windows (.zip) ────────────────────────────
+      - name: Prepare supervisor archive (Windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $tag = "$env:GITHUB_REF_NAME"
+          $archiveName = "engram-indexer-$tag-${{ matrix.target }}.zip"
+          $staging = "staging-indexer-${{ matrix.target }}"
+          New-Item -ItemType Directory -Path $staging -Force | Out-Null
+          Copy-Item "target\${{ matrix.target }}\release\engram-indexer.exe" "$staging\"
+          Copy-Item "README.md" "$staging\"
+          Copy-Item "LICENSE" "$staging\"
+          Compress-Archive -Path "$staging\*" -DestinationPath $archiveName
+          "SUPERVISOR_ASSET=$archiveName" | Out-File -FilePath $env:GITHUB_ENV -Append
+
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: engram-${{ matrix.target }}
           path: ${{ env.ASSET }}
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload supervisor artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: engram-indexer-${{ matrix.target }}
+          path: ${{ env.SUPERVISOR_ASSET }}
           if-no-files-found: error
           retention-days: 7
 

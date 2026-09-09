@@ -83,6 +83,12 @@ pub const ENGRAM_MARKER_END: &str = "<!-- engram:end -->";
 /// later removal pass; see ADR-0016 (superseded).
 pub const DEFAULT_PORT: u16 = 7437;
 
+/// Binary names installed by the agent-facing installer surface.
+///
+/// The out-of-process supervisor ships as a separate artifact and is excluded
+/// from the main workspace installer.
+pub const INSTALLED_BINARIES: &[&str] = &[crate::APP_NAME];
+
 /// Options controlling the behaviour of [`install`].
 #[derive(Debug, Clone)]
 pub struct InstallOptions {

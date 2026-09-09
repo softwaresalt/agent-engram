@@ -12,3 +12,8 @@ name = "engram-indexer"
 path = "src/main.rs"
 
 [dependencies]
+engram = { path = "../.." }
+tokio = { version = "1", features = ["macros", "rt"] }
+
+[dev-dependencies]
+tempfile = "3"

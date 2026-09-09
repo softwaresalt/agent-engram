@@ -5,6 +5,8 @@
 
 use serde_json::{Value, json};
 
+use crate::errors::ErrorResponse;
+
 /// Whether to render JSON-RPC envelopes or human-readable text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputMode {
@@ -101,6 +103,31 @@ impl OutputFormatter {
             }
             OutputMode::Text => {
                 eprintln!("Error [{code}]: {message}");
+            }
+        }
+        1
+    }
+
+    /// Print an error envelope from a structured domain error response.
+    pub fn tool_error_response(&self, id: Option<Value>, response: &ErrorResponse) -> i32 {
+        match self.mode {
+            OutputMode::Json => {
+                let error = &response.error;
+                let envelope = json!({
+                    "jsonrpc": "2.0",
+                    "id": id.unwrap_or(Value::Null),
+                    "error": {
+                        "code": error.code,
+                        "name": error.name,
+                        "message": error.message,
+                        "data": error.details,
+                    }
+                });
+                println!("{envelope}");
+            }
+            OutputMode::Text => {
+                let error = &response.error;
+                eprintln!("Error [{}]: {}", error.code, error.message);
             }
         }
         1

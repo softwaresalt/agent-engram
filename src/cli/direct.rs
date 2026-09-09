@@ -13,10 +13,13 @@ use serde_json::{Value, json};
 use tracing::warn;
 
 use crate::cli::output::OutputFormatter;
-use crate::daemon::lockfile::DaemonLock;
+use crate::daemon::{ipc_server::resolve_daemon_mode, lockfile::DaemonLock};
 use crate::db::workspace::{canonicalize_workspace, resolve_data_dir, resolve_git_branch};
-use crate::errors::{EngramError, LockError};
-use crate::models::metrics::{MetricsConfig, USAGE_SCHEMA_VERSION, UsageEvent};
+use crate::errors::{EngramError, LockError, ReadServerRefusalError};
+use crate::models::{
+    config::DaemonMode,
+    metrics::{MetricsConfig, USAGE_SCHEMA_VERSION, UsageEvent},
+};
 use crate::services::code_graph::{
     IndexResult, ProgressCallback, SyncResult, index_workspace_with_progress,
     sync_workspace_with_progress,
@@ -64,16 +67,50 @@ pub async fn run_direct_sync(
 
     let config = match parse_config(&ws_path) {
         Ok(cfg) => cfg,
+        Err(e) => return formatter.tool_error_response(Some(effective_id), &e.to_response()),
+    };
+
+    let started_at = std::time::Instant::now();
+
+    // `--backfill-python-canonical` / `--revalidate-code-graph` on the full-scan
+    // path imply `--force` (parity with `engram index` and the IPC `run_sync`
+    // path): a `sync --full --<gate>` request must re-extract rather than
+    // silently hash-skip and drop the flag. The bare incremental
+    // `sync --<gate>` (no `--full`) keeps its gated sync path.
+    let force = force || (full && (backfill_python_canonical || revalidate_code_graph));
+
+    // `--force` (or `--full --force`) takes the full-scan index path and
+    // re-parses all discovered files; plain `--full` scans all files but
+    // hash-skips unchanged ones; otherwise perform an incremental sync.
+    let use_index = full || force;
+    let operation = direct_operation_name(use_index);
+
+    let mode = match resolve_daemon_mode(&ws_path) {
+        Ok(mode) => mode,
         Err(e) => {
-            let resp = e.to_response().error;
-            return formatter.tool_error(
-                Some(effective_id),
-                i64::from(resp.code),
-                &resp.message,
-                resp.details,
-            );
+            return formatter.tool_error_response(Some(effective_id), &e.to_response());
         }
     };
+
+    if mode == DaemonMode::ReadServer {
+        let refusal = EngramError::from(ReadServerRefusalError::DirectSyncRefused {
+            operation: operation.to_owned(),
+        });
+        let refusal_response = refusal.to_response();
+        let call_result: Result<Value, EngramError> = Err(refusal);
+        emit_direct_usage(
+            &ws_path,
+            &branch,
+            operation,
+            &call_result,
+            correlation_id.clone(),
+            started_at.elapsed(),
+            &config.metrics,
+        )
+        .await;
+
+        return formatter.tool_error_response(Some(effective_id), &refusal_response);
+    }
 
     let _lock = match DaemonLock::acquire(&ws_path) {
         Ok(lock) => lock,
@@ -133,7 +170,6 @@ pub async fn run_direct_sync(
         }
     }
 
-    let started_at = std::time::Instant::now();
     let mut last_message = String::new();
     let mut progress_callback = |completed: u64, total: u64| {
         if !formatter.shows_progress() {
@@ -152,17 +188,6 @@ pub async fn run_direct_sync(
         None
     };
 
-    // `--backfill-python-canonical` / `--revalidate-code-graph` on the full-scan
-    // path imply `--force` (parity with `engram index` and the IPC `run_sync`
-    // path): a `sync --full --<gate>` request must re-extract rather than
-    // silently hash-skip and drop the flag. The bare incremental
-    // `sync --<gate>` (no `--full`) keeps its gated sync path.
-    let force = force || (full && (backfill_python_canonical || revalidate_code_graph));
-
-    // `--force` (or `--full --force`) takes the full-scan index path and
-    // re-parses all discovered files; plain `--full` scans all files but
-    // hash-skips unchanged ones; otherwise perform an incremental sync.
-    let use_index = full || force;
     let call_result: Result<Value, EngramError> = if use_index {
         index_workspace_with_progress(
             &ws_path,
@@ -197,11 +222,7 @@ pub async fn run_direct_sync(
     emit_direct_usage(
         &ws_path,
         &branch,
-        if use_index {
-            "index_workspace"
-        } else {
-            "sync_workspace"
-        },
+        operation,
         &call_result,
         correlation_id,
         started_at.elapsed(),
@@ -212,13 +233,8 @@ pub async fn run_direct_sync(
     match call_result {
         Ok(value) => formatter.success(Some(effective_id), value),
         Err(e) => {
-            let resp = e.to_response().error;
-            formatter.tool_error(
-                Some(effective_id),
-                i64::from(resp.code),
-                &resp.message,
-                resp.details,
-            )
+            let response = e.to_response();
+            formatter.tool_error_response(Some(effective_id), &response)
         }
     }
 }
@@ -277,6 +293,14 @@ async fn emit_direct_usage(
 
     if let Err(error) = crate::services::metrics::shutdown().await {
         warn!(error = %error, "failed to drain direct-mode metrics writer");
+    }
+}
+
+const fn direct_operation_name(use_index: bool) -> &'static str {
+    if use_index {
+        "index_workspace"
+    } else {
+        "sync_workspace"
     }
 }
 
