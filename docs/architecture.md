@@ -592,7 +592,25 @@ availability outage.
 | `src/db/` | CozoDB setup, query helpers, content-record persistence, and workspace storage resolution |
 | `src/models/` | Workspace, config, symbol, metrics, notebook, and Power BI entity models |
 | `src/installer/` | Workspace install, update, reinstall, uninstall, and client helper generation |
-| `crates/engram-indexer/` | New workspace member (`133-S`, foundations only): an empty, zero-dependency, `#![forbid(unsafe_code)]` stub crate reserved for the future indexer/read-server split described in `docs/exec-plans/2026-09-02-separate-indexer-read-server-plan.md`. It does not run or participate in any daemon behavior yet — the real supervisor logic (plan unit F12) ships in a later shipment under feature `142-F`. |
+| `crates/engram-indexer/` | Workspace member introduced empty in `133-S` (foundations only); `137-S` (plan unit F12) landed the real supervisor entry points: `main.rs`/`lib.rs` implement the build entry point (`run_for_target`/`run_for_target_with_options`, which parse the environment, obtain a sealed `IndexTarget` through `GenerationStore`, and delegate to `engram::services::code_graph::index_sealed_target`), consuming only the minimal public facade from F06-F10 (asserted by `tests/contract/supervisor_workspace_boundary_test.rs`). Publishing itself is implemented separately by `.github/workflows/release.yml` (F14, `137-S`), which builds and publishes the crate as a distinct release artifact excluded from the agent archive — `main.rs`/`lib.rs` do not implement publishing. The crate remains `#![forbid(unsafe_code)]`, is a workspace member but not an agent dependency, mints no `IndexTarget` of its own, and does not appear in the agent CLI or MCP tool catalog (F13/F15, also `137-S`). No production caller of the supervisor exists yet — orchestration/activation wiring (plan units F16-F18) remains a future shipment under feature `142-F`. |
+
+`137-S` also landed two further plan units on the existing `src/services/`
+and `src/cli/` modules: the candidate indexing service
+(`src/services/code_graph.rs`) now accepts only a sealed `IndexTarget`
+minted by the F07 generation store — `IndexTarget::LegacyDirect` preserves
+current managed-mode indexing behavior, `IndexTarget::Candidate` writes
+only into an exclusive candidate directory, and indexing never writes into
+the active generation (plan unit F10, asserted by
+`tests/integration/candidate_indexing_service_test.rs`); and
+`src/cli/direct.rs` now refuses `--direct` sync/index invocations with the
+stable, non-retryable F38 refusal whenever `resolve_daemon_mode` (see
+`src/daemon/ipc_server.rs`) reports `DaemonMode::ReadServer`, while
+`Managed` mode continues to run direct sync/index under `DaemonLock`
+unchanged (plan unit F11, asserted by
+`tests/integration/direct_sync_mode_test.rs`). No production caller of the
+new `IndexTarget::Candidate` path exists yet (cross-process write
+coordination with the supervisor above is deferred to plan units F16-F18;
+tracked in the repository stash).
 
 `src/models/config.rs` and `src/server/state.rs` also gained a `DaemonMode`
 mode-contract **foundation** (`managed`/`read_server`, with a strict
