@@ -5,7 +5,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -21,6 +21,7 @@ use crate::errors::{CodeGraphError, EngramError};
 use crate::models::code_file::CodeFile;
 use crate::models::config::CodeGraphConfig;
 use crate::services::embedding;
+use crate::services::generations::{IndexTarget, IndexTargetKind};
 use crate::services::parsing::canonical;
 use crate::services::parsing::python_canonical::{
     BindingKind, ImportBindings, extract_python_import_bindings, python_module_path_for_file,
@@ -1717,7 +1718,69 @@ pub async fn index_workspace(
     config: &CodeGraphConfig,
     force: bool,
 ) -> Result<IndexResult, EngramError> {
-    index_workspace_with_progress(ws_path, data_dir, branch, config, force, None).await
+    index_workspace_with_file_selection(ws_path, None, data_dir, branch, config, force, None).await
+}
+
+struct SealedIndexScope {
+    root: PathBuf,
+    selected_file: Option<PathBuf>,
+}
+
+fn sealed_index_scope(target: &IndexTarget) -> Result<SealedIndexScope, EngramError> {
+    match target.kind() {
+        IndexTargetKind::Candidate => Ok(SealedIndexScope {
+            root: target.path().to_path_buf(),
+            selected_file: None,
+        }),
+        IndexTargetKind::LegacyDirect => {
+            let target_path = target.path();
+            let Some(root) = target_path.parent() else {
+                return Err(CodeGraphError::SourceAccess {
+                    file_path: target_path.display().to_string(),
+                    reason: "sealed legacy-direct target has no parent directory".to_owned(),
+                }
+                .into());
+            };
+            Ok(SealedIndexScope {
+                root: root.to_path_buf(),
+                selected_file: Some(target_path.to_path_buf()),
+            })
+        }
+    }
+}
+
+/// Index a single sealed generation target.
+///
+/// This entry point admits only [`IndexTarget`] values minted by
+/// [`crate::services::generations::GenerationStore`], never an arbitrary raw
+/// path supplied by the caller.
+///
+/// Legacy direct targets index only the sealed file beneath its parent
+/// directory. Candidate targets use the sealed directory itself as the
+/// discovery root.
+///
+/// # Errors
+///
+/// Returns [`EngramError`] when the sealed target cannot be opened for source
+/// discovery or indexing fails.
+pub async fn index_sealed_target(
+    target: &IndexTarget,
+    data_dir: &Path,
+    branch: &str,
+    config: &CodeGraphConfig,
+    force: bool,
+) -> Result<IndexResult, EngramError> {
+    let scope = sealed_index_scope(target)?;
+    index_workspace_with_file_selection(
+        &scope.root,
+        scope.selected_file.as_deref(),
+        data_dir,
+        branch,
+        config,
+        force,
+        None,
+    )
+    .await
 }
 
 /// Discover, parse, and index all supported source files while reporting
@@ -1730,14 +1793,34 @@ pub async fn index_workspace_with_progress(
     force: bool,
     progress: Option<&mut ProgressCallback<'_>>,
 ) -> Result<IndexResult, EngramError> {
+    index_workspace_with_file_selection(ws_path, None, data_dir, branch, config, force, progress)
+        .await
+}
+
+async fn index_workspace_with_file_selection(
+    ws_path: &Path,
+    selected_file: Option<&Path>,
+    data_dir: &Path,
+    branch: &str,
+    config: &CodeGraphConfig,
+    force: bool,
+    progress: Option<&mut ProgressCallback<'_>>,
+) -> Result<IndexResult, EngramError> {
     Box::pin(index_workspace_impl(
-        ws_path, data_dir, branch, config, force, progress,
+        ws_path,
+        selected_file.map(Path::to_path_buf),
+        data_dir,
+        branch,
+        config,
+        force,
+        progress,
     ))
     .await
 }
 
 async fn index_workspace_impl(
     ws_path: &Path,
+    selected_file: Option<PathBuf>,
     data_dir: &Path,
     branch: &str,
     config: &CodeGraphConfig,
@@ -1769,9 +1852,14 @@ async fn index_workspace_impl(
             &discovery.errors,
         ));
     }
-    let files = discovery.files;
+    let mut files = discovery.files;
+    if let Some(selected_file) = selected_file.as_deref() {
+        files.retain(|file| file == selected_file);
+    }
     let blocked_prefixes = discovery.blocked_prefixes;
-    let deletion_authoritative = true;
+    // Single-file sealed legacy targets deliberately narrow discovery to one
+    // file, so they must not authoritatively evict sibling rows from the DB.
+    let deletion_authoritative = selected_file.is_none();
     let mut pass_complete = blocked_prefixes.is_empty();
     source_errors.extend(discovery.errors);
     let prepass = unsafe_module_prepass(
@@ -4957,7 +5045,7 @@ mod tests {
 
         let config = CodeGraphConfig::default();
         let (data_dir, branch) = test_db_params(ws);
-        index_workspace_impl(ws, &data_dir, &branch, &config, false, None).await?;
+        index_workspace_impl(ws, None, &data_dir, &branch, &config, false, None).await?;
         let db = connect_db(&data_dir, &branch).await?;
         let queries = CodeGraphQueries::new(db);
         let snapshot = queries
@@ -5067,7 +5155,7 @@ def caller_py():
         }
         let config = CodeGraphConfig::default();
         let (data_dir, branch) = test_db_params(ws);
-        index_workspace_impl(ws, &data_dir, &branch, &config, true, None).await?;
+        index_workspace_impl(ws, None, &data_dir, &branch, &config, true, None).await?;
         let db = connect_db(&data_dir, &branch).await?;
         Ok((tmp, CodeGraphQueries::new(db)))
     }
