@@ -1098,6 +1098,11 @@ dependencies = [
 [[package]]
 name = "engram-indexer"
 version = "0.1.0"
+dependencies = [
+ "engram",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "env_logger"
