@@ -130,6 +130,7 @@ archived (`archived_status: done`) via manual safe-close.
 | `AF5CE07E` | (Stage to reprioritize) | Pre-merge review follow-up: no cross-process write coordination yet between supervisor and daemon writers. Referenced only, not triaged/implemented. |
 | `7D47F30B` | medium | **Post-merge, newly captured**: `archive_verifier_runs_the_unpacked_native_binary` Windows stdout-truncation flake, confirmed unrelated, ambiguous against 4 prior entries (`58B33C45`, `4EE241DC`, `3067BC32`, `0443D844`). |
 | `DA0AF326` | low | (cited, not re-captured) Validator-manifest command drift — re-confirmed identical this session. |
+| `F35EA0E6` | high | **Closure-PR review follow-up, newly captured**: whether `137-S`'s `archived_status: done` satisfies `142-S`'s blocks-dependency eligibility check; same open question as `77A4E71C` from `135-S`, recurring one link further down the chain. |
 
 ## Outcome
 
