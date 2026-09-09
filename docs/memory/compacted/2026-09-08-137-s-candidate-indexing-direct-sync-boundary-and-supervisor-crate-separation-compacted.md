@@ -82,12 +82,15 @@ archived (`archived_status: done`) via manual safe-close.
 7. **Post-merge closure (2026-09-08)**:
    * Pre-mode reconciliation: all 6 manifest items `pre-archived`, no
      orphans → `PROCEED`.
-   * **`backlogit shipment ship` not attempted at all** — on the strength
-     of the identical, already-twice-documented non-termination defect
-     against the shared `142-F` covering feature (see
+   * **`backlogit shipment ship` not attempted at all** — the manual
+     safe-close procedure was applied directly by reusing the existing
+     `135-S` non-termination evidence against the shared `142-F` covering
+     feature (see
      `docs/compound/workflow-issues/backlogit-shipment-ship-non-terminating-large-covering-feature-2026-09-06.md`,
-     now updated with a second-occurrence addendum for `137-S`). Manual
-     safe-close applied directly: hand-authored `.backlogit/archive/137-S.md`,
+     now updated with an evidence-reuse addendum for `137-S` — the command
+     was never invoked for `137-S`; only the generic `backlogit move
+     --status shipped` CLI rejection was independently re-confirmed).
+     Hand-authored `.backlogit/archive/137-S.md`,
      removed the queue file, `backlogit sync` clean. Verified `142-F`
      byte-for-byte unchanged (SHA-256 confirmed identical pre/post).
    * Post-mode reconciliation: all archive files present, no deletions
@@ -96,8 +99,9 @@ archived (`archived_status: done`) via manual safe-close.
      `post-merge/137-s-candidate-indexing-direct-sync-boundary-and-supervisor-crate-separation`
      created from fresh `main`.
    * Runtime verification: 15/15 targeted tests across all six manifest
-     tasks GREEN, plus the new `engram-indexer` crate's own boundary test
-     GREEN, plus full `cargo dev-test` 688/689 GREEN (build/fmt/clippy all
+     tasks GREEN (the total already includes the new `engram-indexer`
+     crate's own boundary test), plus full `cargo dev-test` 688/689 GREEN
+     (build/fmt/clippy all
      clean). The one exception —
      `archive_verifier_runs_the_unpacked_native_binary` — is a
      long-documented, pre-existing, confirmed-unrelated Windows stdout-
@@ -112,7 +116,7 @@ archived (`archived_status: done`) via manual safe-close.
      F12 supervisor entry points, and a new paragraph documents F10's
      sealed-`IndexTarget` acceptance and F11's `ReadServer` refusal path.
    * `compound-refresh`: one entry updated (the non-terminating
-     `shipment ship` doc, second-occurrence addendum); two entries kept
+     `shipment ship` doc, evidence-reuse addendum); two entries kept
      unchanged after review (validator-manifest drift, done-status repair
      doc — neither applicable).
    * Source artifact cleanup: checked `source_stash_id` /

@@ -19,6 +19,7 @@ runtime_verification_report: "docs/closure/2026-09-08-137-s-runtime-verification
 follow_up_stash:
   - "AF5CE07E"
   - "7D47F30B"
+  - "F35EA0E6"
 blocking_stash: null
 shipment_record_status: "archived (archived_status: done) — manual safe-close performed 2026-09-08 on post-merge/137-s-candidate-indexing-direct-sync-boundary-and-supervisor-crate-separation"
 ---
