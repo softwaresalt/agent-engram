@@ -126,10 +126,21 @@ container and no blocked item remains in either manifest.
 
 ## Carry-forward obligations
 
-* **CP-1 conflict is unresolved and must be resolved by the operator before any
-  claim.** The `138-S` backlog record reads `queued`; commit `60f0ae4d` asserts
-  a claim; the most recent checkpoint record is archived and quarantined. Stage
-  did not resolve it and did not modify `138-S`.
+* **CP-1 `138-S` authority — RESOLVED (publication update, supersedes the entry
+  below).** The operator explicitly selected the Ship checkpoint
+  `checkpoint-20260910-222318.json` (`agent: ship`, `status: active`, shipment
+  `138-S`) and approved RS5/F17 implementation for all of `138-S`. Commit
+  `60f0ae4d` is **authoritative** and `138-S` is **active**; the
+  current-branch/base copy of `138-S` reading `queued` is **stale**. Neither
+  `143-S` nor `144-S` may be claimed concurrently (P-001). The checkpoint is
+  Ship-owned and Stage did not modify it.
+  * *Historical (superseded, non-operative — recorded at Revision 3 authoring
+    time):* "CP-1 conflict is unresolved and must be resolved by the operator
+    before any claim. The `138-S` backlog record reads `queued`; commit
+    `60f0ae4d` asserts a claim; the most recent checkpoint record is archived
+    and quarantined. Stage did not resolve it and did not modify `138-S`." That
+    statement described the evidence as it stood during the Revision 3 pass and
+    is **no longer operative**.
 * **OD-1 blocks every `144-S` figure.** Incident daemon PID `30528` is still
   running without stop approval.
 * `002-SP` remains `done`. No new feature or shipment was created.
