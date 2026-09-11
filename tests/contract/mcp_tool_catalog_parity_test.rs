@@ -21,20 +21,6 @@ fn catalog_names() -> Vec<String> {
         .collect()
 }
 
-/// Tools that `src/shim/tools_catalog.rs`'s module doc comment documents as
-/// *intentionally* excluded from the derived MCP catalog even though they
-/// declare the `StdioMcp` surface: the `git-graph`-feature-gated dispatch
-/// tools use a local/direct schema source (`SchemaSource::Local`) instead of
-/// a catalog literal, so `catalog_entries()` has no entry for them by design.
-///
-/// Under the default feature set neither name is compiled in at all, so this
-/// allowlist is a no-op there and the parity checks below still assert real,
-/// unconditional equality for every tool that *is* present. It only becomes
-/// load-bearing under `cargo test --features git-graph` (or `--all-features`),
-/// where `capabilities::surface_names(StdioMcp)` grows to include these two
-/// names but the catalog correctly continues to omit them.
-const EXCLUDED_FROM_CATALOG: &[&str] = &["query_changes", "index_git_history"];
-
 fn declared_stdio_mcp_names() -> Vec<String> {
     capabilities::surface_names(ToolSurface::StdioMcp)
         .into_iter()
@@ -42,37 +28,15 @@ fn declared_stdio_mcp_names() -> Vec<String> {
         .collect()
 }
 
-fn declared_catalog_eligible_names() -> Vec<String> {
-    declared_stdio_mcp_names()
-        .into_iter()
-        .filter(|name| !EXCLUDED_FROM_CATALOG.contains(&name.as_str()))
-        .collect()
-}
-
 #[test]
 fn the_catalog_membership_equals_the_declared_stdio_mcp_surface() {
-    let declared: BTreeSet<String> = declared_catalog_eligible_names().into_iter().collect();
+    let declared: BTreeSet<String> = declared_stdio_mcp_names().into_iter().collect();
     let advertised: BTreeSet<String> = catalog_names().into_iter().collect();
 
     assert_eq!(
         advertised, declared,
-        "the MCP catalog and the descriptor registry must describe the same set of tools \
-         (excluding the deliberately-excluded git-graph tools: {EXCLUDED_FROM_CATALOG:?})"
+        "the MCP catalog and the descriptor registry must describe the same set of tools"
     );
-}
-
-#[test]
-fn the_catalog_never_advertises_a_deliberately_excluded_git_graph_tool() {
-    // Guards the other direction of the allowlist: if `catalog_entries()` ever
-    // grows a literal for one of these names, this fails loudly instead of
-    // the allowlist silently absorbing an accidental re-inclusion.
-    let advertised: BTreeSet<String> = catalog_names().into_iter().collect();
-    for excluded in EXCLUDED_FROM_CATALOG {
-        assert!(
-            !advertised.contains(*excluded),
-            "'{excluded}' is documented as excluded from the MCP catalog but is advertised anyway"
-        );
-    }
 }
 
 #[test]
@@ -80,7 +44,7 @@ fn the_catalog_preserves_declaration_order() {
     // Order is derived, not curated. Asserting it keeps the derivation honest:
     // a catalog that merely happened to contain the right names while being
     // built from its own list would pass a set comparison but fail this.
-    let declared = declared_catalog_eligible_names();
+    let declared = declared_stdio_mcp_names();
 
     assert_eq!(
         catalog_names(),
@@ -97,10 +61,9 @@ fn tool_count_matches_the_derived_catalog() {
         "TOOL_COUNT must track the derived catalog length"
     );
     assert_eq!(
-        declared_catalog_eligible_names().len(),
+        declared_stdio_mcp_names().len(),
         TOOL_COUNT,
-        "TOOL_COUNT must track the declared stdio-MCP surface, excluding the \
-         deliberately-excluded git-graph tools: {EXCLUDED_FROM_CATALOG:?}"
+        "TOOL_COUNT must track the declared stdio-MCP surface"
     );
 }
 
