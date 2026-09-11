@@ -357,3 +357,93 @@ async fn a_failed_reconciliation_still_admits_against_the_active_generation() {
         Some(GenerationRevision::new(1))
     );
 }
+
+#[tokio::test]
+async fn try_claim_reconciliation_is_exclusive_until_released() {
+    let fixture = Fixture::new();
+    fixture.publish_generation("gen-claim", 1);
+    let gate = fixture.gate();
+    gate.run_initial_activation()
+        .await
+        .expect("initial activation must succeed");
+
+    assert!(
+        gate.try_claim_reconciliation(),
+        "the slot must start unclaimed"
+    );
+    assert!(
+        !gate.try_claim_reconciliation(),
+        "a second claim must fail while the first is still held"
+    );
+
+    gate.release_reconciliation();
+
+    assert!(
+        gate.try_claim_reconciliation(),
+        "the slot must be claimable again once released"
+    );
+    gate.release_reconciliation();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn admitted_reads_never_spawn_a_second_reconciliation_task_while_one_is_in_flight() {
+    let fixture = Fixture::new();
+    fixture.publish_generation("gen-cas-old", 1);
+    let gate = fixture.gate();
+    gate.run_initial_activation()
+        .await
+        .expect("initial activation must succeed");
+
+    // A newer generation is available, so a spawned reconciliation task would
+    // do real, observable work (a DB open attempt and, eventually, a revision
+    // swap) if one were incorrectly spawned while the slot below is held.
+    fixture.publish_generation("gen-cas-new", 2);
+
+    // Simulate a reconciliation task already in flight by claiming the slot
+    // directly, the same way `spawn_background_reconciliation` does before
+    // calling `tokio::spawn`.
+    assert!(
+        gate.try_claim_reconciliation(),
+        "the slot must start unclaimed"
+    );
+    let opens_before = gate.activator().open_attempt_count();
+
+    // Every admitted read while the slot is held must skip spawning a second
+    // reconciliation task entirely -- the activator must never be asked to
+    // open the newer generation while the first (simulated) task is in flight.
+    for _ in 0..5 {
+        let admission = admit_read(&gate, &frame("unified_search")).await;
+        assert!(admission.is_admitted());
+    }
+
+    // Give any (incorrectly) spawned task a moment to run before asserting.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        gate.activator().open_attempt_count(),
+        opens_before,
+        "no reconciliation task should have been spawned while the slot was already claimed"
+    );
+    assert_eq!(
+        gate.activator().active_revision().await,
+        Some(GenerationRevision::new(1)),
+        "the newer generation must not have been activated while the slot was held"
+    );
+
+    // Releasing the slot lets a subsequent admitted read spawn reconciliation
+    // again, and the newer generation is picked up as normal.
+    gate.release_reconciliation();
+    let admission = admit_read(&gate, &frame("unified_search")).await;
+    assert!(admission.is_admitted());
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if gate.activator().active_revision().await == Some(GenerationRevision::new(2)) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "reconciliation did not resume after the slot was released"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}

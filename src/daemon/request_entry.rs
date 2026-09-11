@@ -172,6 +172,21 @@ fn is_generation_backed_read(method: &str) -> bool {
     })
 }
 
+/// RAII guard releasing the reconciliation in-flight slot on drop.
+///
+/// Guarantees the slot clears on every exit path of the spawned task,
+/// including a panic, matching the codebase's existing pattern of recovering
+/// from stuck state rather than leaving a permanent lock.
+struct ReconciliationInFlightGuard {
+    gate: Arc<ReadServerStartupGate>,
+}
+
+impl Drop for ReconciliationInFlightGuard {
+    fn drop(&mut self) {
+        self.gate.release_reconciliation();
+    }
+}
+
 /// Trigger durable-manifest reconciliation in the background and return
 /// immediately.
 ///
@@ -185,12 +200,25 @@ fn is_generation_backed_read(method: &str) -> bool {
 /// so a spawned task that finds an activation already in flight (or already
 /// rejected) returns almost immediately.
 ///
+/// The reconciliation slot on `gate` is claimed before `tokio::spawn` is ever
+/// called: if a reconciliation task is already in flight, this function
+/// returns without spawning a second one. This bounds the number of
+/// concurrently spawned reconciliation tasks to one, regardless of how many
+/// admitted reads arrive while an activation is slow.
+///
 /// Errors are deliberately swallowed into a log line: no caller's correctness
 /// depends on this task's outcome, only on the active generation staying
 /// open and correct, which a failed reconciliation never changes.
 fn spawn_background_reconciliation(gate: &Arc<ReadServerStartupGate>) {
+    if !gate.try_claim_reconciliation() {
+        return;
+    }
+
     let gate = Arc::clone(gate);
     tokio::spawn(async move {
+        let _guard = ReconciliationInFlightGuard {
+            gate: Arc::clone(&gate),
+        };
         match gate.activator().maybe_activate_newer().await {
             Ok(None) => {}
             Ok(Some(generation)) => {

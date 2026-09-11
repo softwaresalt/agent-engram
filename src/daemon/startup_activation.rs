@@ -109,6 +109,7 @@ pub struct ReadServerStartupGate {
     workspace_id: String,
     phase: RwLock<ReadServerPhase>,
     context: RwLock<Option<Arc<ReadRequestContext>>>,
+    reconciliation_in_flight: AtomicBool,
 }
 
 impl ReadServerStartupGate {
@@ -129,6 +130,7 @@ impl ReadServerStartupGate {
             workspace_id: workspace_id.into(),
             phase: RwLock::new(ReadServerPhase::Binding),
             context: RwLock::new(None),
+            reconciliation_in_flight: AtomicBool::new(false),
         }
     }
 
@@ -201,6 +203,36 @@ impl ReadServerStartupGate {
     pub async fn install_context(&self, context: Arc<ReadRequestContext>) {
         let mut slot = self.context.write().await;
         *slot = Some(context);
+    }
+
+    /// Claim the single background-reconciliation slot for this gate.
+    ///
+    /// Returns `true` when this call successfully claimed the slot (no
+    /// reconciliation task is currently in flight) and `false` when another
+    /// task already holds it. Every admitted generation-backed read would
+    /// otherwise spawn its own reconciliation task; the activator's
+    /// single-flight mutex serializes the actual work but does not coalesce
+    /// the *spawning* itself, so a slow activation (for example, blocked on a
+    /// large database open) could otherwise build an unbounded task queue
+    /// under sustained load. This claim happens before `tokio::spawn` is ever
+    /// called, so a claim failure means no task is spawned at all rather than
+    /// a task that spawns and immediately no-ops.
+    pub fn try_claim_reconciliation(&self) -> bool {
+        self.reconciliation_in_flight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    /// Release the background-reconciliation slot claimed by
+    /// [`try_claim_reconciliation`].
+    ///
+    /// Must be called on every exit path of the spawned reconciliation task
+    /// -- success, `Ok(None)`, and error alike -- so the slot never stays
+    /// stuck claimed. Callers should prefer an RAII guard over calling this
+    /// directly so a task panic still releases the slot.
+    pub fn release_reconciliation(&self) {
+        self.reconciliation_in_flight
+            .store(false, Ordering::Release);
     }
 
     /// Run the initial generation activation and release readiness on success.
