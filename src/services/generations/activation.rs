@@ -76,6 +76,21 @@ const MAX_IDENTITY_LEN: usize = 512;
 /// Maximum accepted length for an inventory-relative path.
 const MAX_INVENTORY_PATH_LEN: usize = 1_024;
 
+/// Individual sealed artifact size cap (plan unit F17, separate-indexer/read-server plan).
+///
+/// Checked from filesystem metadata alone, before [`file_digest`] ever opens
+/// the file: a corrupt or hostile manifest must not be able to force
+/// unbounded blocking-thread I/O by pointing at an implausibly large sealed
+/// artifact.
+const MAX_SEALED_ARTIFACT_BYTES: u64 = 4 * 1024 * 1024 * 1024; // 4 GiB
+
+/// Cumulative size cap across the whole sealed inventory for one activation.
+///
+/// Bounds the total bytes [`resolve_and_open`] will hash and later copy into
+/// the runtime root during a single activation attempt, independent of how
+/// many individual entries stay under [`MAX_SEALED_ARTIFACT_BYTES`].
+const MAX_TOTAL_RUNTIME_COPY_BYTES: u64 = 16 * 1024 * 1024 * 1024; // 16 GiB
+
 /// Base delay applied after the first transient activation failure.
 const TRANSIENT_BACKOFF_BASE: Duration = Duration::from_millis(250);
 
@@ -1024,6 +1039,57 @@ impl GenerationActivator {
     }
 }
 
+/// Enforce the per-artifact and cumulative sealed-inventory size caps for one
+/// entry, from filesystem metadata alone.
+///
+/// `per_artifact_cap` and `total_cap` are taken as parameters rather than
+/// always reading [`MAX_SEALED_ARTIFACT_BYTES`] / [`MAX_TOTAL_RUNTIME_COPY_BYTES`]
+/// directly, so this cap logic can be regression-tested with small caps
+/// without ever writing multi-gigabyte files to disk in CI.
+///
+/// # Errors
+///
+/// Returns [`ActivationError::ManifestFieldOutOfBounds`] when `size` alone
+/// exceeds `per_artifact_cap`, or when `size` added to the running total would
+/// exceed `total_cap`. On success, `running_total` is updated to include
+/// `size`.
+fn check_artifact_size(
+    path: &Path,
+    size: u64,
+    running_total: &mut u64,
+    per_artifact_cap: u64,
+    total_cap: u64,
+) -> Result<(), ActivationError> {
+    if size > per_artifact_cap {
+        return Err(out_of_bounds(
+            "inventory.files[].size",
+            format!(
+                "sealed artifact {} is {size} bytes, exceeds the {per_artifact_cap} byte per-artifact cap",
+                path.display()
+            ),
+        ));
+    }
+    let candidate_total = running_total.checked_add(size).ok_or_else(|| {
+        out_of_bounds(
+            "inventory.files",
+            format!(
+                "cumulative sealed inventory size overflowed while accumulating {}",
+                path.display()
+            ),
+        )
+    })?;
+    if candidate_total > total_cap {
+        return Err(out_of_bounds(
+            "inventory.files",
+            format!(
+                "cumulative sealed inventory size {candidate_total} bytes exceeds the {total_cap} byte total cap"
+            ),
+        ));
+    }
+    *running_total = candidate_total;
+    Ok(())
+}
+
 /// Resolve every sealed inventory entry, revalidate its digest, and open the
 /// generation database through the F09 runtime-copy path.
 ///
@@ -1035,6 +1101,13 @@ impl GenerationActivator {
 /// database: the manifest attests to a set of bytes, and activating a
 /// generation whose sidecar files drifted would serve a snapshot the publisher
 /// never sealed.
+///
+/// Each entry's size is checked against [`MAX_SEALED_ARTIFACT_BYTES`] and the
+/// running total against [`MAX_TOTAL_RUNTIME_COPY_BYTES`] from filesystem
+/// metadata alone, before [`file_digest`] ever opens the file: neither the
+/// async activation deadline nor `spawn_blocking` can interrupt a hash or copy
+/// already in progress, so an oversized artifact must be rejected before any
+/// bytes are read.
 fn resolve_and_open(
     store: &GenerationStore,
     runtime_root: &Path,
@@ -1043,6 +1116,7 @@ fn resolve_and_open(
     let manifest = validated.manifest();
     let generation_id = manifest.generation_id();
     let mut database_target: Option<PathBuf> = None;
+    let mut cumulative_bytes: u64 = 0;
 
     for entry in manifest.inventory().files() {
         // Containment is the store's job: it is the only component allowed to
@@ -1056,6 +1130,19 @@ fn resolve_and_open(
                     entry.path()
                 ))
             })?;
+        let metadata = std::fs::metadata(target.path()).map_err(|source| {
+            transient(format!(
+                "failed to stat sealed inventory file {}: {source}",
+                target.path().display()
+            ))
+        })?;
+        check_artifact_size(
+            target.path(),
+            metadata.len(),
+            &mut cumulative_bytes,
+            MAX_SEALED_ARTIFACT_BYTES,
+            MAX_TOTAL_RUNTIME_COPY_BYTES,
+        )?;
         let found = file_digest(target.path())?;
         if found != entry.sha256() {
             return Err(ActivationError::DigestMismatch {
@@ -1280,4 +1367,69 @@ fn hex_lower(bytes: &[u8]) -> String {
         let _ = write!(acc, "{byte:02x}");
         acc
     })
+}
+
+#[cfg(test)]
+mod size_cap_tests {
+    //! Regression coverage for the F17 sealed-artifact size caps
+    //! (142.018-T). `check_artifact_size` takes its caps as parameters
+    //! specifically so these tests can exercise the per-artifact and
+    //! cumulative-total rejection paths with small caps, without ever
+    //! writing multi-gigabyte files to disk.
+
+    use super::{ActivationError, Path, check_artifact_size};
+
+    #[test]
+    fn a_single_artifact_over_the_per_artifact_cap_is_rejected() {
+        let mut running_total: u64 = 0;
+
+        let error = check_artifact_size(
+            Path::new("gen-a/oversized.bin"),
+            101,
+            &mut running_total,
+            100,
+            1_000,
+        )
+        .expect_err("a single artifact over the per-artifact cap must be rejected");
+
+        assert!(matches!(
+            error,
+            ActivationError::ManifestFieldOutOfBounds { .. }
+        ));
+        // Rejection must happen before any accumulation occurs.
+        assert_eq!(running_total, 0);
+    }
+
+    #[test]
+    fn entries_individually_under_cap_whose_sum_exceeds_the_total_cap_are_rejected() {
+        let per_artifact_cap = 100;
+        let total_cap = 150;
+        let mut running_total: u64 = 0;
+
+        check_artifact_size(
+            Path::new("gen-a/first.bin"),
+            90,
+            &mut running_total,
+            per_artifact_cap,
+            total_cap,
+        )
+        .expect("the first entry alone is under both caps");
+        assert_eq!(running_total, 90);
+
+        let error = check_artifact_size(
+            Path::new("gen-a/second.bin"),
+            90,
+            &mut running_total,
+            per_artifact_cap,
+            total_cap,
+        )
+        .expect_err("the cumulative total must be rejected even though each entry is individually under the per-artifact cap");
+
+        assert!(matches!(
+            error,
+            ActivationError::ManifestFieldOutOfBounds { .. }
+        ));
+        // A rejected entry must not be folded into the running total.
+        assert_eq!(running_total, 90);
+    }
 }
