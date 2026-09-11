@@ -4,6 +4,7 @@
 //! monotonic publication revision, and the typed manifest payload consumed by
 //! sibling generation services.
 
+mod activation;
 mod context;
 mod manifest;
 mod publish;
@@ -14,6 +15,10 @@ use std::fmt;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
+pub use self::activation::{
+    ExpectedIdentity, GENERATION_DATABASE_FILE_NAME, GenerationActivator, RejectionClass,
+    SUPPORTED_MANIFEST_SCHEMA_VERSION, ValidatedManifest, backoff_delay, classify, parse_manifest,
+};
 pub use self::context::GenerationReadContext;
 pub use self::manifest::{
     BranchIdentity, GenerationManifest, GenerationProvenance, ManifestFileDigest, SealedInventory,

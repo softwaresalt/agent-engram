@@ -113,6 +113,16 @@ pub const WORKSPACE_RETARGET_REFUSED: u16 = 16_003;
 pub const GENERATION_NOT_YET_ACTIVATED: u16 = 17_001;
 pub const ACTIVATION_DEADLINE_EXCEEDED: u16 = 17_002;
 pub const TRANSIENT_ACTIVATION_FAILURE: u16 = 17_003;
+/// The durable manifest declares a snapshot schema version this build cannot read.
+pub const GENERATION_MANIFEST_SCHEMA_MISMATCH: u16 = 17_004;
+/// The durable manifest bytes are not a well-formed [`GenerationManifest`].
+pub const GENERATION_MANIFEST_MALFORMED: u16 = 17_005;
+/// A typed manifest field parsed but fell outside the bounds activation accepts.
+pub const GENERATION_MANIFEST_FIELD_OUT_OF_BOUNDS: u16 = 17_006;
+/// The manifest's branch or workspace identity does not match this daemon's.
+pub const GENERATION_IDENTITY_MISMATCH: u16 = 17_007;
+/// A sealed inventory file's recomputed digest does not match the manifest.
+pub const GENERATION_DIGEST_MISMATCH: u16 = 17_008;
 
 /// Shim startup contract error codes (15xxx).
 ///
