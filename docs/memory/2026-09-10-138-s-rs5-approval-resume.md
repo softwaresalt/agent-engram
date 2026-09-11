@@ -229,3 +229,102 @@ Next: reply to and resolve each of the 6 Copilot review threads (citing fixing c
 update the PR body's `## Local Review Readiness` block for the new HEAD, re-request/await
 Copilot review completion at the new HEAD, re-verify the P-014/P-018 gates, then halt at the
 merge gate for explicit operator approval.
+
+## PR #391 — Round 1 threads resolved, round 2 Copilot review (6 new findings) investigated and fixed
+
+All 6 round-1 threads were replied to (citing `17fa260b`/`2808dd85`/`8134a05a`/`c7225c3f`) and
+resolved via GraphQL (`resolveReviewThread`); confirmed `isResolved: true` for all 6.
+Copilot review was re-requested at new HEAD `22d4ea0c` (form-encoded `gh api` reviewer array
+silently no-ops for this endpoint — must POST a JSON body instead) and landed a **new** review
+(state `COMMENTED`) with **6 new unresolved threads** — expected per P-018 (every HEAD advance
+re-arms Copilot review; a prior PASS is never trusted as still-fresh). Each finding was again
+independently investigated against the actual code and owning task's acceptance criteria before
+delegating fixes.
+
+* **Finding 1** (`src/services/generations/activation.rs::read_manifest_bytes`/
+  `read_manifest_with_fingerprint`) — unbounded `read_to_end` on the manifest file with no size
+  limit. **Fixed**: new `MAX_MANIFEST_BYTES` (1 MiB) constant, matching the existing
+  `code_graph.rs:476` bound-size convention; reuses the existing
+  `ActivationError::ManifestFieldOutOfBounds` (stable code `17_006`) rather than introducing a
+  new error variant.
+* **Finding 2** (`tests/contract/mcp_tool_catalog_parity_test.rs`) — the F22/142.031-T
+  acceptance-criteria parity test (pre-existing since `bfdd51e5`, confirmed via `git blame`, not
+  newly created) coincidentally passed by omission: `tools_catalog.rs::catalog_entries()`
+  permanently excludes `query_changes`/`index_git_history`
+  (both `#[cfg(feature = "git-graph")]` in `capabilities.rs`), which is intentional per the
+  module's own doc comment, but the test did not actually assert parity against an explicit
+  allowlist. **Fixed**: extended (not duplicated) the existing test file with an explicit
+  `EXCLUDED_FROM_CATALOG` allowlist for the 2 intentional git-graph exclusions, plus a new
+  reverse-direction guard test (now 7 tests, up from 6). Verified passing under both default
+  and `--features git-graph`.
+* **Finding 3** (`src/daemon/request_entry.rs`/`src/daemon/startup_activation.rs`) —
+  `spawn_background_reconciliation` unconditionally spawned a new Tokio task per admitted read
+  request; the activator's internal single-flight mutex serializes the reconciliation *work*
+  but not the *spawning*, risking unbounded task queuing under sustained slow-activation load.
+  **Fixed**: `ReadServerStartupGate` gained an atomic-CAS in-flight guard
+  (`try_claim_reconciliation`/`release_reconciliation`) plus an RAII
+  `ReconciliationInFlightGuard`, so concurrent admitted reads no longer each spawn their own
+  task while one is already in flight.
+* **Finding 4** (`ManifestFingerprint { modified, len }`) — mtime+len alone can false-positive
+  "unchanged" for two same-length manifests published within filesystem timestamp granularity.
+  **Fixed**: added a SHA-256 content checksum to the fingerprint (affordable now that Finding 1
+  bounds the file to 1 MiB).
+  \[Fixes 1 and 4, plus Finding 5 below, were combined in one commit since all three touch the
+  same `read_manifest_with_fingerprint`/`ManifestFingerprint` code path.]
+* **Finding 5** (same file) — `parse_manifest(&bytes)?`'s early-return via `?` meant `set_probe`
+  (which caches the fingerprint) never ran for malformed manifests, so every repeat request
+  against unchanged-but-malformed bytes re-read and re-parsed the file. **Fixed**: new
+  `ProbeOutcome::{Parsed, Malformed}` cache variant so malformed-manifest fingerprints are
+  cached and short-circuit re-parsing on the next call.
+* **Finding 6** (`src/services/generations/read_inputs.rs::descriptors_without_enumerated_inputs`)
+  — used `entry.reached_via.contains('*')` as a wildcard match against **all** entries, so any
+  entry with a literal `*` character anywhere (e.g. `"* (startup lifecycle)"` for env-var
+  inputs) made the `.any(...)` check pass unconditionally for every descriptor — a genuinely
+  vacuous exhaustiveness guard. **Fixed**: scoped the match to an exact `"*"` sentinel only;
+  this correctly re-exposed a real gap (`get_health_report`'s inputs were never enumerated),
+  which was also added.
+
+All 6 findings confirmed P-021 C1 pass: files owned by 138-S manifest tasks
+`142.018-T` (F17, findings 1/4/5), `142.029-T` (F20, finding 3), `142.031-T` (F22, finding 2),
+`142.033-T` (F24, finding 6) — confirmed via `.backlogit/archive/142.031-T.md` and
+`.backlogit/archive/142.029-T.md`.
+
+Fix commits: `303143f1` (finding 6), `6d25843e` (finding 3), `6a177b63` (findings 1, 4, 5),
+`d97756be` (finding 2).
+
+**Subagent-reported deviation**: instructed (based on Ship's own incomplete `git grep` search)
+to "create" `mcp_tool_catalog_parity_test.rs`; the subagent independently discovered the file
+already existed (`bfdd51e5`) and correctly extended it instead of creating a duplicate — verified
+by Ship via `git log`/`git diff --stat` confirming the file predates this round and the diff is
+additive only.
+
+**`--all-features`/`cargo ci` note**: currently blocked by a pre-existing, unrelated `otlp-export`
+dependency compile error (not caused by 138-S work). The git-graph-specific fix (Finding 2) was
+instead verified in isolation via `cargo test --features git-graph`, which is sufficient for that
+specific concern.
+
+**Independent re-verification by Ship** (HEAD `d97756be`):
+* `cargo fmt --all -- --check` — PASS
+* `cargo clippy --all-targets -- -D warnings -D clippy::pedantic` — PASS, zero warnings (default
+  features)
+* `cargo clippy --all-targets --features git-graph -- -D warnings -D clippy::pedantic` — PASS,
+  zero warnings
+* Targeted suites — all PASS: `integration_generation_activation` 28/28,
+  `integration_request_entry_activation` 12/12, `contract_read_input_ownership_inventory` 16/16,
+  `contract_mcp_tool_catalog_parity` 7/7 (both default and `--features git-graph`)
+* `cargo test --all-targets --no-fail-fast` (full suite) — exit 101, exactly **one** failure:
+  `integration_release_archive_smoke_workflow::archive_verifier_runs_the_unpacked_native_binary`
+  — already documented, stash `2511DAC9` (the same recurring pre-existing Windows full-suite
+  flake cited across 133-S/134-S/135-S/137-S/138-S). No new failures observed. The
+  `hcl_indexing_test` flake reported once by the subagent during its own round-2 verification
+  did **not** reproduce in this full run — consistent with its already-documented intermittent
+  nature (stash `58B33C45`, created during 133-S, explicitly names
+  `hcl_indexing_test::cold_start_lists_and_maps_all_three_hcl_aliases` as one of three
+  interchangeable flaky full-suite failures); no new stash entry required, reused per P-021 C2.
+* Diff scope confirmed: only the 6 named files/test files touched across all 4 round-2 commits;
+  no drift into `lifecycle_policy.rs`/`hydration_ready`/143-144 reliability package.
+
+Next: push all round-2 commits, check the `start-launcher-windows` CI re-run result, re-request
+Copilot review at the new HEAD, reply to and resolve all 6 round-2 threads, poll for a
+third review pass, re-verify the P-014/P-018 gates, update the PR body's
+`## Local Review Readiness` block, then halt at the merge gate for explicit operator approval.
