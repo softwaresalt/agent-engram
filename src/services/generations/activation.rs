@@ -653,6 +653,18 @@ impl GenerationActivator {
         }
     }
 
+    /// The identity this activator was constructed to serve.
+    ///
+    /// Exposed so callers that wrap an activator (for example
+    /// [`crate::daemon::startup_activation::ReadServerStartupGate`]) can
+    /// derive their own identity from this single source of truth instead of
+    /// accepting a second, independently-suppliable copy that could diverge
+    /// from what this activator actually validates against.
+    #[must_use]
+    pub fn expected_identity(&self) -> &ExpectedIdentity {
+        &self.expected
+    }
+
     /// Return the currently-serving read context, if one has been activated.
     ///
     /// The returned context is a cheap `Arc`-backed clone: once a caller holds

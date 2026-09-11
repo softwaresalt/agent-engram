@@ -115,19 +115,23 @@ pub struct ReadServerStartupGate {
 impl ReadServerStartupGate {
     /// Construct a gate for a `ReadServer`-mode daemon.
     ///
-    /// `branch` and `workspace_id` are the identity this daemon serves; they
-    /// are stamped onto the captured [`ReadRequestContext`] so a read reports
-    /// the identity it was actually admitted against.
+    /// The identity this gate stamps onto captured contexts is derived from
+    /// `activator`'s own [`ExpectedIdentity`][crate::services::generations::activation::ExpectedIdentity]
+    /// rather than accepted as separate `branch`/`workspace_id` parameters.
+    /// A single source of truth makes it structurally impossible for the
+    /// gate and the activator it wraps to disagree about which identity is
+    /// being served -- previously nothing prevented a caller from passing
+    /// values here that diverged from what the activator actually validates
+    /// manifests against.
     #[must_use]
-    pub fn new(
-        activator: Arc<GenerationActivator>,
-        branch: impl Into<String>,
-        workspace_id: impl Into<String>,
-    ) -> Self {
+    pub fn new(activator: Arc<GenerationActivator>) -> Self {
+        let identity = activator.expected_identity();
+        let branch = identity.branch().to_owned();
+        let workspace_id = identity.workspace_id().to_owned();
         Self {
             activator,
-            branch: branch.into(),
-            workspace_id: workspace_id.into(),
+            branch,
+            workspace_id,
             phase: RwLock::new(ReadServerPhase::Binding),
             context: RwLock::new(None),
             reconciliation_in_flight: AtomicBool::new(false),

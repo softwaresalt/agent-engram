@@ -94,11 +94,7 @@ impl Fixture {
             ExpectedIdentity::new(HARNESS_BRANCH, HARNESS_WORKSPACE),
             TEST_DEADLINE,
         ));
-        Arc::new(ReadServerStartupGate::new(
-            activator,
-            HARNESS_BRANCH,
-            HARNESS_WORKSPACE,
-        ))
+        Arc::new(ReadServerStartupGate::new(activator))
     }
 }
 

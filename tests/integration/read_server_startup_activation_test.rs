@@ -90,7 +90,7 @@ impl Fixture {
             ExpectedIdentity::new(HARNESS_BRANCH, HARNESS_WORKSPACE),
             TEST_DEADLINE,
         ));
-        ReadServerStartupGate::new(activator, HARNESS_BRANCH, HARNESS_WORKSPACE)
+        ReadServerStartupGate::new(activator)
     }
 }
 
@@ -233,4 +233,22 @@ async fn managed_mode_readiness_is_unchanged_by_the_read_server_gate() {
     assert_eq!(run_initial_gate(&state), StartupOutcome::Ready);
     assert!(readiness(&state).is_ready());
     assert!(readiness(&state).admits_dispatch());
+}
+
+#[tokio::test]
+async fn the_gates_identity_is_derived_from_the_wrapped_activators_expected_identity() {
+    // Regression guard: `ReadServerStartupGate::new` takes only the
+    // activator, deriving its identity from the activator's own sealed
+    // `ExpectedIdentity` rather than accepting a second, independently
+    // suppliable copy. This proves the derivation actually matches what the
+    // activator was constructed with, closing the divergence risk a
+    // two-parameter constructor would have left open.
+    let fixture = Fixture::new();
+    let gate = fixture.gate();
+
+    assert_eq!(
+        gate.identity(),
+        (HARNESS_BRANCH, HARNESS_WORKSPACE),
+        "the gate's identity must match the identity sealed into its activator"
+    );
 }
