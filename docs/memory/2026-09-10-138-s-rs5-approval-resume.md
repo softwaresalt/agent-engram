@@ -160,3 +160,72 @@ implemented.**
 Proceeding to Step 5 (PR lifecycle): create the PR with the `## Local Review Readiness` block,
 run P-014/P-018 gates, and halt at the merge gate for explicit operator approval
 (merge/admin fallback not pre-authorized for 138-S).
+
+## PR #391 — Copilot review findings (6) investigated and fixed
+
+PR #391 created at HEAD `b1d9c378`. Copilot review requested and completed (state `COMMENTED`,
+`commit_id` == HEAD `b1d9c378`), 6 unresolved review threads. Each finding was independently
+investigated against the actual code and the owning task's acceptance criteria (not accepted on
+the reviewer's framing alone) — all 6 confirmed legitimate, in-scope defects against explicit
+acceptance criteria of tasks already in the 138-S manifest (`142.018-T`/F17, `142.029-T`/F20,
+`142.033-T`/F24). Fix implementation delegated to a Rust Engineer subagent with full citations;
+independently re-verified by Ship.
+
+* **Finding 1+2** (`src/daemon/request_entry.rs::admit_read`) — F20's required order
+  (frame → descriptor → authorize → probe → maybe-activate (background) → capture → dispatch)
+  was violated: activation was triggered unconditionally before any method/capability
+  resolution, and awaited inline (blocking the request on manifest I/O). **Fixed**: added
+  `is_generation_backed_read` (descriptor/capability-class check before any reconciliation) and
+  `spawn_background_reconciliation` (`tokio::spawn`, relying on `maybe_activate_newer`'s
+  existing single-flight coalescing). `admit_read` signature changed to
+  `gate: &Arc<ReadServerStartupGate>` (no production caller yet — F44 wiring gap, already
+  deferred). New tests in `tests/integration/request_entry_activation_test.rs` assert
+  `_health`/`_shutdown`/unknown/refused methods never activate.
+* **Finding 3** (`src/errors/codes.rs` 17_004–17_008) — missing literal `assert_eq!` pins in
+  `tests/contract/error_codes_test.rs`. **Fixed**: 5 pins added.
+* **Finding 4** (`src/services/generations/activation.rs`) — activation deadline only bounded
+  `validate_and_open`, not the preceding manifest read/parse/single-flight wait. **Fixed**: new
+  `run_bounded` wraps the complete `activate_initial`/`maybe_activate_newer` attempt in one
+  `tokio::time::timeout`; zero-deadline-rejected-before-filesystem-work check moved earlier
+  (futures are lazy, so the check still runs before any I/O).
+* **Finding 5** (same file) — rejection cache was consulted only after a full manifest
+  read+parse, so a permanently-rejected revision repeated that work every request. **Fixed**:
+  new stat-only `ManifestFingerprint` (mtime+len) probe checked against a cached
+  `(fingerprint, revision)` pair before the full read+parse; `manifest_read_attempt_count()`
+  exposed for test verification that repeat calls against an unchanged/rejected revision skip
+  the full read+parse.
+* **Finding 6** (`src/services/generations/read_inputs.rs`) — `snapshot.connection_count`
+  misclassified `PinnedOperational` (that class's own doc comment requires "stable across every
+  request"; connection_count is a live, mutable transport counter). **Fixed**: reclassified
+  `disallowed`, matching the analogous live-value entries (`snapshot.last_flush`,
+  `snapshot.stale_files`, `snapshot.file_mtimes`).
+
+Commits (not yet pushed at investigation time, pushed together with this doc update):
+`17fa260b` (Fix 1+2), `2808dd85` (Fix 4+5), `8134a05a` (Fix 6), `c7225c3f` (Fix 3).
+
+**Independent re-verification by Ship** (HEAD `c7225c3f`):
+* `cargo fmt --all -- --check` — PASS
+* `cargo clippy --all-targets -- -D warnings -D clippy::pedantic` — PASS, zero warnings
+* `cargo test --all-targets --no-fail-fast` (full suite) — 3 failures, all confirmed
+  pre-existing/environmental, none touching the 6 fixed files:
+  * `archive_verifier_runs_the_unpacked_native_binary` — already documented, stash `2511DAC9`.
+  * `backlog_index_100_items_under_5_seconds` — already documented, stash `1346BC60` (from
+    134-S; reused directly, positive match, no new entry per P-021 C2 discovery protocol).
+  * `t046_s050_daemon_exits_after_idle_timeout_and_restarts` — new; file
+    `tests/integration/daemon_lifecycle_test.rs` last touched at `6db743ec`, confirmed an
+    ancestor of this branch's merge-base `d4ffe2d8` (predates 138-S entirely) via
+    `git merge-base --is-ancestor`. Documented via new stash `2ED1D9BE`.
+  * All three pass cleanly in isolation (`cargo test --test <name> <case> -- --exact`),
+    consistent with the workspace's established full-parallel-suite timing-contention pattern.
+* Diff scope confirmed: only the 7 named files touched
+  (`src/daemon/request_entry.rs`, `src/services/generations/activation.rs`,
+  `src/services/generations/read_inputs.rs`, `tests/contract/error_codes_test.rs`,
+  `tests/contract/read_input_ownership_inventory_test.rs`,
+  `tests/integration/generation_activation_test.rs`,
+  `tests/integration/request_entry_activation_test.rs`); no drift into
+  `lifecycle_policy.rs`/`hydration_ready`/143-144 reliability package.
+
+Next: reply to and resolve each of the 6 Copilot review threads (citing fixing commit SHAs),
+update the PR body's `## Local Review Readiness` block for the new HEAD, re-request/await
+Copilot review completion at the new HEAD, re-verify the P-014/P-018 gates, then halt at the
+merge gate for explicit operator approval.
