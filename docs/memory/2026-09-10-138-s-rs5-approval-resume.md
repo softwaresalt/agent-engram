@@ -512,3 +512,102 @@ suite last independently verified at this HEAD: fmt PASS, clippy PASS (default +
 `READY_WITH_FOLLOWUPS` — proceeding to update the PR body's `## Local Review Readiness` block and
 halt at the merge gate for explicit operator approval per the 138-S dark-mode scope
 (`merge_approval_pre_authorized: false`).
+
+## Round 5 — new P0/P1 findings surfaced by a docs-only push (P-018 re-arm)
+
+* **Discovery**: pushing the round-4 memory-doc commit (`0f878c8c`, docs-only) advanced HEAD,
+  which re-arms the P-018 Copilot-review gate — every HEAD advance re-triggers a fresh review
+  pass, regardless of whether the diff touches source code. Re-requested Copilot review at HEAD
+  `0f878c8c` as routine hygiene (expecting 0 new findings, matching round 4); instead a round-5
+  review landed with **2 new unresolved threads** on unrelated core files
+  (`startup_activation.rs:254`, `activation.rs:1059`) — genuinely new findings from a fresh
+  Copilot pass, not related to the doc-only diff itself.
+* **Circuit-breaker interpretation**: the Ship Stop Conditions table's "Review-fix cycles per
+  task: 3 → accept remaining as backlog items" carve-out was already exercised across rounds 1-3.
+  Both round-5 findings were independently investigated (not accepted from review text at face
+  value) and confirmed genuine **P1 correctness/security defects**, not P2/P3 cosmetic churn.
+  Per the Ship review-gate rule ("BLOCKED — halt; fix the P0/P1 findings before proceeding"),
+  the cycle-count carve-out applies only to P2/P3 severity and does not authorize leaving a
+  confirmed P1 unresolved. This justified a 4th delegated fix round (round 5).
+* **Finding 1 — `startup_activation.rs:254` (`run_initial_activation`)**: the method called
+  `self.socket_bound().await` on itself, synthesizing the "bind-first" state transition instead
+  of requiring a real external caller to bind a listening socket first. Confirmed via grep that
+  `ReadServerStartupGate`/`socket_bound`/`run_initial_activation` have zero production callsites
+  today (only test harnesses — consistent with the already-known, already-downgraded-to-
+  informational F44 daemon-wiring gap), but the API contract itself — owned by this shipment's
+  `142.028-T`/F18 — was incorrect regardless of current callsite count. In scope per P-021 C1:
+  same file this shipment created.
+* **Finding 2 — `activation.rs:1059` (`resolve_and_open` → `file_digest`)**: streamed and hashed
+  every sealed inventory file via `io::copy` with no size limit, despite this shipment's own
+  governing plan (`docs/exec-plans/2026-09-02-separate-indexer-read-server-plan.md:1567-1568`)
+  explicitly documenting a 4 GiB per-artifact cap and 16 GiB cumulative cap — neither enforced
+  anywhere in the code. In scope per P-021 C1: same file/module this shipment created (F17,
+  `142.018-T`).
+* **Fix design (delegated to Rust Engineer subagent, commits `1401c66e` + `98639344`)**:
+  * Fix 1: removed the self-synthesized `socket_bound()` call; added a `Binding`-phase
+    precondition check in `run_initial_activation()` that returns
+    `ActivationError::TransientActivationFailure` **without** mutating `self.phase` — left in
+    `Binding`, not `Failed`, so a caller that binds later and retries still succeeds (a
+    contract-ordering error, not a permanent activation failure). Added a new regression test
+    `initial_activation_is_refused_until_the_socket_has_bound` proving both the rejection (phase
+    stays `Binding`) and the subsequent bind-then-retry success path. Updated 11 pre-existing
+    test callsites across `read_server_startup_activation_test.rs` (3 callsites) and
+    `request_entry_activation_test.rs` (as needed) to insert an explicit `socket_bound()` call
+    before `run_initial_activation()`, since the method no longer synthesizes it internally.
+  * Fix 2: added `MAX_SEALED_ARTIFACT_BYTES` (4 GiB) and `MAX_TOTAL_RUNTIME_COPY_BYTES` (16 GiB)
+    constants matching the governing plan's explicit table; extracted a private testable helper
+    `check_artifact_size(path, size, running_total: &mut u64, per_artifact_cap, total_cap)` that
+    takes caps as parameters so tests can exercise both rejection paths with small caps without
+    ever writing multi-gigabyte files to disk; wired into `resolve_and_open` via
+    `std::fs::metadata(target.path())` **before** `file_digest` opens/hashes the file, so an
+    oversized artifact is rejected without I/O cost. Reused the existing
+    `out_of_bounds(field, reason)` → `ActivationError::ManifestFieldOutOfBounds` idiom (already
+    used for `MAX_INVENTORY_ENTRIES`/`MAX_INVENTORY_PATH_LEN`) for both new caps. Added 2 new
+    fast unit tests in a `#[cfg(test)] mod size_cap_tests` block:
+    `a_single_artifact_over_the_per_artifact_cap_is_rejected` and
+    `entries_individually_under_cap_whose_sum_exceeds_the_total_cap_are_rejected`.
+* **Independent re-verification by Ship** (HEAD `98639344`, not yet pushed at investigation
+  time; pushed together with this doc update):
+  * Diff-stat confirmed exactly 4 files changed (`src/daemon/startup_activation.rs`,
+    `src/services/generations/activation.rs`,
+    `tests/integration/read_server_startup_activation_test.rs`,
+    `tests/integration/request_entry_activation_test.rs`), 225 insertions / 4 deletions — no
+    drift. Read every hunk in both source-file diffs and both test-file diffs directly (not
+    just the subagent's summary) — all match the fix design above exactly.
+  * `cargo fmt --all -- --check` — PASS.
+  * `cargo clippy --all-targets -- -D warnings -D clippy::pedantic` — PASS, zero warnings
+    (default features).
+  * `cargo clippy --all-targets --features git-graph -- -D warnings -D clippy::pedantic` — PASS,
+    zero warnings.
+  * `cargo test --test integration_read_server_startup_activation --test integration_request_entry_activation`
+    — 7/7 + 12/12 passed (targeted integration suites for both changed test files).
+  * `cargo test --lib size_cap_tests` — 2/2 new unit tests passed.
+  * `cargo test --all-targets --no-fail-fast` (full suite) — 4 failures, all confirmed
+    pre-existing/environmental, **none** touching the round-5 diff files:
+    * `services::metrics::tests::full_channel_branch_switch_is_acknowledged_before_following_event`
+      — already documented, stash `9D313653` (root-cause commit `642a820f` predates 138-S
+      merge-base `d4ffe2d8`).
+    * `services::metrics::tests::stale_writer_control_cannot_relabel_a_replacement_writer` — new,
+      same root-cause commit `642a820f` (confirmed ancestor of merge-base `d4ffe2d8` via
+      `git merge-base --is-ancestor`, exit 0); passes cleanly in isolation
+      (`cargo test --lib "services::metrics::tests::stale_writer_control_cannot_relabel_a_replacement_writer" -- --exact`).
+      Documented via new stash `E3321CE1`.
+    * `backlog_index_100_items_under_5_seconds` — already documented, stash `1346BC60` (from
+      134-S; reused directly per the P-021 C2 discovery protocol — a duplicate stash `306A0F66`
+      was mistakenly created before the existing entry was found via the memory-doc search;
+      archived immediately as a duplicate, no harvest/planning action taken on it).
+    * `t046_s050_daemon_exits_after_idle_timeout_and_restarts` — already documented, stash
+      `2ED1D9BE`.
+    All four are wall-clock-timing or full-parallel-suite-contention flakes consistent with the
+    workspace's established pattern; none touch any of the 4 round-5 diff files.
+* **P-021 C1 scope confirmation**: both findings are on files this shipment created and owns
+  (F17 `activation.rs`, F18 `startup_activation.rs`); no deferred-scope capture needed — both
+  were fixed directly, in scope.
+
+Next: commit this round-5 memory update alongside `1401c66e`/`98639344`, push, re-request
+Copilot review at the new HEAD, reply to and resolve the 2 round-5 threads
+(`startup_activation.rs:254`, `activation.rs:1059`), poll for a 6th review pass, confirm CI green,
+run the final §1.9 local review readiness gate, update the PR body's
+`## Local Review Readiness` block, then halt at the merge gate for explicit operator approval.
+No merge without explicit operator approval (138-S dark-mode scope: merge/admin fallback not
+pre-authorized).
