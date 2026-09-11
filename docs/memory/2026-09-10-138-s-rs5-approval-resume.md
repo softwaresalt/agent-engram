@@ -611,3 +611,38 @@ run the final §1.9 local review readiness gate, update the PR body's
 `## Local Review Readiness` block, then halt at the merge gate for explicit operator approval.
 No merge without explicit operator approval (138-S dark-mode scope: merge/admin fallback not
 pre-authorized).
+
+## Final PR readiness — halted at merge gate awaiting operator approval
+
+* Round-5 fixes pushed as `d80b9313` (memory doc) alongside `1401c66e`/`98639344`. Re-requested
+  Copilot review at HEAD `d80b9313` (timeline confirms `review_requested` at
+  `2026-09-11T22:33:18Z`). CI confirmed green: `build` pass (6m10s), `start-launcher-windows`
+  pass (2m2s).
+* Round-6 Copilot review landed (`commit_id: d80b9313`, state `COMMENTED`,
+  `submitted_at: 2026-09-11T22:39:26Z`). Queried all 17 review threads: **0 unresolved**. The 2
+  round-5 threads (`startup_activation.rs` line 254, `activation.rs` line 1059) were found
+  already marked `isResolved: true` by GitHub/Copilot's own re-check once it detected the
+  underlying issue was fixed — no manual `resolveReviewThread` call was needed. Per protocol
+  (never resolve without an explanatory reply, even when a thread auto-resolves), posted an
+  explicit reply to both citing the fixing commit and fix summary
+  (`gh api .../pulls/391/comments/{id}/replies`), for traceability parity with all prior rounds.
+* Final §1.9 readiness gate at HEAD `d80b9313`: Copilot review `commit_id == HEAD` ✓; Copilot
+  removed from `requested_reviewers` (empty array) ✓; 0 unresolved threads ✓;
+  `mergeable_state: clean` ✓; CI green ✓. Gate **PASSES**.
+* Updated the PR #391 body's `## Local Review Readiness` block (and added consolidated "Review
+  findings and disposition", "Known pre-existing test flakiness", and "Follow-up items stashed
+  for Stage triage" sections) to reflect the final HEAD, all 5 review rounds (17 threads, 0
+  unresolved), the complete stash follow-up list (5 round-4 P2/P3 items + 1 deferred-scope item
+  + 7 pre-existing flaky-test entries), and full local build/test evidence.
+* **PR #391 final state**: `state: OPEN`, `headRefOid: d80b9313`, `mergeStateStatus: CLEAN`,
+  `mergeable: MERGEABLE`. Not merged. 138-S dark-mode scope: `merge_approval_pre_authorized: false`,
+  `admin_fallback_pre_authorized: false` — **halting here for explicit operator merge approval**,
+  per the required next actions. PR #390 untouched throughout. 143/144 reliability package
+  untouched. Watcher readiness-latch defect remains deferred (stash `265F99BE`), not
+  implemented.
+* All 14 manifest tasks for 138-S: `status: done`. Checkpoint `checkpoint-20260910-222318.json`:
+  `status: resolved` (resolved after successful resume, per required next action 3).
+
+**Session halted awaiting operator merge approval for PR #391.** No further action will be taken
+on this PR without an explicit operator approval signal, per Constitution Principle VIII / P-014
+and the 138-S dark-mode scope constraints.
