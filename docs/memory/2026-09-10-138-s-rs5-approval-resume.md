@@ -440,3 +440,75 @@ to and resolve all 4 round-3 threads, poll for a 4th review pass (if new finding
 would exceed the 3-cycle circuit breaker — accept remaining P2/P3 as documented follow-ups rather
 than a 4th delegated fix round), re-verify the P-014/P-018 gates, update the PR body's
 `## Local Review Readiness` block, then halt at the merge gate for explicit operator approval.
+
+## Round 3 CI re-run and Copilot review round 4 (0 new threads — circuit breaker reached)
+
+* Round-3 CI: `start-launcher-windows` failed again on the same known hosted-runner flake
+  (step "Test PowerShell launcher contract", stash `F58ECAA8`); re-ran via
+  `gh run rerun 34645823768 --failed`. `build` passed.
+* Round-3 threads: replied to and resolved all 4 (`d9332436`/`182e9bf7`/`982fc019` fixes cited)
+  via `gh api POST .../replies` + GraphQL `resolveReviewThread` — all confirmed `isResolved: true`.
+* Re-requested Copilot review at HEAD `f3717164` via `gh api POST .../requested_reviewers`;
+  confirmed via the timeline endpoint (fresh `review_requested` event at `2026-09-11T20:44:40Z`).
+  The paginated timeline + `--jq` combination failed with "expected an object but got: array";
+  worked around with `gh api ... --paginate --slurp` piped to a Python one-liner that flattens
+  the page arrays and filters for the event.
+* New Copilot review landed at HEAD `f3717164` (state `COMMENTED`, submitted `20:50:35Z`) —
+  queried unresolved threads via GraphQL (`isResolved: false` filter): **0 results**. The review
+  `body` explicitly states "Comments generated: 0 new" and lists 5 "Suppressed comments" — all
+  attributed to "code that hasn't changed since the last review" (pre-existing code untouched by
+  round-3 fixes), confirmed via `comments.totalCount: 0` on that review (i.e., these are
+  informational text inside the review body, not linked review-thread comments requiring a
+  formal reply/resolve action):
+  1. `src/daemon/request_entry.rs:172` — per-request admission check calls
+     `capabilities::descriptor`, rebuilding every descriptor and JSON schema on every read-server
+     admission (hot-path perf concern).
+  2. `src/services/generations/activation.rs:981` — a nonzero activation timeout drops
+     `maybe_activate_newer_attempt` and releases its single-flight guard while the
+     `spawn_blocking` manifest-open task keeps running in the background; no cooldown/backoff is
+     applied before the next attempt for the same manifest, risking blocking-pool exhaustion
+     under sustained retries at the timeout boundary.
+  3. `src/services/generations/read_inputs.rs:514` — the exhaustiveness guard uses substring
+     matching against `reached_via` text, so it is already false-green (e.g. `_health` matches
+     `get_health_report` as a substring) — a new method name that happens to be a substring of an
+     existing one could silently bypass the check.
+  4. `tests/integration/request_entry_activation_test.rs:226` — the poll waits on the activator's
+     revision, which is published before the background task installs the corresponding gate
+     context, creating a narrow race window where the loop could observe the new revision but
+     assert against the still-old context.
+  5. `.backlogit/reconcile/138-S-pre-20260910-151830.md:1` — the `PROCEED` recommendation is
+     recorded only in prose, with no YAML frontmatter, unlike the established pattern in
+     `.backlogit/reconcile/123-S-post-20260824T213710Z.md:1-7`.
+
+**Decision — circuit breaker, not a 4th fix round**: rounds 1–3 already used all 3
+review-fix cycles permitted by the Ship agent's circuit breaker
+("Review-fix cycles per task: 3 → Accept remaining P2/P3 as backlog items, commit, move on").
+Round 4 produced 0 formal unresolved threads, satisfying the P-018 Copilot-review completion
+gate. The 5 suppressed items are advisory P2/P3 observations on code already shipped in this
+session (not new regressions from round-3 fixes). Per policy, these are captured as backlog
+stash follow-ups instead of triggering a 4th delegated fix cycle:
+
+| # | Stash ID | Kind | Priority | File |
+|---|----------|------|----------|------|
+| 1 | `6943514B` | task | medium | `src/daemon/request_entry.rs:172` |
+| 2 | `1EF1E655` | bug  | medium | `src/services/generations/activation.rs:981` |
+| 3 | `C5BC0F99` | bug  | medium | `src/services/generations/read_inputs.rs:514` |
+| 4 | `F157DEC9` | task | low    | `tests/integration/request_entry_activation_test.rs:226` |
+| 5 | `47FBF381` | task | low    | `.backlogit/reconcile/138-S-pre-20260910-151830.md:1` |
+
+Each entry's text references PR #391 and shipment 138-S and describes the concrete fix
+direction, for Stage's future triage. All 5 verified persisted via `backlogit stash get`.
+
+* Round-4 CI re-run confirmed green: `build` pass, `start-launcher-windows` pass
+  (`gh run rerun 34645823768 --failed` succeeded on retry — same known hosted-runner flake,
+  no code change needed).
+
+**Readiness at HEAD `f3717164`**: 0 unresolved Copilot threads across all 4 review rounds
+(16 findings from rounds 1–3, all fixed/replied/resolved; 5 round-4 suppressed items captured as
+follow-ups, none blocking). CI green (`build`, `start-launcher-windows`). Full local build/test
+suite last independently verified at this HEAD: fmt PASS, clippy PASS (default +
+`--features git-graph`), full `cargo test --all-targets --no-fail-fast` — exactly one known flake
+(`archive_verifier_runs_the_unpacked_native_binary`, stash `2511DAC9`), no new failures. Outcome:
+`READY_WITH_FOLLOWUPS` — proceeding to update the PR body's `## Local Review Readiness` block and
+halt at the merge gate for explicit operator approval per the 138-S dark-mode scope
+(`merge_approval_pre_authorized: false`).
