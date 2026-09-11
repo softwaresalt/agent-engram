@@ -173,6 +173,36 @@ impl ReadServerStartupGate {
         self.context.read().await.clone()
     }
 
+    /// The activator this gate drives.
+    ///
+    /// Exposed for the F20 request-entry seam
+    /// ([`crate::daemon::request_entry`]), which reconciles the durable
+    /// manifest at read dispatch. F18 deliberately does not own that
+    /// reconciliation: gating startup and admitting requests are different
+    /// decisions, and collapsing them would make the startup gate a
+    /// per-request authority it is explicitly not.
+    #[must_use]
+    pub fn activator(&self) -> &Arc<GenerationActivator> {
+        &self.activator
+    }
+
+    /// The identity (branch, workspace) this gate stamps onto captured contexts.
+    #[must_use]
+    pub fn identity(&self) -> (&str, &str) {
+        (&self.branch, &self.workspace_id)
+    }
+
+    /// Install a freshly-captured context as the one this daemon serves.
+    ///
+    /// Called by the F20 request-entry seam after a background activation
+    /// produced a newer generation. Readiness is unaffected: this gate only
+    /// ever *raises* readiness, and a daemon that is already serving stays
+    /// serving across a generation swap.
+    pub async fn install_context(&self, context: Arc<ReadRequestContext>) {
+        let mut slot = self.context.write().await;
+        *slot = Some(context);
+    }
+
     /// Run the initial generation activation and release readiness on success.
     ///
     /// Exactly one generation context is opened: the activator is re-entrant,

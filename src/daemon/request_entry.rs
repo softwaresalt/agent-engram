@@ -7,11 +7,13 @@
 use std::sync::Arc;
 
 use serde_json::{Value, json};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::daemon::protocol::{HealthCheckResult, IpcRequest, IpcResponse};
+use crate::daemon::startup_activation::ReadServerStartupGate;
 use crate::daemon::{error_transport, startup_activation};
-use crate::server::state::{AppState, SharedState};
+use crate::errors::{ActivationError, EngramError};
+use crate::server::state::{AppState, ReadRequestContext, SharedState};
 use crate::shim::version::{ENGRAM_BUILD_HASH, ENGRAM_PROTOCOL_VERSION};
 use crate::tools;
 
@@ -49,6 +51,123 @@ pub fn admit(_state: &AppState, frame: &Frame) -> Admission {
         Ok(()) => Admission::Admitted,
         Err(response) => Admission::Refused(Box::new(response)),
     }
+}
+
+// ── Read-server admission (F20) ──────────────────────────────────────────────
+
+/// Admission decision for a `ReadServer`-mode frame.
+///
+/// Distinct from [`Admission`] because a read-server admission carries the
+/// captured context forward: this is the *sole* site at which a request
+/// acquires its [`ReadRequestContext`]. Dispatch (F21) only re-checks that a
+/// context was supplied; it never captures one of its own, so there is exactly
+/// one place where "which generation does this request read?" is decided.
+#[derive(Debug)]
+pub enum ReadAdmission {
+    /// The frame may proceed, reading through the captured context.
+    ///
+    /// Held as an `Arc` so the generation stays open for the whole request
+    /// even if a later reconciliation swaps the daemon's active generation.
+    Admitted(Arc<ReadRequestContext>),
+    /// The frame is refused; the boxed response is returned to the client.
+    Refused(Box<IpcResponse>),
+}
+
+impl ReadAdmission {
+    /// The captured context, when the frame was admitted.
+    #[must_use]
+    pub fn context(&self) -> Option<&Arc<ReadRequestContext>> {
+        match self {
+            ReadAdmission::Admitted(context) => Some(context),
+            ReadAdmission::Refused(_) => None,
+        }
+    }
+
+    /// Return `true` when the frame was admitted.
+    #[must_use]
+    pub fn is_admitted(&self) -> bool {
+        matches!(self, ReadAdmission::Admitted(_))
+    }
+}
+
+/// Admit a `ReadServer`-mode frame, reconciling the durable manifest first.
+///
+/// Order matters and is the whole point of F20:
+///
+/// 1. validate the frame envelope (a malformed frame must not trigger work);
+/// 2. refuse outright while the startup gate withholds dispatch;
+/// 3. **reconcile the durable manifest synchronously**, so a generation
+///    published a moment ago is visible to this request rather than to some
+///    later one;
+/// 4. only then capture the context the request will read through.
+///
+/// Reconciling *before* capture is what makes freshness deterministic: a
+/// capture-then-reconcile order would serve the previous generation to a
+/// request that arrived after the new one was published. This synchronous
+/// reconciliation and the startup reconciliation are the only activation
+/// triggers in the daemon -- there is no notification channel and no control
+/// endpoint (plan rule R48).
+///
+/// A failed reconciliation is never fatal to the request: the previously
+/// activated generation is still open and still correct, so the request is
+/// admitted against it rather than refused. Refusing here would turn a
+/// transient publisher problem into a read outage.
+pub async fn admit_read(gate: &ReadServerStartupGate, frame: &Frame) -> ReadAdmission {
+    if let Err(response) = frame.validate() {
+        return ReadAdmission::Refused(Box::new(response));
+    }
+
+    if !gate.readiness().await.admits_dispatch() {
+        return ReadAdmission::Refused(Box::new(refusal(
+            frame,
+            EngramError::Activation(ActivationError::GenerationNotYetActivated {
+                generation_id: "<pending initial activation>".to_owned(),
+            }),
+        )));
+    }
+
+    reconcile_generation(gate).await;
+
+    match gate.admitted_context().await {
+        Some(context) => ReadAdmission::Admitted(context),
+        None => ReadAdmission::Refused(Box::new(refusal(
+            frame,
+            EngramError::Activation(ActivationError::GenerationNotYetActivated {
+                generation_id: "<no active generation>".to_owned(),
+            }),
+        ))),
+    }
+}
+
+/// Reconcile the durable manifest and install a newer generation if one exists.
+///
+/// Errors are deliberately swallowed into a log line: the caller's correctness
+/// does not depend on the reconciliation succeeding, only on it having been
+/// attempted before capture. The activator's rejection cache and backoff
+/// prevent a broken publish from turning this into per-request work.
+async fn reconcile_generation(gate: &ReadServerStartupGate) {
+    match gate.activator().maybe_activate_newer().await {
+        Ok(None) => {}
+        Ok(Some(generation)) => {
+            let (branch, workspace_id) = gate.identity();
+            let context = ReadRequestContext::from_generation(generation, branch, workspace_id);
+            gate.install_context(context).await;
+        }
+        Err(error) => {
+            warn!(
+                error = %error,
+                "generation reconciliation failed; continuing to serve the active generation"
+            );
+        }
+    }
+}
+
+/// Build the refusal response for a typed availability error.
+fn refusal(frame: &Frame, error: EngramError) -> IpcResponse {
+    IpcResponse::error(
+        frame.id.clone().unwrap_or(Value::Null),
+        error_transport::to_ipc_error(error),
+    )
 }
 
 /// Deserialize and dispatch a single raw request line, returning an [`IpcResponse`].
