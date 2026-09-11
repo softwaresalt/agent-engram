@@ -218,6 +218,21 @@ fn live_workspace_tree_inputs_are_disallowed_in_read_server_mode() {
 }
 
 #[test]
+fn connection_count_is_disallowed_not_pinned_operational() {
+    // `snapshot.connection_count` is a live transport counter that changes as
+    // clients connect and disconnect -- it is not stable across every
+    // request, so `PinnedOperational`'s own invariant rules it out even
+    // though it describes the daemon process rather than workspace data.
+    let verdict = classification_of("snapshot.connection_count")
+        .expect("snapshot.connection_count must be classified");
+    assert_eq!(
+        verdict.class,
+        ReadInputClass::DisallowedInReadServerMode,
+        "snapshot.connection_count varies per request and must not be pinned-operational"
+    );
+}
+
+#[test]
 fn every_verdict_is_one_of_the_three_reviewed_classes() {
     // Exhaustive match with no wildcard arm: a new class cannot slip through
     // as "probably fine".

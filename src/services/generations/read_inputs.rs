@@ -631,10 +631,12 @@ pub const CLASSIFIED_READ_INPUTS: &[ReadInputClassification] = &[
         "Derived from live filesystem comparison against the mutable workspace tree, which is \
          exactly the mutable input generations exist to remove from the read path.",
     ),
-    pinned(
+    disallowed(
         "snapshot.connection_count",
-        "A daemon-local transport counter, not workspace data. It describes the server process \
-         itself, so it neither belongs to nor can contradict the served generation.",
+        "A live transport counter that changes as clients connect and disconnect over the \
+         process lifetime. PinnedOperational requires stability across every request, which \
+         this value does not have, so it is disallowed rather than pinned even though it \
+         describes the daemon process rather than workspace data.",
     ),
     disallowed(
         "snapshot.file_mtimes",
