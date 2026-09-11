@@ -370,6 +370,29 @@ impl ExistingDbLocation {
     pub fn published_db_len(&self) -> u64 {
         self.len
     }
+
+    /// Return the validated published database digest, captured at
+    /// construction time, as lowercase hex.
+    ///
+    /// Callers that already hold a manifest-attested digest for this same
+    /// path (for example, a sealed-inventory entry's `sha256`) MUST compare
+    /// it against this value before trusting the runtime copy this location
+    /// produces: construction here re-reads and re-hashes the file rather
+    /// than reusing an earlier caller-side digest check, so a replacement of
+    /// the underlying file between that earlier check and this constructor
+    /// call would otherwise be sealed and opened as if it were the
+    /// manifest-attested content.
+    #[must_use]
+    pub fn published_db_digest_hex(&self) -> String {
+        use std::fmt::Write as _;
+        self.digest.iter().fold(String::new(), |mut acc, byte| {
+            // Writing into a `String` is infallible, so the result is
+            // discarded rather than propagated through a digest helper that
+            // has no other failure mode.
+            let _ = write!(acc, "{byte:02x}");
+            acc
+        })
+    }
 }
 
 /// Private runtime copy path minted only by this module's open path.

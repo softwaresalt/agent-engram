@@ -1115,7 +1115,11 @@ fn resolve_and_open(
 ) -> Result<GenerationReadContext, ActivationError> {
     let manifest = validated.manifest();
     let generation_id = manifest.generation_id();
-    let mut database_target: Option<PathBuf> = None;
+    // Paired so the manifest-attested digest for the database entry can
+    // never be forgotten alongside its resolved path: see the
+    // `ExistingDbLocation` digest re-check below for why this pairing
+    // matters.
+    let mut database_entry: Option<(PathBuf, String)> = None;
     let mut cumulative_bytes: u64 = 0;
 
     for entry in manifest.inventory().files() {
@@ -1152,11 +1156,11 @@ fn resolve_and_open(
             });
         }
         if entry.path() == validated.database_path() {
-            database_target = Some(target.path().to_path_buf());
+            database_entry = Some((target.path().to_path_buf(), entry.sha256().to_owned()));
         }
     }
 
-    let database_target = database_target.ok_or_else(|| {
+    let (database_target, expected_database_digest) = database_entry.ok_or_else(|| {
         out_of_bounds(
             "inventory.files",
             format!(
@@ -1172,6 +1176,21 @@ fn resolve_and_open(
             database_target.display()
         ))
     })?;
+    // `ExistingDbLocation::new` re-reads and re-hashes `database_target`
+    // rather than reusing the `found` digest already checked against
+    // `entry.sha256()` above: without this second explicit compare, a
+    // replacement of the file in the window between that check and this
+    // constructor call would be sealed under its own (self-consistent but
+    // manifest-diverging) digest and opened as if it were the attested
+    // content (F17, Fix2).
+    let found_database_digest = location.published_db_digest_hex();
+    if found_database_digest != expected_database_digest {
+        return Err(ActivationError::DigestMismatch {
+            path: validated.database_path().to_owned(),
+            expected: expected_database_digest,
+            found: found_database_digest,
+        });
+    }
     let opened =
         open_existing_generation_via_runtime_copy(&location, runtime_root, generation_id.as_str())
             .map_err(|source| {
@@ -1208,6 +1227,36 @@ fn manifest_too_large(len: u64) -> ActivationError {
     }
 }
 
+/// Read at most [`MAX_MANIFEST_BYTES`] `+ 1` bytes from an already-opened
+/// manifest `file` handle.
+///
+/// The metadata length check the caller performs before calling this helper
+/// only bounds the read at the moment of the `stat`: a manifest file that
+/// grows after that check but before this read runs would otherwise let
+/// `read_to_end` consume unbounded memory regardless of the earlier check
+/// (F17, Fix2b). Capping the read itself at one byte past the limit lets the
+/// caller detect "grew past the limit during the read" the same way it
+/// detects "was already past the limit at stat time", without ever
+/// buffering more than `MAX_MANIFEST_BYTES + 1` bytes.
+fn read_manifest_bytes_bounded(file: &mut File, path: &Path) -> Result<Vec<u8>, ActivationError> {
+    use std::io::Read as _;
+
+    let mut bytes = Vec::new();
+    file.take(MAX_MANIFEST_BYTES.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|source| {
+            transient(format!(
+                "failed to read active generation manifest at {}: {source}",
+                path.display()
+            ))
+        })?;
+    let observed_len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    if observed_len > MAX_MANIFEST_BYTES {
+        return Err(manifest_too_large(observed_len));
+    }
+    Ok(bytes)
+}
+
 /// Read the durable active-generation manifest bytes from `store`.
 ///
 /// # Errors
@@ -1217,11 +1266,10 @@ fn manifest_too_large(len: u64) -> ActivationError {
 /// publisher that has not published yet may publish at any moment, and the
 /// read path must stay willing to notice. Returns
 /// [`ActivationError::ManifestFieldOutOfBounds`] when the file exceeds
-/// [`MAX_MANIFEST_BYTES`], checked from metadata alone before any bytes are
-/// read.
+/// [`MAX_MANIFEST_BYTES`], checked both from metadata alone before any bytes
+/// are read and again from the actual bytes read (see
+/// [`read_manifest_bytes_bounded`]).
 fn read_manifest_bytes(store: &GenerationStore) -> Result<Vec<u8>, ActivationError> {
-    use std::io::Read as _;
-
     let path = store.active_manifest_path();
     let mut file = File::open(&path).map_err(|source| {
         if source.kind() == io::ErrorKind::NotFound {
@@ -1245,14 +1293,7 @@ fn read_manifest_bytes(store: &GenerationStore) -> Result<Vec<u8>, ActivationErr
     if metadata.len() > MAX_MANIFEST_BYTES {
         return Err(manifest_too_large(metadata.len()));
     }
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes).map_err(|source| {
-        transient(format!(
-            "failed to read active generation manifest at {}: {source}",
-            path.display()
-        ))
-    })?;
-    Ok(bytes)
+    read_manifest_bytes_bounded(&mut file, &path)
 }
 
 /// Read the active manifest on a blocking thread.
@@ -1282,13 +1323,12 @@ async fn read_manifest_bytes_blocking(store: GenerationStore) -> Result<Vec<u8>,
 /// Returns [`ActivationError::TransientActivationFailure`] when the manifest is
 /// absent or unreadable, for the same reason [`read_manifest_bytes`] does.
 /// Returns [`ActivationError::ManifestFieldOutOfBounds`] when the file
-/// exceeds [`MAX_MANIFEST_BYTES`], checked from metadata alone before any
-/// bytes are read.
+/// exceeds [`MAX_MANIFEST_BYTES`], checked both from metadata alone before
+/// any bytes are read and again from the actual bytes read (see
+/// [`read_manifest_bytes_bounded`]).
 fn read_manifest_with_fingerprint(
     store: &GenerationStore,
 ) -> Result<(Vec<u8>, ManifestFingerprint), ActivationError> {
-    use std::io::Read as _;
-
     let path = store.active_manifest_path();
     let mut file = File::open(&path).map_err(|source| {
         if source.kind() == io::ErrorKind::NotFound {
@@ -1312,13 +1352,7 @@ fn read_manifest_with_fingerprint(
     if metadata.len() > MAX_MANIFEST_BYTES {
         return Err(manifest_too_large(metadata.len()));
     }
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes).map_err(|source| {
-        transient(format!(
-            "failed to read active generation manifest at {}: {source}",
-            path.display()
-        ))
-    })?;
+    let bytes = read_manifest_bytes_bounded(&mut file, &path)?;
     let checksum = hex_lower(&Sha256::digest(&bytes));
     let fingerprint = ManifestFingerprint {
         len: metadata.len(),
@@ -1431,5 +1465,56 @@ mod size_cap_tests {
         ));
         // A rejected entry must not be folded into the running total.
         assert_eq!(running_total, 90);
+    }
+}
+
+#[cfg(test)]
+mod bounded_manifest_read_tests {
+    //! Regression coverage for F17 Fix2b (142.018-T round-6 review):
+    //! `read_manifest_bytes_bounded` must reject a manifest exceeding
+    //! [`MAX_MANIFEST_BYTES`] from the actual bytes read, not only from a
+    //! separate metadata check that a growing file could outrun.
+
+    use std::io::Write as _;
+
+    use super::{ActivationError, File, MAX_MANIFEST_BYTES, read_manifest_bytes_bounded};
+
+    #[test]
+    fn a_manifest_within_the_cap_is_read_back_in_full() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let path = tempdir.path().join("active.json");
+        let contents = b"{\"generation_id\":\"gen-1\"}";
+        std::fs::write(&path, contents).expect("write manifest");
+
+        let mut file = File::open(&path).expect("open manifest");
+        let bytes =
+            read_manifest_bytes_bounded(&mut file, &path).expect("within-cap read must succeed");
+
+        assert_eq!(bytes, contents);
+    }
+
+    #[test]
+    fn a_manifest_whose_actual_bytes_exceed_the_cap_is_rejected_by_the_read_itself() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let path = tempdir.path().join("active.json");
+
+        // Write a file whose content genuinely exceeds MAX_MANIFEST_BYTES.
+        // This directly exercises the read-time bound: a caller that skipped
+        // (or raced past) the metadata pre-check must still be protected by
+        // the `.take(cap + 1)` in `read_manifest_bytes_bounded` itself.
+        let mut file = std::fs::File::create(&path).expect("create manifest");
+        let oversized_len = usize::try_from(MAX_MANIFEST_BYTES).unwrap_or(usize::MAX) + 1;
+        let chunk = vec![b'a'; oversized_len];
+        file.write_all(&chunk).expect("write oversized manifest");
+        drop(file);
+
+        let mut file = File::open(&path).expect("open manifest");
+        let error = read_manifest_bytes_bounded(&mut file, &path)
+            .expect_err("a manifest whose real bytes exceed the cap must be rejected");
+
+        assert!(matches!(
+            error,
+            ActivationError::ManifestFieldOutOfBounds { .. }
+        ));
     }
 }
