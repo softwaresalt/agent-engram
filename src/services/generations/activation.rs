@@ -697,7 +697,7 @@ impl GenerationActivator {
             return Ok(context);
         }
 
-        let manifest = parse_manifest(&read_manifest_bytes(&self.store)?)?;
+        let manifest = parse_manifest(&read_manifest_bytes_blocking(self.store.clone()).await?)?;
         let revision = manifest.revision();
         match self.validate_and_open(manifest).await {
             Ok(context) => {
@@ -736,7 +736,7 @@ impl GenerationActivator {
     pub async fn maybe_activate_newer(
         &self,
     ) -> Result<Option<GenerationReadContext>, ActivationError> {
-        let manifest = parse_manifest(&read_manifest_bytes(&self.store)?)?;
+        let manifest = parse_manifest(&read_manifest_bytes_blocking(self.store.clone()).await?)?;
         let revision = manifest.revision();
 
         if !self.is_strictly_newer(revision).await || !self.may_attempt(revision) {
@@ -935,6 +935,21 @@ fn read_manifest_bytes(store: &GenerationStore) -> Result<Vec<u8>, ActivationErr
             ))
         }
     })
+}
+
+/// Read the active manifest on a blocking thread.
+///
+/// Manifest reconciliation runs on every admitted read request once wired
+/// into request-entry (F20), so this filesystem read must never run directly
+/// on the async runtime -- the same reasoning [`resolve_and_open`] already
+/// documents for the heavier post-parse work.
+async fn read_manifest_bytes_blocking(store: GenerationStore) -> Result<Vec<u8>, ActivationError> {
+    match tokio::task::spawn_blocking(move || read_manifest_bytes(&store)).await {
+        Ok(result) => result,
+        Err(join_error) => Err(transient(format!(
+            "generation manifest read task did not complete: {join_error}"
+        ))),
+    }
 }
 
 /// Recompute the SHA-256 digest of `path` as lowercase hex.
