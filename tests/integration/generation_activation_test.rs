@@ -999,3 +999,198 @@ async fn rejection_records_for_superseded_revisions_are_pruned() {
     assert_eq!(activator.rejection_class(GenerationRevision::new(2)), None);
     assert_eq!(activator.rejection_class(GenerationRevision::new(3)), None);
 }
+
+// ── F17, Fix1/Fix4/Fix5 — bounded manifest reads and content fingerprinting ──
+
+/// One byte over the 1 MiB manifest size bound.
+///
+/// Matches the `MAX_MANIFEST_BYTES` constant activation.rs defines for both
+/// `read_manifest_bytes` and `read_manifest_with_fingerprint` (F17, Fix1).
+const OVERSIZED_MANIFEST_LEN: usize = 1024 * 1024 + 1;
+
+#[tokio::test]
+async fn activate_initial_rejects_an_oversized_manifest_before_a_full_read() {
+    let fixture = StoreFixture::new();
+    let path = fixture.root.path().join("active.json");
+    // Content doesn't need to be valid JSON: the size guard must run, and
+    // reject, before any byte of the file is actually read.
+    fs::write(&path, vec![b'a'; OVERSIZED_MANIFEST_LEN]).expect("write oversized manifest");
+    let activator = fixture.activator(TEST_DEADLINE);
+
+    let started = std::time::Instant::now();
+    let error = activator
+        .activate_initial()
+        .await
+        .expect_err("an oversized manifest must be rejected");
+    let elapsed = started.elapsed();
+
+    match error {
+        ActivationError::ManifestFieldOutOfBounds { field, .. } => {
+            assert_eq!(field, "manifest.bytes_len");
+        }
+        other => panic!("expected ManifestFieldOutOfBounds, got {other:?}"),
+    }
+    // A rejection driven by metadata alone must be fast: a full read of a
+    // 1 MiB+ file that then never happens would still complete well within
+    // this bound, so this is a loose sanity check, not the primary evidence
+    // -- the error variant above is.
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "oversized manifest rejection took {elapsed:?}"
+    );
+}
+
+#[tokio::test]
+async fn maybe_activate_newer_rejects_an_oversized_manifest_before_a_full_read() {
+    let fixture = StoreFixture::new();
+    let activator = live_activator(&fixture, "gen-oversize-base", 1, TEST_DEADLINE);
+    activator
+        .activate_initial()
+        .await
+        .expect("initial activation must succeed");
+
+    let path = fixture.root.path().join("active.json");
+    fs::write(&path, vec![b'b'; OVERSIZED_MANIFEST_LEN]).expect("write oversized manifest");
+
+    let error = activator
+        .maybe_activate_newer()
+        .await
+        .expect_err("an oversized replacement manifest must be rejected");
+
+    match error {
+        ActivationError::ManifestFieldOutOfBounds { field, .. } => {
+            assert_eq!(field, "manifest.bytes_len");
+        }
+        other => panic!("expected ManifestFieldOutOfBounds, got {other:?}"),
+    }
+    // The previously-active generation must keep serving: an oversized
+    // replacement is rejected, not swapped in.
+    assert_eq!(
+        activator.active_revision().await,
+        Some(GenerationRevision::new(1))
+    );
+}
+
+#[tokio::test]
+async fn a_same_length_same_mtime_manifest_replacement_is_detected_as_changed() {
+    /// Force a file's recorded modification time, so two manifests can be
+    /// made to collide on mtime deliberately rather than by timing luck.
+    fn force_mtime(path: &Path, time: std::time::SystemTime) {
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .expect("open manifest file to force its mtime");
+        file.set_modified(time)
+            .expect("set forced mtime on manifest file");
+    }
+
+    let fixture = StoreFixture::new();
+    let activator = live_activator(&fixture, "gen-fp-base", 1, TEST_DEADLINE);
+    activator
+        .activate_initial()
+        .await
+        .expect("initial activation must succeed");
+
+    let path = fixture.root.path().join("active.json");
+    let collision_mtime = std::time::SystemTime::now();
+
+    // Revision 2 is read and parsed for real (the probe cache holds nothing
+    // yet), which caches its fingerprint. Pin its mtime to a fixed instant so
+    // the next revision can be made to collide with it exactly.
+    let digest_b = fixture.seed_generation("gen-fp-b");
+    fixture.publish(&manifest_with(
+        "gen-fp-b",
+        2,
+        SUPPORTED_MANIFEST_SCHEMA_VERSION,
+        BranchIdentity::new(HARNESS_BRANCH, None),
+        WorkspaceIdentity::new(HARNESS_WORKSPACE),
+        SealedInventory::new(vec![database_entry("gen-fp-b", &digest_b)]),
+    ));
+    force_mtime(&path, collision_mtime);
+    activator
+        .maybe_activate_newer()
+        .await
+        .expect("revision 2 must activate")
+        .expect("revision 2 was strictly newer");
+    assert_eq!(
+        activator.active_revision().await,
+        Some(GenerationRevision::new(2))
+    );
+
+    // Revision 3 is a different generation but has the same label length
+    // (and thus the same serialized manifest length, since the digest is
+    // also fixed-width hex) as revision 2, and is pinned to the exact same
+    // mtime. mtime + length alone cannot distinguish this from "unchanged".
+    let digest_c = fixture.seed_generation("gen-fp-c");
+    let manifest_b_len = bytes_of(&manifest_with(
+        "gen-fp-b",
+        2,
+        SUPPORTED_MANIFEST_SCHEMA_VERSION,
+        BranchIdentity::new(HARNESS_BRANCH, None),
+        WorkspaceIdentity::new(HARNESS_WORKSPACE),
+        SealedInventory::new(vec![database_entry("gen-fp-b", &digest_b)]),
+    ))
+    .len();
+    let manifest_c = manifest_with(
+        "gen-fp-c",
+        3,
+        SUPPORTED_MANIFEST_SCHEMA_VERSION,
+        BranchIdentity::new(HARNESS_BRANCH, None),
+        WorkspaceIdentity::new(HARNESS_WORKSPACE),
+        SealedInventory::new(vec![database_entry("gen-fp-c", &digest_c)]),
+    );
+    assert_eq!(
+        bytes_of(&manifest_c).len(),
+        manifest_b_len,
+        "fixture manifests must be byte-length identical to exercise the collision case"
+    );
+    fixture.publish(&manifest_c);
+    force_mtime(&path, collision_mtime);
+
+    // A stat-only mtime+len fingerprint would see the same length and the
+    // same mtime as the cached revision-2 fingerprint and wrongly report
+    // "unchanged", leaving revision 3 permanently unnoticed. A content
+    // checksum must catch the difference and activate it.
+    activator
+        .maybe_activate_newer()
+        .await
+        .expect("revision 3 must activate")
+        .expect("revision 3 must not be short-circuited as unchanged");
+    assert_eq!(
+        activator.active_revision().await,
+        Some(GenerationRevision::new(3))
+    );
+}
+
+#[tokio::test]
+async fn a_malformed_manifest_fingerprint_is_cached_so_unchanged_bytes_are_not_reparsed() {
+    let fixture = StoreFixture::new();
+    let path = fixture.root.path().join("active.json");
+    fs::write(&path, b"not json at all").expect("write malformed manifest");
+    let activator = fixture.activator(TEST_DEADLINE);
+
+    let first_error = activator
+        .maybe_activate_newer()
+        .await
+        .expect_err("a malformed manifest must be rejected");
+    assert!(matches!(
+        first_error,
+        ActivationError::ManifestMalformed { .. }
+    ));
+    let reads_after_first = activator.manifest_read_attempt_count();
+    assert_eq!(reads_after_first, 1);
+
+    // Repeat calls against the same unchanged, still-malformed bytes must
+    // keep returning the same typed error without repeating the JSON parse.
+    for _ in 0..5 {
+        let repeat_error = activator
+            .maybe_activate_newer()
+            .await
+            .expect_err("the same malformed manifest must be rejected identically");
+        assert!(matches!(
+            repeat_error,
+            ActivationError::ManifestMalformed { .. }
+        ));
+    }
+    assert_eq!(activator.manifest_read_attempt_count(), reads_after_first);
+}

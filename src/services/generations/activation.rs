@@ -540,18 +540,48 @@ fn transient(reason: impl Into<String>) -> ActivationError {
     }
 }
 
-/// Cheap, stat-only fingerprint of the durable manifest file.
+/// Content-based fingerprint of the durable manifest file.
 ///
-/// Used by [`GenerationActivator::maybe_activate_newer`] to decide whether the
-/// manifest needs a full read + parse at all (F17, Fix5): a metadata-only
-/// probe is orders of magnitude cheaper than reading and JSON-parsing the
-/// manifest, so a request that repeats against an unchanged file -- most
-/// importantly, one this activator has already permanently rejected -- should
-/// pay for a `stat`, not a read and a parse.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Used by [`GenerationActivator::maybe_activate_newer`] to decide whether a
+/// freshly-read manifest is the same one it already parsed (F17, Fix5), so a
+/// request that repeats against unchanged bytes -- most importantly, one
+/// this activator has already permanently rejected -- pays for a checksum
+/// comparison, not a second JSON parse.
+///
+/// mtime and length alone are not a reliable change detector (F17, Fix4):
+/// two manifests published in quick succession can share both within
+/// filesystem timestamp granularity, especially on platforms with coarse
+/// mtime resolution or atomic-replace publish patterns, which could leave a
+/// same-length replacement undetected indefinitely. The manifest is bounded
+/// to [`MAX_MANIFEST_BYTES`] (F17, Fix1), so hashing the full bytes here is
+/// cheap and bounded -- far cheaper than the JSON parse and validate/open
+/// pipeline this fingerprint lets the activator skip -- and checksum
+/// equality reliably implies byte-for-byte content equality within that
+/// bound. `len` is kept as a fast pre-filter before the checksum comparison;
+/// it is never trusted on its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct ManifestFingerprint {
-    modified: Option<std::time::SystemTime>,
     len: u64,
+    checksum: String,
+}
+
+/// Result of the last full manifest read attempt for a given
+/// [`ManifestFingerprint`] (F17, Fix5).
+///
+/// Caching only the successful case would mean a permanently malformed
+/// manifest repeats its full read + JSON parse on every subsequent
+/// reconciliation attempt, even though the fingerprint proves nothing about
+/// it has changed. Caching the malformed outcome too lets a repeat probe
+/// against the same unchanged bytes return the identical typed error without
+/// re-invoking [`parse_manifest`].
+#[derive(Debug, Clone)]
+enum ProbeOutcome {
+    /// The manifest parsed successfully into this typed value.
+    Parsed(GenerationManifest),
+    /// The manifest failed to parse; `reason` is the [`ActivationError::ManifestMalformed`]
+    /// reason string to reconstruct the same typed error from, without
+    /// re-parsing.
+    Malformed(String),
 }
 
 // ── Activator ────────────────────────────────────────────────────────────────
@@ -584,13 +614,13 @@ pub struct GenerationActivator {
     /// performs the open and the rest observe the result.
     single_flight: tokio::sync::Mutex<()>,
     rejections: Mutex<RejectionCache>,
-    /// Cached fingerprint of the manifest bytes last actually read and
-    /// parsed, paired with the revision they parsed to. `None` until the
-    /// first full read + parse. See [`ManifestFingerprint`].
-    probe: Mutex<Option<(ManifestFingerprint, GenerationRevision)>>,
+    /// Cached fingerprint of the manifest bytes last actually read, paired
+    /// with the outcome of attempting to parse them. `None` until the first
+    /// full read. See [`ManifestFingerprint`] and [`ProbeOutcome`].
+    probe: Mutex<Option<(ManifestFingerprint, ProbeOutcome)>>,
     validation_attempts: AtomicUsize,
     open_attempts: AtomicUsize,
-    /// Number of times the manifest has actually been read and parsed, as
+    /// Number of times the manifest has actually been JSON-parsed, as
     /// opposed to short-circuited by the Fix5 fingerprint probe.
     manifest_read_attempts: AtomicUsize,
 }
@@ -707,20 +737,20 @@ impl GenerationActivator {
         }
     }
 
-    /// Cached fingerprint/revision pair from the last full manifest read, if
+    /// Cached fingerprint/outcome pair from the last full manifest read, if
     /// there has been one. Recovers from poisoning for the same reason
     /// [`GenerationActivator::with_rejections`] does: this cache is advisory,
     /// and a panic elsewhere must not permanently disable the probe
     /// short-circuit.
-    fn cached_probe(&self) -> Option<(ManifestFingerprint, GenerationRevision)> {
+    fn cached_probe(&self) -> Option<(ManifestFingerprint, ProbeOutcome)> {
         match self.probe.lock() {
-            Ok(guard) => *guard,
-            Err(poisoned) => *poisoned.into_inner(),
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
         }
     }
 
-    fn set_probe(&self, fingerprint: ManifestFingerprint, revision: GenerationRevision) {
-        let recorded = Some((fingerprint, revision));
+    fn set_probe(&self, fingerprint: ManifestFingerprint, outcome: ProbeOutcome) {
+        let recorded = Some((fingerprint, outcome));
         match self.probe.lock() {
             Ok(mut guard) => *guard = recorded,
             Err(poisoned) => *poisoned.into_inner() = recorded,
@@ -783,12 +813,17 @@ impl GenerationActivator {
     /// the new one is fully open, so a read already in flight is never blocked
     /// and never loses the generation it captured.
     ///
-    /// Before doing any full read or parse, a cheap stat-only fingerprint
-    /// probe checks whether the manifest is unchanged since the last time it
-    /// was actually read (F17, Fix5). When it is -- most importantly, when
-    /// the cached revision is one this activator has already permanently
-    /// rejected -- this call returns `Ok(None)` after a single `stat`,
-    /// without repeating the read + JSON parse on every request.
+    /// Before doing any JSON parse, a fingerprint probe checks whether the
+    /// manifest's content is unchanged since the last time it was actually
+    /// parsed (F17, Fix5). When it is -- most importantly, when the cached
+    /// outcome is a revision this activator has already permanently
+    /// rejected, or a manifest that failed to parse -- this call reuses the
+    /// cached outcome without repeating the JSON parse on every request. The
+    /// manifest is still read every call (it is bounded to
+    /// [`MAX_MANIFEST_BYTES`], so this is cheap), because computing the
+    /// content checksum the fingerprint relies on requires the bytes; what is
+    /// skipped is the more expensive JSON parse and, transitively, the
+    /// validate/resolve/open pipeline (F17, Fix4).
     ///
     /// Returns `Ok(None)` when there is nothing to do: no newer revision was
     /// published, another caller already activated it, or the published
@@ -800,8 +835,9 @@ impl GenerationActivator {
     /// # Errors
     ///
     /// Returns a typed [`ActivationError`] when a strictly newer revision was
-    /// found but could not be activated. The currently-active generation is
-    /// left untouched and still serving in every error case. As with
+    /// found but could not be activated, or when the manifest bytes are
+    /// oversized or malformed. The currently-active generation is left
+    /// untouched and still serving in every error case. As with
     /// [`GenerationActivator::activate_initial`], the configured deadline
     /// bounds the complete attempt, not just the final open step.
     pub async fn maybe_activate_newer(
@@ -813,18 +849,32 @@ impl GenerationActivator {
     async fn maybe_activate_newer_attempt(
         &self,
     ) -> Result<Option<GenerationReadContext>, ActivationError> {
-        if let Some(revision) = self.probe_revision_if_unchanged().await {
-            if !self.is_strictly_newer(revision).await || !self.may_attempt(revision) {
-                return Ok(None);
-            }
-        }
-
-        self.manifest_read_attempts.fetch_add(1, Ordering::SeqCst);
         let (bytes, fingerprint) =
             read_manifest_with_fingerprint_blocking(self.store.clone()).await?;
-        let manifest = parse_manifest(&bytes)?;
+
+        let manifest = match self.probe_outcome_if_unchanged(&fingerprint) {
+            Some(ProbeOutcome::Malformed(reason)) => {
+                return Err(ActivationError::ManifestMalformed { reason });
+            }
+            Some(ProbeOutcome::Parsed(manifest)) => manifest,
+            None => {
+                self.manifest_read_attempts.fetch_add(1, Ordering::SeqCst);
+                match parse_manifest(&bytes) {
+                    Ok(manifest) => {
+                        self.set_probe(fingerprint, ProbeOutcome::Parsed(manifest.clone()));
+                        manifest
+                    }
+                    Err(error) => {
+                        let ActivationError::ManifestMalformed { reason } = &error else {
+                            return Err(error);
+                        };
+                        self.set_probe(fingerprint, ProbeOutcome::Malformed(reason.clone()));
+                        return Err(error);
+                    }
+                }
+            }
+        };
         let revision = manifest.revision();
-        self.set_probe(fingerprint, revision);
 
         if !self.is_strictly_newer(revision).await || !self.may_attempt(revision) {
             return Ok(None);
@@ -873,19 +923,17 @@ impl GenerationActivator {
         self.with_rejections_mut(|cache| cache.record(revision, class, reason, now));
     }
 
-    /// Cheap pre-check for [`GenerationActivator::maybe_activate_newer`]: if
-    /// the manifest file's fingerprint (mtime + length) matches the one
-    /// recorded the last time it was actually read and parsed, reuse the
-    /// cached revision instead of repeating that work.
+    /// Pre-parse check for [`GenerationActivator::maybe_activate_newer`]: if
+    /// `current`'s content checksum matches the fingerprint recorded the
+    /// last time the manifest was actually parsed, reuse the cached outcome
+    /// instead of repeating the JSON parse.
     ///
     /// Returns `None` when there is no cached fingerprint yet, or the current
-    /// fingerprint cannot be obtained (missing/unreadable file) or does not
-    /// match the cached one -- in every such case the caller must fall
-    /// through to a full read + parse.
-    async fn probe_revision_if_unchanged(&self) -> Option<GenerationRevision> {
-        let current = manifest_fingerprint_blocking(self.store.clone()).await?;
-        let (cached_fingerprint, cached_revision) = self.cached_probe()?;
-        (cached_fingerprint == current).then_some(cached_revision)
+    /// fingerprint does not match the cached one -- in either case the
+    /// caller must parse the freshly-read bytes.
+    fn probe_outcome_if_unchanged(&self, current: &ManifestFingerprint) -> Option<ProbeOutcome> {
+        let (cached_fingerprint, outcome) = self.cached_probe()?;
+        (cached_fingerprint == *current).then_some(outcome)
     }
 
     /// Run `attempt` bounded by the configured activation deadline.
@@ -1040,6 +1088,27 @@ fn resolve_and_open(
     })
 }
 
+/// Upper bound on the durable manifest file size.
+///
+/// A corrupt or oversized `active.json` must not be able to consume
+/// unbounded memory (F17, Fix1): the deadline that bounds a complete
+/// activation attempt (see [`GenerationActivator::run_bounded`]) does not
+/// stop a blocking read already spawned from it, so the read itself must
+/// refuse to start once the file is implausibly large rather than relying on
+/// the deadline alone. 1 MiB matches the bound already used for a
+/// similarly-purposed manifest read in
+/// [`crate::services::code_graph::discover_workspace_crates_from_reader`].
+const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
+
+/// Build the typed out-of-bounds error for a manifest exceeding
+/// [`MAX_MANIFEST_BYTES`].
+fn manifest_too_large(len: u64) -> ActivationError {
+    ActivationError::ManifestFieldOutOfBounds {
+        field: "manifest.bytes_len".to_owned(),
+        reason: format!("manifest is {len} bytes, exceeding the {MAX_MANIFEST_BYTES} byte limit"),
+    }
+}
+
 /// Read the durable active-generation manifest bytes from `store`.
 ///
 /// # Errors
@@ -1047,10 +1116,15 @@ fn resolve_and_open(
 /// Returns [`ActivationError::TransientActivationFailure`] when the manifest is
 /// absent or unreadable. Absence is transient rather than permanent: a
 /// publisher that has not published yet may publish at any moment, and the
-/// read path must stay willing to notice.
+/// read path must stay willing to notice. Returns
+/// [`ActivationError::ManifestFieldOutOfBounds`] when the file exceeds
+/// [`MAX_MANIFEST_BYTES`], checked from metadata alone before any bytes are
+/// read.
 fn read_manifest_bytes(store: &GenerationStore) -> Result<Vec<u8>, ActivationError> {
+    use std::io::Read as _;
+
     let path = store.active_manifest_path();
-    std::fs::read(&path).map_err(|source| {
+    let mut file = File::open(&path).map_err(|source| {
         if source.kind() == io::ErrorKind::NotFound {
             transient(format!(
                 "no active generation manifest published at {}",
@@ -1058,11 +1132,28 @@ fn read_manifest_bytes(store: &GenerationStore) -> Result<Vec<u8>, ActivationErr
             ))
         } else {
             transient(format!(
-                "failed to read active generation manifest at {}: {source}",
+                "failed to open active generation manifest at {}: {source}",
                 path.display()
             ))
         }
-    })
+    })?;
+    let metadata = file.metadata().map_err(|source| {
+        transient(format!(
+            "failed to stat active generation manifest at {}: {source}",
+            path.display()
+        ))
+    })?;
+    if metadata.len() > MAX_MANIFEST_BYTES {
+        return Err(manifest_too_large(metadata.len()));
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).map_err(|source| {
+        transient(format!(
+            "failed to read active generation manifest at {}: {source}",
+            path.display()
+        ))
+    })?;
+    Ok(bytes)
 }
 
 /// Read the active manifest on a blocking thread.
@@ -1080,7 +1171,7 @@ async fn read_manifest_bytes_blocking(store: GenerationStore) -> Result<Vec<u8>,
     }
 }
 
-/// Read the durable active-generation manifest bytes and capture its
+/// Read the durable active-generation manifest bytes and capture its content
 /// fingerprint from the same open file handle.
 ///
 /// Capturing both from one handle means the recorded fingerprint always
@@ -1091,6 +1182,9 @@ async fn read_manifest_bytes_blocking(store: GenerationStore) -> Result<Vec<u8>,
 ///
 /// Returns [`ActivationError::TransientActivationFailure`] when the manifest is
 /// absent or unreadable, for the same reason [`read_manifest_bytes`] does.
+/// Returns [`ActivationError::ManifestFieldOutOfBounds`] when the file
+/// exceeds [`MAX_MANIFEST_BYTES`], checked from metadata alone before any
+/// bytes are read.
 fn read_manifest_with_fingerprint(
     store: &GenerationStore,
 ) -> Result<(Vec<u8>, ManifestFingerprint), ActivationError> {
@@ -1116,10 +1210,9 @@ fn read_manifest_with_fingerprint(
             path.display()
         ))
     })?;
-    let fingerprint = ManifestFingerprint {
-        modified: metadata.modified().ok(),
-        len: metadata.len(),
-    };
+    if metadata.len() > MAX_MANIFEST_BYTES {
+        return Err(manifest_too_large(metadata.len()));
+    }
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes).map_err(|source| {
         transient(format!(
@@ -1127,6 +1220,11 @@ fn read_manifest_with_fingerprint(
             path.display()
         ))
     })?;
+    let checksum = hex_lower(&Sha256::digest(&bytes));
+    let fingerprint = ManifestFingerprint {
+        len: metadata.len(),
+        checksum,
+    };
     Ok((bytes, fingerprint))
 }
 
@@ -1141,28 +1239,6 @@ async fn read_manifest_with_fingerprint_blocking(
             "generation manifest read task did not complete: {join_error}"
         ))),
     }
-}
-
-/// Stat the manifest file without reading its bytes.
-///
-/// Returns `None` when the file is missing or its metadata cannot be read --
-/// in either case the caller falls back to a full read, which produces the
-/// proper typed error itself.
-fn manifest_fingerprint(store: &GenerationStore) -> Option<ManifestFingerprint> {
-    let path = store.active_manifest_path();
-    let metadata = std::fs::metadata(&path).ok()?;
-    Some(ManifestFingerprint {
-        modified: metadata.modified().ok(),
-        len: metadata.len(),
-    })
-}
-
-/// Stat the manifest file on a blocking thread. See [`manifest_fingerprint`].
-async fn manifest_fingerprint_blocking(store: GenerationStore) -> Option<ManifestFingerprint> {
-    tokio::task::spawn_blocking(move || manifest_fingerprint(&store))
-        .await
-        .ok()
-        .flatten()
 }
 
 /// Recompute the SHA-256 digest of `path` as lowercase hex.
