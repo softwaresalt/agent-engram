@@ -19,8 +19,8 @@ use engram::errors::ActivationError;
 use engram::services::generations::{
     BranchIdentity, ExpectedIdentity, GENERATION_DATABASE_FILE_NAME, GenerationActivator,
     GenerationId, GenerationManifest, GenerationProvenance, GenerationRevision, GenerationStore,
-    ManifestFileDigest, SUPPORTED_MANIFEST_SCHEMA_VERSION, SealedInventory, ValidatedManifest,
-    WorkspaceIdentity, parse_manifest,
+    ManifestFileDigest, RejectionClass, SUPPORTED_MANIFEST_SCHEMA_VERSION, SealedInventory,
+    ValidatedManifest, WorkspaceIdentity, backoff_delay, parse_manifest,
 };
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
@@ -755,4 +755,216 @@ fn count_probe_rows(db: &cozo::DbInstance) -> usize {
     .expect("read probe rows")
     .rows
     .len()
+}
+
+// ── 142.018.004-ST — immutable rejection cache and transient backoff ─────────
+
+#[tokio::test]
+async fn a_permanently_rejected_revision_is_recorded_and_never_retried() {
+    let fixture = StoreFixture::new();
+    let activator = live_activator(&fixture, "gen-perm-base", 1, TEST_DEADLINE);
+    activator
+        .activate_initial()
+        .await
+        .expect("initial activation must succeed");
+
+    // A successor whose sealed digest does not match its bytes can never
+    // succeed: the manifest bytes for revision 2 are immutable.
+    fixture.seed_generation("gen-perm-bad");
+    fixture.publish(&manifest_with(
+        "gen-perm-bad",
+        2,
+        SUPPORTED_MANIFEST_SCHEMA_VERSION,
+        BranchIdentity::new(HARNESS_BRANCH, None),
+        WorkspaceIdentity::new(HARNESS_WORKSPACE),
+        SealedInventory::new(vec![database_entry("gen-perm-bad", PLACEHOLDER_DIGEST)]),
+    ));
+
+    activator
+        .maybe_activate_newer()
+        .await
+        .expect_err("the drifted successor must be rejected");
+
+    assert_eq!(
+        activator.rejection_class(GenerationRevision::new(2)),
+        Some(RejectionClass::Permanent)
+    );
+    assert!(
+        activator
+            .rejection_reason(GenerationRevision::new(2))
+            .is_some_and(|reason| reason.contains("digest"))
+    );
+
+    let validations_after_first = activator.validation_attempt_count();
+    let opens_after_first = activator.open_attempt_count();
+
+    // Every subsequent reconciliation must perform no work at all.
+    for _ in 0..5 {
+        assert!(
+            activator
+                .maybe_activate_newer()
+                .await
+                .expect("a cached permanent rejection must not surface as an error")
+                .is_none()
+        );
+    }
+
+    assert_eq!(
+        activator.validation_attempt_count(),
+        validations_after_first
+    );
+    assert_eq!(activator.open_attempt_count(), opens_after_first);
+    assert_eq!(
+        activator.active_revision().await,
+        Some(GenerationRevision::new(1))
+    );
+}
+
+#[tokio::test]
+async fn the_rejection_cache_distinguishes_permanent_from_transient_failures() {
+    let fixture = StoreFixture::new();
+    let activator = live_activator(&fixture, "gen-class-base", 1, TEST_DEADLINE);
+    activator
+        .activate_initial()
+        .await
+        .expect("initial activation must succeed");
+
+    // Revision 2 names a generation directory that does not exist: the
+    // publisher may still be materializing it, so this is transient.
+    fixture.publish(&manifest_with(
+        "gen-class-missing",
+        2,
+        SUPPORTED_MANIFEST_SCHEMA_VERSION,
+        BranchIdentity::new(HARNESS_BRANCH, None),
+        WorkspaceIdentity::new(HARNESS_WORKSPACE),
+        SealedInventory::new(vec![database_entry(
+            "gen-class-missing",
+            &PLACEHOLDER_DIGEST.replace('0', "a"),
+        )]),
+    ));
+    activator
+        .maybe_activate_newer()
+        .await
+        .expect_err("a missing generation directory must be rejected");
+    assert_eq!(
+        activator.rejection_class(GenerationRevision::new(2)),
+        Some(RejectionClass::Transient)
+    );
+
+    // Revision 3 carries a branch identity this daemon does not serve: the
+    // bytes are immutable, so this can never succeed.
+    fixture.publish(&manifest_with(
+        "gen-class-branch",
+        3,
+        SUPPORTED_MANIFEST_SCHEMA_VERSION,
+        BranchIdentity::new("some-other-branch", None),
+        WorkspaceIdentity::new(HARNESS_WORKSPACE),
+        SealedInventory::new(vec![database_entry("gen-class-branch", PLACEHOLDER_DIGEST)]),
+    ));
+    activator
+        .maybe_activate_newer()
+        .await
+        .expect_err("a foreign branch identity must be rejected");
+    assert_eq!(
+        activator.rejection_class(GenerationRevision::new(3)),
+        Some(RejectionClass::Permanent)
+    );
+}
+
+#[tokio::test]
+async fn repeated_transient_failures_back_off_instead_of_spinning() {
+    let fixture = StoreFixture::new();
+    let activator = live_activator(&fixture, "gen-backoff-base", 1, TEST_DEADLINE);
+    activator
+        .activate_initial()
+        .await
+        .expect("initial activation must succeed");
+
+    fixture.publish(&manifest_with(
+        "gen-backoff-missing",
+        2,
+        SUPPORTED_MANIFEST_SCHEMA_VERSION,
+        BranchIdentity::new(HARNESS_BRANCH, None),
+        WorkspaceIdentity::new(HARNESS_WORKSPACE),
+        SealedInventory::new(vec![database_entry(
+            "gen-backoff-missing",
+            &PLACEHOLDER_DIGEST.replace('0', "b"),
+        )]),
+    ));
+
+    activator
+        .maybe_activate_newer()
+        .await
+        .expect_err("a missing generation directory must be rejected");
+    let opens_after_first = activator.open_attempt_count();
+
+    // Inside the backoff window every further reconciliation is a no-op: the
+    // read path must not turn a broken publish into per-request work.
+    for _ in 0..10 {
+        assert!(
+            activator
+                .maybe_activate_newer()
+                .await
+                .expect("a backed-off revision must not surface as an error")
+                .is_none()
+        );
+    }
+    assert_eq!(activator.open_attempt_count(), opens_after_first);
+}
+
+#[test]
+fn transient_backoff_grows_exponentially_and_saturates() {
+    assert_eq!(backoff_delay(0), Duration::ZERO);
+
+    let first = backoff_delay(1);
+    assert!(first > Duration::ZERO);
+    assert_eq!(backoff_delay(2), first * 2);
+    assert_eq!(backoff_delay(3), first * 4);
+
+    // The delay is bounded: an indefinitely broken publisher must not push the
+    // retry interval toward infinity.
+    let saturated = backoff_delay(u32::MAX);
+    assert_eq!(saturated, backoff_delay(u32::MAX - 1));
+    assert!(saturated <= Duration::from_secs(30));
+}
+
+#[tokio::test]
+async fn rejection_records_for_superseded_revisions_are_pruned() {
+    let fixture = StoreFixture::new();
+    let activator = live_activator(&fixture, "gen-prune-base", 1, TEST_DEADLINE);
+    activator
+        .activate_initial()
+        .await
+        .expect("initial activation must succeed");
+
+    // Reject revisions 2 and 3 permanently.
+    for (revision, label) in [(2_u64, "gen-prune-bad-a"), (3_u64, "gen-prune-bad-b")] {
+        fixture.seed_generation(label);
+        fixture.publish(&manifest_with(
+            label,
+            revision,
+            SUPPORTED_MANIFEST_SCHEMA_VERSION,
+            BranchIdentity::new(HARNESS_BRANCH, None),
+            WorkspaceIdentity::new(HARNESS_WORKSPACE),
+            SealedInventory::new(vec![database_entry(label, PLACEHOLDER_DIGEST)]),
+        ));
+        activator
+            .maybe_activate_newer()
+            .await
+            .expect_err("a drifted successor must be rejected");
+    }
+    assert_eq!(activator.rejection_cache_len(), 2);
+
+    // Activating revision 4 makes 2 and 3 permanently unreachable, because
+    // only a strictly greater revision is ever considered again.
+    publish_revision(&fixture, "gen-prune-good", 4);
+    activator
+        .maybe_activate_newer()
+        .await
+        .expect("a valid successor must activate")
+        .expect("a newer revision was published");
+
+    assert_eq!(activator.rejection_cache_len(), 0);
+    assert_eq!(activator.rejection_class(GenerationRevision::new(2)), None);
+    assert_eq!(activator.rejection_class(GenerationRevision::new(3)), None);
 }
