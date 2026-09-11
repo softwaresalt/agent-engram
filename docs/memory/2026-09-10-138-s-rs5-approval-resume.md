@@ -106,3 +106,57 @@ implemented.**
    after this commit is confirmed pushed (durable resume). **Done** — resolved at
    2026-09-11T05:09:36Z.
 3. Proceed to Step 2 (Harness Generation) for all 14 manifest items.
+
+## Build, verification, and review outcome (final — all 14 manifest items)
+
+* **Implementation**: delegated to a Rust Engineer subagent (harness-first RED→GREEN TDD for
+  all 14 items). Result: 14/14 `done`, 0 blocked. 13 feature commits + 1 archive commit
+  (`72532bf2`..`940fac42`), plus this session's `decac28d` (deferred-scope stash for the
+  archive-verifier flake) and `6abbf7a2` (P2 hardening fix + metrics-flake stash). HEAD:
+  `6abbf7a2e59d7d3b401ba821052e2579ebd39ac8`.
+* **Quality gates** (post-hardening-fix, HEAD `6abbf7a2`):
+  * `cargo fmt --all -- --check` — PASS
+  * `cargo clippy --all-targets -- -D warnings -D clippy::pedantic` — PASS
+  * `cargo dev-test` (full suite) — 687-688 passed; exactly one unrelated test failed per run,
+    a different one each time, both confirmed pre-existing full-suite parallel-execution
+    flakes unrelated to 138-S (see below). No `unsafe`, no production `unwrap()`/`expect()`
+    (all `.expect()` hits are inside `#[cfg(test)]` modules).
+* **Flaky pre-existing tests observed during full-suite runs** (not 138-S regressions):
+  * `integration_release_archive_smoke_workflow::archive_verifier_runs_the_unpacked_native_binary`
+    — documented via stash `2511DAC9` (citing 4 prior entries across 133-S/134-S/135-S/137-S).
+  * `services::metrics::tests::full_channel_branch_switch_is_acknowledged_before_following_event`
+    — new, documented via stash `9D313653` (root-cause commit `642a820f` predates the 138-S
+    merge-base `d4ffe2d8`; `git merge-base --is-ancestor` exit 0).
+  * `integration_daemon_startup_order::run_with_shutdown_v2_exits_cleanly_on_ttl_expiry` —
+    already documented via prior stash `58B33C45` (from 133-S, reused directly per the P-021 C2
+    discovery protocol — positively confirmed identical test/root-cause, no new entry created).
+  * All three pass cleanly in isolation (`cargo test --test <name> <case> -- --exact`); this is
+    consistent with the workspace's established Windows full-parallel-suite timing-contention
+    pattern, not a code defect.
+* **Local review (report-only, full diff)** — outcome `READY_WITH_FOLLOWUPS`:
+  * **P1 finding** (F17/F18/F20/F21 activation/admission/dispatch pipeline not yet wired into
+    the live daemon's `ipc_server.rs`): investigated against the actual task specs
+    (`142.028-T`/`142.029-T`/`142.030-T`) and
+    `docs/exec-plans/2026-09-02-separate-indexer-read-server-plan.md` Revision 6. Confirmed this
+    is an **intentional, already-planned incremental-delivery seam** (unit F04a extracted
+    `ipc_server.rs` into a composition root + pass-through seam modules; task implementation
+    notes explicitly state F18/F20 "does NOT touch `src/daemon/ipc_server.rs` at all"; the plan
+    explicitly assigns the wiring to a future unit, **F44 "Read-server lifecycle policy"**).
+    **Downgraded to informational** — not a blocker, not a new deferred-scope entry (already
+    tracked in the exec plan).
+  * **P2 finding** (blocking synchronous file I/O in `read_manifest_bytes` on the async task
+    without `spawn_blocking`): legitimate and in-scope for `142.018-T`/F17. **Fixed directly**
+    in commit `6abbf7a2` (new `read_manifest_bytes_blocking` helper wrapping the read in
+    `tokio::task::spawn_blocking`, matching the existing `resolve_and_open` pattern).
+  * P3/informational notes: mutation-testing RED-phase deviation (workspace's dead-code lint
+    denies `unimplemented!()` stubs from compiling cleanly-but-failing; subagent instead
+    implemented fully, broke a guard to prove the harness binds, then restored — reviewed, no
+    evidence of unproven harness binding, accepted as advisory).
+* **Scope discipline confirmed**: `src/daemon/lifecycle_policy.rs` and
+  `AppState::hydration_ready`/`publish_workspace_generation_transition` (the recovery-identified
+  watcher readiness-latch defect) remain untouched by every 138-S commit — consistent with the
+  P-021 C1 deferral decision above (stash `265F99BE`).
+
+Proceeding to Step 5 (PR lifecycle): create the PR with the `## Local Review Readiness` block,
+run P-014/P-018 gates, and halt at the merge gate for explicit operator approval
+(merge/admin fallback not pre-authorized for 138-S).
