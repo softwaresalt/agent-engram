@@ -439,5 +439,9 @@ Shipment `138-S` is **active** on
 with an active Ship checkpoint. Nothing in this decision may modify `138-S`,
 its manifest, its checkpoint, or any `142.*` item. Workstream B overlaps 138-S's
 surfaces (generation activation, startup gate) and must therefore be **queued,
-not claimed**, and sequenced behind 138-S's completion. Workstream A does not
-overlap and may be claimed as soon as Ship is free.
+not claimed**, and sequenced behind 138-S's completion. The design-time
+observation that Workstream A does not overlap 138-S is retained here as a
+historical record only and is **superseded by the terminal Revision 3 review**:
+`143-S` is **not currently claimable** because all of its manifest members are
+blocked, and only a fresh operator-authorized Stage cycle producing a new PASS
+may change that.
