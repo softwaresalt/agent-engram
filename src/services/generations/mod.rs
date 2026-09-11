@@ -8,6 +8,7 @@ mod activation;
 mod context;
 mod manifest;
 mod publish;
+mod read_inputs;
 mod store;
 
 use std::fmt;
@@ -28,8 +29,11 @@ pub use self::publish::{
     PublishError, PublisherLock, PublisherLockGuard, list_orphaned_staging_files,
     publish_generation_manifest,
 };
+pub use self::read_inputs::{
+    ENUMERATED_READ_INPUTS, ReadInput, ReadInputKind, descriptors_without_enumerated_inputs,
+    duplicate_enumerated_ids, read_mode_descriptor_names,
+};
 pub use self::store::{GenerationStore, IndexTarget, IndexTargetKind, StoreError};
-
 /// Strict single-component identifier for a published generation.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GenerationId(String);
