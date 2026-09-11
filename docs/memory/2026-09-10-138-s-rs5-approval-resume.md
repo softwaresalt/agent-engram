@@ -646,3 +646,118 @@ pre-authorized).
 **Session halted awaiting operator merge approval for PR #391.** No further action will be taken
 on this PR without an explicit operator approval signal, per Constitution Principle VIII / P-014
 and the 138-S dark-mode scope constraints.
+
+## Round 6 — P-018 re-arm, CI flake, and two genuine security findings
+
+A docs-only push (`b381773c`, adding the "Final PR readiness" section above) re-armed the
+P-018 Copilot-review gate, which is unconditional per the Step 5 item 15 last-mile re-check —
+there is no way to land a final closing commit without risking a fresh review pass, so the
+push proceeded anyway and the outcome was handled as a normal review round.
+
+### CI flake investigation
+
+* CI's `build` job initially reported **FAILURE** at HEAD `b381773c`, which was alarming since
+  only a documentation file changed. Extracted the failed job log
+  (`gh run view <id> --log-failed`): the single failure was
+  `archive_verifier_runs_the_unpacked_native_binary` in
+  `tests/integration/release_archive_smoke_workflow_test.rs` — `ARCHIVE_SMOKE=FAIL: missing
+  JSON-RPC response id 2`, a native-binary-spawn + JSON-RPC-over-stdio smoke test.
+* Confirmed via `git diff --stat` / `git log` that this file was completely untouched by the
+  PR's diff. Reran the failed job (`gh run rerun <id> --failed`) — it passed cleanly with zero
+  code changes, confirming transient CI-runner flakiness (timing/resource sensitive native
+  process spawn), not a regression from this PR.
+* Created stash entry `F86074CD` documenting the flake for Stage triage.
+
+### Round-6 Copilot review — 3 unresolved threads
+
+Copilot review at HEAD `b381773c` (`state: COMMENTED`) raised 3 new unresolved threads:
+
+1. **TOCTOU digest race** (`src/services/generations/activation.rs:1173`,
+   `resolve_and_open`): the manifest loop validates each entry's digest via `file_digest()`
+   against `entry.sha256()`, but `ExistingDbLocation::new()` separately re-reads the same file
+   and captures its own fresh digest snapshot internally. If the file is replaced between the
+   loop's check and the constructor call, the manifest-attested digest check passes against the
+   old content while the constructor's internally-captured digest reflects the replacement —
+   and only that internal digest is later trusted by `open_existing_generation_via_runtime_copy`.
+2. **Unbounded manifest read** (`src/services/generations/activation.rs:1255`): both
+   `read_manifest_bytes` and `read_manifest_with_fingerprint` checked `metadata.len()` against
+   `MAX_MANIFEST_BYTES` before calling `read_to_end` unbounded. A manifest that grows between
+   the metadata stat and the read call could exceed the cap without ever tripping
+   `manifest_too_large`.
+3. **Stale PR body observation** (`.backlogit/checkpoints/checkpoint-20260910-222318.json:1`):
+   Copilot noted the readiness block still cited `d80b9313` while the actual HEAD was
+   `b381773c`, and that `mergeable_state` was `blocked` — expected transient state while a
+   Copilot review is in flight; resolves once the body is refreshed at the next HEAD.
+
+### P-021 C1 assessment
+
+Both code findings (1 and 2) are in `src/services/generations/activation.rs` — the exact F17
+module (142.018-T) modified by the round-5 size-cap fix. Both are direct completions/hardening
+of that same round-5 contract surface (the size-cap and manifest-trust boundary this shipment
+owns), so both pass the P-021 C1 same-contract-surface test and were fixed directly rather than
+deferred.
+
+### Fixes implemented
+
+* **Digest-binding fix**: added `pub fn published_db_digest_hex(&self) -> String` to
+  `ExistingDbLocation` in `src/db/cozo_backend/mod.rs` (hex-encodes the digest captured at
+  construction, via the same `fold` + `write!` pattern used elsewhere to satisfy
+  `clippy::format_collect`). In `resolve_and_open`, the previously bare
+  `database_target: Option<PathBuf>` became a paired `database_entry: Option<(PathBuf, String)>`
+  that also captures `entry.sha256().to_owned()` at the point the database entry is located in
+  the manifest loop. After `ExistingDbLocation::new(...)` succeeds, an explicit comparison of
+  `location.published_db_digest_hex()` against the captured manifest-attested digest now runs,
+  returning `ActivationError::DigestMismatch { path, expected, found }` on mismatch — closing the
+  TOCTOU window regardless of what the constructor's own internal re-read observed.
+* **Bounded manifest read fix**: added a shared `read_manifest_bytes_bounded(file: &mut File,
+  path: &Path) -> Result<Vec<u8>, ActivationError>` helper that reads via
+  `.take(MAX_MANIFEST_BYTES.saturating_add(1)).read_to_end(...)` and then checks the actual
+  byte count read (not the pre-read `metadata.len()`) against `MAX_MANIFEST_BYTES`, returning
+  `manifest_too_large(...)` if exceeded. Both `read_manifest_bytes` and
+  `read_manifest_with_fingerprint` were refactored to call this shared helper instead of
+  duplicating the unbounded-read pattern, closing the window in both call sites.
+
+### Regression tests added
+
+* `tests/integration/generation_db_open_test.rs`:
+  `existing_db_location_digest_hex_matches_the_files_actual_sha256` — proves
+  `published_db_digest_hex()` matches an independently computed SHA-256 hex digest of the file's
+  actual bytes at construction time.
+* `src/services/generations/activation.rs`, new `bounded_manifest_read_tests` module:
+  * `a_manifest_within_the_cap_is_read_back_in_full` — normal within-cap read succeeds and
+    returns the exact bytes.
+  * `a_manifest_whose_actual_bytes_exceed_the_cap_is_rejected_by_the_read_itself` — writes a
+    file whose actual content exceeds `MAX_MANIFEST_BYTES` and calls
+    `read_manifest_bytes_bounded` directly (bypassing the metadata pre-check), proving the
+    read-time bound itself rejects oversized content, not merely the earlier metadata check.
+
+### Verification
+
+* `cargo check --all-targets`: PASS
+* `cargo fmt --all -- --check`: PASS (one lint-driven follow-up: the new integration test's hex
+  encoding originally used `.map(format!).collect()`, flagged by `clippy::format_collect`;
+  switched to the same `fold` + `write!` pattern already used in `published_db_digest_hex` and
+  in the codebase's other digest-hex call sites, then re-formatted with `cargo fmt --all` and
+  re-verified clean)
+* `cargo clippy --all-targets -- -D warnings -D clippy::pedantic`: PASS (after the fix above; a
+  second pass also required moving a `use std::fmt::Write as _;` import above the first
+  statement in the test function to satisfy `clippy::items_after_statements`)
+* Targeted tests, all passing:
+  * `cargo test --test integration_generation_db_open` — 9/9 passed (including the new digest
+    test)
+  * `cargo test --lib services::generations::activation::` — 4/4 passed (2 pre-existing
+    `size_cap_tests` + 2 new `bounded_manifest_read_tests`)
+  * Broader regression sweep across the shipment's owned surface — all green:
+    `integration_generation_activation` (28/28), `integration_read_server_startup_activation`
+    (7/7), `integration_request_entry_activation` (12/12), `unit_generation_context` (4/4)
+
+### Commit
+
+* `d907a067` — `fix(142.018-T): close TOCTOU digest gap and bound manifest reads (round 6)` —
+  contains the digest-binding fix, the bounded-manifest-read fix, both new regression tests, and
+  the `F86074CD` stash entry. Pushed to
+  `feat/138-s-generation-activation-request-context-startup-gate-and-request-entry`.
+
+**Next**: re-request Copilot review at the new HEAD, poll CI to green, poll for round-7 review
+completion, refresh the PR body's readiness block to the new HEAD, re-run the full §1.9
+readiness gate, and halt again at the merge gate for explicit operator approval.
