@@ -567,3 +567,192 @@ async fn activate_initial_reports_a_typed_error_when_no_manifest_is_published() 
     ));
     assert!(activator.active_context().await.is_none());
 }
+
+// ── 142.018.003-ST — single-flight background activation ─────────────────────
+
+/// Publish a newer revision for `label` into an existing fixture.
+fn publish_revision(fixture: &StoreFixture, label: &str, revision: u64) {
+    let digest = fixture.seed_generation(label);
+    fixture.publish(&manifest_with(
+        label,
+        revision,
+        SUPPORTED_MANIFEST_SCHEMA_VERSION,
+        BranchIdentity::new(HARNESS_BRANCH, None),
+        WorkspaceIdentity::new(HARNESS_WORKSPACE),
+        SealedInventory::new(vec![database_entry(label, &digest)]),
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_callers_coalesce_into_exactly_one_activation() {
+    let fixture = StoreFixture::new();
+    let activator = Arc::new(live_activator(&fixture, "gen-one", 1, TEST_DEADLINE));
+    activator
+        .activate_initial()
+        .await
+        .expect("initial activation must succeed");
+    assert_eq!(activator.open_attempt_count(), 1);
+
+    publish_revision(&fixture, "gen-two", 2);
+
+    let mut handles = Vec::new();
+    for _ in 0..8 {
+        let activator = Arc::clone(&activator);
+        handles.push(tokio::spawn(async move {
+            activator.maybe_activate_newer().await
+        }));
+    }
+
+    let mut activated = 0_usize;
+    for handle in handles {
+        let outcome = handle
+            .await
+            .expect("activation task must not panic")
+            .expect("activation must not fail");
+        if outcome.is_some() {
+            activated += 1;
+        }
+    }
+
+    // Exactly one caller performed the activation; the other seven observed
+    // the newly-active revision and did no work at all.
+    assert_eq!(activated, 1);
+    assert_eq!(activator.open_attempt_count(), 2);
+    assert_eq!(
+        activator.active_revision().await,
+        Some(GenerationRevision::new(2))
+    );
+}
+
+#[tokio::test]
+async fn only_a_strictly_greater_revision_triggers_activation() {
+    let fixture = StoreFixture::new();
+    let activator = live_activator(&fixture, "gen-strict", 5, TEST_DEADLINE);
+    activator
+        .activate_initial()
+        .await
+        .expect("initial activation must succeed");
+    let opens_after_initial = activator.open_attempt_count();
+
+    // Same revision republished: not strictly greater, so nothing happens.
+    publish_revision(&fixture, "gen-strict-same", 5);
+    assert!(
+        activator
+            .maybe_activate_newer()
+            .await
+            .expect("equal revision must not error")
+            .is_none()
+    );
+
+    // Older revision republished: also not strictly greater.
+    publish_revision(&fixture, "gen-strict-older", 4);
+    assert!(
+        activator
+            .maybe_activate_newer()
+            .await
+            .expect("older revision must not error")
+            .is_none()
+    );
+
+    assert_eq!(activator.open_attempt_count(), opens_after_initial);
+    assert_eq!(
+        activator.active_revision().await,
+        Some(GenerationRevision::new(5))
+    );
+
+    // Strictly greater: this one does activate.
+    publish_revision(&fixture, "gen-strict-newer", 6);
+    assert!(
+        activator
+            .maybe_activate_newer()
+            .await
+            .expect("newer revision must activate")
+            .is_some()
+    );
+    assert_eq!(
+        activator.active_revision().await,
+        Some(GenerationRevision::new(6))
+    );
+}
+
+#[tokio::test]
+async fn a_read_already_in_flight_keeps_its_generation_across_activation() {
+    let fixture = StoreFixture::new();
+    let activator = live_activator(&fixture, "gen-hold", 1, TEST_DEADLINE);
+    let held = activator
+        .activate_initial()
+        .await
+        .expect("initial activation must succeed");
+    let held_runtime_path = held.opened_generation().runtime_copy().path().to_path_buf();
+
+    publish_revision(&fixture, "gen-hold-next", 2);
+    let swapped = activator
+        .maybe_activate_newer()
+        .await
+        .expect("newer revision must activate")
+        .expect("a newer revision was published");
+
+    // The activator now serves the new generation, but the previously-captured
+    // context is untouched: still the old generation, still readable, and its
+    // runtime copy still present on disk because the Arc keeps it alive.
+    assert_eq!(swapped.generation_id().as_str(), "gen-hold-next");
+    assert_eq!(held.generation_id().as_str(), "gen-hold");
+    assert!(held_runtime_path.exists());
+    assert!(!Arc::ptr_eq(
+        held.shared_opened_generation(),
+        swapped.shared_opened_generation()
+    ));
+    assert_eq!(count_probe_rows(held.opened_generation().db()), 1);
+}
+
+#[tokio::test]
+async fn a_failed_background_activation_leaves_the_active_generation_serving() {
+    let fixture = StoreFixture::new();
+    let activator = live_activator(&fixture, "gen-stable", 1, TEST_DEADLINE);
+    let serving = activator
+        .activate_initial()
+        .await
+        .expect("initial activation must succeed");
+
+    // Publish a newer revision whose sealed digest does not match its bytes.
+    fixture.seed_generation("gen-broken");
+    fixture.publish(&manifest_with(
+        "gen-broken",
+        2,
+        SUPPORTED_MANIFEST_SCHEMA_VERSION,
+        BranchIdentity::new(HARNESS_BRANCH, None),
+        WorkspaceIdentity::new(HARNESS_WORKSPACE),
+        SealedInventory::new(vec![database_entry("gen-broken", PLACEHOLDER_DIGEST)]),
+    ));
+
+    let error = activator
+        .maybe_activate_newer()
+        .await
+        .expect_err("a drifted successor must be rejected");
+    assert!(matches!(error, ActivationError::DigestMismatch { .. }));
+
+    let still_active = activator
+        .active_context()
+        .await
+        .expect("the previous generation must still be serving");
+    assert!(Arc::ptr_eq(
+        serving.shared_opened_generation(),
+        still_active.shared_opened_generation()
+    ));
+    assert_eq!(
+        activator.active_revision().await,
+        Some(GenerationRevision::new(1))
+    );
+    assert_eq!(count_probe_rows(still_active.opened_generation().db()), 1);
+}
+
+fn count_probe_rows(db: &cozo::DbInstance) -> usize {
+    db.run_script(
+        "?[id, val] := *probe_row{id, val}",
+        std::collections::BTreeMap::new(),
+        cozo::ScriptMutability::Immutable,
+    )
+    .expect("read probe rows")
+    .rows
+    .len()
+}
