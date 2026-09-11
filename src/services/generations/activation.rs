@@ -1147,7 +1147,7 @@ fn resolve_and_open(
             MAX_SEALED_ARTIFACT_BYTES,
             MAX_TOTAL_RUNTIME_COPY_BYTES,
         )?;
-        let found = file_digest(target.path())?;
+        let found = file_digest(target.path(), MAX_SEALED_ARTIFACT_BYTES)?;
         if found != entry.sha256() {
             return Err(ActivationError::DigestMismatch {
                 path: entry.path().to_owned(),
@@ -1375,7 +1375,29 @@ async fn read_manifest_with_fingerprint_blocking(
 }
 
 /// Recompute the SHA-256 digest of `path` as lowercase hex.
-fn file_digest(path: &Path) -> Result<String, ActivationError> {
+///
+/// The read is bounded at `per_artifact_cap + 1` bytes rather than trusting
+/// the metadata-time size the caller already checked: a sealed artifact that
+/// grows or is replaced after that stat but before this digest read would
+/// otherwise let `io::copy` stream an unbounded number of bytes through the
+/// hasher, consuming unbounded blocking-thread I/O and bypassing both the
+/// per-artifact and cumulative caps [`resolve_and_open`] is meant to enforce
+/// (F17, Fix3, round-7 review). Capping the read itself lets the cap be
+/// re-checked against the bytes actually read, the same pattern already used
+/// by [`read_manifest_bytes_bounded`] for the manifest file.
+///
+/// `per_artifact_cap` is a parameter (mirroring [`check_artifact_size`])
+/// specifically so this can be regression-tested with a small cap instead of
+/// writing multi-gigabyte files to disk.
+///
+/// # Errors
+///
+/// Returns [`ActivationError::ManifestFieldOutOfBounds`] when the file
+/// actually contains more than `per_artifact_cap` bytes at read time, even if
+/// it was within the cap at the earlier metadata check.
+fn file_digest(path: &Path, per_artifact_cap: u64) -> Result<String, ActivationError> {
+    use std::io::Read as _;
+
     let mut file = File::open(path).map_err(|source| {
         transient(format!(
             "failed to open sealed inventory file {}: {source}",
@@ -1383,12 +1405,22 @@ fn file_digest(path: &Path) -> Result<String, ActivationError> {
         ))
     })?;
     let mut hasher = Sha256::new();
-    io::copy(&mut file, &mut hasher).map_err(|source| {
+    let mut bounded = (&mut file).take(per_artifact_cap.saturating_add(1));
+    let bytes_read = io::copy(&mut bounded, &mut hasher).map_err(|source| {
         transient(format!(
             "failed to read sealed inventory file {}: {source}",
             path.display()
         ))
     })?;
+    if bytes_read > per_artifact_cap {
+        return Err(out_of_bounds(
+            "inventory.files[].size",
+            format!(
+                "sealed artifact {} grew past the {per_artifact_cap} byte per-artifact cap while being read",
+                path.display()
+            ),
+        ));
+    }
     Ok(hex_lower(&hasher.finalize()))
 }
 
@@ -1511,6 +1543,57 @@ mod bounded_manifest_read_tests {
         let mut file = File::open(&path).expect("open manifest");
         let error = read_manifest_bytes_bounded(&mut file, &path)
             .expect_err("a manifest whose real bytes exceed the cap must be rejected");
+
+        assert!(matches!(
+            error,
+            ActivationError::ManifestFieldOutOfBounds { .. }
+        ));
+    }
+}
+
+#[cfg(test)]
+mod bounded_digest_read_tests {
+    //! Regression coverage for F17 Fix3 (142.018-T round-7 review):
+    //! `file_digest` must bound its own read at `per_artifact_cap + 1`
+    //! bytes and re-check the cap against bytes actually read, rather than
+    //! trusting the caller's earlier metadata-time size check. A sealed
+    //! artifact that grows after that stat but before this read would
+    //! otherwise let `io::copy` stream it unbounded and bypass the cap.
+
+    use std::io::Write as _;
+
+    use super::{ActivationError, file_digest};
+
+    #[test]
+    fn a_file_within_the_cap_is_digested_normally() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let path = tempdir.path().join("artifact.bin");
+        std::fs::write(&path, b"small sealed artifact").expect("write artifact");
+
+        let digest =
+            file_digest(&path, 1_000).expect("a file within the cap must digest successfully");
+
+        assert_eq!(digest.len(), 64, "SHA-256 hex digest must be 64 characters");
+    }
+
+    #[test]
+    fn a_file_whose_actual_bytes_exceed_the_cap_is_rejected_by_the_read_itself() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let path = tempdir.path().join("artifact.bin");
+
+        // Write a file whose content genuinely exceeds a small per-artifact
+        // cap, simulating an artifact that grew after the caller's earlier
+        // metadata-time stat. This must be caught by the bounded read in
+        // `file_digest` itself, not merely by a separate metadata check.
+        let per_artifact_cap: u64 = 100;
+        let oversized_len = usize::try_from(per_artifact_cap).unwrap_or(usize::MAX) + 1;
+        let mut file = std::fs::File::create(&path).expect("create artifact");
+        file.write_all(&vec![b'a'; oversized_len])
+            .expect("write oversized artifact");
+        drop(file);
+
+        let error = file_digest(&path, per_artifact_cap)
+            .expect_err("a file whose real bytes exceed the cap must be rejected");
 
         assert!(matches!(
             error,
