@@ -761,3 +761,80 @@ deferred.
 **Next**: re-request Copilot review at the new HEAD, poll CI to green, poll for round-7 review
 completion, refresh the PR body's readiness block to the new HEAD, re-run the full §1.9
 readiness gate, and halt again at the merge gate for explicit operator approval.
+
+## Round 7-8 — one more digest-bounding finding, then a clean review
+
+Copilot's auto-review re-armed on push (no manual re-request needed — GitHub re-adds Copilot to
+`requested_reviewers` automatically on every HEAD advance) and landed round 7 at HEAD `7151ca12`
+alongside the round-6 fix push, plus the leftover stale-body observation from round 6.
+
+### Round 7 finding
+
+* **Unbounded per-artifact digest read** (`src/services/generations/activation.rs:1150`,
+  `resolve_and_open` → `file_digest`): the per-artifact size cap was checked only against
+  `metadata.len()` before `file_digest` streamed the whole file through `io::copy` unbounded via
+  `Sha256`. A sealed artifact that grew or was replaced after that stat but before the digest
+  read could consume unbounded blocking-thread I/O and bypass both the 4 GiB per-file and 16 GiB
+  cumulative caps — the exact same bug class as the round-6 manifest-read finding, just in the
+  per-artifact digest path instead of the manifest-parsing path.
+* **P-021 C1**: same F17 module, same size-cap/manifest-trust contract surface established by
+  round 5 and extended by round 6. Passes C1; fixed directly.
+
+### Fix
+
+* `file_digest` gained a `per_artifact_cap: u64` parameter (mirroring `check_artifact_size`'s
+  existing test-friendly parameterization) and now bounds its own read at
+  `per_artifact_cap.saturating_add(1)` bytes via `(&mut file).take(...)`, then re-checks the
+  actual bytes copied against the cap — returning the same
+  `ActivationError::ManifestFieldOutOfBounds` shape `check_artifact_size` already uses on
+  mismatch. The single call site in `resolve_and_open` now passes `MAX_SEALED_ARTIFACT_BYTES`
+  explicitly.
+* Added a new `bounded_digest_read_tests` module: a within-cap file digests normally, and a file
+  whose actual bytes exceed a small test cap is rejected by the read itself (bypassing the
+  metadata pre-check, proving the read-time bound holds independent of it).
+* Verification: `cargo check --all-targets` PASS, `cargo fmt --all -- --check` PASS,
+  `cargo clippy --all-targets -- -D warnings -D clippy::pedantic` PASS. Targeted tests: activation
+  module unit tests 6/6 (2 `size_cap_tests` + 2 `bounded_manifest_read_tests` + 2 new
+  `bounded_digest_read_tests`); full owned-surface regression sweep all green:
+  `integration_generation_activation` 28/28, `integration_generation_db_open` 9/9,
+  `integration_read_server_startup_activation` 7/7, `integration_request_entry_activation` 12/12,
+  `unit_generation_context` 4/4 — 60 tests total, 0 failures.
+* Committed as `3e43c746` — `fix(142.018-T): bound the sealed-artifact digest read (round 7)` —
+  pushed to the shipment branch.
+
+### Closing out rounds 6 and 7
+
+* Replied to both unresolved round-6/7 threads (the digest-bounding fix reply cited commit
+  `3e43c746`; the stale-body reply cited the just-pushed PR body refresh) and resolved both via
+  the GraphQL `resolveReviewThread` mutation.
+* Updated the PR body: refreshed the `## Local Review Readiness` block to HEAD `3e43c746`, added
+  Round 6/7/8 summaries to "Review findings and disposition" (now 8 rounds, 21 threads total),
+  and added stash `F86074CD` to the known-flaky-test list.
+* CI at HEAD `3e43c746`: `build` PASS (6m12s), `start-launcher-windows` PASS (2m14s) — fully
+  green, no flake this round.
+* **Round 8**: Copilot's review at HEAD `3e43c746` landed with **0 new comments** — Copilot
+  removed from `requested_reviewers` (empty array), 0 unresolved threads across all 8 rounds,
+  `mergeStateStatus: CLEAN`, `mergeable: MERGEABLE`.
+
+### Final §1.9 readiness gate — PASSES
+
+* Reviewed HEAD `3e43c746` == PR `headRefOid` `3e43c746` ✓
+* Copilot review `commit_id == HEAD` ✓ (round 8, `3e43c74685cae921cb3fa241e5aeb005a4e1fd50`)
+* Copilot removed from `requested_reviewers` ✓ (empty array)
+* 0 unresolved review threads ✓ (across all 8 rounds / 21 threads)
+* `mergeStateStatus: CLEAN`, `mergeable: MERGEABLE` ✓
+* CI green ✓ (`build` PASS, `start-launcher-windows` PASS)
+* Gate **PASSES**.
+
+### Final state — halted at merge gate again
+
+**PR #391 final state**: `state: OPEN`, `headRefOid: 3e43c746`, `mergeStateStatus: CLEAN`,
+`mergeable: MERGEABLE`. Not merged. 138-S dark-mode scope unchanged:
+`merge_approval_pre_authorized: false`, `admin_fallback_pre_authorized: false` —
+**halting here again for explicit operator merge approval**. PR #390 untouched throughout.
+143/144 reliability package untouched. Watcher readiness-latch defect remains deferred (stash
+`265F99BE`), not implemented.
+
+**Session halted awaiting operator merge approval for PR #391 at HEAD `3e43c746`.** No further
+action will be taken on this PR without an explicit operator approval signal, per Constitution
+Principle VIII / P-014 and the 138-S dark-mode scope constraints.
