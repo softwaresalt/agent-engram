@@ -72,10 +72,37 @@ Proceeding to Step 2 (Harness Generation) for the full manifest next.
   fix is attempted; if it fails C1 it will be captured as a P-021 deferred-scope-expansion entry,
   not implemented.
 
+## P-021 C1 assessment: watcher readiness-latch defect (recovery-identified)
+
+Assessed per required next action #5. **Result: FAILS C1 — captured as deferred scope, not
+implemented.**
+
+* The defect lives in `src/server/state.rs::publish_workspace_generation_transition`
+  (unconditionally clears `hydration_ready`) and `src/daemon/lifecycle_policy.rs::run_watcher_driver`
+  (never re-publishes readiness via `set_hydration_ready_for_permit`/`set_hydration_ready_for_generation`
+  when there is no transferred successor permit).
+* `142.019-T` owns `src/server/state.rs`, but its authorized contract is narrowly the
+  `ReadRequestContext` managed/generation-backed constructors (F16) — it does not touch
+  `publish_workspace_generation_transition`'s watcher/branch-refresh readiness-republication
+  behavior.
+* No other 138-S manifest item (F17 generation activation, F18 startup activation gate,
+  F20/F21 request entry/dispatch, F22/F23 tool catalogs, F24 read-input-ownership inventory)
+  owns `src/daemon/lifecycle_policy.rs` or the watcher branch-refresh readiness path.
+* This is pre-existing generation/hydration-transition machinery from prior shipments, not a
+  completion of any of 138-S's 14 manifest items — fails the P-021 C1 same-contract-surface
+  test.
+* Discovery lookup (active + archived stash) found zero prior entries describing this defect.
+* **Captured**: stash entry `265F99BE` (kind: bug, priority: high, requires deliberation: yes).
+  No thread exists yet (pre-PR), so this is the threadless capture path — no reply/resolve step
+  applies; the entry ID is recorded here and will be carried into the closure residual-risk
+  record.
+* This defect will **not** be implemented as part of 138-S.
+
 ## Next steps
 
 1. Commit and push this approval/resume record (this file) before any harness or implementation
    work begins.
 2. Resolve checkpoint `checkpoint-20260910-222318.json` via `backlogit_resolve_checkpoint` only
-   after this commit is confirmed pushed (durable resume).
+   after this commit is confirmed pushed (durable resume). **Done** — resolved at
+   2026-09-11T05:09:36Z.
 3. Proceed to Step 2 (Harness Generation) for all 14 manifest items.
