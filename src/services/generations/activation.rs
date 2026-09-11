@@ -28,6 +28,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
+use std::future::Future;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -539,6 +540,20 @@ fn transient(reason: impl Into<String>) -> ActivationError {
     }
 }
 
+/// Cheap, stat-only fingerprint of the durable manifest file.
+///
+/// Used by [`GenerationActivator::maybe_activate_newer`] to decide whether the
+/// manifest needs a full read + parse at all (F17, Fix5): a metadata-only
+/// probe is orders of magnitude cheaper than reading and JSON-parsing the
+/// manifest, so a request that repeats against an unchanged file -- most
+/// importantly, one this activator has already permanently rejected -- should
+/// pay for a `stat`, not a read and a parse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ManifestFingerprint {
+    modified: Option<std::time::SystemTime>,
+    len: u64,
+}
+
 // ── Activator ────────────────────────────────────────────────────────────────
 
 /// The currently-serving generation, paired with the revision that produced it.
@@ -569,8 +584,15 @@ pub struct GenerationActivator {
     /// performs the open and the rest observe the result.
     single_flight: tokio::sync::Mutex<()>,
     rejections: Mutex<RejectionCache>,
+    /// Cached fingerprint of the manifest bytes last actually read and
+    /// parsed, paired with the revision they parsed to. `None` until the
+    /// first full read + parse. See [`ManifestFingerprint`].
+    probe: Mutex<Option<(ManifestFingerprint, GenerationRevision)>>,
     validation_attempts: AtomicUsize,
     open_attempts: AtomicUsize,
+    /// Number of times the manifest has actually been read and parsed, as
+    /// opposed to short-circuited by the Fix5 fingerprint probe.
+    manifest_read_attempts: AtomicUsize,
 }
 
 impl GenerationActivator {
@@ -594,8 +616,10 @@ impl GenerationActivator {
             active: RwLock::new(None),
             single_flight: tokio::sync::Mutex::new(()),
             rejections: Mutex::new(RejectionCache::default()),
+            probe: Mutex::new(None),
             validation_attempts: AtomicUsize::new(0),
             open_attempts: AtomicUsize::new(0),
+            manifest_read_attempts: AtomicUsize::new(0),
         }
     }
 
@@ -636,6 +660,16 @@ impl GenerationActivator {
         self.open_attempts.load(Ordering::SeqCst)
     }
 
+    /// Number of times the manifest has actually been read and parsed.
+    ///
+    /// Exposed so a repeat call against an already-rejected, unchanged
+    /// revision can be proven to skip the full read + parse (F17, Fix5)
+    /// rather than merely inferred from timing.
+    #[must_use]
+    pub fn manifest_read_attempt_count(&self) -> usize {
+        self.manifest_read_attempts.load(Ordering::SeqCst)
+    }
+
     /// Rejection class recorded for `revision`, if it has been rejected.
     #[must_use]
     pub fn rejection_class(&self, revision: GenerationRevision) -> Option<RejectionClass> {
@@ -673,13 +707,36 @@ impl GenerationActivator {
         }
     }
 
+    /// Cached fingerprint/revision pair from the last full manifest read, if
+    /// there has been one. Recovers from poisoning for the same reason
+    /// [`GenerationActivator::with_rejections`] does: this cache is advisory,
+    /// and a panic elsewhere must not permanently disable the probe
+    /// short-circuit.
+    fn cached_probe(&self) -> Option<(ManifestFingerprint, GenerationRevision)> {
+        match self.probe.lock() {
+            Ok(guard) => *guard,
+            Err(poisoned) => *poisoned.into_inner(),
+        }
+    }
+
+    fn set_probe(&self, fingerprint: ManifestFingerprint, revision: GenerationRevision) {
+        let recorded = Some((fingerprint, revision));
+        match self.probe.lock() {
+            Ok(mut guard) => *guard = recorded,
+            Err(poisoned) => *poisoned.into_inner() = recorded,
+        }
+    }
+
     /// Perform the initial startup activation.
     ///
     /// The startup gate (F18) calls this before publishing readiness, so the
     /// deadline is what keeps a failed startup bounded rather than hung: an
     /// activation that cannot finish within [`GenerationActivator::new`]'s
     /// `deadline` is abandoned with a typed timeout instead of holding the
-    /// daemon in `starting` forever.
+    /// daemon in `starting` forever. The deadline bounds the *complete*
+    /// attempt -- single-flight lock acquisition, the manifest read and
+    /// parse, and validate-resolve-open -- not just the final open step (F17,
+    /// Fix4): see [`GenerationActivator::run_bounded`].
     ///
     /// Re-entrant by design: if a context is already active this returns it
     /// without re-opening anything, so a retried startup never produces a
@@ -692,11 +749,16 @@ impl GenerationActivator {
     /// the configured deadline. On every error path nothing is published, so a
     /// failed activation leaves no partially-opened state behind.
     pub async fn activate_initial(&self) -> Result<GenerationReadContext, ActivationError> {
+        self.run_bounded(self.activate_initial_attempt()).await
+    }
+
+    async fn activate_initial_attempt(&self) -> Result<GenerationReadContext, ActivationError> {
         let _single_flight = self.single_flight.lock().await;
         if let Some(context) = self.active_context().await {
             return Ok(context);
         }
 
+        self.manifest_read_attempts.fetch_add(1, Ordering::SeqCst);
         let manifest = parse_manifest(&read_manifest_bytes_blocking(self.store.clone()).await?)?;
         let revision = manifest.revision();
         match self.validate_and_open(manifest).await {
@@ -721,6 +783,13 @@ impl GenerationActivator {
     /// the new one is fully open, so a read already in flight is never blocked
     /// and never loses the generation it captured.
     ///
+    /// Before doing any full read or parse, a cheap stat-only fingerprint
+    /// probe checks whether the manifest is unchanged since the last time it
+    /// was actually read (F17, Fix5). When it is -- most importantly, when
+    /// the cached revision is one this activator has already permanently
+    /// rejected -- this call returns `Ok(None)` after a single `stat`,
+    /// without repeating the read + JSON parse on every request.
+    ///
     /// Returns `Ok(None)` when there is nothing to do: no newer revision was
     /// published, another caller already activated it, or the published
     /// revision is one this activator has already rejected (permanently, or
@@ -732,12 +801,30 @@ impl GenerationActivator {
     ///
     /// Returns a typed [`ActivationError`] when a strictly newer revision was
     /// found but could not be activated. The currently-active generation is
-    /// left untouched and still serving in every error case.
+    /// left untouched and still serving in every error case. As with
+    /// [`GenerationActivator::activate_initial`], the configured deadline
+    /// bounds the complete attempt, not just the final open step.
     pub async fn maybe_activate_newer(
         &self,
     ) -> Result<Option<GenerationReadContext>, ActivationError> {
-        let manifest = parse_manifest(&read_manifest_bytes_blocking(self.store.clone()).await?)?;
+        self.run_bounded(self.maybe_activate_newer_attempt()).await
+    }
+
+    async fn maybe_activate_newer_attempt(
+        &self,
+    ) -> Result<Option<GenerationReadContext>, ActivationError> {
+        if let Some(revision) = self.probe_revision_if_unchanged().await {
+            if !self.is_strictly_newer(revision).await || !self.may_attempt(revision) {
+                return Ok(None);
+            }
+        }
+
+        self.manifest_read_attempts.fetch_add(1, Ordering::SeqCst);
+        let (bytes, fingerprint) =
+            read_manifest_with_fingerprint_blocking(self.store.clone()).await?;
+        let manifest = parse_manifest(&bytes)?;
         let revision = manifest.revision();
+        self.set_probe(fingerprint, revision);
 
         if !self.is_strictly_newer(revision).await || !self.may_attempt(revision) {
             return Ok(None);
@@ -786,20 +873,66 @@ impl GenerationActivator {
         self.with_rejections_mut(|cache| cache.record(revision, class, reason, now));
     }
 
-    /// Validate, resolve, revalidate digests, and open, bounded by the deadline.
+    /// Cheap pre-check for [`GenerationActivator::maybe_activate_newer`]: if
+    /// the manifest file's fingerprint (mtime + length) matches the one
+    /// recorded the last time it was actually read and parsed, reuse the
+    /// cached revision instead of repeating that work.
+    ///
+    /// Returns `None` when there is no cached fingerprint yet, or the current
+    /// fingerprint cannot be obtained (missing/unreadable file) or does not
+    /// match the cached one -- in every such case the caller must fall
+    /// through to a full read + parse.
+    async fn probe_revision_if_unchanged(&self) -> Option<GenerationRevision> {
+        let current = manifest_fingerprint_blocking(self.store.clone()).await?;
+        let (cached_fingerprint, cached_revision) = self.cached_probe()?;
+        (cached_fingerprint == current).then_some(cached_revision)
+    }
+
+    /// Run `attempt` bounded by the configured activation deadline.
+    ///
+    /// The deadline bounds the *complete* attempt -- single-flight lock
+    /// acquisition, the manifest read and parse, and validate-resolve-open --
+    /// not just the tail portion that used to be wrapped inside
+    /// `validate_and_open` alone (F17, Fix4): a stalled manifest read or a
+    /// long single-flight wait must not keep the whole operation pending
+    /// indefinitely.
+    ///
+    /// A non-positive deadline is rejected before `attempt` is ever polled --
+    /// futures are lazy, so this check runs before any filesystem work -- so
+    /// a misconfigured deadline cannot silently degrade into "unbounded".
+    ///
+    /// On timeout the wrapped future (and anything it was awaiting, such as
+    /// an open's join handle) is dropped. A blocking task already spawned
+    /// from within it still runs to completion, but its result -- including
+    /// any opened database handle -- is dropped with it, so an abandoned
+    /// attempt closes what it opened instead of leaking a half-activated
+    /// generation.
+    async fn run_bounded<T>(
+        &self,
+        attempt: impl Future<Output = Result<T, ActivationError>>,
+    ) -> Result<T, ActivationError> {
+        let deadline_ms = u64::try_from(self.deadline.as_millis()).unwrap_or(u64::MAX);
+        if self.deadline.is_zero() {
+            return Err(ActivationError::ActivationDeadlineExceeded { deadline_ms });
+        }
+
+        match tokio::time::timeout(self.deadline, attempt).await {
+            Ok(result) => result,
+            Err(_elapsed) => Err(ActivationError::ActivationDeadlineExceeded { deadline_ms }),
+        }
+    }
+
+    /// Validate, resolve, revalidate digests, and open.
+    ///
+    /// Bounded by the caller: [`GenerationActivator::run_bounded`] wraps the
+    /// whole attempt this is one step of, so this method performs no deadline
+    /// bookkeeping of its own.
     async fn validate_and_open(
         &self,
         manifest: GenerationManifest,
     ) -> Result<GenerationReadContext, ActivationError> {
         self.validation_attempts.fetch_add(1, Ordering::SeqCst);
         let validated = ValidatedManifest::validate(manifest, &self.expected)?;
-
-        // A non-positive deadline is rejected before any filesystem work so a
-        // misconfigured deadline cannot silently degrade into "unbounded".
-        let deadline_ms = u64::try_from(self.deadline.as_millis()).unwrap_or(u64::MAX);
-        if self.deadline.is_zero() {
-            return Err(ActivationError::ActivationDeadlineExceeded { deadline_ms });
-        }
 
         self.open_attempts.fetch_add(1, Ordering::SeqCst);
         let store = self.store.clone();
@@ -808,16 +941,11 @@ impl GenerationActivator {
             resolve_and_open(&store, &runtime_root, &validated)
         });
 
-        // On timeout the join handle is dropped. The blocking task still runs
-        // to completion, but its result -- including any opened database
-        // handle -- is dropped with it, so an abandoned attempt closes what it
-        // opened instead of leaking a half-activated generation.
-        match tokio::time::timeout(self.deadline, opened).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(join_error)) => Err(transient(format!(
+        match opened.await {
+            Ok(result) => result,
+            Err(join_error) => Err(transient(format!(
                 "generation activation task did not complete: {join_error}"
             ))),
-            Err(_elapsed) => Err(ActivationError::ActivationDeadlineExceeded { deadline_ms }),
         }
     }
 
@@ -950,6 +1078,91 @@ async fn read_manifest_bytes_blocking(store: GenerationStore) -> Result<Vec<u8>,
             "generation manifest read task did not complete: {join_error}"
         ))),
     }
+}
+
+/// Read the durable active-generation manifest bytes and capture its
+/// fingerprint from the same open file handle.
+///
+/// Capturing both from one handle means the recorded fingerprint always
+/// corresponds to exactly the bytes that were parsed, with no separate
+/// stat-then-read window for the two to drift apart.
+///
+/// # Errors
+///
+/// Returns [`ActivationError::TransientActivationFailure`] when the manifest is
+/// absent or unreadable, for the same reason [`read_manifest_bytes`] does.
+fn read_manifest_with_fingerprint(
+    store: &GenerationStore,
+) -> Result<(Vec<u8>, ManifestFingerprint), ActivationError> {
+    use std::io::Read as _;
+
+    let path = store.active_manifest_path();
+    let mut file = File::open(&path).map_err(|source| {
+        if source.kind() == io::ErrorKind::NotFound {
+            transient(format!(
+                "no active generation manifest published at {}",
+                path.display()
+            ))
+        } else {
+            transient(format!(
+                "failed to open active generation manifest at {}: {source}",
+                path.display()
+            ))
+        }
+    })?;
+    let metadata = file.metadata().map_err(|source| {
+        transient(format!(
+            "failed to stat active generation manifest at {}: {source}",
+            path.display()
+        ))
+    })?;
+    let fingerprint = ManifestFingerprint {
+        modified: metadata.modified().ok(),
+        len: metadata.len(),
+    };
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).map_err(|source| {
+        transient(format!(
+            "failed to read active generation manifest at {}: {source}",
+            path.display()
+        ))
+    })?;
+    Ok((bytes, fingerprint))
+}
+
+/// Read the active manifest and its fingerprint on a blocking thread. See
+/// [`read_manifest_with_fingerprint`] and [`read_manifest_bytes_blocking`].
+async fn read_manifest_with_fingerprint_blocking(
+    store: GenerationStore,
+) -> Result<(Vec<u8>, ManifestFingerprint), ActivationError> {
+    match tokio::task::spawn_blocking(move || read_manifest_with_fingerprint(&store)).await {
+        Ok(result) => result,
+        Err(join_error) => Err(transient(format!(
+            "generation manifest read task did not complete: {join_error}"
+        ))),
+    }
+}
+
+/// Stat the manifest file without reading its bytes.
+///
+/// Returns `None` when the file is missing or its metadata cannot be read --
+/// in either case the caller falls back to a full read, which produces the
+/// proper typed error itself.
+fn manifest_fingerprint(store: &GenerationStore) -> Option<ManifestFingerprint> {
+    let path = store.active_manifest_path();
+    let metadata = std::fs::metadata(&path).ok()?;
+    Some(ManifestFingerprint {
+        modified: metadata.modified().ok(),
+        len: metadata.len(),
+    })
+}
+
+/// Stat the manifest file on a blocking thread. See [`manifest_fingerprint`].
+async fn manifest_fingerprint_blocking(store: GenerationStore) -> Option<ManifestFingerprint> {
+    tokio::task::spawn_blocking(move || manifest_fingerprint(&store))
+        .await
+        .ok()
+        .flatten()
 }
 
 /// Recompute the SHA-256 digest of `path` as lowercase hex.

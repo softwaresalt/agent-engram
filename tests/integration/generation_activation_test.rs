@@ -546,8 +546,34 @@ async fn activate_initial_is_bounded_by_the_activation_deadline() {
         ActivationError::ActivationDeadlineExceeded { deadline_ms: 0 }
     ));
     assert!(activator.active_context().await.is_none());
-    // The deadline is enforced before any open is attempted, so no database
-    // handle is ever created for an attempt that cannot finish.
+    // The deadline now bounds the complete attempt (F17, Fix4): it is
+    // enforced before the manifest is even read, not merely before the final
+    // open, so neither a read nor an open is ever attempted.
+    assert_eq!(activator.manifest_read_attempt_count(), 0);
+    assert_eq!(activator.open_attempt_count(), 0);
+}
+
+#[tokio::test]
+async fn maybe_activate_newer_is_bounded_by_the_activation_deadline_before_any_read() {
+    // A fresh activator has no active generation, so any published revision
+    // is "strictly newer" and `maybe_activate_newer` would normally attempt
+    // it. With a zero deadline the whole attempt -- including the manifest
+    // read that used to run unconditionally before the deadline was ever
+    // consulted -- must be abandoned up front.
+    let fixture = StoreFixture::new();
+    let activator = live_activator(&fixture, "gen-deadline-newer", 1, Duration::ZERO);
+
+    let error = activator
+        .maybe_activate_newer()
+        .await
+        .expect_err("an exhausted deadline must abandon the attempt");
+
+    assert!(matches!(
+        error,
+        ActivationError::ActivationDeadlineExceeded { deadline_ms: 0 }
+    ));
+    assert!(activator.active_context().await.is_none());
+    assert_eq!(activator.manifest_read_attempt_count(), 0);
     assert_eq!(activator.open_attempt_count(), 0);
 }
 
@@ -797,6 +823,7 @@ async fn a_permanently_rejected_revision_is_recorded_and_never_retried() {
 
     let validations_after_first = activator.validation_attempt_count();
     let opens_after_first = activator.open_attempt_count();
+    let reads_after_first = activator.manifest_read_attempt_count();
 
     // Every subsequent reconciliation must perform no work at all.
     for _ in 0..5 {
@@ -814,6 +841,10 @@ async fn a_permanently_rejected_revision_is_recorded_and_never_retried() {
         validations_after_first
     );
     assert_eq!(activator.open_attempt_count(), opens_after_first);
+    // The cheap fingerprint probe (F17, Fix5) must short-circuit before the
+    // manifest is even read again: an unchanged, already-rejected revision
+    // must not repeat the full read + parse on every call.
+    assert_eq!(activator.manifest_read_attempt_count(), reads_after_first);
     assert_eq!(
         activator.active_revision().await,
         Some(GenerationRevision::new(1))
