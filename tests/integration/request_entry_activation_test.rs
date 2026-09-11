@@ -137,6 +137,7 @@ async fn a_malformed_frame_is_refused_before_any_activation_work() {
     let fixture = Fixture::new();
     fixture.publish_generation("gen-entry", 1);
     let gate = fixture.gate();
+    gate.socket_bound().await;
     gate.run_initial_activation()
         .await
         .expect("initial activation must succeed");
@@ -168,6 +169,7 @@ async fn an_admitted_request_captures_exactly_one_read_request_context() {
     let fixture = Fixture::new();
     fixture.publish_generation("gen-capture", 1);
     let gate = fixture.gate();
+    gate.socket_bound().await;
     let startup_context = gate
         .run_initial_activation()
         .await
@@ -188,6 +190,7 @@ async fn background_reconciliation_installs_a_newer_generation_without_blocking_
     let fixture = Fixture::new();
     fixture.publish_generation("gen-old", 1);
     let gate = fixture.gate();
+    gate.socket_bound().await;
     let old_context = gate
         .run_initial_activation()
         .await
@@ -245,6 +248,7 @@ async fn health_probe_does_not_trigger_reconciliation() {
     let fixture = Fixture::new();
     fixture.publish_generation("gen-health", 1);
     let gate = fixture.gate();
+    gate.socket_bound().await;
     gate.run_initial_activation()
         .await
         .expect("initial activation must succeed");
@@ -261,6 +265,7 @@ async fn shutdown_does_not_trigger_reconciliation() {
     let fixture = Fixture::new();
     fixture.publish_generation("gen-shutdown", 1);
     let gate = fixture.gate();
+    gate.socket_bound().await;
     gate.run_initial_activation()
         .await
         .expect("initial activation must succeed");
@@ -277,6 +282,7 @@ async fn an_unknown_method_does_not_trigger_reconciliation() {
     let fixture = Fixture::new();
     fixture.publish_generation("gen-unknown", 1);
     let gate = fixture.gate();
+    gate.socket_bound().await;
     gate.run_initial_activation()
         .await
         .expect("initial activation must succeed");
@@ -293,6 +299,7 @@ async fn a_method_refused_by_the_capability_gate_does_not_trigger_reconciliation
     let fixture = Fixture::new();
     fixture.publish_generation("gen-write-refused", 1);
     let gate = fixture.gate();
+    gate.socket_bound().await;
     gate.run_initial_activation()
         .await
         .expect("initial activation must succeed");
@@ -315,6 +322,7 @@ async fn reconciliation_is_the_only_activation_trigger_and_costs_nothing_when_id
     let fixture = Fixture::new();
     fixture.publish_generation("gen-idle", 1);
     let gate = fixture.gate();
+    gate.socket_bound().await;
     gate.run_initial_activation()
         .await
         .expect("initial activation must succeed");
@@ -333,6 +341,7 @@ async fn a_failed_reconciliation_still_admits_against_the_active_generation() {
     let fixture = Fixture::new();
     fixture.publish_generation("gen-serving", 1);
     let gate = fixture.gate();
+    gate.socket_bound().await;
     let serving = gate
         .run_initial_activation()
         .await
@@ -359,6 +368,7 @@ async fn try_claim_reconciliation_is_exclusive_until_released() {
     let fixture = Fixture::new();
     fixture.publish_generation("gen-claim", 1);
     let gate = fixture.gate();
+    gate.socket_bound().await;
     gate.run_initial_activation()
         .await
         .expect("initial activation must succeed");
@@ -386,6 +396,7 @@ async fn admitted_reads_never_spawn_a_second_reconciliation_task_while_one_is_in
     let fixture = Fixture::new();
     fixture.publish_generation("gen-cas-old", 1);
     let gate = fixture.gate();
+    gate.socket_bound().await;
     gate.run_initial_activation()
         .await
         .expect("initial activation must succeed");

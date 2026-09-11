@@ -245,13 +245,28 @@ impl ReadServerStartupGate {
     /// so a retried startup reuses the generation it already opened rather
     /// than opening a second copy of it.
     ///
+    /// Must be called only after [`socket_bound`][Self::socket_bound]: the
+    /// bind-first guarantee documented there requires that the socket is
+    /// already accepting connections before activation work begins, so this
+    /// method never advances the phase on the caller's behalf.
+    ///
     /// # Errors
     ///
-    /// Returns the typed [`ActivationError`] produced by the activation
-    /// attempt. The gate moves to [`ReadServerPhase::Failed`] and readiness
-    /// stays withheld; nothing partially-activated is ever published.
+    /// Returns [`ActivationError::TransientActivationFailure`] without
+    /// mutating the phase when called while still [`ReadServerPhase::Binding`]
+    /// -- this is a contract-ordering error a caller can retry after binding
+    /// the socket, not a permanent activation failure, so it must stay
+    /// distinguishable from [`ReadServerPhase::Failed`]. Otherwise returns the
+    /// typed [`ActivationError`] produced by the activation attempt; the gate
+    /// moves to [`ReadServerPhase::Failed`] and readiness stays withheld so
+    /// nothing partially-activated is ever published.
     pub async fn run_initial_activation(&self) -> Result<Arc<ReadRequestContext>, ActivationError> {
-        self.socket_bound().await;
+        if matches!(self.phase().await, ReadServerPhase::Binding) {
+            return Err(ActivationError::TransientActivationFailure {
+                reason: "socket must be bound via socket_bound() before initial activation runs"
+                    .to_owned(),
+            });
+        }
 
         match self.activator.activate_initial().await {
             Ok(generation) => {

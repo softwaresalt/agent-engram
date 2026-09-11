@@ -150,6 +150,7 @@ async fn exactly_one_generation_context_is_open_once_readiness_is_published() {
     fixture.publish("gen-single", 1, &digest);
     let gate = fixture.gate();
 
+    gate.socket_bound().await;
     let first = gate
         .run_initial_activation()
         .await
@@ -187,6 +188,7 @@ async fn a_failed_initial_activation_reports_a_typed_error_and_never_reports_rea
     fixture.publish("gen-broken", 1, PLACEHOLDER_DIGEST);
     let gate = fixture.gate();
 
+    gate.socket_bound().await;
     let error = gate
         .run_initial_activation()
         .await
@@ -205,6 +207,7 @@ async fn a_missing_manifest_reports_a_typed_availability_error() {
     let fixture = Fixture::new();
     let gate = fixture.gate();
 
+    gate.socket_bound().await;
     let error = gate
         .run_initial_activation()
         .await
@@ -251,4 +254,44 @@ async fn the_gates_identity_is_derived_from_the_wrapped_activators_expected_iden
         (HARNESS_BRANCH, HARNESS_WORKSPACE),
         "the gate's identity must match the identity sealed into its activator"
     );
+}
+
+#[tokio::test]
+async fn initial_activation_is_refused_until_the_socket_has_bound() {
+    // Regression guard: `run_initial_activation` must never synthesize its
+    // own `socket_bound()` call. Calling it while still `Binding` is a
+    // contract-ordering error a caller can retry after binding, not a
+    // permanent activation failure -- so the phase must stay `Binding`, never
+    // `Failed`, and a subsequent bind-then-retry must still succeed.
+    let fixture = Fixture::new();
+    let digest = fixture.seed_generation("gen-unbound");
+    fixture.publish("gen-unbound", 1, &digest);
+    let gate = fixture.gate();
+
+    assert_eq!(gate.phase().await, ReadServerPhase::Binding);
+
+    let error = gate
+        .run_initial_activation()
+        .await
+        .expect_err("activation before socket_bound() must be refused");
+
+    assert!(matches!(
+        error,
+        ActivationError::TransientActivationFailure { .. }
+    ));
+    assert_eq!(
+        gate.phase().await,
+        ReadServerPhase::Binding,
+        "a contract-ordering error must not be indistinguishable from a permanent failure"
+    );
+
+    gate.socket_bound().await;
+    let context = gate
+        .run_initial_activation()
+        .await
+        .expect("activation must succeed once the socket has bound");
+
+    assert_eq!(gate.phase().await, ReadServerPhase::Ready);
+    assert_eq!(context.workspace_id(), HARNESS_WORKSPACE);
+    assert_eq!(context.branch(), HARNESS_BRANCH);
 }
