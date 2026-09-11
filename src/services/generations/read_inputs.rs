@@ -457,3 +457,330 @@ pub fn duplicate_enumerated_ids() -> Vec<&'static str> {
     }
     duplicates.into_iter().collect()
 }
+
+// ── Classification (142.033.002-ST) ──────────────────────────────────────────
+
+/// Who owns an input, from the ReadServer's point of view.
+///
+/// The three answers are exhaustive by construction: either the sealed
+/// generation supplies the bytes, or something outside the generation supplies
+/// them and that exception is individually justified, or the input has no
+/// business being read at all in this mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ReadInputClass {
+    /// Supplied by the sealed generation the request was admitted against.
+    ///
+    /// These are the inputs the whole design is for: immutable for the life of
+    /// the generation, so two reads admitted against the same generation
+    /// cannot disagree.
+    GenerationOwned,
+    /// Supplied from outside the generation, but pinned for the process
+    /// lifetime and therefore stable across every request.
+    ///
+    /// Every entry in this class is an exception and must carry its own
+    /// justification; a pinned-operational input that is not actually pinned
+    /// is a correctness bug wearing a classification.
+    PinnedOperational,
+    /// Must not be read in `ReadServer` mode at all.
+    ///
+    /// Typically a live, indexer-mutable input whose value can change
+    /// underneath an in-flight read and thereby break the single-generation
+    /// guarantee.
+    DisallowedInReadServerMode,
+}
+
+impl ReadInputClass {
+    /// Canonical setting string for this class.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        // Exhaustive with no wildcard arm on purpose: a new class cannot be
+        // added without deciding how it serializes.
+        match self {
+            Self::GenerationOwned => "generation_owned",
+            Self::PinnedOperational => "pinned_operational",
+            Self::DisallowedInReadServerMode => "disallowed_in_read_server_mode",
+        }
+    }
+
+    /// Whether an entry of this class must carry an individual justification.
+    #[must_use]
+    pub const fn requires_justification(self) -> bool {
+        match self {
+            Self::PinnedOperational | Self::DisallowedInReadServerMode => true,
+            Self::GenerationOwned => false,
+        }
+    }
+}
+
+impl std::fmt::Display for ReadInputClass {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// The ownership verdict for one enumerated input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReadInputClassification {
+    /// Identifier, matching a [`ReadInput::id`] in [`ENUMERATED_READ_INPUTS`].
+    pub id: &'static str,
+    /// The ownership verdict.
+    pub class: ReadInputClass,
+    /// Why the verdict is correct. Required for every non-generation class.
+    pub justification: &'static str,
+}
+
+const fn owned(id: &'static str) -> ReadInputClassification {
+    ReadInputClassification {
+        id,
+        class: ReadInputClass::GenerationOwned,
+        justification: "",
+    }
+}
+
+const fn pinned(id: &'static str, justification: &'static str) -> ReadInputClassification {
+    ReadInputClassification {
+        id,
+        class: ReadInputClass::PinnedOperational,
+        justification,
+    }
+}
+
+const fn disallowed(id: &'static str, justification: &'static str) -> ReadInputClassification {
+    ReadInputClassification {
+        id,
+        class: ReadInputClass::DisallowedInReadServerMode,
+        justification,
+    }
+}
+
+/// The ownership verdict for every enumerated input.
+///
+/// Deliberately a second table rather than a field on [`ReadInput`]: see the
+/// module docs. Reconciling two tables is what lets a newly enumerated input
+/// be RED until somebody classifies it.
+pub const CLASSIFIED_READ_INPUTS: &[ReadInputClassification] = &[
+    // -- Generation database relations: the sealed payload -------------------
+    owned("db.backlog_content_record"),
+    owned("db.backlog_edge"),
+    owned("db.backlog_node"),
+    owned("db.calls_edge"),
+    owned("db.class_code"),
+    owned("db.class_embedding"),
+    owned("db.class_meta"),
+    owned("db.commit_node"),
+    owned("db.concerns_edge"),
+    owned("db.content_record"),
+    owned("db.dataset_node"),
+    owned("db.defines_edge"),
+    owned("db.file_hash"),
+    owned("db.file_node"),
+    owned("db.function_code"),
+    owned("db.function_embedding"),
+    owned("db.function_meta"),
+    owned("db.import_node"),
+    owned("db.imports_edge"),
+    owned("db.index_canonical_workspace_snapshot"),
+    owned("db.inherits_from_edge"),
+    owned("db.interface_code"),
+    owned("db.interface_embedding"),
+    owned("db.interface_meta"),
+    owned("db.lineage_edge"),
+    owned("db.lineage_edge_evidence"),
+    owned("db.lineage_index_state"),
+    owned("db.powerbi_edge"),
+    owned("db.powerbi_file_index_state"),
+    owned("db.powerbi_node"),
+    owned("db.references_edge"),
+    owned("db.rewrite"),
+    owned("db.schema_meta"),
+    owned("db.staged_call"),
+    // -- Workspace snapshot fields ------------------------------------------
+    pinned(
+        "snapshot.workspace_id",
+        "Pinned at activation from the manifest's workspace identity. It is the identity the \
+         generation was sealed for, so it cannot drift without a new generation.",
+    ),
+    pinned(
+        "snapshot.workspace_uuid",
+        "Same provenance as workspace_id: carried on the manifest's workspace identity and \
+         therefore constant for the generation's lifetime.",
+    ),
+    pinned(
+        "snapshot.branch",
+        "Pinned at activation from the manifest's branch identity. A branch change produces a \
+         different generation rather than mutating this value.",
+    ),
+    pinned(
+        "snapshot.data_dir",
+        "Resolved once to the generation's runtime copy root. It addresses generation-owned \
+         bytes, so pinning it is what keeps reads inside the sealed payload.",
+    ),
+    pinned(
+        "snapshot.path",
+        "The workspace root path string, fixed at process start by the binding. Only the path \
+         value is pinned-operational; reading the tree it points at is classified separately \
+         and disallowed.",
+    ),
+    disallowed(
+        "snapshot.last_flush",
+        "An indexer-write watermark. It changes whenever the indexer flushes, so serving it \
+         from a read server would report progress the served generation does not contain.",
+    ),
+    disallowed(
+        "snapshot.stale_files",
+        "Derived from live filesystem comparison against the mutable workspace tree, which is \
+         exactly the mutable input generations exist to remove from the read path.",
+    ),
+    pinned(
+        "snapshot.connection_count",
+        "A daemon-local transport counter, not workspace data. It describes the server process \
+         itself, so it neither belongs to nor can contradict the served generation.",
+    ),
+    disallowed(
+        "snapshot.file_mtimes",
+        "Live mtime fingerprints of the mutable workspace tree. Two reads admitted against the \
+         same generation could observe different values, breaking the single-generation \
+         guarantee.",
+    ),
+    // -- Live workspace-root paths ------------------------------------------
+    disallowed(
+        "workspace_root.source_file_bytes",
+        "The indexer may rewrite these bytes mid-request. Snippets must come from the sealed \
+         content relations instead, which is why the code relations are enumerated separately.",
+    ),
+    disallowed(
+        "workspace_root.git_directory",
+        "Git history is mutable (commits, rebases, gc). Commit-derived answers must come from \
+         the sealed commit_node/concerns_edge relations captured at index time.",
+    ),
+    disallowed(
+        "workspace_root.directory_listing",
+        "A live directory walk reports files the generation never indexed, producing statistics \
+         that contradict the generation being served.",
+    ),
+    // -- `.engram/` control paths --------------------------------------------
+    pinned(
+        "engram.generations_active_manifest",
+        "Read only by the activation seam, never by a read handler. It is the generation \
+         boundary itself: reconciling it is how a request learns which generation to pin, so \
+         it sits outside the payload by definition.",
+    ),
+    owned("engram.generation_database_file"),
+    owned("engram.generation_runtime_copy"),
+    disallowed(
+        "engram.legacy_managed_database",
+        "The managed-mode database is written in place by the indexer. A read server must reach \
+         its data only through a sealed generation, never through the live managed file.",
+    ),
+    pinned(
+        "engram.run_socket",
+        "Bound once before readiness is reported and never rebound; it is transport, not data, \
+         and carries no generation-dependent content.",
+    ),
+    pinned(
+        "engram.run_lock",
+        "Acquired once at startup for single-instance enforcement. Transport/lifecycle only, \
+         with no bearing on served content.",
+    ),
+    pinned(
+        "engram.config_toml",
+        "Loaded once at startup and held for the process lifetime. Because it is never re-read \
+         per request, every request observes the same configuration.",
+    ),
+    // -- Environment values ---------------------------------------------------
+    pinned(
+        "env.ENGRAM_WORKSPACE",
+        "Read once during startup binding. The process environment is fixed at exec time, so \
+         this cannot change between requests.",
+    ),
+    pinned(
+        "env.ENGRAM_DATA_DIR",
+        "Read once during startup binding to locate the store root; fixed for the process \
+         lifetime.",
+    ),
+    pinned(
+        "env.ENGRAM_LOG_FORMAT",
+        "Startup logging configuration only. It affects diagnostics, never served content.",
+    ),
+    pinned(
+        "env.ENGRAM_IDLE_TIMEOUT_MS",
+        "Startup lifecycle configuration. It governs when the process exits, not what any \
+         request observes.",
+    ),
+    pinned(
+        "env.ENGRAM_READY_TIMEOUT_MS",
+        "Startup lifecycle configuration consumed before readiness is reported; never consulted \
+         on the read path.",
+    ),
+    disallowed(
+        "env.ENGRAM_AUTO_REINDEX",
+        "Enables indexer writes. A read server honouring it would perform the very mutation the \
+         mode exists to exclude.",
+    ),
+    disallowed(
+        "env.ENGRAM_TEST_STARTUP_DELAY_MS",
+        "Test-harness fault injection. It must have no effect on a production read server, so \
+         it is excluded rather than pinned.",
+    ),
+    disallowed(
+        "env.ENGRAM_TEST_CAPTURE_AUTOSPAWN_TRACE",
+        "Test-harness tracing hook. Same reasoning as the startup delay: excluded from the \
+         production read path entirely.",
+    ),
+];
+
+// ── Fail-on-unclassified guard ───────────────────────────────────────────────
+
+/// Enumerated inputs that carry no ownership verdict.
+///
+/// This is the guard the F24 contract test exists to run. A non-empty result
+/// means somebody found a new input and stopped before answering the only
+/// question that matters about it.
+#[must_use]
+pub fn unclassified_inputs() -> Vec<&'static str> {
+    let classified: BTreeSet<&str> = CLASSIFIED_READ_INPUTS
+        .iter()
+        .map(|entry| entry.id)
+        .collect();
+    ENUMERATED_READ_INPUTS
+        .iter()
+        .map(|entry| entry.id)
+        .filter(|id| !classified.contains(id))
+        .collect()
+}
+
+/// Classifications with no matching enumerated input.
+///
+/// The mirror of [`unclassified_inputs`]: it catches a verdict left behind
+/// after the input it described was removed or renamed, which would otherwise
+/// let the two tables agree on a count while disagreeing on content.
+#[must_use]
+pub fn unenumerated_classifications() -> Vec<&'static str> {
+    let enumerated: BTreeSet<&str> = ENUMERATED_READ_INPUTS
+        .iter()
+        .map(|entry| entry.id)
+        .collect();
+    CLASSIFIED_READ_INPUTS
+        .iter()
+        .map(|entry| entry.id)
+        .filter(|id| !enumerated.contains(id))
+        .collect()
+}
+
+/// Look up the ownership verdict for an enumerated input.
+#[must_use]
+pub fn classification_of(id: &str) -> Option<&'static ReadInputClassification> {
+    CLASSIFIED_READ_INPUTS.iter().find(|entry| entry.id == id)
+}
+
+/// Classifications that owe a justification but do not supply one.
+#[must_use]
+pub fn unjustified_classifications() -> Vec<&'static str> {
+    CLASSIFIED_READ_INPUTS
+        .iter()
+        .filter(|entry| {
+            entry.class.requires_justification() && entry.justification.trim().is_empty()
+        })
+        .map(|entry| entry.id)
+        .collect()
+}

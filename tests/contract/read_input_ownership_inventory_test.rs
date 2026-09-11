@@ -15,8 +15,10 @@
 use std::collections::BTreeSet;
 
 use engram::services::generations::{
-    ENUMERATED_READ_INPUTS, ReadInputKind, descriptors_without_enumerated_inputs,
-    duplicate_enumerated_ids, read_mode_descriptor_names,
+    CLASSIFIED_READ_INPUTS, ENUMERATED_READ_INPUTS, ReadInputClass, ReadInputKind,
+    classification_of, descriptors_without_enumerated_inputs, duplicate_enumerated_ids,
+    read_mode_descriptor_names, unclassified_inputs, unenumerated_classifications,
+    unjustified_classifications,
 };
 
 // ── Breadth pass (142.033.001-ST) ────────────────────────────────────────────
@@ -116,4 +118,148 @@ fn the_database_relation_surface_covers_the_declared_schema() {
             "relation '{relation}' is reachable from Read dispatch but is not enumerated"
         );
     }
+}
+
+// ── Ownership pass (142.033.002-ST) ──────────────────────────────────────────
+
+#[test]
+fn no_enumerated_input_is_left_unclassified() {
+    // The guard. If this fires, an input was discovered and its ownership
+    // question was never answered -- which is a RED state by design, not a
+    // formality.
+    assert_eq!(
+        unclassified_inputs(),
+        Vec::<&str>::new(),
+        "these enumerated inputs carry no ownership verdict"
+    );
+}
+
+#[test]
+fn no_classification_describes_an_input_that_no_longer_exists() {
+    assert_eq!(
+        unenumerated_classifications(),
+        Vec::<&str>::new(),
+        "these verdicts describe inputs that are not enumerated"
+    );
+}
+
+#[test]
+fn the_two_tables_are_the_same_set() {
+    let enumerated: BTreeSet<&str> = ENUMERATED_READ_INPUTS
+        .iter()
+        .map(|entry| entry.id)
+        .collect();
+    let classified: BTreeSet<&str> = CLASSIFIED_READ_INPUTS
+        .iter()
+        .map(|entry| entry.id)
+        .collect();
+    assert_eq!(
+        enumerated, classified,
+        "the enumeration set and the classification set must be identical"
+    );
+}
+
+#[test]
+fn every_pinned_operational_entry_is_individually_justified() {
+    // A pinned-operational entry is an exception to the single-generation
+    // rule. An unexplained exception is indistinguishable from an oversight.
+    assert_eq!(
+        unjustified_classifications(),
+        Vec::<&str>::new(),
+        "these non-generation-owned verdicts do not say why they are safe"
+    );
+
+    for entry in CLASSIFIED_READ_INPUTS {
+        if entry.class == ReadInputClass::PinnedOperational {
+            assert!(
+                entry.justification.len() > 40,
+                "input '{}' has a justification too terse to review: {:?}",
+                entry.id,
+                entry.justification
+            );
+        }
+    }
+}
+
+#[test]
+fn the_generation_database_relations_are_all_generation_owned() {
+    for entry in ENUMERATED_READ_INPUTS {
+        if entry.kind != ReadInputKind::DatabaseRelation {
+            continue;
+        }
+        let verdict = classification_of(entry.id)
+            .unwrap_or_else(|| panic!("relation '{}' must be classified", entry.id));
+        assert_eq!(
+            verdict.class,
+            ReadInputClass::GenerationOwned,
+            "relation '{}' lives inside the sealed generation and must be generation-owned",
+            entry.id
+        );
+    }
+}
+
+#[test]
+fn live_workspace_tree_inputs_are_disallowed_in_read_server_mode() {
+    // The mutable workspace tree is precisely what generations exist to keep
+    // off the read path; none of it may be pinned-operational.
+    for entry in ENUMERATED_READ_INPUTS {
+        if entry.kind != ReadInputKind::WorkspaceRootPath {
+            continue;
+        }
+        let verdict = classification_of(entry.id)
+            .unwrap_or_else(|| panic!("input '{}' must be classified", entry.id));
+        assert_eq!(
+            verdict.class,
+            ReadInputClass::DisallowedInReadServerMode,
+            "input '{}' reads the live workspace tree and must be disallowed",
+            entry.id
+        );
+    }
+}
+
+#[test]
+fn every_verdict_is_one_of_the_three_reviewed_classes() {
+    // Exhaustive match with no wildcard arm: a new class cannot slip through
+    // as "probably fine".
+    for entry in CLASSIFIED_READ_INPUTS {
+        let label = match entry.class {
+            ReadInputClass::GenerationOwned => "generation_owned",
+            ReadInputClass::PinnedOperational => "pinned_operational",
+            ReadInputClass::DisallowedInReadServerMode => "disallowed_in_read_server_mode",
+        };
+        assert_eq!(
+            label,
+            entry.class.as_str(),
+            "class labelling for '{}' disagrees with its canonical string",
+            entry.id
+        );
+    }
+}
+
+#[test]
+fn mutable_indexer_watermarks_never_reach_a_read() {
+    for id in [
+        "snapshot.last_flush",
+        "snapshot.stale_files",
+        "snapshot.file_mtimes",
+        "engram.legacy_managed_database",
+        "env.ENGRAM_AUTO_REINDEX",
+    ] {
+        let verdict =
+            classification_of(id).unwrap_or_else(|| panic!("input '{id}' must be classified"));
+        assert_eq!(
+            verdict.class,
+            ReadInputClass::DisallowedInReadServerMode,
+            "input '{id}' is indexer-mutable and must be disallowed in ReadServer mode"
+        );
+    }
+}
+
+#[test]
+fn read_mode_descriptors_remain_the_anchor_for_the_classified_surface() {
+    // Re-assert the anchor after classification so the two passes cannot be
+    // satisfied by different descriptor sets.
+    assert!(!read_mode_descriptor_names().is_empty());
+    assert_eq!(descriptors_without_enumerated_inputs(), Vec::<&str>::new());
+    assert_eq!(duplicate_enumerated_ids(), Vec::<&str>::new());
 }
