@@ -43,6 +43,11 @@ pub enum ReadInputKind {
     EngramPath,
     /// A process environment variable.
     EnvironmentValue,
+    /// An in-memory operational gauge or counter on the daemon process
+    /// itself (uptime, call counts, latency, watcher activity, embedding
+    /// model load state), independent of any workspace snapshot or
+    /// generation.
+    DaemonRuntimeMetric,
 }
 
 impl ReadInputKind {
@@ -55,6 +60,7 @@ impl ReadInputKind {
             Self::WorkspaceRootPath => "workspace_root_path",
             Self::EngramPath => "engram_path",
             Self::EnvironmentValue => "environment_value",
+            Self::DaemonRuntimeMetric => "daemon_runtime_metric",
         }
     }
 
@@ -67,6 +73,7 @@ impl ReadInputKind {
             Self::WorkspaceRootPath,
             Self::EngramPath,
             Self::EnvironmentValue,
+            Self::DaemonRuntimeMetric,
         ]
     }
 }
@@ -311,7 +318,7 @@ pub const ENUMERATED_READ_INPUTS: &[ReadInput] = &[
     input(
         "snapshot.connection_count",
         ReadInputKind::WorkspaceSnapshotField,
-        "get_daemon_status",
+        "get_daemon_status, get_health_report",
     ),
     input(
         "snapshot.file_mtimes",
@@ -358,7 +365,7 @@ pub const ENUMERATED_READ_INPUTS: &[ReadInput] = &[
     input(
         "engram.run_socket",
         ReadInputKind::EngramPath,
-        "* (transport)",
+        "* (transport), doctor --smoke",
     ),
     input(
         "engram.run_lock",
@@ -369,6 +376,16 @@ pub const ENUMERATED_READ_INPUTS: &[ReadInput] = &[
         "engram.config_toml",
         ReadInputKind::EngramPath,
         "* (startup configuration)",
+    ),
+    input(
+        "engram.usage_events_file",
+        ReadInputKind::EngramPath,
+        "get_health_report, get_branch_metrics, get_token_savings_report, get_evaluation_report",
+    ),
+    input(
+        "engram.retrieval_eval_reports_dir",
+        ReadInputKind::EngramPath,
+        "get_retrieval_eval_report",
     ),
     // -- Environment values --------------------------------------------------
     input(
@@ -411,6 +428,47 @@ pub const ENUMERATED_READ_INPUTS: &[ReadInput] = &[
         ReadInputKind::EnvironmentValue,
         "* (test harness only)",
     ),
+    // -- Daemon runtime metrics ----------------------------------------------
+    input(
+        "daemon.uptime_seconds",
+        ReadInputKind::DaemonRuntimeMetric,
+        "get_health_report",
+    ),
+    input(
+        "daemon.tool_call_count",
+        ReadInputKind::DaemonRuntimeMetric,
+        "get_health_report",
+    ),
+    input(
+        "daemon.latency_percentiles",
+        ReadInputKind::DaemonRuntimeMetric,
+        "get_health_report",
+    ),
+    input(
+        "daemon.watcher_stats",
+        ReadInputKind::DaemonRuntimeMetric,
+        "get_health_report",
+    ),
+    input(
+        "daemon.process_memory_bytes",
+        ReadInputKind::DaemonRuntimeMetric,
+        "get_health_report",
+    ),
+    input(
+        "daemon.embedding_model_status",
+        ReadInputKind::DaemonRuntimeMetric,
+        "get_health_report",
+    ),
+    input(
+        "daemon.query_timing_snapshot",
+        ReadInputKind::DaemonRuntimeMetric,
+        "get_health_report",
+    ),
+    input(
+        "daemon.mutable_script_retry_metrics",
+        ReadInputKind::DaemonRuntimeMetric,
+        "get_mutable_script_retry_metrics",
+    ),
 ];
 
 /// Descriptor names the inventory was enumerated against.
@@ -433,6 +491,18 @@ pub fn read_mode_descriptor_names() -> Vec<&'static str> {
 /// A descriptor that reaches nothing is either genuinely input-free or an
 /// enumeration gap; the contract test treats the empty result as the only
 /// acceptable answer for descriptors that read anything at all.
+///
+/// This only recognizes an entry as covering a descriptor when its
+/// `reached_via` string names that descriptor specifically. It deliberately
+/// does **not** treat a `'*'` anywhere in `reached_via` as a blanket match:
+/// several genuinely global entries (e.g. `env.ENGRAM_AUTO_REINDEX`'s
+/// `"* (startup lifecycle)"`) contain a literal `'*'` character, and a
+/// substring match against the whole field would make this check trivially
+/// true for every descriptor as soon as any single entry anywhere used that
+/// character — which is exactly the vacuous guard this function exists to
+/// avoid. A row that is genuinely global still documents that with a `"*"`
+/// `reached_via` value for human readers; it just does not, by itself,
+/// satisfy any specific descriptor's coverage requirement here.
 #[must_use]
 pub fn descriptors_without_enumerated_inputs() -> Vec<&'static str> {
     read_mode_descriptor_names()
@@ -440,7 +510,7 @@ pub fn descriptors_without_enumerated_inputs() -> Vec<&'static str> {
         .filter(|name| {
             !ENUMERATED_READ_INPUTS
                 .iter()
-                .any(|entry| entry.reached_via.contains('*') || entry.reached_via.contains(name))
+                .any(|entry| entry.reached_via.contains(name))
         })
         .collect()
 }
@@ -689,6 +759,18 @@ pub const CLASSIFIED_READ_INPUTS: &[ReadInputClassification] = &[
         "Loaded once at startup and held for the process lifetime. Because it is never re-read \
          per request, every request observes the same configuration.",
     ),
+    disallowed(
+        "engram.usage_events_file",
+        "A live, append-only usage-event log the daemon keeps writing for the process lifetime. \
+         It is not part of the sealed generation payload, and two reads against the same \
+         generation can observe different event counts as new events are appended.",
+    ),
+    disallowed(
+        "engram.retrieval_eval_reports_dir",
+        "Evaluation run reports are written by out-of-band evaluation tooling on an ongoing \
+         basis and are not captured by generation sealing, so the newest report available can \
+         change between two reads admitted against the same generation.",
+    ),
     // -- Environment values ---------------------------------------------------
     pinned(
         "env.ENGRAM_WORKSPACE",
@@ -728,6 +810,51 @@ pub const CLASSIFIED_READ_INPUTS: &[ReadInputClassification] = &[
         "env.ENGRAM_TEST_CAPTURE_AUTOSPAWN_TRACE",
         "Test-harness tracing hook. Same reasoning as the startup delay: excluded from the \
          production read path entirely.",
+    ),
+    // -- Daemon runtime metrics -----------------------------------------------
+    disallowed(
+        "daemon.uptime_seconds",
+        "A live wall-clock gauge that grows every second the process runs. It describes the \
+         daemon process rather than workspace data and changes on every read, so it cannot be \
+         pinned.",
+    ),
+    disallowed(
+        "daemon.tool_call_count",
+        "A live counter incremented on every dispatched tool call. Two reads admitted against \
+         the same generation will typically observe different values, so it is disallowed \
+         rather than pinned even though it is harmless to report.",
+    ),
+    disallowed(
+        "daemon.latency_percentiles",
+        "Derived from a live, continuously updated latency sample window. The percentiles shift \
+         as new calls complete, so the value is not stable across requests.",
+    ),
+    disallowed(
+        "daemon.watcher_stats",
+        "Live file-watcher event counters that change whenever the indexer's watcher fires, \
+         independent of which generation is currently sealed.",
+    ),
+    disallowed(
+        "daemon.process_memory_bytes",
+        "Sampled from the host process via `sysinfo` at call time. Memory usage fluctuates \
+         continuously and has no relationship to the sealed generation payload.",
+    ),
+    disallowed(
+        "daemon.embedding_model_status",
+        "Reflects whether the embedding model is currently loaded in this process. This is \
+         process lifecycle state, not generation-sealed content, and can change if the model \
+         load state changes during the process lifetime.",
+    ),
+    disallowed(
+        "daemon.query_timing_snapshot",
+        "A live rolling snapshot of query timing samples, updated continuously as queries \
+         complete. Same reasoning as the latency percentiles above.",
+    ),
+    disallowed(
+        "daemon.mutable_script_retry_metrics",
+        "A live, process-global retry counter and timestamp accumulated by mutable-script \
+         SQLITE_BUSY retries. It changes independent of any generation and does not require a \
+         workspace to be bound at all.",
     ),
 ];
 
