@@ -2,9 +2,12 @@
 //! F20, 142.029-T).
 //!
 //! The contract: admission validates the frame, refuses while dispatch is
-//! withheld, reconciles the durable manifest **before** capturing the request
-//! context, and captures exactly one `Arc<ReadRequestContext>` per admitted
-//! request.
+//! withheld, resolves the method's descriptor and authorizes it as a
+//! generation-backed Read operation, triggers background reconciliation of
+//! the durable manifest (without blocking on it), and captures exactly one
+//! `Arc<ReadRequestContext>` per admitted request. `_health`, `_shutdown`,
+//! unknown methods, and methods refused by the capability gate must never
+//! trigger reconciliation.
 
 #![forbid(unsafe_code)]
 
@@ -184,8 +187,8 @@ async fn an_admitted_request_captures_exactly_one_read_request_context() {
     assert_eq!(captured.branch(), HARNESS_BRANCH);
 }
 
-#[tokio::test]
-async fn the_durable_manifest_is_reconciled_before_the_context_is_captured() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn background_reconciliation_installs_a_newer_generation_without_blocking_admission() {
     let fixture = Fixture::new();
     fixture.publish_generation("gen-old", 1);
     let gate = fixture.gate();
@@ -194,16 +197,42 @@ async fn the_durable_manifest_is_reconciled_before_the_context_is_captured() {
         .await
         .expect("initial activation must succeed");
 
-    // A newer generation is published between requests. Because reconciliation
-    // happens BEFORE capture, the very next request observes it -- not the one
-    // after that.
+    // A newer generation is published between requests. Reconciliation is now
+    // a background task (F20 fix): this admission must return promptly using
+    // whatever context is already active, not block until the newer
+    // generation finishes opening.
     fixture.publish_generation("gen-new", 2);
+
+    let started = std::time::Instant::now();
+    let admission = admit_read(&gate, &frame("unified_search")).await;
+    let elapsed = started.elapsed();
+
+    let captured = admission
+        .context()
+        .expect("an admitted request must carry a context");
+    assert!(Arc::ptr_eq(captured, &old_context));
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "admission must not block on background reconciliation, took {elapsed:?}"
+    );
+
+    // The swap completes asynchronously; a later observation sees it.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if gate.activator().active_revision().await == Some(GenerationRevision::new(2)) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "background reconciliation did not activate the newer generation in time"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 
     let admission = admit_read(&gate, &frame("unified_search")).await;
     let captured = admission
         .context()
         .expect("an admitted request must carry a context");
-
     assert!(!Arc::ptr_eq(captured, &old_context));
     assert_eq!(
         captured
@@ -213,10 +242,73 @@ async fn the_durable_manifest_is_reconciled_before_the_context_is_captured() {
             .as_str(),
         "gen-new"
     );
-    assert_eq!(
-        gate.activator().active_revision().await,
-        Some(GenerationRevision::new(2))
-    );
+}
+
+#[tokio::test]
+async fn health_probe_does_not_trigger_reconciliation() {
+    let fixture = Fixture::new();
+    fixture.publish_generation("gen-health", 1);
+    let gate = fixture.gate();
+    gate.run_initial_activation()
+        .await
+        .expect("initial activation must succeed");
+    let opens_before = gate.activator().open_attempt_count();
+
+    let admission = admit_read(&gate, &frame("_health")).await;
+
+    assert!(!admission.is_admitted());
+    assert_eq!(gate.activator().open_attempt_count(), opens_before);
+}
+
+#[tokio::test]
+async fn shutdown_does_not_trigger_reconciliation() {
+    let fixture = Fixture::new();
+    fixture.publish_generation("gen-shutdown", 1);
+    let gate = fixture.gate();
+    gate.run_initial_activation()
+        .await
+        .expect("initial activation must succeed");
+    let opens_before = gate.activator().open_attempt_count();
+
+    let admission = admit_read(&gate, &frame("_shutdown")).await;
+
+    assert!(!admission.is_admitted());
+    assert_eq!(gate.activator().open_attempt_count(), opens_before);
+}
+
+#[tokio::test]
+async fn an_unknown_method_does_not_trigger_reconciliation() {
+    let fixture = Fixture::new();
+    fixture.publish_generation("gen-unknown", 1);
+    let gate = fixture.gate();
+    gate.run_initial_activation()
+        .await
+        .expect("initial activation must succeed");
+    let opens_before = gate.activator().open_attempt_count();
+
+    let admission = admit_read(&gate, &frame("totally_unrecognized_method")).await;
+
+    assert!(!admission.is_admitted());
+    assert_eq!(gate.activator().open_attempt_count(), opens_before);
+}
+
+#[tokio::test]
+async fn a_method_refused_by_the_capability_gate_does_not_trigger_reconciliation() {
+    let fixture = Fixture::new();
+    fixture.publish_generation("gen-write-refused", 1);
+    let gate = fixture.gate();
+    gate.run_initial_activation()
+        .await
+        .expect("initial activation must succeed");
+    let opens_before = gate.activator().open_attempt_count();
+
+    // `sync_workspace` is a Write-capability method: even though it is a
+    // perfectly valid, known descriptor, a read-server must refuse it without
+    // ever reconciling the manifest on its behalf.
+    let admission = admit_read(&gate, &frame("sync_workspace")).await;
+
+    assert!(!admission.is_admitted());
+    assert_eq!(gate.activator().open_attempt_count(), opens_before);
 }
 
 #[tokio::test]

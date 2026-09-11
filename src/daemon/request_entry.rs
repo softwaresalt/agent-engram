@@ -12,10 +12,11 @@ use tracing::{info, warn};
 use crate::daemon::protocol::{HealthCheckResult, IpcRequest, IpcResponse};
 use crate::daemon::startup_activation::ReadServerStartupGate;
 use crate::daemon::{error_transport, startup_activation};
-use crate::errors::{ActivationError, EngramError};
+use crate::errors::{ActivationError, EngramError, ReadServerRefusalError};
 use crate::server::state::{AppState, ReadRequestContext, SharedState};
 use crate::shim::version::{ENGRAM_BUILD_HASH, ENGRAM_PROTOCOL_VERSION};
 use crate::tools;
+use crate::tools::capabilities::{self, CapabilityClass, InputOwnership};
 
 /// A decoded IPC request frame awaiting admission.
 pub type Frame = IpcRequest;
@@ -90,29 +91,34 @@ impl ReadAdmission {
     }
 }
 
-/// Admit a `ReadServer`-mode frame, reconciling the durable manifest first.
+/// Admit a `ReadServer`-mode frame, authorizing it before any activation work.
 ///
 /// Order matters and is the whole point of F20:
 ///
 /// 1. validate the frame envelope (a malformed frame must not trigger work);
 /// 2. refuse outright while the startup gate withholds dispatch;
-/// 3. **reconcile the durable manifest synchronously**, so a generation
-///    published a moment ago is visible to this request rather than to some
-///    later one;
-/// 4. only then capture the context the request will read through.
+/// 3. resolve the method's canonical descriptor and refuse unauthorized
+///    methods -- unknown methods, non-`Read` methods, methods unavailable in
+///    read-server mode, and methods not dispatched through
+///    [`tools::dispatch`] (`_health`, `_shutdown`) -- **before** triggering
+///    any reconciliation or activation work;
+/// 4. trigger reconciliation as a bounded background task rather than
+///    awaiting it inline, so an authorized request's admission latency never
+///    includes manifest I/O or a generation open;
+/// 5. only then capture the context the request will read through.
 ///
-/// Reconciling *before* capture is what makes freshness deterministic: a
-/// capture-then-reconcile order would serve the previous generation to a
-/// request that arrived after the new one was published. This synchronous
-/// reconciliation and the startup reconciliation are the only activation
-/// triggers in the daemon -- there is no notification channel and no control
-/// endpoint (plan rule R48).
+/// `_health` and `_shutdown` are answered by [`process_request`] before
+/// dispatch is ever considered and therefore never reach this function in
+/// production, but this function must independently refuse them (and any
+/// other non-generation-backed method) so it is correct on its own terms, not
+/// only correct given today's call sites.
 ///
-/// A failed reconciliation is never fatal to the request: the previously
-/// activated generation is still open and still correct, so the request is
-/// admitted against it rather than refused. Refusing here would turn a
-/// transient publisher problem into a read outage.
-pub async fn admit_read(gate: &ReadServerStartupGate, frame: &Frame) -> ReadAdmission {
+/// A failed or still-pending reconciliation is never fatal to an authorized
+/// request: the previously activated generation is still open and still
+/// correct, so the request is admitted against it rather than refused.
+/// Refusing here would turn a transient publisher problem into a read
+/// outage.
+pub async fn admit_read(gate: &Arc<ReadServerStartupGate>, frame: &Frame) -> ReadAdmission {
     if let Err(response) = frame.validate() {
         return ReadAdmission::Refused(Box::new(response));
     }
@@ -126,7 +132,16 @@ pub async fn admit_read(gate: &ReadServerStartupGate, frame: &Frame) -> ReadAdmi
         )));
     }
 
-    reconcile_generation(gate).await;
+    if !is_generation_backed_read(&frame.method) {
+        return ReadAdmission::Refused(Box::new(refusal(
+            frame,
+            EngramError::ReadServerRefusal(ReadServerRefusalError::WriteControlRefused {
+                operation: frame.method.clone(),
+            }),
+        )));
+    }
+
+    spawn_background_reconciliation(gate);
 
     match gate.admitted_context().await {
         Some(context) => ReadAdmission::Admitted(context),
@@ -139,27 +154,58 @@ pub async fn admit_read(gate: &ReadServerStartupGate, frame: &Frame) -> ReadAdmi
     }
 }
 
-/// Reconcile the durable manifest and install a newer generation if one exists.
+/// Whether `method` is a `Read` tool dispatched through [`tools::dispatch`]
+/// and therefore actually reads through a captured generation.
 ///
-/// Errors are deliberately swallowed into a log line: the caller's correctness
-/// does not depend on the reconciliation succeeding, only on it having been
-/// attempted before capture. The activator's rejection cache and backoff
-/// prevent a broken publish from turning this into per-request work.
-async fn reconcile_generation(gate: &ReadServerStartupGate) {
-    match gate.activator().maybe_activate_newer().await {
-        Ok(None) => {}
-        Ok(Some(generation)) => {
-            let (branch, workspace_id) = gate.identity();
-            let context = ReadRequestContext::from_generation(generation, branch, workspace_id);
-            gate.install_context(context).await;
+/// This is deliberately narrower than "refuse `Write`/`Control`"
+/// ([`tools::enforce_read_server_dispatch`]'s check): `_health` and
+/// `_shutdown` are declared `Read`- and `Control`-capability respectively but
+/// carry [`InputOwnership::IpcServer`] because [`process_request`] answers
+/// them directly and never routes them through [`tools::dispatch`]. Neither
+/// one reads a generation, so neither one has any business triggering
+/// reconciliation.
+fn is_generation_backed_read(method: &str) -> bool {
+    capabilities::descriptor(method).is_some_and(|descriptor| {
+        descriptor.capability == CapabilityClass::Read
+            && descriptor.read_server_available
+            && descriptor.input_ownership == InputOwnership::DaemonHandler
+    })
+}
+
+/// Trigger durable-manifest reconciliation in the background and return
+/// immediately.
+///
+/// Awaiting [`crate::services::generations::GenerationActivator::maybe_activate_newer`]
+/// inline would make an admitted request's latency include manifest I/O and,
+/// whenever a newer generation needs activating, whole-inventory digest
+/// hashing and a database open. Spawning it instead means this request always
+/// captures whatever context is *already* active; a later request observes
+/// the swap once the spawned task installs it. Concurrent spawns never
+/// duplicate work: `maybe_activate_newer`'s single-flight gate coalesces them,
+/// so a spawned task that finds an activation already in flight (or already
+/// rejected) returns almost immediately.
+///
+/// Errors are deliberately swallowed into a log line: no caller's correctness
+/// depends on this task's outcome, only on the active generation staying
+/// open and correct, which a failed reconciliation never changes.
+fn spawn_background_reconciliation(gate: &Arc<ReadServerStartupGate>) {
+    let gate = Arc::clone(gate);
+    tokio::spawn(async move {
+        match gate.activator().maybe_activate_newer().await {
+            Ok(None) => {}
+            Ok(Some(generation)) => {
+                let (branch, workspace_id) = gate.identity();
+                let context = ReadRequestContext::from_generation(generation, branch, workspace_id);
+                gate.install_context(context).await;
+            }
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    "generation reconciliation failed; continuing to serve the active generation"
+                );
+            }
         }
-        Err(error) => {
-            warn!(
-                error = %error,
-                "generation reconciliation failed; continuing to serve the active generation"
-            );
-        }
-    }
+    });
 }
 
 /// Build the refusal response for a typed availability error.
