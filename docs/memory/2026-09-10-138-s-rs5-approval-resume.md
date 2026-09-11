@@ -328,3 +328,115 @@ Next: push all round-2 commits, check the `start-launcher-windows` CI re-run res
 Copilot review at the new HEAD, reply to and resolve all 6 round-2 threads, poll for a
 third review pass, re-verify the P-014/P-018 gates, update the PR body's
 `## Local Review Readiness` block, then halt at the merge gate for explicit operator approval.
+
+## Round 2 CI re-run and Copilot review round 3 (4 new findings)
+
+* `gh run view 34627856537` (the `start-launcher-windows` re-run) — `conclusion: success`. Confirms
+  the pre-existing flake precedent (stash `F58ECAA8`); no code change needed.
+* Re-requested Copilot review at HEAD `4461b913` via direct `gh api POST .../requested_reviewers`
+  (JSON body file). The PR GET response's `requested_reviewers` array showed `[]` immediately after
+  — this is **not** a reliable failure signal; confirmed success via
+  `gh api .../timeline --jq 'select(.event=="review_requested")'`, which showed a fresh
+  `review_requested` event for Copilot at `2026-09-11T19:28:49Z`. (Two `gh pr edit --add-reviewer`
+  fallback attempts failed with a generic `'' not found` CLI error — not investigated further since
+  the direct API method already succeeded; noted as a possible CLI quirk for future reference.)
+* New Copilot review landed at HEAD `4461b913` (state `COMMENTED`, submitted `19:34:41Z`) — **4 new
+  unresolved threads** (round 3, the 3rd review-fix cycle — within the 3-cycle circuit breaker
+  limit):
+  1. `src/shim/tools_catalog.rs:515` — feature-gated MCP methods (`query_changes`/
+     `index_git_history`) are dropped from the derived catalog under `--features git-graph`,
+     failing the parity contract's actual intent under an all-features build.
+  2. `src/daemon/startup_activation.rs:126` — `ReadServerStartupGate::new` accepts `branch`/
+     `workspace_id` independently from the wrapped activator's own `ExpectedIdentity`, risking
+     divergence between the two.
+  3. `src/services/generations/read_inputs.rs:676` — `snapshot.workspace_uuid` misclassified as
+     `pinned`; the manifest's `WorkspaceIdentity` carries no UUID at all, so the provenance claim
+     was false.
+  4. `tests/contract/mcp_tool_catalog_parity_test.rs:36` — the round-2 `EXCLUDED_FROM_CATALOG`
+     allowlist itself was the wrong fix: it made the parity contract pass by allowlisting an
+     omission that should never have existed, masking that an all-features server can dispatch
+     tools it never advertises.
+
+**Investigation** (all 4 confirmed legitimate, in-scope, P-021 C1 pass):
+
+* **Findings 1+4 (same root cause)**: confirmed via direct code reading that
+  `tools_catalog.rs::all_tools()` derives the actual advertised `tools/list` surface via
+  `capabilities::surface_names(ToolSurface::StdioMcp).filter_map(|name| described.remove(name))` —
+  any declared stdio-MCP method absent from `catalog_entries()` is **silently dropped**, not merely
+  under-described. Confirmed `capabilities.rs` declares `query_changes`/`index_git_history` (both
+  `#[cfg(feature = "git-graph")]`) with `surfaces: IPC_AND_MCP` (includes `StdioMcp`) and real
+  `SchemaSource::Local(...)` schemas — meaning under `--features git-graph` these two tools ARE
+  dispatchable via MCP but genuinely never appear in `tools/list`. This is a real MCP
+  protocol-compliance gap, not the "intentional exclusion" round 2's allowlist assumed.
+* **Finding 2**: confirmed `ReadServerStartupGate::new` currently has zero production callsites
+  (only 2 test harnesses) — consistent with the already-known F44 daemon-wiring gap — but the
+  constructor contract itself was still an open API-design correctness gap while this shipment
+  defines it. `ExpectedIdentity` already exposes `branch()`/`workspace_id()` accessors;
+  `GenerationActivator` did not yet expose its own `expected` field.
+* **Finding 3**: confirmed via `manifest.rs` that `WorkspaceIdentity` has only a
+  `workspace_id: String` field — no UUID at all. `workspace_uuid` is actually a live
+  `AppState`/`WorkspaceSnapshot` field (`src/server/state.rs:106`, populated via
+  `load_or_create_workspace_id`) entirely unrelated to the sealed generation manifest —
+  should be `disallowed`, matching the existing `snapshot.connection_count` precedent.
+* **Ownership**: `startup_activation.rs` → 142.028-T/F18; `tools_catalog.rs`/
+  `mcp_tool_catalog_parity_test.rs` → 142.031-T/F22; `read_inputs.rs` → F24 classification logic,
+  already legitimately modified twice this shipment (round 1 finding 6, round 2 finding 6) for the
+  same acceptance-criteria contract. All within the 138-S manifest; no P-021 C1 scope violation.
+
+**Fixes** (delegated to a Rust Engineer subagent with detailed per-finding technical instructions,
+committed across `d9332436`, `182e9bf7`, `982fc019`):
+
+1. `d9332436` fix(142.031-T): advertise git-graph tools in tools/list catalog — added
+   `#[cfg(feature = "git-graph")]`-gated `Tool::new(...)` entries for `query_changes`/
+   `index_git_history` to `tools_catalog.rs::catalog_entries()`; made `TOOL_COUNT` feature-aware
+   (21 default / 23 with `git-graph`); switched both `capabilities.rs` `Declaration`s to
+   `SchemaSource::McpCatalog`, removing the now-dead local schema functions; updated both modules'
+   doc comments to no longer describe the exclusion as intentional; removed the
+   `EXCLUDED_FROM_CATALOG` allowlist and its guard test from the parity test file, restoring plain
+   unconditional equality assertions; added two new bidirectional regression tests
+   (`git_graph_tools_are_advertised_when_feature_enabled` / `_are_absent_without_feature`) in
+   `tools_catalog.rs`'s own unit test module.
+2. `182e9bf7` fix(142.028-T): derive ReadServerStartupGate identity from its activator — added
+   `GenerationActivator::expected_identity()` public accessor; changed
+   `ReadServerStartupGate::new` to a single-argument constructor that derives `branch`/
+   `workspace_id` from the activator's own `ExpectedIdentity` instead of accepting a second,
+   independently-suppliable copy; updated both test callsites; added a new regression test
+   (`the_gates_identity_is_derived_from_the_wrapped_activators_expected_identity`) proving the
+   derivation matches what the activator was constructed with.
+3. `982fc019` fix(142.033-T): reclassify snapshot.workspace_uuid as disallowed — moved the entry
+   from `pinned(...)` to `disallowed(...)` in `read_inputs.rs`'s `CLASSIFIED_READ_INPUTS`, matching
+   the `snapshot.connection_count` precedent's justification style.
+
+**Subagent-reported verification**: `cargo fmt`/`cargo clippy` (default + `--features git-graph`) —
+clean; `cargo test --all-targets --no-fail-fast` (default) — 2442 passed, 1 failed
+(`archive_verifier_runs_the_unpacked_native_binary`, re-ran 3× in isolation, non-deterministic,
+confirmed pre-existing flake unrelated to any of the 3 fixes); `cargo test --features git-graph
+--test contract_mcp_tool_catalog_parity` 6/6 pass; `cargo test --features git-graph --lib
+shim::tools_catalog` 4/4 pass. Two minor reporting deviations (regression test file placement;
+combined double-check command split into two invocations) — both cosmetic, no scope impact.
+
+**Independent re-verification by Ship** (HEAD `982fc019`):
+* Diff-stat confirmed exactly the 8 expected files touched, no drift outside the 3 findings'
+  named scope (`lifecycle_policy.rs`/`hydration_ready`/143-144 package untouched).
+* Read every diff hunk directly (all 3 fixes) — matches the delegated design exactly.
+* `cargo fmt --all -- --check` — PASS.
+* `cargo clippy --all-targets -- -D warnings -D clippy::pedantic` — PASS, zero warnings (default).
+* `cargo clippy --all-targets --features git-graph -- -D warnings -D clippy::pedantic` — PASS,
+  zero warnings.
+* Targeted suites — all PASS: `contract_mcp_tool_catalog_parity` 6/6,
+  `integration_read_server_startup_activation` 6/6 (including the new regression test),
+  `integration_request_entry_activation` 12/12, `contract_read_input_ownership_inventory` 16/16;
+  `cargo test --features git-graph --test contract_mcp_tool_catalog_parity` 6/6; the two new
+  `tools_catalog` bidirectional tests confirmed to pass under both default and `--features
+  git-graph` builds individually.
+* `cargo test --all-targets --no-fail-fast` (full suite, default features) — exactly **one**
+  failure: `integration_release_archive_smoke_workflow::archive_verifier_runs_the_unpacked_native_binary`
+  — already documented, stash `2511DAC9` (recurring pre-existing Windows flake). No new or
+  unexpected failures. `git status --short` clean except the pre-existing untracked
+  `.copilot-tracking/pr/138-s-pr-body.md` scratch file.
+
+Next: commit round-3 fixes' memory update, push, re-request Copilot review at the new HEAD, reply
+to and resolve all 4 round-3 threads, poll for a 4th review pass (if new findings appear, this
+would exceed the 3-cycle circuit breaker — accept remaining P2/P3 as documented follow-ups rather
+than a 4th delegated fix round), re-verify the P-014/P-018 gates, update the PR body's
+`## Local Review Readiness` block, then halt at the merge gate for explicit operator approval.
