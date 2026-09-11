@@ -671,11 +671,6 @@ pub const CLASSIFIED_READ_INPUTS: &[ReadInputClassification] = &[
          generation was sealed for, so it cannot drift without a new generation.",
     ),
     pinned(
-        "snapshot.workspace_uuid",
-        "Same provenance as workspace_id: carried on the manifest's workspace identity and \
-         therefore constant for the generation's lifetime.",
-    ),
-    pinned(
         "snapshot.branch",
         "Pinned at activation from the manifest's branch identity. A branch change produces a \
          different generation rather than mutating this value.",
@@ -707,6 +702,14 @@ pub const CLASSIFIED_READ_INPUTS: &[ReadInputClassification] = &[
          process lifetime. PinnedOperational requires stability across every request, which \
          this value does not have, so it is disallowed rather than pinned even though it \
          describes the daemon process rather than workspace data.",
+    ),
+    disallowed(
+        "snapshot.workspace_uuid",
+        "A live AppState field (see WorkspaceSnapshot/load_or_create_workspace_id), not part of \
+         the manifest's sealed WorkspaceIdentity, which carries only workspace_id -- no UUID. \
+         PinnedOperational requires provenance from the sealed generation manifest, which this \
+         value does not have, so it is disallowed rather than pinned despite superficially \
+         resembling workspace_id.",
     ),
     disallowed(
         "snapshot.file_mtimes",
