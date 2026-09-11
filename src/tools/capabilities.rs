@@ -551,10 +551,30 @@ pub const SHUTDOWN_METHOD: &str = "_shutdown";
 // ── Registry accessors ───────────────────────────────────────────────────────
 
 /// Build a name-keyed map of the agent-visible MCP catalog schemas.
+///
+/// Reads the raw catalog literals rather than
+/// [`tools_catalog::all_tools`](crate::shim::tools_catalog::all_tools): that
+/// function derives its membership from this registry (plan unit F22), so
+/// going through it here would close a cycle.
 fn catalog_schemas() -> BTreeMap<String, Arc<Map<String, Value>>> {
-    tools_catalog::all_tools()
+    tools_catalog::catalog_entries()
         .into_iter()
         .map(|tool| (tool.name.to_string(), Arc::clone(&tool.input_schema)))
+        .collect()
+}
+
+/// Every declared method name that is exposed on `surface`, in declaration
+/// order.
+///
+/// This is the derivation seam for the per-surface catalogs (plan units F22
+/// and F23). A surface that builds its own list from this function cannot
+/// drift from the registry, because there is no second list to drift from.
+#[must_use]
+pub fn surface_names(surface: ToolSurface) -> Vec<&'static str> {
+    DECLARATIONS
+        .iter()
+        .filter(|declaration| declaration.surfaces.contains(&surface))
+        .map(|declaration| declaration.name)
         .collect()
 }
 

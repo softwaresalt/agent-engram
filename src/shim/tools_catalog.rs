@@ -12,12 +12,22 @@
 //! The [`TOOL_COUNT`] constant is asserted by the `tool_count_matches_catalog`
 //! contract test so that catalog and dispatch stay in sync.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use rmcp::model::Tool;
 use serde_json::{Map, Value, json};
 
+use crate::tools::capabilities::{self, ToolSurface};
+
 /// Total number of tools registered in the dispatch table and this catalog.
+///
+/// Derived membership (see [`all_tools`]) means this constant is a redundant
+/// check rather than the source of truth: the `mcp_tool_catalog_parity`
+/// contract test asserts it against
+/// [`capabilities::surface_names`](crate::tools::capabilities::surface_names),
+/// so a descriptor added without a catalog literal is RED rather than silently
+/// under-advertised.
 pub const TOOL_COUNT: usize = 21;
 
 /// Build a `serde_json::Map` from a JSON object literal.
@@ -50,10 +60,13 @@ macro_rules! mcp_only_desc {
     };
 }
 
-/// Return the full list of Engram MCP tools.
+/// Raw catalog literals: name, description, and input schema for each tool the
+/// shim can describe.
 ///
-/// The returned `Vec` has exactly [`TOOL_COUNT`] entries with unique names.
-pub fn all_tools() -> Vec<Tool> {
+/// This is the *schema* source only. Which of these entries the shim actually
+/// advertises is decided by [`all_tools`] from the descriptor registry, so
+/// this list can never widen the MCP surface on its own.
+pub(crate) fn catalog_entries() -> Vec<Tool> {
     vec![
         // ── Workspace / lifecycle ──────────────────────────────────────────
         Tool::new(
@@ -472,6 +485,34 @@ pub fn all_tools() -> Vec<Tool> {
             })),
         ),
     ]
+}
+
+/// Return the full list of Engram MCP tools, derived from the descriptor
+/// registry (plan unit F22).
+///
+/// Membership comes from
+/// [`capabilities::surface_names`](crate::tools::capabilities::surface_names)
+/// for [`ToolSurface::StdioMcp`], not from the literal list above. That
+/// inversion is the point: previously the MCP surface and the descriptor list
+/// were two hand-maintained tables that agreed only by diligence, so a tool
+/// declared in one could go missing from the other without anything failing.
+/// Now the registry decides *what* is advertised and the literals supply only
+/// *how* it is described, which leaves exactly one place to change.
+///
+/// A declared stdio-MCP method with no catalog literal is omitted rather than
+/// advertised with an empty schema; the `mcp_tool_catalog_parity` contract test
+/// compares this list against the registry, so that omission is RED.
+#[must_use]
+pub fn all_tools() -> Vec<Tool> {
+    let mut described: BTreeMap<String, Tool> = catalog_entries()
+        .into_iter()
+        .map(|tool| (tool.name.to_string(), tool))
+        .collect();
+
+    capabilities::surface_names(ToolSurface::StdioMcp)
+        .into_iter()
+        .filter_map(|name| described.remove(name))
+        .collect()
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
