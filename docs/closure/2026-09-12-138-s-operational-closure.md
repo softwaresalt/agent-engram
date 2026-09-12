@@ -267,10 +267,19 @@ or archival was performed.
 
 ## Compaction status
 
-`pending` — `compact-context --target all` to be invoked at Ship Step 8
-(post-merge closure), immediately following this document's commit. This
-field will be updated to `done` (or `degraded` on failure) once that
-invocation completes.
+`done` — `compact-context --target all` invoked at Ship Step 8 (post-merge
+closure, 2026-09-12). Candidate scope: the 7 memory checkpoints for the
+just-closed 138-S release unit (the eligible candidate per the
+completed-work rule; no other memory/plan/closure artifacts in the
+workspace met the age/size compaction thresholds). Result: 7 verbose
+checkpoints (including one 73 KB file covering the full RS5-resume
+implementation history) consolidated into 1 compacted summary
+(`docs/memory/compacted/2026-09-12-138-s-generation-activation-request-context-startup-gate-and-request-entry-compacted.md`);
+originals preserved (never deleted) under
+`docs/archive/memory/2026-09-12/`. 0 exec-plans and 0 additional closure
+records were compaction candidates (no stale/threshold-exceeding artifacts
+found beyond this shipment's own just-produced closure documents, which are
+current, not stale). No degradation — this run completed cleanly.
 
 ## Post-merge closure record
 

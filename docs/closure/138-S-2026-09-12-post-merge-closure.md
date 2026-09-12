@@ -9,7 +9,7 @@ author: ship
 verdict: "CLOSED — PR #391 merged as a merge commit under explicit operator approval ('OPERATOR MERGE APPROVAL: PR #391 is explicitly approved for merge'), verified reachable from origin/main; shipment 138-S manually safe-closed (targeted, non-cascading) following the 133-S/134-S/135-S/137-S precedent; 142-F verified untouched and remains active for later 142-F-covering shipments."
 closure_status: "READY"
 releasability: "READY_WITH_CONDITIONS"
-compaction_status: "pending"
+compaction_status: "done"
 pr_number: 391
 merge_commit: "81b19b0d91c79c9c456ce703dca42a4688978dfa"
 head_commit_merged: "6b39ee94"
