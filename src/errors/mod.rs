@@ -303,6 +303,62 @@ pub enum ActivationError {
     /// Activation failed for a transient reason and may succeed on retry.
     #[error("transient activation failure: {reason}")]
     TransientActivationFailure { reason: String },
+    /// The durable manifest declares a snapshot schema version this build
+    /// cannot read. Permanent for that revision: the durable bytes are
+    /// immutable, so retrying the same revision can only fail identically.
+    #[error(
+        "generation manifest schema version {found:?} is not supported (this build reads {expected:?})"
+    )]
+    ManifestSchemaMismatch {
+        /// The schema version this build accepts.
+        expected: String,
+        /// The schema version the manifest declared.
+        found: String,
+    },
+    /// The durable manifest bytes could not be parsed into the typed
+    /// [`GenerationManifest`](crate::services::generations::GenerationManifest)
+    /// shape. Reported without a revision because the revision itself could
+    /// not be read from unparseable bytes.
+    #[error("generation manifest is malformed: {reason}")]
+    ManifestMalformed { reason: String },
+    /// A typed manifest field parsed successfully but carried a value outside
+    /// the bounds activation accepts (empty identity, non-hex digest,
+    /// oversized inventory, and similar).
+    #[error("generation manifest field '{field}' is out of bounds: {reason}")]
+    ManifestFieldOutOfBounds {
+        /// The offending manifest field, in dotted path form.
+        field: String,
+        /// Why the value was rejected.
+        reason: String,
+    },
+    /// The manifest's branch or workspace identity does not match the identity
+    /// this daemon is serving. Activating it would silently serve another
+    /// branch's or another workspace's data.
+    #[error(
+        "generation manifest identity '{field}' mismatch: expected {expected:?}, found {found:?}"
+    )]
+    IdentityMismatch {
+        /// Which identity field mismatched (`branch` or `workspace`).
+        field: String,
+        /// The identity this daemon expects.
+        expected: String,
+        /// The identity the manifest declared.
+        found: String,
+    },
+    /// A sealed inventory file's recomputed SHA-256 digest does not match the
+    /// digest the manifest sealed for it, so the generation's bytes are not
+    /// the bytes the publisher attested to.
+    #[error(
+        "generation inventory file {path:?} digest mismatch: expected {expected:?}, found {found:?}"
+    )]
+    DigestMismatch {
+        /// The inventory-relative path whose digest failed revalidation.
+        path: String,
+        /// The digest sealed into the manifest.
+        expected: String,
+        /// The digest recomputed from the file on disk.
+        found: String,
+    },
 }
 
 /// Classifies why the shim's deferred startup preconditions (workspace
@@ -947,6 +1003,44 @@ impl EngramError {
                     "TransientActivationFailure",
                     inner.to_string(),
                     Some(json!({ "reason": reason })),
+                ),
+                ActivationError::ManifestSchemaMismatch { expected, found } => (
+                    GENERATION_MANIFEST_SCHEMA_MISMATCH,
+                    "GenerationManifestSchemaMismatch",
+                    inner.to_string(),
+                    Some(json!({ "expected": expected, "found": found })),
+                ),
+                ActivationError::ManifestMalformed { reason } => (
+                    GENERATION_MANIFEST_MALFORMED,
+                    "GenerationManifestMalformed",
+                    inner.to_string(),
+                    Some(json!({ "reason": reason })),
+                ),
+                ActivationError::ManifestFieldOutOfBounds { field, reason } => (
+                    GENERATION_MANIFEST_FIELD_OUT_OF_BOUNDS,
+                    "GenerationManifestFieldOutOfBounds",
+                    inner.to_string(),
+                    Some(json!({ "field": field, "reason": reason })),
+                ),
+                ActivationError::IdentityMismatch {
+                    field,
+                    expected,
+                    found,
+                } => (
+                    GENERATION_IDENTITY_MISMATCH,
+                    "GenerationIdentityMismatch",
+                    inner.to_string(),
+                    Some(json!({ "field": field, "expected": expected, "found": found })),
+                ),
+                ActivationError::DigestMismatch {
+                    path,
+                    expected,
+                    found,
+                } => (
+                    GENERATION_DIGEST_MISMATCH,
+                    "GenerationDigestMismatch",
+                    inner.to_string(),
+                    Some(json!({ "path": path, "expected": expected, "found": found })),
                 ),
             },
             EngramError::ShimStartup(inner) => (

@@ -85,6 +85,11 @@ fn read_server_and_activation_error_codes_match_contract() {
     assert_eq!(GENERATION_NOT_YET_ACTIVATED, 17_001);
     assert_eq!(ACTIVATION_DEADLINE_EXCEEDED, 17_002);
     assert_eq!(TRANSIENT_ACTIVATION_FAILURE, 17_003);
+    assert_eq!(GENERATION_MANIFEST_SCHEMA_MISMATCH, 17_004);
+    assert_eq!(GENERATION_MANIFEST_MALFORMED, 17_005);
+    assert_eq!(GENERATION_MANIFEST_FIELD_OUT_OF_BOUNDS, 17_006);
+    assert_eq!(GENERATION_IDENTITY_MISMATCH, 17_007);
+    assert_eq!(GENERATION_DIGEST_MISMATCH, 17_008);
 }
 
 /// Verify error-to-response mapping produces the correct code for each variant.

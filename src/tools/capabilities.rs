@@ -23,8 +23,7 @@
 //! Tools served through the MCP `tools/list` catalog take their schema from
 //! [`crate::shim::tools_catalog::all_tools`], which remains the single source
 //! of truth for agent-visible schemas. Methods that are *not* MCP tools
-//! (`_health`, `_shutdown`, the `doctor --smoke` readiness workflow, and the
-//! `git-graph` feature-gated dispatch tools that the default catalog omits)
+//! (`_health`, `_shutdown`, and the `doctor --smoke` readiness workflow)
 //! declare their schema locally here.
 //!
 //! # What is intentionally not registered
@@ -255,31 +254,6 @@ fn smoke_workflow_schema() -> Value {
     })
 }
 
-#[cfg(feature = "git-graph")]
-fn query_changes_schema() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "file_path": { "type": "string", "description": "Filter commits that touched this file path" },
-            "symbol": { "type": "string", "description": "Filter commits that affected this named symbol" },
-            "since": { "type": "string", "description": "Return only commits on or after this ISO-8601 timestamp" },
-            "until": { "type": "string", "description": "Return only commits on or before this ISO-8601 timestamp" },
-            "limit": { "type": "integer", "description": "Maximum number of commits to return (default: 20)" }
-        }
-    })
-}
-
-#[cfg(feature = "git-graph")]
-fn index_git_history_schema() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "depth": { "type": "integer", "description": "Number of commits to walk from HEAD (default: 500)" },
-            "force": { "type": "boolean", "description": "Re-index all commits even if already stored" }
-        }
-    })
-}
-
 /// Every declared method and workflow, in catalog order followed by the
 /// non-catalog IPC methods and workflows.
 ///
@@ -473,9 +447,10 @@ const DECLARATIONS: &[Declaration] = &[
         schema: SchemaSource::McpCatalog,
     },
     // ── git-graph feature-gated dispatch tools ───────────────────────────
-    // Excluded from the default MCP catalog (`TOOL_COUNT` covers the default
-    // build only), so they declare local schemas and are compiled only when
-    // the feature that makes them reachable is enabled.
+    // Catalog-backed like every other tool (see `SchemaSource::McpCatalog`
+    // above): the MCP catalog carries their schema too, in a matching
+    // `#[cfg(feature = "git-graph")]`-gated entry. They are compiled only
+    // when the feature that makes them reachable is enabled.
     #[cfg(feature = "git-graph")]
     Declaration {
         name: "query_changes",
@@ -483,7 +458,7 @@ const DECLARATIONS: &[Declaration] = &[
         surfaces: IPC_AND_MCP,
         read_server_available: true,
         input_ownership: InputOwnership::DaemonHandler,
-        schema: SchemaSource::Local(query_changes_schema),
+        schema: SchemaSource::McpCatalog,
     },
     #[cfg(feature = "git-graph")]
     Declaration {
@@ -492,7 +467,7 @@ const DECLARATIONS: &[Declaration] = &[
         surfaces: IPC_AND_MCP,
         read_server_available: false,
         input_ownership: InputOwnership::DaemonHandler,
-        schema: SchemaSource::Local(index_git_history_schema),
+        schema: SchemaSource::McpCatalog,
     },
     // ── Non-dispatch IPC methods ─────────────────────────────────────────
     // `_health` is the direct-IPC liveness probe the shim polls while the
@@ -551,10 +526,30 @@ pub const SHUTDOWN_METHOD: &str = "_shutdown";
 // ── Registry accessors ───────────────────────────────────────────────────────
 
 /// Build a name-keyed map of the agent-visible MCP catalog schemas.
+///
+/// Reads the raw catalog literals rather than
+/// [`tools_catalog::all_tools`](crate::shim::tools_catalog::all_tools): that
+/// function derives its membership from this registry (plan unit F22), so
+/// going through it here would close a cycle.
 fn catalog_schemas() -> BTreeMap<String, Arc<Map<String, Value>>> {
-    tools_catalog::all_tools()
+    tools_catalog::catalog_entries()
         .into_iter()
         .map(|tool| (tool.name.to_string(), Arc::clone(&tool.input_schema)))
+        .collect()
+}
+
+/// Every declared method name that is exposed on `surface`, in declaration
+/// order.
+///
+/// This is the derivation seam for the per-surface catalogs (plan units F22
+/// and F23). A surface that builds its own list from this function cannot
+/// drift from the registry, because there is no second list to drift from.
+#[must_use]
+pub fn surface_names(surface: ToolSurface) -> Vec<&'static str> {
+    DECLARATIONS
+        .iter()
+        .filter(|declaration| declaration.surfaces.contains(&surface))
+        .map(|declaration| declaration.name)
         .collect()
 }
 

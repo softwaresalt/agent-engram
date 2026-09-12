@@ -14,6 +14,7 @@ use crate::daemon::protocol::{IpcError, IpcRequest, IpcResponse};
 use crate::errors::EngramError;
 use crate::shim::ipc_client;
 use crate::shim::lifecycle::{check_health, ensure_daemon_running};
+use crate::tools::capabilities::{self, ToolSurface};
 
 /// Default IPC request timeout for short-lived CLI commands (30 s).
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
@@ -204,6 +205,27 @@ pub fn inject_correlation_id(params: Option<Value>, correlation_id: Option<&str>
     Some(params)
 }
 
+/// Every method name the CLI workflow surface is declared to expose (plan unit
+/// F23).
+///
+/// Derived from the F19 descriptor registry rather than maintained beside it.
+/// Before this seam existed the CLI's surface was implicit — it was whatever
+/// string literals the command modules happened to pass to [`run_tool`] — so a
+/// method could be renamed or retired in the registry while the CLI kept
+/// calling the old name, and nothing failed until a user hit it. Deriving the
+/// surface means the registry is the only place that decides what the CLI may
+/// invoke.
+#[must_use]
+pub fn cli_workflow_methods() -> Vec<&'static str> {
+    capabilities::surface_names(ToolSurface::Cli)
+}
+
+/// Whether `method` is declared on the CLI workflow surface.
+#[must_use]
+pub fn is_cli_workflow_method(method: &str) -> bool {
+    capabilities::descriptor(method).is_some_and(|descriptor| descriptor.supports(ToolSurface::Cli))
+}
+
 /// Run a single tool call through the daemon IPC and print the result.
 ///
 /// `command_default_secs` is the per-command timeout default, which may be
@@ -278,6 +300,18 @@ async fn run_tool_dispatch(
     command_default_secs: u64,
     capture: bool,
 ) -> (i32, Option<Value>) {
+    // Fail closed on an undeclared method. Reaching the daemon with a name the
+    // registry does not expose on this surface would turn a build-time drift
+    // into a runtime "unknown method" the user has to decode.
+    if !is_cli_workflow_method(method) {
+        return (
+            formatter.cli_error(&format!(
+                "'{method}' is not declared on the CLI workflow surface"
+            )),
+            None,
+        );
+    }
+
     let timeout: Duration = flags.ipc_timeout(command_default_secs);
 
     // Resolve workspace.

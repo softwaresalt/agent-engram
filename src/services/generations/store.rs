@@ -96,6 +96,18 @@ impl GenerationStore {
         })
     }
 
+    /// Return the canonical root this store contains every target within.
+    ///
+    /// Exposed so a caller that must hand the root to a lower layer (for
+    /// example [`ExistingDbLocation`](crate::db::cozo_backend::ExistingDbLocation),
+    /// which re-derives containment for itself) passes the same already-
+    /// canonicalized root this store validated, rather than re-deriving a
+    /// second, possibly different, root of its own.
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     /// Return the canonical path to the durable active-generation manifest
     /// within this store's root.
     ///

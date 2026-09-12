@@ -263,6 +263,19 @@ fn connect_db_open_lock(db_path: &Path) -> DbOpenLock {
 
 const RUNTIME_COPY_DB_FILE_NAME: &str = "engram.db";
 
+/// Upper bound on the published database bytes [`ExistingDbLocation::new`]
+/// will stat-then-hash at construction time.
+///
+/// This mirrors `services::generations::activation::MAX_SEALED_ARTIFACT_BYTES`
+/// (4 GiB) in value only: this module cannot import that services-layer
+/// constant without violating the same no-generation-service-import layering
+/// rule documented on [`ExistingDbLocation`], so the cap is duplicated locally
+/// instead. Keeping both at 4 GiB ensures the constructor's independent
+/// re-hash never does more work — or admits a larger file — than the
+/// sealed-inventory loop's own per-artifact cap already allows for the same
+/// path (F17, round 9).
+const MAX_PUBLISHED_DB_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+
 /// Location of an existing published generation database on disk, validated
 /// at construction time.
 ///
@@ -302,11 +315,40 @@ impl ExistingDbLocation {
     /// cannot be canonicalized, `generation_root` does not resolve to an
     /// existing directory, `published_db_path` does not resolve to an
     /// existing regular file, the canonicalized path escapes
-    /// `generation_root`, or the file cannot be read to compute its
-    /// validation digest.
+    /// `generation_root`, the file exceeds [`MAX_PUBLISHED_DB_BYTES`], or the
+    /// file cannot be read to compute its validation digest.
     pub fn new(
         generation_root: &Path,
         published_db_path: impl Into<PathBuf>,
+    ) -> Result<Self, EngramError> {
+        Self::new_with_cap(generation_root, published_db_path, MAX_PUBLISHED_DB_BYTES)
+    }
+
+    /// Same as [`Self::new`], taking the per-artifact byte cap as a
+    /// parameter (mirroring `check_artifact_size`/`file_digest` in
+    /// `services::generations::activation`) so the rejection path can be
+    /// regression-tested with a small cap instead of writing a multi-gigabyte
+    /// database to disk.
+    ///
+    /// A caller (`resolve_and_open`) may already have hashed this same path
+    /// under the sealed-inventory loop's own per-artifact cap before this
+    /// constructor re-stats and re-hashes it. Re-reading `metadata.len()`
+    /// here without an independent cap would let a file that grew between
+    /// that earlier check and this call be stat-then-hashed in full,
+    /// bypassing the per-artifact cap the earlier check enforced (F17,
+    /// round 9). Enforcing `max_len` on the freshly observed length, before
+    /// [`digest_bounded`] ever opens the file, bounds this constructor's own
+    /// hashing work to at most `max_len` bytes regardless of how large the
+    /// file has grown by the time it is actually read.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::new`], plus [`EngramError`] when the file is larger
+    /// than `max_len`.
+    fn new_with_cap(
+        generation_root: &Path,
+        published_db_path: impl Into<PathBuf>,
+        max_len: u64,
     ) -> Result<Self, EngramError> {
         let requested_path = published_db_path.into();
         let canonical_path = requested_path.canonicalize().map_err(|source| {
@@ -349,6 +391,12 @@ impl ExistingDbLocation {
             )));
         }
         let len = metadata.len();
+        if len > max_len {
+            return Err(map_db_err(format!(
+                "published database {} is {len} bytes, exceeds the {max_len} byte cap",
+                canonical_path.display()
+            )));
+        }
         let digest = digest_bounded(&canonical_path, len)?;
 
         Ok(Self {
@@ -369,6 +417,29 @@ impl ExistingDbLocation {
     #[must_use]
     pub fn published_db_len(&self) -> u64 {
         self.len
+    }
+
+    /// Return the validated published database digest, captured at
+    /// construction time, as lowercase hex.
+    ///
+    /// Callers that already hold a manifest-attested digest for this same
+    /// path (for example, a sealed-inventory entry's `sha256`) MUST compare
+    /// it against this value before trusting the runtime copy this location
+    /// produces: construction here re-reads and re-hashes the file rather
+    /// than reusing an earlier caller-side digest check, so a replacement of
+    /// the underlying file between that earlier check and this constructor
+    /// call would otherwise be sealed and opened as if it were the
+    /// manifest-attested content.
+    #[must_use]
+    pub fn published_db_digest_hex(&self) -> String {
+        use std::fmt::Write as _;
+        self.digest.iter().fold(String::new(), |mut acc, byte| {
+            // Writing into a `String` is infallible, so the result is
+            // discarded rather than propagated through a digest helper that
+            // has no other failure mode.
+            let _ = write!(acc, "{byte:02x}");
+            acc
+        })
     }
 }
 
@@ -1430,5 +1501,42 @@ mod tests {
             !message.contains(&*source_path.to_string_lossy()),
             "expected the error NOT to name the source path being read, got: {message}"
         );
+    }
+
+    /// Regression coverage for PR #391 round-9 review (F17, 142.018-T):
+    /// `ExistingDbLocation::new` must reject a published database whose
+    /// freshly observed length already exceeds the per-artifact cap, before
+    /// [`digest_bounded`] ever opens the file to hash it. Uses
+    /// `new_with_cap` with a tiny cap so this is regression-tested without
+    /// writing a multi-gigabyte database to disk.
+    #[test]
+    fn existing_db_location_rejects_a_file_larger_than_the_cap_before_hashing() {
+        let root = TempDir::new().expect("tempdir");
+        let db_path = root.path().join("engram.db");
+        std::fs::write(&db_path, b"0123456789").expect("write oversized published database");
+
+        let error = super::ExistingDbLocation::new_with_cap(root.path(), &db_path, 9)
+            .expect_err("a file larger than the cap must be rejected");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("exceeds the 9 byte cap"),
+            "expected a cap-exceeded error, got: {message}"
+        );
+    }
+
+    /// Companion to the rejection test above: a file at or under the cap
+    /// must still construct and hash successfully.
+    #[test]
+    fn existing_db_location_accepts_a_file_within_the_cap() {
+        let root = TempDir::new().expect("tempdir");
+        let db_path = root.path().join("engram.db");
+        std::fs::write(&db_path, b"0123456789").expect("write published database");
+
+        let location = super::ExistingDbLocation::new_with_cap(root.path(), &db_path, 10)
+            .expect("a file at the cap must be accepted");
+
+        assert_eq!(location.published_db_len(), 10);
+        assert_eq!(location.published_db_digest_hex().len(), 64);
     }
 }

@@ -385,6 +385,47 @@ fn open_rejects_a_non_utf8_runtime_root_before_any_runtime_copy_side_effects() {
     );
 }
 
+/// GIVEN a published database validated by `ExistingDbLocation::new`
+/// WHEN the caller reads back `published_db_digest_hex`
+/// THEN it must equal an independently computed SHA-256 hex digest of the
+/// exact bytes on disk at construction time.
+///
+/// Regression coverage for F17 Fix2 (142.018-T round-6 review): `resolve_and_open`
+/// now compares this digest against the manifest-attested `sha256` for the
+/// database entry before trusting the runtime copy, specifically to close the
+/// window where the file could be replaced between the manifest's own
+/// per-entry digest check and this constructor's re-read. This test proves
+/// the exposed accessor is wired correctly to the digest actually captured at
+/// construction time, independent of that broader TOCTOU scenario.
+#[test]
+fn existing_db_location_digest_hex_matches_the_files_actual_sha256() {
+    use sha2::{Digest as _, Sha256};
+    use std::fmt::Write as _;
+
+    let published_dir = tempfile::tempdir().expect("tempdir");
+    let published_db_path = published_dir.path().join("engram.db");
+    let published_bytes = create_seeded_db(&published_db_path);
+
+    let location = ExistingDbLocation::new(published_dir.path(), published_db_path)
+        .expect("published database path must validate");
+
+    let mut hasher = Sha256::new();
+    hasher.update(&published_bytes);
+    let expected_hex = hasher
+        .finalize()
+        .iter()
+        .fold(String::new(), |mut acc, byte| {
+            let _ = write!(acc, "{byte:02x}");
+            acc
+        });
+
+    assert_eq!(
+        location.published_db_digest_hex(),
+        expected_hex,
+        "published_db_digest_hex must equal the file's actual SHA-256 digest"
+    );
+}
+
 #[test]
 fn reopening_same_generation_replaces_existing_runtime_copy() {
     let published_dir = tempfile::tempdir().expect("tempdir");

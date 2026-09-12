@@ -4,9 +4,11 @@
 //! monotonic publication revision, and the typed manifest payload consumed by
 //! sibling generation services.
 
+mod activation;
 mod context;
 mod manifest;
 mod publish;
+mod read_inputs;
 mod store;
 
 use std::fmt;
@@ -14,6 +16,10 @@ use std::fmt;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
+pub use self::activation::{
+    ExpectedIdentity, GENERATION_DATABASE_FILE_NAME, GenerationActivator, RejectionClass,
+    SUPPORTED_MANIFEST_SCHEMA_VERSION, ValidatedManifest, backoff_delay, classify, parse_manifest,
+};
 pub use self::context::GenerationReadContext;
 pub use self::manifest::{
     BranchIdentity, GenerationManifest, GenerationProvenance, ManifestFileDigest, SealedInventory,
@@ -23,8 +29,13 @@ pub use self::publish::{
     PublishError, PublisherLock, PublisherLockGuard, list_orphaned_staging_files,
     publish_generation_manifest,
 };
+pub use self::read_inputs::{
+    CLASSIFIED_READ_INPUTS, ENUMERATED_READ_INPUTS, ReadInput, ReadInputClass,
+    ReadInputClassification, ReadInputKind, classification_of,
+    descriptors_without_enumerated_inputs, duplicate_enumerated_ids, read_mode_descriptor_names,
+    unclassified_inputs, unenumerated_classifications, unjustified_classifications,
+};
 pub use self::store::{GenerationStore, IndexTarget, IndexTargetKind, StoreError};
-
 /// Strict single-component identifier for a published generation.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GenerationId(String);

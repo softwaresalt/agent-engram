@@ -12,19 +12,20 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use chrono::Utc;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{RwLock, mpsc, watch};
 use tracing::{debug, error, info, warn};
 
 use crate::daemon::lifecycle_policy::{
     drive_daemon_transferred_syncs, flush_daemon_snapshot, guarded_daemon_sync_context,
 };
 use crate::daemon::ttl::TtlTimer;
-use crate::errors::EngramError;
+use crate::errors::{ActivationError, EngramError};
 use crate::models::health::ScanProgress;
 use crate::server::state::{
     AppState, CompletionOutcome, CoordinatorCell, DispatchSnapshot, DriverTaskGuard, OwnerKind,
-    OwnerProgressScope, SharedState,
+    OwnerProgressScope, ReadRequestContext, SharedState,
 };
+use crate::services::generations::GenerationActivator;
 
 /// Outcome of the daemon's initial startup gate.
 ///
@@ -51,6 +52,248 @@ impl ReadinessView {
     #[must_use]
     pub fn is_ready(self) -> bool {
         matches!(self.startup, StartupOutcome::Ready)
+    }
+
+    /// Return `true` when read dispatch may proceed.
+    ///
+    /// Readiness and read dispatch are withheld together and released
+    /// together: a daemon that is not ready has, by construction, no data to
+    /// serve a read from. Keeping this derived from `startup` rather than
+    /// tracked separately makes it impossible for the two signals to drift
+    /// apart, which is exactly the failure mode that would let a request be
+    /// dispatched against a generation that is not open yet.
+    #[must_use]
+    pub fn admits_dispatch(self) -> bool {
+        self.is_ready()
+    }
+}
+
+// ── Read-server startup gate (F18) ───────────────────────────────────────────
+
+/// The phase a `ReadServer`-mode daemon has reached during startup.
+///
+/// Ordered by the sequence the startup path walks: the socket is bound first
+/// so clients get a connection (and a `starting` health answer) rather than a
+/// connection refusal, and only then is the initial generation activated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadServerPhase {
+    /// The listening socket has not been bound yet.
+    Binding,
+    /// The socket is bound and the daemon answers `starting`; the initial
+    /// generation activation has not completed.
+    Starting,
+    /// Exactly one generation context is open; readiness and read dispatch are
+    /// released.
+    Ready,
+    /// The initial activation failed. The daemon stays bound so the failure is
+    /// reportable, but it never publishes readiness.
+    Failed,
+}
+
+/// The `ReadServer`-mode startup gate: the sole writer of [`ReadinessView`].
+///
+/// F18 owns exactly one decision -- "has the daemon opened its initial
+/// generation, and may it therefore publish readiness?" -- and nothing else.
+/// In particular it does **not** gate individual requests: admission is
+/// [`crate::daemon::request_entry::admit`]'s sole authority, and that function
+/// only *reads* the view this gate publishes. Splitting the write and the read
+/// this way is what keeps a single, auditable answer to "is this daemon
+/// serving?" rather than one answer per call site.
+///
+/// Managed mode never constructs this gate; its readiness continues to come
+/// from [`readiness`] and is unchanged by F18.
+#[derive(Debug)]
+pub struct ReadServerStartupGate {
+    activator: Arc<GenerationActivator>,
+    branch: String,
+    workspace_id: String,
+    phase: RwLock<ReadServerPhase>,
+    context: RwLock<Option<Arc<ReadRequestContext>>>,
+    reconciliation_in_flight: AtomicBool,
+}
+
+impl ReadServerStartupGate {
+    /// Construct a gate for a `ReadServer`-mode daemon.
+    ///
+    /// The identity this gate stamps onto captured contexts is derived from
+    /// `activator`'s own [`ExpectedIdentity`][crate::services::generations::activation::ExpectedIdentity]
+    /// rather than accepted as separate `branch`/`workspace_id` parameters.
+    /// A single source of truth makes it structurally impossible for the
+    /// gate and the activator it wraps to disagree about which identity is
+    /// being served -- previously nothing prevented a caller from passing
+    /// values here that diverged from what the activator actually validates
+    /// manifests against.
+    #[must_use]
+    pub fn new(activator: Arc<GenerationActivator>) -> Self {
+        let identity = activator.expected_identity();
+        let branch = identity.branch().to_owned();
+        let workspace_id = identity.workspace_id().to_owned();
+        Self {
+            activator,
+            branch,
+            workspace_id,
+            phase: RwLock::new(ReadServerPhase::Binding),
+            context: RwLock::new(None),
+            reconciliation_in_flight: AtomicBool::new(false),
+        }
+    }
+
+    /// Record that the listening socket has been bound.
+    ///
+    /// Binding first is deliberate: a client that connects during activation
+    /// must receive a `starting` answer it can poll, not a connection refusal
+    /// it would interpret as "no daemon".
+    pub async fn socket_bound(&self) {
+        let mut phase = self.phase.write().await;
+        if matches!(*phase, ReadServerPhase::Binding) {
+            *phase = ReadServerPhase::Starting;
+        }
+    }
+
+    /// The phase this gate has reached.
+    pub async fn phase(&self) -> ReadServerPhase {
+        *self.phase.read().await
+    }
+
+    /// The readiness view this gate publishes.
+    ///
+    /// Readiness is `Ready` only in [`ReadServerPhase::Ready`]; every other
+    /// phase -- including a failed activation -- publishes `Pending`, so a
+    /// failed startup can never be mistaken for a serving daemon.
+    pub async fn readiness(&self) -> ReadinessView {
+        ReadinessView {
+            startup: match self.phase().await {
+                ReadServerPhase::Ready => StartupOutcome::Ready,
+                ReadServerPhase::Binding | ReadServerPhase::Starting | ReadServerPhase::Failed => {
+                    StartupOutcome::Pending
+                }
+            },
+        }
+    }
+
+    /// The captured context, once the initial activation has completed.
+    ///
+    /// Returns `None` until readiness is published, which is what withholds
+    /// read dispatch: there is simply no context for a request to capture.
+    pub async fn admitted_context(&self) -> Option<Arc<ReadRequestContext>> {
+        self.context.read().await.clone()
+    }
+
+    /// The activator this gate drives.
+    ///
+    /// Exposed for the F20 request-entry seam
+    /// ([`crate::daemon::request_entry`]), which reconciles the durable
+    /// manifest at read dispatch. F18 deliberately does not own that
+    /// reconciliation: gating startup and admitting requests are different
+    /// decisions, and collapsing them would make the startup gate a
+    /// per-request authority it is explicitly not.
+    #[must_use]
+    pub fn activator(&self) -> &Arc<GenerationActivator> {
+        &self.activator
+    }
+
+    /// The identity (branch, workspace) this gate stamps onto captured contexts.
+    #[must_use]
+    pub fn identity(&self) -> (&str, &str) {
+        (&self.branch, &self.workspace_id)
+    }
+
+    /// Install a freshly-captured context as the one this daemon serves.
+    ///
+    /// Called by the F20 request-entry seam after a background activation
+    /// produced a newer generation. Readiness is unaffected: this gate only
+    /// ever *raises* readiness, and a daemon that is already serving stays
+    /// serving across a generation swap.
+    pub async fn install_context(&self, context: Arc<ReadRequestContext>) {
+        let mut slot = self.context.write().await;
+        *slot = Some(context);
+    }
+
+    /// Claim the single background-reconciliation slot for this gate.
+    ///
+    /// Returns `true` when this call successfully claimed the slot (no
+    /// reconciliation task is currently in flight) and `false` when another
+    /// task already holds it. Every admitted generation-backed read would
+    /// otherwise spawn its own reconciliation task; the activator's
+    /// single-flight mutex serializes the actual work but does not coalesce
+    /// the *spawning* itself, so a slow activation (for example, blocked on a
+    /// large database open) could otherwise build an unbounded task queue
+    /// under sustained load. This claim happens before `tokio::spawn` is ever
+    /// called, so a claim failure means no task is spawned at all rather than
+    /// a task that spawns and immediately no-ops.
+    pub fn try_claim_reconciliation(&self) -> bool {
+        self.reconciliation_in_flight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    /// Release the background-reconciliation slot claimed by
+    /// [`try_claim_reconciliation`].
+    ///
+    /// Must be called on every exit path of the spawned reconciliation task
+    /// -- success, `Ok(None)`, and error alike -- so the slot never stays
+    /// stuck claimed. Callers should prefer an RAII guard over calling this
+    /// directly so a task panic still releases the slot.
+    pub fn release_reconciliation(&self) {
+        self.reconciliation_in_flight
+            .store(false, Ordering::Release);
+    }
+
+    /// Run the initial generation activation and release readiness on success.
+    ///
+    /// Exactly one generation context is opened: the activator is re-entrant,
+    /// so a retried startup reuses the generation it already opened rather
+    /// than opening a second copy of it.
+    ///
+    /// Must be called only after [`socket_bound`][Self::socket_bound]: the
+    /// bind-first guarantee documented there requires that the socket is
+    /// already accepting connections before activation work begins, so this
+    /// method never advances the phase on the caller's behalf.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActivationError::TransientActivationFailure`] without
+    /// mutating the phase when called while still [`ReadServerPhase::Binding`]
+    /// -- this is a contract-ordering error a caller can retry after binding
+    /// the socket, not a permanent activation failure, so it must stay
+    /// distinguishable from [`ReadServerPhase::Failed`]. Otherwise returns the
+    /// typed [`ActivationError`] produced by the activation attempt; the gate
+    /// moves to [`ReadServerPhase::Failed`] and readiness stays withheld so
+    /// nothing partially-activated is ever published.
+    pub async fn run_initial_activation(&self) -> Result<Arc<ReadRequestContext>, ActivationError> {
+        if matches!(self.phase().await, ReadServerPhase::Binding) {
+            return Err(ActivationError::TransientActivationFailure {
+                reason: "socket must be bound via socket_bound() before initial activation runs"
+                    .to_owned(),
+            });
+        }
+
+        match self.activator.activate_initial().await {
+            Ok(generation) => {
+                let context = ReadRequestContext::from_generation(
+                    generation,
+                    self.branch.clone(),
+                    self.workspace_id.clone(),
+                );
+                {
+                    let mut slot = self.context.write().await;
+                    *slot = Some(Arc::clone(&context));
+                }
+                // Readiness is published only after the context is installed,
+                // so no observer can see `Ready` without a context to serve.
+                *self.phase.write().await = ReadServerPhase::Ready;
+                info!("read-server startup gate released: initial generation activated");
+                Ok(context)
+            }
+            Err(error) => {
+                *self.phase.write().await = ReadServerPhase::Failed;
+                error!(
+                    error = %error,
+                    "read-server startup gate failed: initial generation activation rejected"
+                );
+                Err(error)
+            }
+        }
     }
 }
 

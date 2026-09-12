@@ -1,10 +1,1196 @@
-//! Placeholder harness for plan unit F17 (generation activation).
+//! Integration coverage for the generation activation service (plan unit F17,
+//! 142.018-T).
 //!
-//! Registered by F00 (142.001-T / 133-S). This file is inert scaffolding: it
-//! imports nothing from `engram` and bundles no behavior change. The real
-//! test body is written when F17 executes in a later shipment.
-//!
-//! See docs/exec-plans/2026-09-02-separate-indexer-read-server-plan.md.
+//! The suite is organized by subtask: typed manifest parsing and bounds
+//! enforcement (142.018.001-ST), `activate_initial` with deadline and store
+//! resolution (142.018.002-ST), the single-flight background path
+//! (142.018.003-ST), and the immutable rejection cache with transient backoff
+//! (142.018.004-ST).
+
+#![forbid(unsafe_code)]
+
+use std::fs;
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
+
+use chrono::{DateTime, Utc};
+use engram::errors::ActivationError;
+use engram::services::generations::{
+    BranchIdentity, ExpectedIdentity, GENERATION_DATABASE_FILE_NAME, GenerationActivator,
+    GenerationId, GenerationManifest, GenerationProvenance, GenerationRevision, GenerationStore,
+    ManifestFileDigest, RejectionClass, SUPPORTED_MANIFEST_SCHEMA_VERSION, SealedInventory,
+    ValidatedManifest, WorkspaceIdentity, backoff_delay, parse_manifest,
+};
+use sha2::{Digest, Sha256};
+use tempfile::TempDir;
+
+const HARNESS_BRANCH: &str = "activation-harness";
+const HARNESS_WORKSPACE: &str = "workspace-activation-harness";
+
+/// A syntactically valid lowercase-hex SHA-256 placeholder digest.
+const PLACEHOLDER_DIGEST: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+
+fn expected_identity() -> ExpectedIdentity {
+    ExpectedIdentity::new(HARNESS_BRANCH, HARNESS_WORKSPACE)
+}
+
+fn fixture_created_at() -> DateTime<Utc> {
+    DateTime::parse_from_rfc3339("2026-09-10T00:00:00Z")
+        .expect("fixture timestamp literal must parse")
+        .with_timezone(&Utc)
+}
+
+fn generation_id(label: &str) -> GenerationId {
+    GenerationId::new(label).expect("fixture generation id must be valid")
+}
+
+fn database_entry(label: &str, digest: &str) -> ManifestFileDigest {
+    ManifestFileDigest::new(format!("{label}/{GENERATION_DATABASE_FILE_NAME}"), digest)
+}
+
+/// A fully valid manifest that passes every bounds and identity check.
+fn valid_manifest(label: &str, revision: u64) -> GenerationManifest {
+    GenerationManifest::new(
+        generation_id(label),
+        GenerationRevision::new(revision),
+        SUPPORTED_MANIFEST_SCHEMA_VERSION,
+        BranchIdentity::new(HARNESS_BRANCH, Some("source-rev-1".to_owned())),
+        WorkspaceIdentity::new(HARNESS_WORKSPACE),
+        SealedInventory::new(vec![database_entry(label, PLACEHOLDER_DIGEST)]),
+        GenerationProvenance::new("activation-harness", fixture_created_at()),
+    )
+}
+
+fn manifest_with(
+    label: &str,
+    revision: u64,
+    schema_version: &str,
+    branch: BranchIdentity,
+    workspace: WorkspaceIdentity,
+    inventory: SealedInventory,
+) -> GenerationManifest {
+    GenerationManifest::new(
+        generation_id(label),
+        GenerationRevision::new(revision),
+        schema_version,
+        branch,
+        workspace,
+        inventory,
+        GenerationProvenance::new("activation-harness", fixture_created_at()),
+    )
+}
+
+fn bytes_of(manifest: &GenerationManifest) -> Vec<u8> {
+    serde_json::to_vec(manifest).expect("fixture manifest must serialize")
+}
+
+// ── 142.018.001-ST — typed parse, bounds, and identity ───────────────────────
 
 #[test]
-fn placeholder_registered() {}
+fn parses_manifest_bytes_into_typed_values() {
+    let manifest = valid_manifest("gen-typed", 7);
+    let parsed = parse_manifest(&bytes_of(&manifest)).expect("valid manifest must parse");
+
+    assert_eq!(parsed, manifest);
+    assert_eq!(parsed.revision(), GenerationRevision::new(7));
+    assert_eq!(parsed.generation_id().as_str(), "gen-typed");
+    assert_eq!(parsed.branch().name(), HARNESS_BRANCH);
+    assert_eq!(parsed.workspace().id(), HARNESS_WORKSPACE);
+}
+
+#[test]
+fn validation_accepts_a_fully_valid_manifest() {
+    let manifest = valid_manifest("gen-valid", 3);
+    let validated = ValidatedManifest::parse(&bytes_of(&manifest), &expected_identity())
+        .expect("fully valid manifest must validate");
+
+    assert_eq!(validated.revision(), GenerationRevision::new(3));
+    assert_eq!(validated.generation_id().as_str(), "gen-valid");
+    assert_eq!(
+        validated.database_path(),
+        format!("gen-valid/{GENERATION_DATABASE_FILE_NAME}")
+    );
+    assert_eq!(validated.manifest(), &manifest);
+}
+
+#[test]
+fn malformed_manifest_bytes_are_a_typed_rejection_and_never_panic() {
+    // Each input is malformed in a different way: not JSON at all, JSON of the
+    // wrong shape, a valid document missing required fields, a field of the
+    // wrong type, truncated bytes, and an outright empty body. None may panic.
+    let malformed: &[&[u8]] = &[
+        b"",
+        b"not json at all",
+        b"[]",
+        b"null",
+        br#"{"generation_id":"gen"}"#,
+        br#"{"generation_id":"gen","revision":"not-a-number","schema_version":"1.0.0"}"#,
+        br#"{"generation_id":"a/b","revision":1,"schema_version":"1.0.0"}"#,
+        br#"{"generation_id":"gen","revision":1,"schema_ver"#,
+    ];
+
+    for bytes in malformed {
+        let error = parse_manifest(bytes).expect_err("malformed manifest must be rejected");
+        assert!(
+            matches!(error, ActivationError::ManifestMalformed { .. }),
+            "expected ManifestMalformed for {:?}, got {error:?}",
+            String::from_utf8_lossy(bytes)
+        );
+
+        let error = ValidatedManifest::parse(bytes, &expected_identity())
+            .expect_err("malformed manifest must be rejected by validation too");
+        assert!(matches!(error, ActivationError::ManifestMalformed { .. }));
+    }
+}
+
+#[test]
+fn schema_version_mismatch_is_a_typed_rejection() {
+    let manifest = manifest_with(
+        "gen-schema",
+        1,
+        "99.0.0-unknown",
+        BranchIdentity::new(HARNESS_BRANCH, None),
+        WorkspaceIdentity::new(HARNESS_WORKSPACE),
+        SealedInventory::new(vec![database_entry("gen-schema", PLACEHOLDER_DIGEST)]),
+    );
+
+    let error = ValidatedManifest::parse(&bytes_of(&manifest), &expected_identity())
+        .expect_err("unsupported schema version must be rejected");
+
+    match error {
+        ActivationError::ManifestSchemaMismatch { expected, found } => {
+            assert_eq!(expected, SUPPORTED_MANIFEST_SCHEMA_VERSION);
+            assert_eq!(found, "99.0.0-unknown");
+        }
+        other => panic!("expected ManifestSchemaMismatch, got {other:?}"),
+    }
+}
+
+#[test]
+fn branch_identity_mismatch_is_a_typed_rejection() {
+    let manifest = manifest_with(
+        "gen-branch",
+        1,
+        SUPPORTED_MANIFEST_SCHEMA_VERSION,
+        BranchIdentity::new("some-other-branch", None),
+        WorkspaceIdentity::new(HARNESS_WORKSPACE),
+        SealedInventory::new(vec![database_entry("gen-branch", PLACEHOLDER_DIGEST)]),
+    );
+
+    let error = ValidatedManifest::parse(&bytes_of(&manifest), &expected_identity())
+        .expect_err("foreign branch identity must be rejected");
+
+    match error {
+        ActivationError::IdentityMismatch {
+            field,
+            expected,
+            found,
+        } => {
+            assert_eq!(field, "branch");
+            assert_eq!(expected, HARNESS_BRANCH);
+            assert_eq!(found, "some-other-branch");
+        }
+        other => panic!("expected IdentityMismatch, got {other:?}"),
+    }
+}
+
+#[test]
+fn workspace_identity_mismatch_is_a_typed_rejection() {
+    let manifest = manifest_with(
+        "gen-workspace",
+        1,
+        SUPPORTED_MANIFEST_SCHEMA_VERSION,
+        BranchIdentity::new(HARNESS_BRANCH, None),
+        WorkspaceIdentity::new("some-other-workspace"),
+        SealedInventory::new(vec![database_entry("gen-workspace", PLACEHOLDER_DIGEST)]),
+    );
+
+    let error = ValidatedManifest::parse(&bytes_of(&manifest), &expected_identity())
+        .expect_err("foreign workspace identity must be rejected");
+
+    match error {
+        ActivationError::IdentityMismatch { field, found, .. } => {
+            assert_eq!(field, "workspace");
+            assert_eq!(found, "some-other-workspace");
+        }
+        other => panic!("expected IdentityMismatch, got {other:?}"),
+    }
+}
+
+#[test]
+fn out_of_bounds_fields_are_rejected_with_named_field_paths() {
+    let cases: Vec<(&str, GenerationManifest)> = vec![
+        (
+            "revision",
+            manifest_with(
+                "gen-rev0",
+                0,
+                SUPPORTED_MANIFEST_SCHEMA_VERSION,
+                BranchIdentity::new(HARNESS_BRANCH, None),
+                WorkspaceIdentity::new(HARNESS_WORKSPACE),
+                SealedInventory::new(vec![database_entry("gen-rev0", PLACEHOLDER_DIGEST)]),
+            ),
+        ),
+        (
+            "branch.name",
+            manifest_with(
+                "gen-blank-branch",
+                1,
+                SUPPORTED_MANIFEST_SCHEMA_VERSION,
+                BranchIdentity::new("", None),
+                WorkspaceIdentity::new(HARNESS_WORKSPACE),
+                SealedInventory::new(vec![database_entry("gen-blank-branch", PLACEHOLDER_DIGEST)]),
+            ),
+        ),
+        (
+            "workspace.workspace_id",
+            manifest_with(
+                "gen-blank-ws",
+                1,
+                SUPPORTED_MANIFEST_SCHEMA_VERSION,
+                BranchIdentity::new(HARNESS_BRANCH, None),
+                WorkspaceIdentity::new(""),
+                SealedInventory::new(vec![database_entry("gen-blank-ws", PLACEHOLDER_DIGEST)]),
+            ),
+        ),
+        (
+            "inventory.files",
+            manifest_with(
+                "gen-empty-inv",
+                1,
+                SUPPORTED_MANIFEST_SCHEMA_VERSION,
+                BranchIdentity::new(HARNESS_BRANCH, None),
+                WorkspaceIdentity::new(HARNESS_WORKSPACE),
+                SealedInventory::new(vec![]),
+            ),
+        ),
+        (
+            "inventory.files[].sha256",
+            manifest_with(
+                "gen-bad-digest",
+                1,
+                SUPPORTED_MANIFEST_SCHEMA_VERSION,
+                BranchIdentity::new(HARNESS_BRANCH, None),
+                WorkspaceIdentity::new(HARNESS_WORKSPACE),
+                SealedInventory::new(vec![database_entry("gen-bad-digest", "sha256:not-hex")]),
+            ),
+        ),
+        (
+            "inventory.files[].path",
+            manifest_with(
+                "gen-escape",
+                1,
+                SUPPORTED_MANIFEST_SCHEMA_VERSION,
+                BranchIdentity::new(HARNESS_BRANCH, None),
+                WorkspaceIdentity::new(HARNESS_WORKSPACE),
+                SealedInventory::new(vec![
+                    ManifestFileDigest::new("../escape.db", PLACEHOLDER_DIGEST),
+                    database_entry("gen-escape", PLACEHOLDER_DIGEST),
+                ]),
+            ),
+        ),
+    ];
+
+    for (field_name, manifest) in cases {
+        let error = ValidatedManifest::parse(&bytes_of(&manifest), &expected_identity())
+            .expect_err("out-of-bounds manifest field must be rejected");
+        match error {
+            ActivationError::ManifestFieldOutOfBounds { field, .. } => {
+                assert_eq!(field, field_name, "wrong field named for {field_name}");
+            }
+            other => panic!("expected ManifestFieldOutOfBounds for {field_name}, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn inventory_missing_the_published_database_is_rejected() {
+    let manifest = manifest_with(
+        "gen-no-db",
+        1,
+        SUPPORTED_MANIFEST_SCHEMA_VERSION,
+        BranchIdentity::new(HARNESS_BRANCH, None),
+        WorkspaceIdentity::new(HARNESS_WORKSPACE),
+        SealedInventory::new(vec![ManifestFileDigest::new(
+            "gen-no-db/sidecar.bin",
+            PLACEHOLDER_DIGEST,
+        )]),
+    );
+
+    let error = ValidatedManifest::parse(&bytes_of(&manifest), &expected_identity())
+        .expect_err("a manifest that seals no database must be rejected");
+
+    match error {
+        ActivationError::ManifestFieldOutOfBounds { field, .. } => {
+            assert_eq!(field, "inventory.files");
+        }
+        other => panic!("expected ManifestFieldOutOfBounds, got {other:?}"),
+    }
+}
+
+#[test]
+fn duplicate_inventory_paths_are_rejected() {
+    let manifest = manifest_with(
+        "gen-dupe",
+        1,
+        SUPPORTED_MANIFEST_SCHEMA_VERSION,
+        BranchIdentity::new(HARNESS_BRANCH, None),
+        WorkspaceIdentity::new(HARNESS_WORKSPACE),
+        SealedInventory::new(vec![
+            database_entry("gen-dupe", PLACEHOLDER_DIGEST),
+            database_entry("gen-dupe", PLACEHOLDER_DIGEST),
+        ]),
+    );
+
+    let error = ValidatedManifest::parse(&bytes_of(&manifest), &expected_identity())
+        .expect_err("duplicate inventory paths must be rejected");
+
+    match error {
+        ActivationError::ManifestFieldOutOfBounds { field, .. } => {
+            assert_eq!(field, "inventory.files[].path");
+        }
+        other => panic!("expected ManifestFieldOutOfBounds, got {other:?}"),
+    }
+}
+
+/// Bounds and identity failures must be classified permanent: the durable
+/// bytes for a revision never change, so retrying can only fail identically.
+#[test]
+fn every_typed_manifest_rejection_is_a_named_activation_error() {
+    let rejections = [
+        ValidatedManifest::parse(b"{", &expected_identity()),
+        ValidatedManifest::parse(
+            &bytes_of(&manifest_with(
+                "gen-x",
+                1,
+                "0.0.0",
+                BranchIdentity::new(HARNESS_BRANCH, None),
+                WorkspaceIdentity::new(HARNESS_WORKSPACE),
+                SealedInventory::new(vec![database_entry("gen-x", PLACEHOLDER_DIGEST)]),
+            )),
+            &expected_identity(),
+        ),
+    ];
+
+    for rejection in rejections {
+        let error = rejection.expect_err("each fixture must be rejected");
+        assert!(matches!(
+            error,
+            ActivationError::ManifestMalformed { .. }
+                | ActivationError::ManifestSchemaMismatch { .. }
+        ));
+    }
+}
+
+// ── Live-store fixture shared by 142.018.002-ST .. 142.018.004-ST ────────────
+
+/// A generation store on disk plus the runtime root activations copy into.
+///
+/// Held by value in each test so both temporary directories outlive every
+/// context the activator hands out; dropping the fixture is what releases the
+/// opened runtime copy.
+struct StoreFixture {
+    root: TempDir,
+    runtime_root: TempDir,
+}
+
+impl StoreFixture {
+    fn new() -> Self {
+        Self {
+            root: tempfile::tempdir().expect("store tempdir"),
+            runtime_root: tempfile::tempdir().expect("runtime tempdir"),
+        }
+    }
+
+    fn store(&self) -> GenerationStore {
+        GenerationStore::new(self.root.path()).expect("store root must validate")
+    }
+
+    /// Materialize a seeded generation database under `<root>/<label>/engram.db`.
+    fn seed_generation(&self, label: &str) -> String {
+        let dir = self.root.path().join(label);
+        fs::create_dir_all(&dir).expect("generation directory");
+        let db_path = dir.join(GENERATION_DATABASE_FILE_NAME);
+        {
+            let db = cozo::DbInstance::new("sqlite", db_path.to_str().expect("utf8 path"), "")
+                .expect("create db");
+            db.run_default(":create probe_row {id => val}")
+                .expect("create relation");
+            db.run_default("?[id, val] <- [[1, 'seed']] :put probe_row {id => val}")
+                .expect("seed row");
+        }
+        sha256_hex(&db_path)
+    }
+
+    /// Write `manifest` to the store's durable active-manifest path.
+    fn publish(&self, manifest: &GenerationManifest) {
+        let path = self.root.path().join("active.json");
+        fs::write(&path, bytes_of(manifest)).expect("write active manifest");
+    }
+
+    fn activator(&self, deadline: Duration) -> GenerationActivator {
+        GenerationActivator::new(
+            self.store(),
+            self.runtime_root.path(),
+            expected_identity(),
+            deadline,
+        )
+    }
+}
+
+fn sha256_hex(path: &Path) -> String {
+    use std::fmt::Write as _;
+
+    let bytes = fs::read(path).expect("read file for digest");
+    let digest = Sha256::digest(bytes);
+    digest.iter().fold(String::new(), |mut hex, byte| {
+        let _ = write!(hex, "{byte:02x}");
+        hex
+    })
+}
+
+/// Seed a generation, publish a matching manifest, and return an activator.
+fn live_activator(
+    fixture: &StoreFixture,
+    label: &str,
+    revision: u64,
+    deadline: Duration,
+) -> GenerationActivator {
+    let digest = fixture.seed_generation(label);
+    fixture.publish(&manifest_with(
+        label,
+        revision,
+        SUPPORTED_MANIFEST_SCHEMA_VERSION,
+        BranchIdentity::new(HARNESS_BRANCH, None),
+        WorkspaceIdentity::new(HARNESS_WORKSPACE),
+        SealedInventory::new(vec![database_entry(label, &digest)]),
+    ));
+    fixture.activator(deadline)
+}
+
+const TEST_DEADLINE: Duration = Duration::from_secs(60);
+
+// ── 142.018.002-ST — activate_initial, deadline, and store resolution ────────
+
+#[tokio::test]
+async fn activate_initial_resolves_opens_and_yields_exactly_one_context() {
+    let fixture = StoreFixture::new();
+    let activator = live_activator(&fixture, "gen-initial", 4, TEST_DEADLINE);
+
+    assert!(activator.active_context().await.is_none());
+
+    let context = activator
+        .activate_initial()
+        .await
+        .expect("valid published generation must activate");
+
+    assert_eq!(context.generation_id().as_str(), "gen-initial");
+    assert_eq!(
+        activator.active_revision().await,
+        Some(GenerationRevision::new(4))
+    );
+    assert_eq!(activator.open_attempt_count(), 1);
+
+    // Re-entrancy: a second startup call must reuse the already-open
+    // generation rather than opening a second copy of it.
+    let again = activator
+        .activate_initial()
+        .await
+        .expect("re-entrant activation must succeed");
+    assert!(Arc::ptr_eq(
+        context.shared_opened_generation(),
+        again.shared_opened_generation()
+    ));
+    assert_eq!(activator.open_attempt_count(), 1);
+}
+
+#[tokio::test]
+async fn activate_initial_revalidates_digests_before_opening() {
+    let fixture = StoreFixture::new();
+    fixture.seed_generation("gen-digest");
+    // Publish a manifest whose sealed digest does not match the bytes on disk.
+    fixture.publish(&manifest_with(
+        "gen-digest",
+        1,
+        SUPPORTED_MANIFEST_SCHEMA_VERSION,
+        BranchIdentity::new(HARNESS_BRANCH, None),
+        WorkspaceIdentity::new(HARNESS_WORKSPACE),
+        SealedInventory::new(vec![database_entry("gen-digest", PLACEHOLDER_DIGEST)]),
+    ));
+    let activator = fixture.activator(TEST_DEADLINE);
+
+    let error = activator
+        .activate_initial()
+        .await
+        .expect_err("drifted generation bytes must be rejected");
+
+    assert!(matches!(error, ActivationError::DigestMismatch { .. }));
+    // No partially-opened state: nothing is published on the failure path.
+    assert!(activator.active_context().await.is_none());
+    assert!(activator.active_revision().await.is_none());
+}
+
+#[tokio::test]
+async fn activate_initial_is_bounded_by_the_activation_deadline() {
+    let fixture = StoreFixture::new();
+    let activator = live_activator(&fixture, "gen-deadline", 2, Duration::ZERO);
+
+    let error = activator
+        .activate_initial()
+        .await
+        .expect_err("an exhausted deadline must abandon the attempt");
+
+    assert!(matches!(
+        error,
+        ActivationError::ActivationDeadlineExceeded { deadline_ms: 0 }
+    ));
+    assert!(activator.active_context().await.is_none());
+    // The deadline now bounds the complete attempt (F17, Fix4): it is
+    // enforced before the manifest is even read, not merely before the final
+    // open, so neither a read nor an open is ever attempted.
+    assert_eq!(activator.manifest_read_attempt_count(), 0);
+    assert_eq!(activator.open_attempt_count(), 0);
+}
+
+#[tokio::test]
+async fn maybe_activate_newer_is_bounded_by_the_activation_deadline_before_any_read() {
+    // A fresh activator has no active generation, so any published revision
+    // is "strictly newer" and `maybe_activate_newer` would normally attempt
+    // it. With a zero deadline the whole attempt -- including the manifest
+    // read that used to run unconditionally before the deadline was ever
+    // consulted -- must be abandoned up front.
+    let fixture = StoreFixture::new();
+    let activator = live_activator(&fixture, "gen-deadline-newer", 1, Duration::ZERO);
+
+    let error = activator
+        .maybe_activate_newer()
+        .await
+        .expect_err("an exhausted deadline must abandon the attempt");
+
+    assert!(matches!(
+        error,
+        ActivationError::ActivationDeadlineExceeded { deadline_ms: 0 }
+    ));
+    assert!(activator.active_context().await.is_none());
+    assert_eq!(activator.manifest_read_attempt_count(), 0);
+    assert_eq!(activator.open_attempt_count(), 0);
+}
+
+#[tokio::test]
+async fn activate_initial_reports_a_typed_error_when_no_manifest_is_published() {
+    let fixture = StoreFixture::new();
+    let activator = fixture.activator(TEST_DEADLINE);
+
+    let error = activator
+        .activate_initial()
+        .await
+        .expect_err("an unpublished store must not activate");
+
+    assert!(matches!(
+        error,
+        ActivationError::TransientActivationFailure { .. }
+    ));
+    assert!(activator.active_context().await.is_none());
+}
+
+// ── 142.018.003-ST — single-flight background activation ─────────────────────
+
+/// Publish a newer revision for `label` into an existing fixture.
+fn publish_revision(fixture: &StoreFixture, label: &str, revision: u64) {
+    let digest = fixture.seed_generation(label);
+    fixture.publish(&manifest_with(
+        label,
+        revision,
+        SUPPORTED_MANIFEST_SCHEMA_VERSION,
+        BranchIdentity::new(HARNESS_BRANCH, None),
+        WorkspaceIdentity::new(HARNESS_WORKSPACE),
+        SealedInventory::new(vec![database_entry(label, &digest)]),
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_callers_coalesce_into_exactly_one_activation() {
+    let fixture = StoreFixture::new();
+    let activator = Arc::new(live_activator(&fixture, "gen-one", 1, TEST_DEADLINE));
+    activator
+        .activate_initial()
+        .await
+        .expect("initial activation must succeed");
+    assert_eq!(activator.open_attempt_count(), 1);
+
+    publish_revision(&fixture, "gen-two", 2);
+
+    let mut handles = Vec::new();
+    for _ in 0..8 {
+        let activator = Arc::clone(&activator);
+        handles.push(tokio::spawn(async move {
+            activator.maybe_activate_newer().await
+        }));
+    }
+
+    let mut activated = 0_usize;
+    for handle in handles {
+        let outcome = handle
+            .await
+            .expect("activation task must not panic")
+            .expect("activation must not fail");
+        if outcome.is_some() {
+            activated += 1;
+        }
+    }
+
+    // Exactly one caller performed the activation; the other seven observed
+    // the newly-active revision and did no work at all.
+    assert_eq!(activated, 1);
+    assert_eq!(activator.open_attempt_count(), 2);
+    assert_eq!(
+        activator.active_revision().await,
+        Some(GenerationRevision::new(2))
+    );
+}
+
+#[tokio::test]
+async fn only_a_strictly_greater_revision_triggers_activation() {
+    let fixture = StoreFixture::new();
+    let activator = live_activator(&fixture, "gen-strict", 5, TEST_DEADLINE);
+    activator
+        .activate_initial()
+        .await
+        .expect("initial activation must succeed");
+    let opens_after_initial = activator.open_attempt_count();
+
+    // Same revision republished: not strictly greater, so nothing happens.
+    publish_revision(&fixture, "gen-strict-same", 5);
+    assert!(
+        activator
+            .maybe_activate_newer()
+            .await
+            .expect("equal revision must not error")
+            .is_none()
+    );
+
+    // Older revision republished: also not strictly greater.
+    publish_revision(&fixture, "gen-strict-older", 4);
+    assert!(
+        activator
+            .maybe_activate_newer()
+            .await
+            .expect("older revision must not error")
+            .is_none()
+    );
+
+    assert_eq!(activator.open_attempt_count(), opens_after_initial);
+    assert_eq!(
+        activator.active_revision().await,
+        Some(GenerationRevision::new(5))
+    );
+
+    // Strictly greater: this one does activate.
+    publish_revision(&fixture, "gen-strict-newer", 6);
+    assert!(
+        activator
+            .maybe_activate_newer()
+            .await
+            .expect("newer revision must activate")
+            .is_some()
+    );
+    assert_eq!(
+        activator.active_revision().await,
+        Some(GenerationRevision::new(6))
+    );
+}
+
+#[tokio::test]
+async fn a_read_already_in_flight_keeps_its_generation_across_activation() {
+    let fixture = StoreFixture::new();
+    let activator = live_activator(&fixture, "gen-hold", 1, TEST_DEADLINE);
+    let held = activator
+        .activate_initial()
+        .await
+        .expect("initial activation must succeed");
+    let held_runtime_path = held.opened_generation().runtime_copy().path().to_path_buf();
+
+    publish_revision(&fixture, "gen-hold-next", 2);
+    let swapped = activator
+        .maybe_activate_newer()
+        .await
+        .expect("newer revision must activate")
+        .expect("a newer revision was published");
+
+    // The activator now serves the new generation, but the previously-captured
+    // context is untouched: still the old generation, still readable, and its
+    // runtime copy still present on disk because the Arc keeps it alive.
+    assert_eq!(swapped.generation_id().as_str(), "gen-hold-next");
+    assert_eq!(held.generation_id().as_str(), "gen-hold");
+    assert!(held_runtime_path.exists());
+    assert!(!Arc::ptr_eq(
+        held.shared_opened_generation(),
+        swapped.shared_opened_generation()
+    ));
+    assert_eq!(count_probe_rows(held.opened_generation().db()), 1);
+}
+
+#[tokio::test]
+async fn a_failed_background_activation_leaves_the_active_generation_serving() {
+    let fixture = StoreFixture::new();
+    let activator = live_activator(&fixture, "gen-stable", 1, TEST_DEADLINE);
+    let serving = activator
+        .activate_initial()
+        .await
+        .expect("initial activation must succeed");
+
+    // Publish a newer revision whose sealed digest does not match its bytes.
+    fixture.seed_generation("gen-broken");
+    fixture.publish(&manifest_with(
+        "gen-broken",
+        2,
+        SUPPORTED_MANIFEST_SCHEMA_VERSION,
+        BranchIdentity::new(HARNESS_BRANCH, None),
+        WorkspaceIdentity::new(HARNESS_WORKSPACE),
+        SealedInventory::new(vec![database_entry("gen-broken", PLACEHOLDER_DIGEST)]),
+    ));
+
+    let error = activator
+        .maybe_activate_newer()
+        .await
+        .expect_err("a drifted successor must be rejected");
+    assert!(matches!(error, ActivationError::DigestMismatch { .. }));
+
+    let still_active = activator
+        .active_context()
+        .await
+        .expect("the previous generation must still be serving");
+    assert!(Arc::ptr_eq(
+        serving.shared_opened_generation(),
+        still_active.shared_opened_generation()
+    ));
+    assert_eq!(
+        activator.active_revision().await,
+        Some(GenerationRevision::new(1))
+    );
+    assert_eq!(count_probe_rows(still_active.opened_generation().db()), 1);
+}
+
+fn count_probe_rows(db: &cozo::DbInstance) -> usize {
+    db.run_script(
+        "?[id, val] := *probe_row{id, val}",
+        std::collections::BTreeMap::new(),
+        cozo::ScriptMutability::Immutable,
+    )
+    .expect("read probe rows")
+    .rows
+    .len()
+}
+
+// ── 142.018.004-ST — immutable rejection cache and transient backoff ─────────
+
+#[tokio::test]
+async fn a_permanently_rejected_revision_is_recorded_and_never_retried() {
+    let fixture = StoreFixture::new();
+    let activator = live_activator(&fixture, "gen-perm-base", 1, TEST_DEADLINE);
+    activator
+        .activate_initial()
+        .await
+        .expect("initial activation must succeed");
+
+    // A successor whose sealed digest does not match its bytes can never
+    // succeed: the manifest bytes for revision 2 are immutable.
+    fixture.seed_generation("gen-perm-bad");
+    fixture.publish(&manifest_with(
+        "gen-perm-bad",
+        2,
+        SUPPORTED_MANIFEST_SCHEMA_VERSION,
+        BranchIdentity::new(HARNESS_BRANCH, None),
+        WorkspaceIdentity::new(HARNESS_WORKSPACE),
+        SealedInventory::new(vec![database_entry("gen-perm-bad", PLACEHOLDER_DIGEST)]),
+    ));
+
+    activator
+        .maybe_activate_newer()
+        .await
+        .expect_err("the drifted successor must be rejected");
+
+    assert_eq!(
+        activator.rejection_class(GenerationRevision::new(2)),
+        Some(RejectionClass::Permanent)
+    );
+    assert!(
+        activator
+            .rejection_reason(GenerationRevision::new(2))
+            .is_some_and(|reason| reason.contains("digest"))
+    );
+
+    let validations_after_first = activator.validation_attempt_count();
+    let opens_after_first = activator.open_attempt_count();
+    let reads_after_first = activator.manifest_read_attempt_count();
+
+    // Every subsequent reconciliation must perform no work at all.
+    for _ in 0..5 {
+        assert!(
+            activator
+                .maybe_activate_newer()
+                .await
+                .expect("a cached permanent rejection must not surface as an error")
+                .is_none()
+        );
+    }
+
+    assert_eq!(
+        activator.validation_attempt_count(),
+        validations_after_first
+    );
+    assert_eq!(activator.open_attempt_count(), opens_after_first);
+    // The cheap fingerprint probe (F17, Fix5) must short-circuit before the
+    // manifest is even read again: an unchanged, already-rejected revision
+    // must not repeat the full read + parse on every call.
+    assert_eq!(activator.manifest_read_attempt_count(), reads_after_first);
+    assert_eq!(
+        activator.active_revision().await,
+        Some(GenerationRevision::new(1))
+    );
+}
+
+#[tokio::test]
+async fn the_rejection_cache_distinguishes_permanent_from_transient_failures() {
+    let fixture = StoreFixture::new();
+    let activator = live_activator(&fixture, "gen-class-base", 1, TEST_DEADLINE);
+    activator
+        .activate_initial()
+        .await
+        .expect("initial activation must succeed");
+
+    // Revision 2 names a generation directory that does not exist: the
+    // publisher may still be materializing it, so this is transient.
+    fixture.publish(&manifest_with(
+        "gen-class-missing",
+        2,
+        SUPPORTED_MANIFEST_SCHEMA_VERSION,
+        BranchIdentity::new(HARNESS_BRANCH, None),
+        WorkspaceIdentity::new(HARNESS_WORKSPACE),
+        SealedInventory::new(vec![database_entry(
+            "gen-class-missing",
+            &PLACEHOLDER_DIGEST.replace('0', "a"),
+        )]),
+    ));
+    activator
+        .maybe_activate_newer()
+        .await
+        .expect_err("a missing generation directory must be rejected");
+    assert_eq!(
+        activator.rejection_class(GenerationRevision::new(2)),
+        Some(RejectionClass::Transient)
+    );
+
+    // Revision 3 carries a branch identity this daemon does not serve: the
+    // bytes are immutable, so this can never succeed.
+    fixture.publish(&manifest_with(
+        "gen-class-branch",
+        3,
+        SUPPORTED_MANIFEST_SCHEMA_VERSION,
+        BranchIdentity::new("some-other-branch", None),
+        WorkspaceIdentity::new(HARNESS_WORKSPACE),
+        SealedInventory::new(vec![database_entry("gen-class-branch", PLACEHOLDER_DIGEST)]),
+    ));
+    activator
+        .maybe_activate_newer()
+        .await
+        .expect_err("a foreign branch identity must be rejected");
+    assert_eq!(
+        activator.rejection_class(GenerationRevision::new(3)),
+        Some(RejectionClass::Permanent)
+    );
+}
+
+#[tokio::test]
+async fn repeated_transient_failures_back_off_instead_of_spinning() {
+    let fixture = StoreFixture::new();
+    let activator = live_activator(&fixture, "gen-backoff-base", 1, TEST_DEADLINE);
+    activator
+        .activate_initial()
+        .await
+        .expect("initial activation must succeed");
+
+    fixture.publish(&manifest_with(
+        "gen-backoff-missing",
+        2,
+        SUPPORTED_MANIFEST_SCHEMA_VERSION,
+        BranchIdentity::new(HARNESS_BRANCH, None),
+        WorkspaceIdentity::new(HARNESS_WORKSPACE),
+        SealedInventory::new(vec![database_entry(
+            "gen-backoff-missing",
+            &PLACEHOLDER_DIGEST.replace('0', "b"),
+        )]),
+    ));
+
+    activator
+        .maybe_activate_newer()
+        .await
+        .expect_err("a missing generation directory must be rejected");
+    let opens_after_first = activator.open_attempt_count();
+
+    // Inside the backoff window every further reconciliation is a no-op: the
+    // read path must not turn a broken publish into per-request work.
+    for _ in 0..10 {
+        assert!(
+            activator
+                .maybe_activate_newer()
+                .await
+                .expect("a backed-off revision must not surface as an error")
+                .is_none()
+        );
+    }
+    assert_eq!(activator.open_attempt_count(), opens_after_first);
+}
+
+#[test]
+fn transient_backoff_grows_exponentially_and_saturates() {
+    assert_eq!(backoff_delay(0), Duration::ZERO);
+
+    let first = backoff_delay(1);
+    assert!(first > Duration::ZERO);
+    assert_eq!(backoff_delay(2), first * 2);
+    assert_eq!(backoff_delay(3), first * 4);
+
+    // The delay is bounded: an indefinitely broken publisher must not push the
+    // retry interval toward infinity.
+    let saturated = backoff_delay(u32::MAX);
+    assert_eq!(saturated, backoff_delay(u32::MAX - 1));
+    assert!(saturated <= Duration::from_secs(30));
+}
+
+#[tokio::test]
+async fn rejection_records_for_superseded_revisions_are_pruned() {
+    let fixture = StoreFixture::new();
+    let activator = live_activator(&fixture, "gen-prune-base", 1, TEST_DEADLINE);
+    activator
+        .activate_initial()
+        .await
+        .expect("initial activation must succeed");
+
+    // Reject revisions 2 and 3 permanently.
+    for (revision, label) in [(2_u64, "gen-prune-bad-a"), (3_u64, "gen-prune-bad-b")] {
+        fixture.seed_generation(label);
+        fixture.publish(&manifest_with(
+            label,
+            revision,
+            SUPPORTED_MANIFEST_SCHEMA_VERSION,
+            BranchIdentity::new(HARNESS_BRANCH, None),
+            WorkspaceIdentity::new(HARNESS_WORKSPACE),
+            SealedInventory::new(vec![database_entry(label, PLACEHOLDER_DIGEST)]),
+        ));
+        activator
+            .maybe_activate_newer()
+            .await
+            .expect_err("a drifted successor must be rejected");
+    }
+    assert_eq!(activator.rejection_cache_len(), 2);
+
+    // Activating revision 4 makes 2 and 3 permanently unreachable, because
+    // only a strictly greater revision is ever considered again.
+    publish_revision(&fixture, "gen-prune-good", 4);
+    activator
+        .maybe_activate_newer()
+        .await
+        .expect("a valid successor must activate")
+        .expect("a newer revision was published");
+
+    assert_eq!(activator.rejection_cache_len(), 0);
+    assert_eq!(activator.rejection_class(GenerationRevision::new(2)), None);
+    assert_eq!(activator.rejection_class(GenerationRevision::new(3)), None);
+}
+
+// ── F17, Fix1/Fix4/Fix5 — bounded manifest reads and content fingerprinting ──
+
+/// One byte over the 1 MiB manifest size bound.
+///
+/// Matches the `MAX_MANIFEST_BYTES` constant activation.rs defines for both
+/// `read_manifest_bytes` and `read_manifest_with_fingerprint` (F17, Fix1).
+const OVERSIZED_MANIFEST_LEN: usize = 1024 * 1024 + 1;
+
+#[tokio::test]
+async fn activate_initial_rejects_an_oversized_manifest_before_a_full_read() {
+    let fixture = StoreFixture::new();
+    let path = fixture.root.path().join("active.json");
+    // Content doesn't need to be valid JSON: the size guard must run, and
+    // reject, before any byte of the file is actually read.
+    fs::write(&path, vec![b'a'; OVERSIZED_MANIFEST_LEN]).expect("write oversized manifest");
+    let activator = fixture.activator(TEST_DEADLINE);
+
+    let started = std::time::Instant::now();
+    let error = activator
+        .activate_initial()
+        .await
+        .expect_err("an oversized manifest must be rejected");
+    let elapsed = started.elapsed();
+
+    match error {
+        ActivationError::ManifestFieldOutOfBounds { field, .. } => {
+            assert_eq!(field, "manifest.bytes_len");
+        }
+        other => panic!("expected ManifestFieldOutOfBounds, got {other:?}"),
+    }
+    // A rejection driven by metadata alone must be fast: a full read of a
+    // 1 MiB+ file that then never happens would still complete well within
+    // this bound, so this is a loose sanity check, not the primary evidence
+    // -- the error variant above is.
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "oversized manifest rejection took {elapsed:?}"
+    );
+}
+
+#[tokio::test]
+async fn maybe_activate_newer_rejects_an_oversized_manifest_before_a_full_read() {
+    let fixture = StoreFixture::new();
+    let activator = live_activator(&fixture, "gen-oversize-base", 1, TEST_DEADLINE);
+    activator
+        .activate_initial()
+        .await
+        .expect("initial activation must succeed");
+
+    let path = fixture.root.path().join("active.json");
+    fs::write(&path, vec![b'b'; OVERSIZED_MANIFEST_LEN]).expect("write oversized manifest");
+
+    let error = activator
+        .maybe_activate_newer()
+        .await
+        .expect_err("an oversized replacement manifest must be rejected");
+
+    match error {
+        ActivationError::ManifestFieldOutOfBounds { field, .. } => {
+            assert_eq!(field, "manifest.bytes_len");
+        }
+        other => panic!("expected ManifestFieldOutOfBounds, got {other:?}"),
+    }
+    // The previously-active generation must keep serving: an oversized
+    // replacement is rejected, not swapped in.
+    assert_eq!(
+        activator.active_revision().await,
+        Some(GenerationRevision::new(1))
+    );
+}
+
+#[tokio::test]
+async fn a_same_length_same_mtime_manifest_replacement_is_detected_as_changed() {
+    /// Force a file's recorded modification time, so two manifests can be
+    /// made to collide on mtime deliberately rather than by timing luck.
+    fn force_mtime(path: &Path, time: std::time::SystemTime) {
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .expect("open manifest file to force its mtime");
+        file.set_modified(time)
+            .expect("set forced mtime on manifest file");
+    }
+
+    let fixture = StoreFixture::new();
+    let activator = live_activator(&fixture, "gen-fp-base", 1, TEST_DEADLINE);
+    activator
+        .activate_initial()
+        .await
+        .expect("initial activation must succeed");
+
+    let path = fixture.root.path().join("active.json");
+    let collision_mtime = std::time::SystemTime::now();
+
+    // Revision 2 is read and parsed for real (the probe cache holds nothing
+    // yet), which caches its fingerprint. Pin its mtime to a fixed instant so
+    // the next revision can be made to collide with it exactly.
+    let digest_b = fixture.seed_generation("gen-fp-b");
+    fixture.publish(&manifest_with(
+        "gen-fp-b",
+        2,
+        SUPPORTED_MANIFEST_SCHEMA_VERSION,
+        BranchIdentity::new(HARNESS_BRANCH, None),
+        WorkspaceIdentity::new(HARNESS_WORKSPACE),
+        SealedInventory::new(vec![database_entry("gen-fp-b", &digest_b)]),
+    ));
+    force_mtime(&path, collision_mtime);
+    activator
+        .maybe_activate_newer()
+        .await
+        .expect("revision 2 must activate")
+        .expect("revision 2 was strictly newer");
+    assert_eq!(
+        activator.active_revision().await,
+        Some(GenerationRevision::new(2))
+    );
+
+    // Revision 3 is a different generation but has the same label length
+    // (and thus the same serialized manifest length, since the digest is
+    // also fixed-width hex) as revision 2, and is pinned to the exact same
+    // mtime. mtime + length alone cannot distinguish this from "unchanged".
+    let digest_c = fixture.seed_generation("gen-fp-c");
+    let manifest_b_len = bytes_of(&manifest_with(
+        "gen-fp-b",
+        2,
+        SUPPORTED_MANIFEST_SCHEMA_VERSION,
+        BranchIdentity::new(HARNESS_BRANCH, None),
+        WorkspaceIdentity::new(HARNESS_WORKSPACE),
+        SealedInventory::new(vec![database_entry("gen-fp-b", &digest_b)]),
+    ))
+    .len();
+    let manifest_c = manifest_with(
+        "gen-fp-c",
+        3,
+        SUPPORTED_MANIFEST_SCHEMA_VERSION,
+        BranchIdentity::new(HARNESS_BRANCH, None),
+        WorkspaceIdentity::new(HARNESS_WORKSPACE),
+        SealedInventory::new(vec![database_entry("gen-fp-c", &digest_c)]),
+    );
+    assert_eq!(
+        bytes_of(&manifest_c).len(),
+        manifest_b_len,
+        "fixture manifests must be byte-length identical to exercise the collision case"
+    );
+    fixture.publish(&manifest_c);
+    force_mtime(&path, collision_mtime);
+
+    // A stat-only mtime+len fingerprint would see the same length and the
+    // same mtime as the cached revision-2 fingerprint and wrongly report
+    // "unchanged", leaving revision 3 permanently unnoticed. A content
+    // checksum must catch the difference and activate it.
+    activator
+        .maybe_activate_newer()
+        .await
+        .expect("revision 3 must activate")
+        .expect("revision 3 must not be short-circuited as unchanged");
+    assert_eq!(
+        activator.active_revision().await,
+        Some(GenerationRevision::new(3))
+    );
+}
+
+#[tokio::test]
+async fn a_malformed_manifest_fingerprint_is_cached_so_unchanged_bytes_are_not_reparsed() {
+    let fixture = StoreFixture::new();
+    let path = fixture.root.path().join("active.json");
+    fs::write(&path, b"not json at all").expect("write malformed manifest");
+    let activator = fixture.activator(TEST_DEADLINE);
+
+    let first_error = activator
+        .maybe_activate_newer()
+        .await
+        .expect_err("a malformed manifest must be rejected");
+    assert!(matches!(
+        first_error,
+        ActivationError::ManifestMalformed { .. }
+    ));
+    let reads_after_first = activator.manifest_read_attempt_count();
+    assert_eq!(reads_after_first, 1);
+
+    // Repeat calls against the same unchanged, still-malformed bytes must
+    // keep returning the same typed error without repeating the JSON parse.
+    for _ in 0..5 {
+        let repeat_error = activator
+            .maybe_activate_newer()
+            .await
+            .expect_err("the same malformed manifest must be rejected identically");
+        assert!(matches!(
+            repeat_error,
+            ActivationError::ManifestMalformed { .. }
+        ));
+    }
+    assert_eq!(activator.manifest_read_attempt_count(), reads_after_first);
+}

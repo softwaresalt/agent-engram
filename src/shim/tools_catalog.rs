@@ -5,19 +5,36 @@
 //! (IDEs, agents) get accurate schema information before the daemon is ready
 //! and without an extra round-trip.
 //!
-//! All tools in the **default feature set** (`cozo-backend`) that are registered
-//! in [`crate::tools::dispatch`] must appear here. Feature-gated tools (e.g.,
-//! those compiled only under `cfg(feature = "git-graph")`) are intentionally
-//! excluded; [`TOOL_COUNT`] and this catalog reflect only the default build.
+//! All tools registered in [`crate::tools::dispatch`] must appear here. Tools
+//! compiled only under a non-default feature (e.g., `cfg(feature =
+//! "git-graph")`) get their own `#[cfg(feature = "...")]`-gated catalog entry
+//! alongside the same-gated dispatch declaration, so the catalog and dispatch
+//! stay in sync per build configuration — nothing is silently excluded.
 //! The [`TOOL_COUNT`] constant is asserted by the `tool_count_matches_catalog`
 //! contract test so that catalog and dispatch stay in sync.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use rmcp::model::Tool;
 use serde_json::{Map, Value, json};
 
+use crate::tools::capabilities::{self, ToolSurface};
+
 /// Total number of tools registered in the dispatch table and this catalog.
+///
+/// Derived membership (see [`all_tools`]) means this constant is a redundant
+/// check rather than the source of truth: the `mcp_tool_catalog_parity`
+/// contract test asserts it against
+/// [`capabilities::surface_names`](crate::tools::capabilities::surface_names),
+/// so a descriptor added without a catalog literal is RED rather than silently
+/// under-advertised.
+///
+/// This count varies with the `git-graph` feature: enabling it compiles in
+/// two additional catalog entries (`query_changes`, `index_git_history`).
+#[cfg(feature = "git-graph")]
+pub const TOOL_COUNT: usize = 23;
+#[cfg(not(feature = "git-graph"))]
 pub const TOOL_COUNT: usize = 21;
 
 /// Build a `serde_json::Map` from a JSON object literal.
@@ -50,10 +67,13 @@ macro_rules! mcp_only_desc {
     };
 }
 
-/// Return the full list of Engram MCP tools.
+/// Raw catalog literals: name, description, and input schema for each tool the
+/// shim can describe.
 ///
-/// The returned `Vec` has exactly [`TOOL_COUNT`] entries with unique names.
-pub fn all_tools() -> Vec<Tool> {
+/// This is the *schema* source only. Which of these entries the shim actually
+/// advertises is decided by [`all_tools`] from the descriptor registry, so
+/// this list can never widen the MCP surface on its own.
+pub(crate) fn catalog_entries() -> Vec<Tool> {
     vec![
         // ── Workspace / lifecycle ──────────────────────────────────────────
         Tool::new(
@@ -471,7 +491,65 @@ pub fn all_tools() -> Vec<Tool> {
                 "properties": {}
             })),
         ),
+        // ── git-graph (feature-gated) ──────────────────────────────────────
+        #[cfg(feature = "git-graph")]
+        Tool::new(
+            "query_changes",
+            mcp_only_desc!(
+                "Query git commit history filtered by file path, symbol, or date range."
+            ),
+            schema(json!({
+                "type": "object",
+                "properties": {
+                    "file_path": { "type": "string", "description": "Filter commits that touched this file path" },
+                    "symbol": { "type": "string", "description": "Filter commits that affected this named symbol" },
+                    "since": { "type": "string", "description": "Return only commits on or after this ISO-8601 timestamp" },
+                    "until": { "type": "string", "description": "Return only commits on or before this ISO-8601 timestamp" },
+                    "limit": { "type": "integer", "description": "Maximum number of commits to return (default: 20)" }
+                }
+            })),
+        ),
+        #[cfg(feature = "git-graph")]
+        Tool::new(
+            "index_git_history",
+            mcp_only_desc!("Index git commit history for attribution, walking commits from HEAD."),
+            schema(json!({
+                "type": "object",
+                "properties": {
+                    "depth": { "type": "integer", "description": "Number of commits to walk from HEAD (default: 500)" },
+                    "force": { "type": "boolean", "description": "Re-index all commits even if already stored" }
+                }
+            })),
+        ),
     ]
+}
+
+/// Return the full list of Engram MCP tools, derived from the descriptor
+/// registry (plan unit F22).
+///
+/// Membership comes from
+/// [`capabilities::surface_names`](crate::tools::capabilities::surface_names)
+/// for [`ToolSurface::StdioMcp`], not from the literal list above. That
+/// inversion is the point: previously the MCP surface and the descriptor list
+/// were two hand-maintained tables that agreed only by diligence, so a tool
+/// declared in one could go missing from the other without anything failing.
+/// Now the registry decides *what* is advertised and the literals supply only
+/// *how* it is described, which leaves exactly one place to change.
+///
+/// A declared stdio-MCP method with no catalog literal is omitted rather than
+/// advertised with an empty schema; the `mcp_tool_catalog_parity` contract test
+/// compares this list against the registry, so that omission is RED.
+#[must_use]
+pub fn all_tools() -> Vec<Tool> {
+    let mut described: BTreeMap<String, Tool> = catalog_entries()
+        .into_iter()
+        .map(|tool| (tool.name.to_string(), tool))
+        .collect();
+
+    capabilities::surface_names(ToolSurface::StdioMcp)
+        .into_iter()
+        .filter_map(|name| described.remove(name))
+        .collect()
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
@@ -488,6 +566,30 @@ mod tests {
             TOOL_COUNT,
             "all_tools() length must equal TOOL_COUNT ({TOOL_COUNT})"
         );
+    }
+
+    /// Under `--features git-graph`, the two git-graph dispatch tools must be
+    /// advertised — they are dispatchable, so they must be discoverable.
+    #[cfg(feature = "git-graph")]
+    #[test]
+    fn git_graph_tools_are_advertised_when_feature_enabled() {
+        let tools = all_tools();
+        let names: std::collections::HashSet<&str> =
+            tools.iter().map(|t| t.name.as_ref()).collect();
+        assert!(names.contains("query_changes"));
+        assert!(names.contains("index_git_history"));
+    }
+
+    /// Without the `git-graph` feature, neither tool is compiled in at all,
+    /// so neither can be advertised.
+    #[cfg(not(feature = "git-graph"))]
+    #[test]
+    fn git_graph_tools_are_absent_without_feature() {
+        let tools = all_tools();
+        let names: std::collections::HashSet<&str> =
+            tools.iter().map(|t| t.name.as_ref()).collect();
+        assert!(!names.contains("query_changes"));
+        assert!(!names.contains("index_git_history"));
     }
 
     /// Every tool name must be unique.

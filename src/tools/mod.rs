@@ -9,10 +9,13 @@ use std::sync::Arc;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::errors::{EngramError, SystemError, WorkspaceError};
+use crate::errors::{
+    ActivationError, EngramError, ReadServerRefusalError, SystemError, WorkspaceError,
+};
 use crate::models::metrics::{CoarseParams, UsageEvent};
-use crate::server::state::{AppState, DispatchSnapshot, SharedState};
+use crate::server::state::{AppState, DispatchSnapshot, ReadRequestContext, SharedState};
 use crate::services::{metrics, policy};
+use crate::tools::capabilities::CapabilityClass;
 
 pub mod capabilities;
 pub mod doctor;
@@ -33,6 +36,72 @@ fn not_implemented(method: &str) -> EngramError {
     EngramError::System(SystemError::InvalidParams {
         reason: format!("{method} not implemented"),
     })
+}
+
+// ── Read-server dispatch gate (F21) ──────────────────────────────────────────
+
+/// Re-check the capability gate and assert a captured context was supplied.
+///
+/// This is a **re-check**, not a first check, and deliberately not a capture
+/// site. The request-entry seam ([`crate::daemon::request_entry::admit_read`],
+/// plan unit F20) is the sole place a request acquires its
+/// [`ReadRequestContext`]; duplicating that capture here would create two
+/// answers to "which generation does this request read?" and let them drift.
+/// What dispatch adds is defence in depth: a method that reaches dispatch with
+/// no context, with a context that carries no generation provenance, or with
+/// a capability that a read-server must not service, is refused here even if
+/// some future caller bypasses the entry seam.
+///
+/// A [`ReadRequestContext`] is mode-agnostic (plan unit F16): a managed-mode
+/// context is a legitimate value of that same type, but it reads the
+/// daemon's live, mutable workspace binding rather than a pinned generation.
+/// F20's admission path only ever captures a generation-backed context, so a
+/// managed-mode context reaching this gate means the entry seam was bypassed
+/// or a future caller reused this function outside its intended composition.
+/// Checking only "was a context supplied" would silently accept that case;
+/// this gate instead asserts the context also carries generation provenance
+/// ([`ReadRequestContext::generation`]), so a read-server never serves a read
+/// through mutable managed state.
+///
+/// Refusals are the typed F38 vocabulary
+/// ([`ReadServerRefusalError`], [`ActivationError`]) rather than an ad-hoc
+/// local error, so every refusal carries the same stable wire code regardless
+/// of which layer produced it.
+///
+/// # Errors
+///
+/// * [`ReadServerRefusalError::WriteControlRefused`] when `method` is not
+///   declared read-server available, including when it is undeclared entirely:
+///   an unknown method has no reviewed capability class, and the safe reading
+///   of "unknown" in a read-only server is "not permitted".
+/// * [`ActivationError::GenerationNotYetActivated`] when no context was
+///   supplied, or the supplied context carries no generation provenance,
+///   which means no generation is open to read through.
+pub fn enforce_read_server_dispatch(
+    method: &str,
+    context: Option<&Arc<ReadRequestContext>>,
+) -> Result<(), EngramError> {
+    let permitted = capabilities::descriptor(method).is_some_and(|descriptor| {
+        descriptor.read_server_available && descriptor.capability == CapabilityClass::Read
+    });
+    if !permitted {
+        return Err(EngramError::ReadServerRefusal(
+            ReadServerRefusalError::WriteControlRefused {
+                operation: method.to_owned(),
+            },
+        ));
+    }
+
+    let has_pinned_generation = context.is_some_and(|context| context.generation().is_some());
+    if !has_pinned_generation {
+        return Err(EngramError::Activation(
+            ActivationError::GenerationNotYetActivated {
+                generation_id: format!("<no pinned generation for '{method}'>"),
+            },
+        ));
+    }
+
+    Ok(())
 }
 
 /// Atomically capture the active workspace binding and its config for the

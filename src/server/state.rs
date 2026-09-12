@@ -26,7 +26,7 @@
 // Verdict: no deadlock potential identified.
 
 use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -41,6 +41,7 @@ use crate::errors::WorkspaceError;
 use crate::models::config::{DaemonMode, WorkspaceConfig};
 use crate::models::health::ScanProgress;
 use crate::services::connection::ConnectionRegistry;
+use crate::services::generations::GenerationReadContext;
 use crate::services::hydration::FileFingerprint;
 
 /// Atomic point-in-time snapshot of workspace binding and config taken at dispatch entry.
@@ -110,6 +111,135 @@ pub struct WorkspaceSnapshot {
     pub stale_files: bool,
     pub connection_count: usize,
     pub file_mtimes: HashMap<String, FileFingerprint>,
+}
+
+/// One read request's view of the data it is permitted to observe (plan unit
+/// F16).
+///
+/// Read handlers consume this single type in both managed mode and ReadServer
+/// mode. That is the whole point: without it, every handler would have to ask
+/// "which mode am I in?" and then reach for a different source of truth, which
+/// is exactly how the two modes drift apart. The mode-specific source is held
+/// privately in [`ReadSource`] and is never exposed as a discriminant a
+/// handler can branch on; every accessor below answers the same question with
+/// the same type regardless of which constructor produced the context.
+///
+/// Instances are always handed out as `Arc<ReadRequestContext>` so the request
+/// that captured the context owns a share of the generation's lifetime. A
+/// background activation may swap the daemon's active generation at any
+/// moment; because the captured `Arc` keeps the previous
+/// [`GenerationReadContext`] alive, an in-flight read keeps reading the exact
+/// snapshot it was admitted against rather than observing a mid-request
+/// generation change.
+#[derive(Debug)]
+pub struct ReadRequestContext {
+    workspace_id: String,
+    branch: String,
+    data_dir: PathBuf,
+    source: ReadSource,
+}
+
+/// Where a [`ReadRequestContext`] draws its data from.
+///
+/// Deliberately private: making this public would hand handlers the mode
+/// discriminant F16 exists to remove.
+#[derive(Debug)]
+enum ReadSource {
+    /// Managed mode reads the daemon's live, in-process workspace binding.
+    Managed,
+    /// ReadServer mode reads a sealed, already-opened generation.
+    Generation(GenerationReadContext),
+}
+
+impl ReadRequestContext {
+    /// Capture a context from the daemon's live managed-mode workspace binding.
+    ///
+    /// Managed-mode behaviour is unchanged by F16: this reads the same active
+    /// [`WorkspaceSnapshot`] managed handlers already read, and fails with the
+    /// same [`WorkspaceError::NotSet`] a managed handler already returns when
+    /// nothing is bound.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkspaceError::NotSet`] when no workspace is bound.
+    pub async fn from_managed_state(state: &AppState) -> Result<Arc<Self>, WorkspaceError> {
+        let snapshot = state
+            .snapshot_workspace()
+            .await
+            .ok_or(WorkspaceError::NotSet)?;
+        Ok(Arc::new(Self {
+            workspace_id: snapshot.workspace_id,
+            branch: snapshot.branch,
+            data_dir: snapshot.data_dir,
+            source: ReadSource::Managed,
+        }))
+    }
+
+    /// Capture a context from an already-opened generation (plan unit F17).
+    ///
+    /// Taking the [`GenerationReadContext`] by value is what makes the
+    /// lifetime guarantee real: the context now owns a clone of the
+    /// generation's `Arc`, so the generation cannot close while this request
+    /// is still holding its context.
+    ///
+    /// `branch` and `workspace_id` come from the activated manifest's attested
+    /// identity rather than from ambient process state, so a ReadServer
+    /// context reports the identity it actually opened.
+    #[must_use]
+    pub fn from_generation(
+        generation: GenerationReadContext,
+        branch: impl Into<String>,
+        workspace_id: impl Into<String>,
+    ) -> Arc<Self> {
+        // The runtime copy's parent directory is the generation's on-disk data
+        // directory, mirroring what `WorkspaceSnapshot::data_dir` means in
+        // managed mode so the accessor answers the same question in both.
+        let data_dir = generation
+            .opened_generation()
+            .runtime_copy()
+            .path()
+            .parent()
+            .map_or_else(PathBuf::new, Path::to_path_buf);
+
+        Arc::new(Self {
+            workspace_id: workspace_id.into(),
+            branch: branch.into(),
+            data_dir,
+            source: ReadSource::Generation(generation),
+        })
+    }
+
+    /// The workspace identity this request reads.
+    #[must_use]
+    pub fn workspace_id(&self) -> &str {
+        &self.workspace_id
+    }
+
+    /// The branch identity this request reads.
+    #[must_use]
+    pub fn branch(&self) -> &str {
+        &self.branch
+    }
+
+    /// The on-disk data directory backing this request's reads.
+    #[must_use]
+    pub fn data_dir(&self) -> &Path {
+        &self.data_dir
+    }
+
+    /// The generation backing this context, when one exists.
+    ///
+    /// Provided for provenance and diagnostics -- and for the admission path,
+    /// which must know whether a generation is pinned -- not as a branch point
+    /// for read handlers. A handler that reaches for this to decide *how* to
+    /// read has reintroduced the mode branching F16 removes.
+    #[must_use]
+    pub fn generation(&self) -> Option<&GenerationReadContext> {
+        match &self.source {
+            ReadSource::Managed => None,
+            ReadSource::Generation(generation) => Some(generation),
+        }
+    }
 }
 
 /// Sliding-window rate limiter for SSE connections (FR-025/T118).
