@@ -21,13 +21,43 @@ and the P-018 Copilot-review completion gate both pass at the final HEAD.
 
 ## Final state
 
-* **HEAD**: `baa168b0d7c99d5b7bac6a6e961506d51d7216d8`
-* **CI**: `build` PASS (6m25s), `start-launcher-windows` PASS (2m0s)
-* **Copilot review**: 10 rounds, 24 threads total, **all replied and resolved** — 0 unresolved
-  threads at HEAD `baa168b0`. Requested reviewers list is empty (Copilot cleared).
+* **HEAD**: `72619e3d8f3d2ab00735f1cba6d879a874d64211`
+* **CI**: `build` PASS (6m9s), `start-launcher-windows` PASS (2m1s, after one rerun of a
+  documented hosted-runner timing flake unrelated to this PR's diff — see Round 11 below)
+* **Copilot review**: 11 rounds, 25 threads total, **all replied and resolved** — 0 unresolved
+  threads at HEAD `72619e3d`. Requested reviewers list is empty (Copilot cleared).
 * **Mergeable state**: `mergeable: true`, `mergeable_state: clean`
-* **PR body**: `## Local Review Readiness` block updated to cite HEAD `baa168b0`, 10
-  rounds / 24 threads, outcome `READY_WITH_FOLLOWUPS`.
+* **PR body**: `## Local Review Readiness` block updated to cite HEAD `72619e3d`, 11
+  rounds / 25 threads, outcome `READY_WITH_FOLLOWUPS`.
+
+## Round 11 (this session, after the initial merge-gate-ready checkpoint push)
+
+* Pushing the merge-gate-ready memory checkpoint (`72619e3d`) re-armed both CI and the P-018
+  Copilot review gate (every push re-triggers review, including docs-only commits).
+* **CI flake**: `start-launcher-windows` failed once on
+  `launcher_fails_open_to_copilot_within_one_prewarm_budget` (elapsed 14.38s vs an 8s
+  hosted-runner budget) — a wall-clock timing assertion, not a logic regression, and this push
+  touched only a markdown file. Reran the failed job via `gh run rerun --failed`; passed clean
+  on rerun (2m1s).
+* **Review at `72619e3d`**: 1 new actionable thread — the review correctly flagged that the
+  just-pushed memory checkpoint still cited the prior HEAD (`baa168b0`) as final while the PR
+  now pointed at `72619e3d`, and that `mergeable_state` was transiently `blocked` pending this
+  review. Replied and resolved via GraphQL after updating the PR body to the true final HEAD.
+* Also surfaced 2 "suppressed" (non-blocking) findings on **unchanged code from prior rounds**,
+  each investigated on its merits:
+  * `src/services/generations/activation.rs:821` — `activate_initial` never consults the
+    rejection cache before repeating validation, so a permanently-rejected initial revision can
+    be retried indefinitely instead of honoring the cache/backoff contract already applied to
+    `maybe_activate_newer`. Reliability concern (wasted retries on a proven-bad revision), not a
+    correctness/data-integrity defect — assessed as P2. **Stashed** as `5C873386` rather than
+    opening an 11th delegated fix round (10+ fix rounds already completed this PR; consistent
+    with the round-4 precedent of capturing non-blocking suppressed findings as follow-ups).
+  * `src/errors/mod.rs:1011` — the five new `17_004`–`17_008` activation-error response branches
+    have no `to_response()` contract-test coverage. Test-coverage gap, P3. **Stashed** as
+    `3FFEE99B`.
+* Neither suppressed finding was posted as a blocking GitHub review thread (`Comments
+  generated: 1` in the review body — only the readiness-staleness thread above), so neither
+  gates the §1.9/P-018 mechanical checks; they are follow-up items for Stage triage.
 
 ## Round 9 and Round 10 (this session)
 
@@ -52,7 +82,8 @@ and the P-018 Copilot-review completion gate both pass at the final HEAD.
 
 ## Commits this session (all pushed)
 
-* `baa168b0` — docs(138-s): record round-10 review finding and fix (this commit)
+* `72619e3d` — docs(138-s): record merge-gate-ready state and halt for operator approval
+* `baa168b0` — docs(138-s): record round-10 review finding and fix
 * `7c9abca9` — fix(142.030-T): reject managed-mode context at read-server dispatch gate (round 10)
 * `c60af408` — docs(138-s): record round-9 review findings and fixes
 
@@ -63,15 +94,16 @@ and the P-018 Copilot-review completion gate both pass at the final HEAD.
 * Shipment 138-S remains `active` (not yet closed — closure happens only after operator-approved
   merge, per Ship Step 6).
 
-## Gate verification (§1.9 / P-018) at final HEAD `baa168b0`
+## Gate verification (§1.9 / P-018) at final HEAD `72619e3d`
 
 1. Local review readiness record present and current (this PR body update). ✅
 2. Outcome `READY_WITH_FOLLOWUPS`, `P0=0, P1=0` blocking findings. ✅
-3. Follow-ups explicitly listed (5 round-4 P2/P3 stash entries, 1 deferred-scope entry
-   `265F99BE`, pre-existing flaky-test stash entries). ✅
+3. Follow-ups explicitly listed (5 round-4 P2/P3 stash entries + 2 round-11 stash entries
+   `5C873386`/`3FFEE99B` + 1 deferred-scope entry `265F99BE`, pre-existing flaky-test stash
+   entries). ✅
 4. Full local build evidence present (fmt, clippy, targeted + full suite). ✅
-5. Copilot-review gate: `SATISFIED` — review posted at HEAD `baa168b0`, 0 unresolved threads,
-   Copilot cleared from requested reviewers. ✅
+5. Copilot-review gate: `SATISFIED` — review posted at HEAD `72619e3d`, 0 unresolved threads
+   (25/25 resolved), Copilot cleared from requested reviewers. ✅
 
 All 5 checks pass. **GATE PASSES** — PR is ready for merge presentation.
 
