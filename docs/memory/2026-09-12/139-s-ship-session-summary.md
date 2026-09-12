@@ -67,17 +67,51 @@ doctor_read_pin_test}.rs`. No files outside this owned set were modified.
 
 None of these were fixed, re-triaged, or expanded into. All require Stage deliberation.
 
-## Branch state
+## Branch state (final)
 
 - Branch: `feat/139-s-migrate-read-and-lifecycle-handlers-to-pinned-generation-context`
-- HEAD: `12d56319226804f999aaba0970409d3331b0e0e7`
-- 8 commits ahead of `origin/main` (`47eb9e1e440790768f2813a1cc549c6d2c17f394`)
-- Backlog state (task→done, stash additions) pending commit as of this checkpoint
+- HEAD: `679500ce73a592214fef3928717fb3bd02294d79`
+- 11 commits ahead of `origin/main` (`47eb9e1e440790768f2813a1cc549c6d2c17f394`)
+- PR: #393 — https://github.com/softwaresalt/agent-engram/pull/393
+- CI: `build` SUCCESS, `start-launcher-windows` SUCCESS; `mergeStateStatus: CLEAN`
+- P-018 copilot-review gate: **SATISFIED** (all 8 Copilot-authored threads across 2 review
+  rounds replied-to and resolved; 4 fixed in-scope, 4 deferred out-of-scope citing stash
+  `EFE9190A`, 1 PR-description-staleness finding addressed by rewriting the readiness block)
+- P-009 merge-strategy guardrail: repo allows merge-commit only (squash/rebase disabled) — compliant
+- P-014 local readiness: recorded in PR body, reviewed HEAD matches current HEAD
+
+## Post-implementation review-fix round (discovered via Copilot PR review, addressed before halt)
+
+A GitHub-hosted Copilot review on PR #393 surfaced 7 findings at HEAD `b45a51dc`, all
+triaged and closed:
+
+- **3 in-scope, fixed directly** (commit `679500ce`):
+  - `eval.rs` `run_retrieval_eval` opened the DB before checking the disabled-config early
+    return — reordered so the check happens first; kept `connect_db` behind a dedicated
+    `open_queries` helper so the existing structural test (asserting the pub handler body
+    text doesn't contain `connect_db(`/`snapshot_dispatch_context(` directly) still passes.
+  - `doctor.rs` `run_smoke_test` rustdoc was stale (claimed unconditional bind+shutdown;
+    the new ReadServer branch does neither) — corrected to describe both modes.
+  - `.backlogit/reconcile/139-S-pre-20260911-232025.md` was missing machine-readable
+    `recommendation`/`artifact_type` frontmatter — added to match sibling reports.
+- **4 out-of-scope, deferred per P-021 C1** (no code change; replied citing pre-existing
+  stash `EFE9190A`, resolved): `doctor.rs:82`, `eval.rs:107`, `lifecycle.rs:1041`,
+  `lint.rs:90`, `read.rs:77` all describe the same root architectural gap — handlers pin a
+  per-invocation `DispatchSnapshot` rather than consuming the F20-admitted
+  `Arc<ReadRequestContext>`, because `dispatch()` in un-owned `src/tools/mod.rs` does not
+  thread that context to handlers at all (pre-existing F21 gap, stash `1918AFD2`). Closing
+  this fully requires modifying `src/tools/mod.rs`, outside 139-S's owned-files set.
+- A second Copilot review pass at the fix-commit HEAD (`679500ce`) flagged that the PR's
+  readiness block was now stale relative to the new HEAD — corrected by rewriting the PR
+  body and re-running a scoped code-review pass over the `12d56319..679500ce` diff (READY,
+  0 findings).
+- Re-verified after all fixes: `cargo check --all-targets`, `cargo clippy --all-targets -D
+  warnings -D clippy::pedantic`, `cargo fmt --all -- --check`, and all 6 harness test files
+  (15 assertions) — all PASS at final HEAD `679500ce`.
 
 ## Next steps
 
-1. Commit backlog state (task done-moves + stash additions) as a dedicated commit.
-2. Push branch, create PR with Local Review Readiness block.
-3. P-018 copilot-review gate / P-014 readiness gate as applicable.
-4. **HALT at merge-approval gate** — `merge_approval_pre_authorized: false` per
-   DARK_MODE_ACTIVE contract. Await explicit new operator approval before any merge.
+**HALT at merge-approval gate** — `merge_approval_pre_authorized: false` per the
+DARK_MODE_ACTIVE contract. All automated gates (CI, P-018, P-009, P-014) pass. Awaiting
+explicit new operator approval before any merge. Shipment 139-S remains `active` (not yet
+`shipped`/closed — that happens post-merge, out of scope for this run).
