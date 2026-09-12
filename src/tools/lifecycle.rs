@@ -395,23 +395,21 @@ async fn set_workspace_with_probe(
     let canonical_path = canonical.display().to_string();
 
     if state.mode() == DaemonMode::ReadServer {
-        let active = state
-            .snapshot_dispatch_context()
-            .await
-            .ok_or(EngramError::Workspace(WorkspaceError::NotSet))?;
-        if active.workspace.path == canonical_path {
-            return Ok(WorkspaceBinding {
-                workspace_id: active.workspace.workspace_id,
-                path: active.workspace.path,
-                hydrated: true,
-                pending_scan: false,
-            });
+        if let Some(active) = state.snapshot_dispatch_context().await {
+            if active.workspace.path == canonical_path {
+                return Ok(WorkspaceBinding {
+                    workspace_id: active.workspace.workspace_id,
+                    path: active.workspace.path,
+                    hydrated: true,
+                    pending_scan: false,
+                });
+            }
+            return Err(EngramError::ReadServerRefusal(
+                ReadServerRefusalError::WorkspaceRetargetRefused {
+                    requested_workspace: canonical_path,
+                },
+            ));
         }
-        return Err(EngramError::ReadServerRefusal(
-            ReadServerRefusalError::WorkspaceRetargetRefused {
-                requested_workspace: canonical_path,
-            },
-        ));
     }
 
     let workspace_uuid = load_or_create_workspace_id(&canonical)?;
