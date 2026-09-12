@@ -29,12 +29,16 @@ A GitHub Copilot hosted code review on PR #393 flagged that `set_workspace_with_
 `src/tools/lifecycle.rs` fell through to the full write-capable workspace-bind path whenever
 `DaemonMode::ReadServer` had no dispatch context admitted yet
 (`state.snapshot_dispatch_context().await` returned `None`). The suggested fix — refuse the
-`None` case — was implemented, and passed every standard quality gate: `cargo check
---all-targets`, `cargo clippy --all-targets -- -D warnings -D clippy::pedantic`, `cargo fmt
---all -- --check`, and the full `cargo dev-test` suite (702 passed, 1 known-flaky failure
-unrelated). A new regression test covering the refusal was added and passed.
+`None` case — was implemented. `cargo check --all-targets`, `cargo clippy --all-targets -- -D
+warnings -D clippy::pedantic`, and `cargo fmt --all -- --check` all passed. The full `cargo
+dev-test` run **did not pass cleanly**: it exited with 1 failure out of 703 tests (702
+passed). A new regression test covering the refusal was added and passed in isolation. The
+single `cargo dev-test` failure was reviewed only via a truncated tail of its output and
+was, at the time, assumed to be an unrelated pre-existing flake rather than actually
+identified — this is precisely the gap this learning documents (see Root Cause below).
 
-Despite all gates passing, this fix was a critical regression: it made every
+Despite the three static/format gates passing and the one `cargo dev-test` failure being
+dismissed without full investigation, this fix was a critical regression: it made every
 `read_server`-mode daemon fail to start immediately.
 
 ## Root Cause
