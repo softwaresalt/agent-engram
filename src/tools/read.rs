@@ -101,6 +101,20 @@ async fn pinned_queries(
     Ok((context, CodeGraphQueries::new(db)))
 }
 
+/// Open (and, on first access, bootstrap) the code-graph queries for an
+/// already-pinned dispatch context.
+///
+/// Callers that must validate request params before touching storage should
+/// pin the context via [`pinned_dispatch_context`], deserialize and validate
+/// params, and only then call this helper — `connect_db` creates directories,
+/// acquires the open lock, and bootstraps schema, so opening it before params
+/// are known to be well-formed lets a malformed request mutate storage or
+/// surface a database/lock error instead of `InvalidParams`.
+async fn queries_from_context(context: &DispatchSnapshot) -> Result<CodeGraphQueries, EngramError> {
+    let db = connect_db(&context.workspace.data_dir, &context.workspace.branch).await?;
+    Ok(CodeGraphQueries::new(db))
+}
+
 async fn pinned_workspace_path_and_branch(
     state: &SharedState,
     method: &str,
@@ -299,7 +313,7 @@ const fn default_map_max_nodes() -> usize {
 /// Falls back to vector search when the exact symbol name is not found.
 /// Returns full source bodies for all nodes (FR-148).
 pub async fn map_code(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
-    let (context, cg_queries) = pinned_queries(&state, "map_code").await?;
+    let context = pinned_dispatch_context(&state, "map_code").await?;
 
     // Read-only: graph state may be partially written during a background
     // index. Returning available symbol graph context is more useful than
@@ -318,6 +332,10 @@ pub async fn map_code(state: SharedState, params: Option<Value>) -> Result<Value
     let effective_max_nodes = parsed
         .max_nodes
         .min(context.config.code_graph.max_traversal_nodes);
+
+    // Params are well-formed — safe to open (and, on first access, bootstrap)
+    // storage now.
+    let cg_queries = queries_from_context(&context).await?;
 
     // Exact-name lookup across all symbol tables
     let matches = cg_queries.find_symbols_by_name(&parsed.symbol_name).await?;
@@ -811,7 +829,7 @@ pub async fn impact_analysis(
     state: SharedState,
     params: Option<Value>,
 ) -> Result<Value, EngramError> {
-    let (context, cg_queries) = pinned_queries(&state, "impact_analysis").await?;
+    let context = pinned_dispatch_context(&state, "impact_analysis").await?;
 
     // Read-only: graph may be partially populated during a background index.
     // Returning available impact data is more useful than an IndexInProgress error.
@@ -830,6 +848,10 @@ pub async fn impact_analysis(
         .max_nodes
         .clamp(1, 100)
         .min(context.config.code_graph.max_traversal_nodes);
+
+    // Params are well-formed — safe to open (and, on first access, bootstrap)
+    // storage now.
+    let cg_queries = queries_from_context(&context).await?;
 
     // Power BI root selection (C3): an explicit `powerbi_node_id` pins the root
     // to exactly one node and bypasses name resolution entirely.
@@ -1448,7 +1470,7 @@ fn build_find_path_json(from: &str, to: &str, result: FindPathResult) -> Value {
 /// traverse all types.
 #[tracing::instrument(name = "tool.query_graph", skip(state, params))]
 pub async fn query_graph(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
-    let (_context, cg_queries) = pinned_queries(&state, "query_graph").await?;
+    let context = pinned_dispatch_context(&state, "query_graph").await?;
     let raw = params.unwrap_or_default();
 
     // Legacy compat: if `query` field is present without `operation`, return a helpful error
@@ -1469,6 +1491,10 @@ pub async fn query_graph(state: SharedState, params: Option<Value>) -> Result<Va
             reason: e.to_string(),
         })
     })?;
+
+    // Params are well-formed — safe to open (and, on first access, bootstrap)
+    // storage now.
+    let cg_queries = queries_from_context(&context).await?;
 
     match gq {
         GraphQuery::Neighborhood {
@@ -1547,7 +1573,7 @@ pub async fn query_changes(
 ) -> Result<Value, EngramError> {
     use chrono::DateTime;
 
-    let (_context, queries) = pinned_queries(&state, "query_changes").await?;
+    let context = pinned_dispatch_context(&state, "query_changes").await?;
 
     // Read-only: git-graph tables may be partially written during a background
     // index. Returning available commit data is more useful than blocking the caller.
@@ -1588,6 +1614,10 @@ pub async fn query_changes(
                 })
         })
         .transpose()?;
+
+    // Params are well-formed — safe to open (and, on first access, bootstrap)
+    // storage now.
+    let queries = queries_from_context(&context).await?;
 
     // If a symbol is provided, resolve its file path via the code graph so we
     // can filter commits by file. Symbol not found → CodeGraphError::SymbolNotFound.
