@@ -191,3 +191,23 @@ shipment sharing this same covering feature (`138-S` onward) should
 likewise skip attempting
 `backlogit shipment ship` entirely rather than re-discovering the timeout
 symptom each time.
+
+## Addendum (2026-09-12): reused for `138-S` without re-attempting the command
+
+Shipment `138-S` (manifest: 14 tasks, all already individually
+`done`/archived) closes under the identical shared covering feature `142-F`
+during its own post-merge closure. `backlogit shipment ship 138-S` was
+**not attempted at all** for this closure, for the same reasoning applied
+to `137-S`: the manual safe-close procedure was applied directly on the
+strength of this compound entry's existing evidence. The generic
+`backlogit move 138-S --status shipped` fallback *was* independently
+re-attempted and confirmed rejected outright by the CLI (same class of
+error) — that specific sub-finding is genuinely re-confirmed for `138-S`.
+`138-S` closed cleanly via the identical manual archive-file procedure (see
+`.backlogit/archive/138-S.md` AUDIT RATIONALE); covering feature `142-F`
+verified untouched (still `active`, byte-identical to its pre-closure
+SHA-256 snapshot, `59263E8FFB779485E135A7AA41D9DAAC89B4A996B767D128D76A1AD2E70404C3`,
+802 bytes). This is now the fifth consecutive shipment (`134-S` through
+`138-S` — five shipment IDs: 134-S, 135-S, 136-S, 137-S, 138-S) to close
+under this same covering feature by skipping `shipment ship` entirely and
+going straight to manual safe-close.
