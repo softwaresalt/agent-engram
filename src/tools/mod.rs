@@ -48,8 +48,20 @@ fn not_implemented(method: &str) -> EngramError {
 /// [`ReadRequestContext`]; duplicating that capture here would create two
 /// answers to "which generation does this request read?" and let them drift.
 /// What dispatch adds is defence in depth: a method that reaches dispatch with
-/// no context, or with a capability that a read-server must not service, is
-/// refused here even if some future caller bypasses the entry seam.
+/// no context, with a context that carries no generation provenance, or with
+/// a capability that a read-server must not service, is refused here even if
+/// some future caller bypasses the entry seam.
+///
+/// A [`ReadRequestContext`] is mode-agnostic (plan unit F16): a managed-mode
+/// context is a legitimate value of that same type, but it reads the
+/// daemon's live, mutable workspace binding rather than a pinned generation.
+/// F20's admission path only ever captures a generation-backed context, so a
+/// managed-mode context reaching this gate means the entry seam was bypassed
+/// or a future caller reused this function outside its intended composition.
+/// Checking only "was a context supplied" would silently accept that case;
+/// this gate instead asserts the context also carries generation provenance
+/// ([`ReadRequestContext::generation`]), so a read-server never serves a read
+/// through mutable managed state.
 ///
 /// Refusals are the typed F38 vocabulary
 /// ([`ReadServerRefusalError`], [`ActivationError`]) rather than an ad-hoc
@@ -63,7 +75,8 @@ fn not_implemented(method: &str) -> EngramError {
 ///   an unknown method has no reviewed capability class, and the safe reading
 ///   of "unknown" in a read-only server is "not permitted".
 /// * [`ActivationError::GenerationNotYetActivated`] when no context was
-///   supplied, which means no generation is open to read through.
+///   supplied, or the supplied context carries no generation provenance,
+///   which means no generation is open to read through.
 pub fn enforce_read_server_dispatch(
     method: &str,
     context: Option<&Arc<ReadRequestContext>>,
@@ -79,10 +92,11 @@ pub fn enforce_read_server_dispatch(
         ));
     }
 
-    if context.is_none() {
+    let has_pinned_generation = context.is_some_and(|context| context.generation().is_some());
+    if !has_pinned_generation {
         return Err(EngramError::Activation(
             ActivationError::GenerationNotYetActivated {
-                generation_id: format!("<no context captured for '{method}'>"),
+                generation_id: format!("<no pinned generation for '{method}'>"),
             },
         ));
     }

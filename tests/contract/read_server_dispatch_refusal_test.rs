@@ -8,12 +8,15 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
+use engram::config::StaleStrategy;
 use engram::db::cozo_backend::{ExistingDbLocation, open_existing_generation_via_runtime_copy};
 use engram::errors::{ActivationError, EngramError};
-use engram::server::state::ReadRequestContext;
+use engram::models::config::DaemonMode;
+use engram::server::state::{AppState, ReadRequestContext, WorkspaceSnapshot};
 use engram::services::generations::GenerationReadContext;
 use engram::tools::capabilities::{self, CapabilityClass};
 use engram::tools::enforce_read_server_dispatch;
@@ -24,6 +27,32 @@ fn create_seeded_db(db_path: &Path) {
         .expect("create db");
     db.run_default(":create probe_row {id => val}")
         .expect("create relation");
+}
+
+/// Build a managed-mode context: `generation()` is `None`, unlike every
+/// context [`captured_context`] hands back.
+async fn managed_mode_context() -> (Arc<ReadRequestContext>, TempDir) {
+    let data_dir = tempfile::tempdir().expect("data tempdir");
+    let state = AppState::with_mode(DaemonMode::Managed, 1, StaleStrategy::Warn, 10, 60);
+    state
+        .set_workspace(WorkspaceSnapshot {
+            workspace_id: "workspace-managed".to_owned(),
+            workspace_uuid: "00000000-0000-0000-0000-000000000002".to_owned(),
+            branch: "main".to_owned(),
+            data_dir: data_dir.path().to_path_buf(),
+            path: data_dir.path().display().to_string(),
+            last_flush: None,
+            stale_files: false,
+            connection_count: 0,
+            file_mtimes: HashMap::new(),
+        })
+        .await
+        .expect("bind managed workspace");
+
+    let context = ReadRequestContext::from_managed_state(&state)
+        .await
+        .expect("a bound managed workspace must yield a context");
+    (context, data_dir)
 }
 
 fn captured_context() -> (Arc<ReadRequestContext>, TempDir, TempDir) {
@@ -137,6 +166,40 @@ fn dispatch_refuses_when_the_entry_seam_supplied_no_context() {
         error.to_response().error.name,
         "GenerationNotYetActivated",
         "a missing context must surface the typed F38 availability code"
+    );
+}
+
+#[tokio::test]
+async fn dispatch_refuses_a_managed_mode_context_even_though_it_is_supplied() {
+    // F20's admission path only ever captures a generation-backed context
+    // (`ReadServer` mode). A managed-mode context is a legitimate
+    // `ReadRequestContext` value (F16 unifies both modes), but it reads the
+    // daemon's live, mutable workspace binding rather than a pinned
+    // generation. Checking only "was a context supplied" would let this slip
+    // through and serve a read-server request against mutable managed state
+    // instead of refusing it -- assert the gate rejects it explicitly.
+    let (managed_context, _data_dir) = managed_mode_context().await;
+    assert!(
+        managed_context.generation().is_none(),
+        "test setup must produce a context with no pinned generation"
+    );
+
+    let method = read_server_methods()
+        .first()
+        .copied()
+        .expect("at least one read-server method");
+
+    let error = enforce_read_server_dispatch(method, Some(&managed_context))
+        .expect_err("a managed-mode context must be refused, not treated as a pinned generation");
+
+    assert!(matches!(
+        error,
+        EngramError::Activation(ActivationError::GenerationNotYetActivated { .. })
+    ));
+    assert_eq!(
+        error.to_response().error.name,
+        "GenerationNotYetActivated",
+        "a managed-mode context must surface the typed F38 availability code"
     );
 }
 
