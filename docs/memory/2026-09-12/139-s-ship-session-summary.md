@@ -28,7 +28,17 @@ merge-approval gate per the DARK_MODE_ACTIVE contract.
 Owned files touched: `src/tools/{read,lifecycle,eval,lint,doctor}.rs` +
 `tests/integration/{core_read_generation_pin_test,report_read_generation_pin_test,
 lifecycle_read_generation_pin_test,eval_read_pin_test,lint_read_pin_test,
-doctor_read_pin_test}.rs`. No files outside this owned set were modified.
+doctor_read_pin_test}.rs`.
+
+**Correction (Copilot round-4 review, PR #393)**: an earlier version of this note claimed "no
+files outside this owned set were modified." That was overbroad and imprecise — it is true for
+*source and test files*, but this PR also adds normal Ship-workflow bookkeeping artifacts
+outside the owned-files set: `.backlogit/stash.jsonl` (P-021 deferred-scope-expansion
+entries), `.backlogit/queue/*.md` (task-status transitions), `docs/memory/2026-09-12/*.md`
+(this file and prior checkpoints), and `docs/compound/test-failures/*.md` (learnings capture).
+None of these are source or test changes and none expand the shipment's functional scope; the
+original claim should have said "no *source or test* files outside this owned set were
+modified" rather than an unqualified "no files."
 
 ## Quality gates (all independently verified by Ship)
 
@@ -129,8 +139,8 @@ every daemon mode including `ReadServer`, and calls this exact function as the v
 bind — at a point where `snapshot_dispatch_context()` is *guaranteed* to be `None`. The
 refusal fix made every `read_server`-mode daemon fail to start immediately. This was
 confirmed directly by running `read_server_mode_survives_auto_spawn_and_bounded_restart`
-(an end-to-end daemon-spawn integration test not part of the default `cargo dev-test`
-target set): it failed at `f54ed718` and passed at `679500ce`. This is exactly why an
+(an end-to-end daemon-spawn integration test that **is** part of `cargo dev-test`'s target
+set — see the round-4 correction below): it failed at `f54ed718` and passed at `679500ce`. This is exactly why an
 earlier commit in this same PR (`8bfb790e`) had deliberately made the `None` case fall
 through instead of refusing it — Copilot's round-3 suggestion reintroduced a previously-
 fixed bug.
@@ -146,17 +156,77 @@ correctly fixing it requires threading a trust signal from un-owned
 Unresolved and re-resolved the Copilot thread with a corrected explanation citing the
 revert and the new stash entry.
 
-**Lesson for future sessions**: `cargo dev-test` alone did not catch this regression —
-the end-to-end daemon-restart integration tests are apparently excluded from (or too slow
-for) the default dev-test target set. When a fix changes control flow in a function called
-from multiple production entry points (here, both daemon startup and per-request dispatch),
-grep for all call sites of the changed function before considering the fix verified, and/or
-run the specific end-to-end test(s) covering those call sites, not just the unit/integration
-tests scoped to the changed file.
+**Lesson for future sessions**: `cargo dev-test` DID include the regression-detecting test
+(`.cargo/config.toml` defines `dev-test = "test --all-targets"`, no exclusion) — this was a
+review-process failure, not a test-selection gap (see the round-4 correction below for the
+full retraction). When a fix changes control flow in a function called from multiple
+production entry points (here, both daemon startup and per-request dispatch), grep for all
+call sites of the changed function before considering the fix verified, and always inspect
+**complete** test output (or check the process exit code) rather than a truncated tail —
+especially for a long multi-binary `--all-targets` run where a single expensive test's
+`FAILED` marker can be buried mid-stream.
+
+## Copilot review round 4 (HEAD `ff35e4d0` → 4 new findings, 2 genuine bugs + 2 doc corrections)
+
+A fourth Copilot review pass (re-armed by the round-3 docs push) surfaced 4 new threads:
+
+1. **Genuine bug (in scope)**: `tests/integration/report_read_generation_pin_test.rs` relies
+   on a process-global test hook in `src/tools/read.rs`
+   (`Mutex<Option<GenerationPinTestHook>>`) that two concurrently-running `#[tokio::test]`
+   functions installing hooks for *different* methods could clobber, hanging one test forever
+   on `reached_rx`. **Fixed** by refactoring the hook store to a per-method-keyed
+   `Mutex<HashMap<String, GenerationPinTestHook>>` in `src/tools/read.rs` (owned file).
+2. **Genuine bug (in scope)**: `src/tools/doctor.rs::run_smoke_test` re-read the daemon mode
+   from on-disk config (`resolve_daemon_mode`) *after* `ensure_daemon_running` may have reused
+   an already-live daemon — if config had drifted, this could send the Managed-mode smoke
+   sequence (`set_workspace` + `_shutdown`) to a live `ReadServer` daemon, violating its
+   non-destructive contract. **Fixed** by adding a `pub mode: String` field to `DaemonStatus`
+   (`src/tools/lifecycle.rs`, populated via the pre-existing `DaemonMode::as_str()`) and
+   refactoring `run_smoke_test` to always probe `get_daemon_status` first and derive the
+   remaining smoke sequence from the daemon's own *observed* live mode rather than on-disk
+   config. Both fixes stayed entirely within owned files.
+3. **& 4. Documentation-accuracy findings (on Ship's own round-3 artifacts)**: Copilot
+   correctly flagged that the compound doc's central claim ("cargo dev-test's default target
+   set did not include this test") was factually wrong, and that the memory file's blanket
+   "no files outside this owned set were modified" claim was contradicted by this PR's own
+   docs/bookkeeping additions. **Independently re-verified both**: `cargo test --all-targets
+   --no-run` confirmed the `integration_read_server_restart` binary is built and included;
+   `git diff --stat` confirmed `.backlogit/`, `docs/memory/`, and `docs/compound/` files were
+   indeed touched alongside the owned `src/tools/*.rs` set. Corrected both documents in place
+   (this file, and the compound doc's frontmatter + Root Cause + Prevention sections) rather
+   than leaving inaccurate institutional knowledge in the repository.
+
+Also discovered incidentally during round-4 verification (not from Copilot, from Ship's own
+full-suite re-verification) and captured as new P-021 deferred-scope stash entries per C1
+(neither touches any 139-S owned file):
+
+- `069B5F74` — `tests/contract/lint_dax_contract_test.rs::tool_count_is_twenty_one_and_matches_catalog`
+  hardcodes the literal `21` and fails under `--features git-graph` (where
+  `tools_catalog::TOOL_COUNT` is itself feature-gated to 23) — pre-existing, and the standard
+  `cargo dev-test` alias does not enable `git-graph` so this does not surface in the canonical
+  gate.
+- `7A596F8C` — `contract_shim_stdio_initialize::t3_missing_result_is_terminal` failed once
+  during a full-suite run but passed reliably in 3 isolated re-runs (clean HEAD and with
+  round-4 changes present); consistent with the same environment-level parallel-load
+  flakiness already tracked in stash `9088F47D`/`F1E5A255`.
+
+Re-verified after both round-4 fixes: `cargo check --all-targets` (PASS), `cargo clippy
+--all-targets -- -D warnings -D clippy::pedantic` (PASS), `cargo fmt --all -- --check` (PASS
+after one auto-fix), all 6 owned pin-test files including with `--features git-graph` (PASS,
+no hang — confirms the hook-registry fix), the end-to-end
+`read_server_mode_survives_auto_spawn_and_bounded_restart` test (PASS), and a full `cargo
+dev-test` run with **complete output captured to a file and grepped for every `test result:`
+line** rather than a truncated tail (703 passed, 1 ignored, 0 failed at the canonical
+no-git-graph invocation — the only failures observed were the two flaky/pre-existing items
+above, seen only under the separate `--features git-graph` all-targets pass, and reproduced
+as non-reproducible in isolation).
 
 ## Next steps
 
-**HALT at merge-approval gate** — `merge_approval_pre_authorized: false` per the
-DARK_MODE_ACTIVE contract. All automated gates (CI, P-018, P-009, P-014) pass. Awaiting
-explicit new operator approval before any merge. Shipment 139-S remains `active` (not yet
-`shipped`/closed — that happens post-merge, out of scope for this run).
+Round 4 fixes and doc corrections are being committed next, then pushed, then the 4 new
+Copilot threads will be replied-to and resolved, the PR body rewritten to reflect the new
+HEAD, and the P-018 gate re-run. **HALT at merge-approval gate** —
+`merge_approval_pre_authorized: false` per the DARK_MODE_ACTIVE contract — remains the plan
+once all gates are green at a stable final HEAD. Do not merge without a new explicit operator
+approval signal. Shipment 139-S remains `active` (not yet `shipped`/closed — that happens
+post-merge, out of scope for this run).

@@ -56,6 +56,13 @@ pub struct DaemonStatus {
     pub health: HealthReport,
     /// Process-level reliability counters (029-F WS-8).
     pub telemetry: ReliabilitySnapshot,
+    /// The daemon's actual live `DaemonMode` (`"managed"` or `"read_server"`,
+    /// per [`DaemonMode::as_str`]), as reported by the running process
+    /// itself. Callers that need to select mode-dependent behavior for an
+    /// already-running (possibly reused) daemon must read this field rather
+    /// than re-resolving mode from on-disk configuration, since the two can
+    /// diverge if configuration changed after the daemon started.
+    pub mode: String,
 }
 
 /// Serializable snapshot of `ReliabilityCounters` for `DaemonStatus`.
@@ -1021,6 +1028,7 @@ pub async fn get_daemon_status(state: &AppState) -> Result<DaemonStatus, EngramE
         model_name,
         health,
         telemetry,
+        mode: state.mode().as_str().to_owned(),
     })
 }
 

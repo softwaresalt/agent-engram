@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
@@ -16,14 +17,20 @@ use crate::services::search::{SearchCandidate, hybrid_search};
 use crate::services::search::{SearchRegion, UnifiedSearchResult, merge_unified_results};
 
 struct GenerationPinTestHook {
-    method: String,
     reached: Option<oneshot::Sender<()>>,
     resume: Option<oneshot::Receiver<()>>,
 }
 
-fn generation_pin_test_hook() -> &'static Mutex<Option<GenerationPinTestHook>> {
-    static HOOK: OnceLock<Mutex<Option<GenerationPinTestHook>>> = OnceLock::new();
-    HOOK.get_or_init(|| Mutex::new(None))
+/// Registry of per-method one-shot test barriers, keyed by handler method
+/// name. A single shared slot (rather than one entry per method) would let
+/// two `#[tokio::test]` functions running concurrently in the same binary
+/// stomp on each other's installed hook: whichever `install` call landed
+/// second would silently discard the first, leaving the first test's
+/// `reached_rx` waiting forever. Keying by method name isolates concurrent
+/// tests that pin different handlers from one another.
+fn generation_pin_test_hooks() -> &'static Mutex<HashMap<String, GenerationPinTestHook>> {
+    static HOOKS: OnceLock<Mutex<HashMap<String, GenerationPinTestHook>>> = OnceLock::new();
+    HOOKS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// Install a one-shot barrier reached immediately after a handler pins its dispatch context.
@@ -34,27 +41,23 @@ pub fn install_generation_pin_test_hook(
     resume: oneshot::Receiver<()>,
 ) {
     let hook = GenerationPinTestHook {
-        method: method.to_owned(),
         reached: Some(reached),
         resume: Some(resume),
     };
-    *generation_pin_test_hook()
+    generation_pin_test_hooks()
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hook);
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(method.to_owned(), hook);
 }
 
 async fn maybe_pause_generation_pin_test_hook(method: &str) {
     let pending_resume = {
-        let mut slot = generation_pin_test_hook()
+        let mut hooks = generation_pin_test_hooks()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(mut hook) = slot.take() else {
+        let Some(mut hook) = hooks.remove(method) else {
             return;
         };
-        if hook.method != method {
-            *slot = Some(hook);
-            return;
-        }
         if let Some(reached) = hook.reached.take() {
             let _ = reached.send(());
         }
