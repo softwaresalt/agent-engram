@@ -251,7 +251,7 @@ fn seed_metrics_workspace(
             estimated_output_tokens: 100,
             estimated_tokens: 100,
             result_count: 1,
-            response_shape_counts: Default::default(),
+            response_shape_counts: std::collections::BTreeMap::default(),
             symbols_returned: 1,
             results_returned: 1,
             branch: BRANCH.to_owned(),
@@ -282,10 +282,10 @@ fn named_function_body(source: &str, function_name: &str) -> String {
     let start = source
         .find(&needle)
         .unwrap_or_else(|| panic!("function '{function_name}' not found"));
-    let brace_start = source[start..]
-        .find('{')
-        .map(|offset| start + offset)
-        .unwrap_or_else(|| panic!("function '{function_name}' has no body"));
+    let brace_start = source[start..].find('{').map_or_else(
+        || panic!("function '{function_name}' has no body"),
+        |offset| start + offset,
+    );
     let mut depth = 0usize;
     let mut end = None;
     for (offset, ch) in source[brace_start..].char_indices() {

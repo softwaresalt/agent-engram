@@ -35,9 +35,12 @@ impl EvalFixture {
         create_git_workspace(workspace_b.path());
         seed_report(
             workspace_a.path(),
-            RetrievalEvalReport::empty(false, BRANCH),
+            &RetrievalEvalReport::empty(false, BRANCH),
         );
-        seed_report(workspace_b.path(), RetrievalEvalReport::empty(true, BRANCH));
+        seed_report(
+            workspace_b.path(),
+            &RetrievalEvalReport::empty(true, BRANCH),
+        );
 
         let snap_a = snapshot("workspace-eval-a", workspace_a.path());
         let snap_b = snapshot("workspace-eval-b", workspace_b.path());
@@ -75,7 +78,7 @@ fn create_git_workspace(path: &Path) {
     fs::write(path.join("lib.rs"), "pub fn eval_fixture() {}\n").expect("write source file");
 }
 
-fn seed_report(workspace: &Path, report: RetrievalEvalReport) {
+fn seed_report(workspace: &Path, report: &RetrievalEvalReport) {
     let engram_dir = workspace.join(".engram");
     let report_dir = eval_dir(&engram_dir, BRANCH);
     fs::create_dir_all(&report_dir).expect("create retrieval eval dir");
@@ -110,10 +113,10 @@ fn named_function_body(source: &str, function_name: &str) -> String {
     let start = source
         .find(&needle)
         .unwrap_or_else(|| panic!("function '{function_name}' not found"));
-    let brace_start = source[start..]
-        .find('{')
-        .map(|offset| start + offset)
-        .unwrap_or_else(|| panic!("function '{function_name}' has no body"));
+    let brace_start = source[start..].find('{').map_or_else(
+        || panic!("function '{function_name}' has no body"),
+        |offset| start + offset,
+    );
     let mut depth = 0usize;
     let mut end = None;
     for (offset, ch) in source[brace_start..].char_indices() {
