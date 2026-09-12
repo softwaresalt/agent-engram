@@ -78,6 +78,17 @@ async fn pinned_dispatch_context(
     Ok(context)
 }
 
+async fn maybe_pinned_dispatch_context(
+    state: &SharedState,
+    method: &str,
+) -> Option<DispatchSnapshot> {
+    let context = state.snapshot_dispatch_context().await;
+    if context.is_some() {
+        maybe_pause_generation_pin_test_hook(method).await;
+    }
+    context
+}
+
 async fn pinned_queries(
     state: &SharedState,
     method: &str,
@@ -96,12 +107,6 @@ async fn pinned_workspace_path_and_branch(
         PathBuf::from(context.workspace.path),
         context.workspace.branch,
     ))
-}
-
-async fn workspace_snapshot_path_and_branch(
-    state: &SharedState,
-) -> Result<(PathBuf, String), EngramError> {
-    pinned_workspace_path_and_branch(state, "workspace_snapshot_path_and_branch").await
 }
 
 async fn load_registry_status(workspace_path: &Path) -> Result<Option<Value>, EngramError> {
@@ -1094,8 +1099,10 @@ pub async fn get_health_report(
     let version = env!("CARGO_PKG_VERSION");
     let uptime_secs = state.uptime_seconds();
     let connections = state.active_connections();
-    let workspace_snapshot = state.snapshot_workspace().await;
-    let workspace_id = workspace_snapshot.as_ref().map(|s| s.workspace_id.clone());
+    let dispatch_context = maybe_pinned_dispatch_context(&state, "get_health_report").await;
+    let workspace_id = dispatch_context
+        .as_ref()
+        .map(|context| context.workspace.workspace_id.clone());
     let tool_call_count = state.tool_call_count();
     let (p50, p95, p99) = state.latency_percentiles().await;
     let (watcher_events, last_watcher_event) = state.watcher_stats().await;
@@ -1105,12 +1112,13 @@ pub async fn get_health_report(
 
     // Collect embedding status — no workspace needed for the basic availability check.
     let embedding_status = embedding::status(None).await?;
-    let metrics_summary = if let Some(snapshot) = &workspace_snapshot {
-        let wp = PathBuf::from(&snapshot.path);
-        let br = snapshot.branch.clone();
+    let metrics_summary = if let Some(context) = dispatch_context {
+        let branch = context.workspace.branch.clone();
+        let wp = PathBuf::from(&context.workspace.path);
+        let br = branch.clone();
         match tokio::task::spawn_blocking(move || metrics::compute_summary(&wp, &br)).await {
             Ok(Ok(summary)) => serde_json::to_value(json!({
-                "branch": snapshot.branch,
+                "branch": branch,
                 "summary": summary,
             }))
             .unwrap_or(Value::Null),
@@ -1166,7 +1174,8 @@ pub async fn get_branch_metrics(
             reason: error.to_string(),
         })
     })?;
-    let (workspace_path, current_branch) = workspace_snapshot_path_and_branch(&state).await?;
+    let (workspace_path, current_branch) =
+        pinned_workspace_path_and_branch(&state, "get_branch_metrics").await?;
     let branch_name = parsed.branch_name.unwrap_or(current_branch);
     let wp = workspace_path.clone();
     let br = branch_name.clone();
@@ -1225,7 +1234,8 @@ pub async fn get_token_savings_report(
     state: SharedState,
     _params: Option<Value>,
 ) -> Result<Value, EngramError> {
-    let (workspace_path, branch) = workspace_snapshot_path_and_branch(&state).await?;
+    let (workspace_path, branch) =
+        pinned_workspace_path_and_branch(&state, "get_token_savings_report").await?;
     let wp = workspace_path.clone();
     let br = branch.clone();
     // Load events once, then derive both the summary and the (report-only)
@@ -1526,11 +1536,7 @@ pub async fn query_changes(
 ) -> Result<Value, EngramError> {
     use chrono::DateTime;
 
-    let (data_dir, branch) = if let Some(snap) = state.snapshot_workspace().await {
-        (snap.data_dir.clone(), snap.branch.clone())
-    } else {
-        return Err(EngramError::Workspace(WorkspaceError::NotSet));
-    };
+    let (_context, queries) = pinned_queries(&state, "query_changes").await?;
 
     // Read-only: git-graph tables may be partially written during a background
     // index. Returning available commit data is more useful than blocking the caller.
@@ -1544,8 +1550,6 @@ pub async fn query_changes(
 
     let limit = parsed.limit.unwrap_or(20);
 
-    let db = connect_db(&data_dir, &branch).await?;
-    let queries = CodeGraphQueries::new(db);
     let since_dt = parsed
         .since
         .as_deref()
@@ -1577,9 +1581,7 @@ pub async fn query_changes(
     // If a symbol is provided, resolve its file path via the code graph so we
     // can filter commits by file. Symbol not found → CodeGraphError::SymbolNotFound.
     let effective_file_path: Option<String> = if let Some(ref sym) = parsed.symbol {
-        let cg_db = connect_db(&data_dir, &branch).await?;
-        let cg = CodeGraphQueries::new(cg_db);
-        let syms = cg.find_symbols_by_name(sym).await?;
+        let syms = queries.find_symbols_by_name(sym).await?;
         if syms.is_empty() {
             return Err(EngramError::CodeGraph(CodeGraphError::SymbolNotFound {
                 name: sym.clone(),
@@ -1637,8 +1639,10 @@ pub async fn get_evaluation_report(
     state: SharedState,
     _params: Option<Value>,
 ) -> Result<Value, EngramError> {
-    let (workspace_path, branch) = workspace_snapshot_path_and_branch(&state).await?;
-    let config = state.evaluation_config().await.unwrap_or_default();
+    let context = pinned_dispatch_context(&state, "get_evaluation_report").await?;
+    let workspace_path = PathBuf::from(&context.workspace.path);
+    let branch = context.workspace.branch.clone();
+    let config = context.config.evaluation.clone();
 
     let wp = workspace_path.clone();
     let br = branch.clone();
