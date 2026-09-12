@@ -207,6 +207,7 @@ error) — that specific sub-finding is genuinely re-confirmed for `138-S`.
 `.backlogit/archive/138-S.md` AUDIT RATIONALE); covering feature `142-F`
 verified untouched (still `active`, byte-identical to its pre-closure
 SHA-256 snapshot, `59263E8FFB779485E135A7AA41D9DAAC89B4A996B767D128D76A1AD2E70404C3`,
-802 bytes). This is now the fourth consecutive shipment (`134-S` through
-`138-S`) to close under this same covering feature by skipping `shipment
-ship` entirely and going straight to manual safe-close.
+802 bytes). This is now the fifth consecutive shipment (`134-S` through
+`138-S` — five shipment IDs: 134-S, 135-S, 136-S, 137-S, 138-S) to close
+under this same covering feature by skipping `shipment ship` entirely and
+going straight to manual safe-close.

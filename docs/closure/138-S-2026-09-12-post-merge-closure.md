@@ -13,7 +13,7 @@ compaction_status: "done"
 pr_number: 391
 merge_commit: "81b19b0d91c79c9c456ce703dca42a4688978dfa"
 head_commit_merged: "6b39ee94"
-closure_pr_number: null
+closure_pr_number: 392
 closure_pr_merge_commit: null
 runtime_verification_report: "docs/closure/2026-09-12-138-s-runtime-verification.md"
 follow_up_stash:

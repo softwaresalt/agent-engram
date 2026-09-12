@@ -22,9 +22,18 @@ surface from descriptors (`src/cli/runner.rs`); (8) `142.033-T` (+ subtasks
 `.001`-`.002`) — the read-input ownership inventory and fail-on-unclassified
 guard. This touches the `cli`, `api`, and `background-job` surfaces declared in
 the workspace profile's `runtime_validation.validator_manifest`. Verification
-below runs against merge commit
-`81b19b0d91c79c9c456ce703dca42a4688978dfa` (PR #391) on the
-`post-merge/138-s-generation-activation-request-context` branch.
+below was executed against a working tree at merge commit
+`81b19b0d91c79c9c456ce703dca42a4688978dfa` (PR #391) plus the
+non-source closure/checkpoint artifacts added on the
+`post-merge/138-s-generation-activation-request-context` branch (`git diff
+--stat main..HEAD -- src/ tests/ Cargo.toml Cargo.lock` is empty — zero
+source changes). The build/test binary's embedded version string therefore
+reports the local branch tip (`+gce3b2fba-dirty`, the cherry-picked
+checkpoint commit plus uncommitted-at-build-time working-tree state) rather
+than the bare merge-commit SHA; because no source file differs between the
+merge commit and this branch, the compiled and tested behavior is
+equivalent to a build at `81b19b0d91c79c9c456ce703dca42a4688978dfa` itself,
+not merely similar to it.
 
 ## Build
 
@@ -37,7 +46,7 @@ below runs against merge commit
 
 | Probe | Command | Result |
 |---|---|---|
-| `cli-version` | `engram --version` (via existing `target\debug\engram.exe` to avoid rebuild-lock contention with concurrently running verification tests) | **PASS** — `engram 0.3.0-rc.1+gce3b2fba-dirty`, exit 0 |
+| `cli-version` | `engram --version` (via existing `target\debug\engram.exe` to avoid rebuild-lock contention with concurrently running verification tests) | **PASS** — `engram 0.3.0-rc.1+gce3b2fba-dirty`, exit 0. Version metadata reflects the local closure-branch tip (cherry-picked checkpoint commit `ce3b2fba` + uncommitted-at-build-time state), not the bare merge-commit SHA — see the Scope section above for why this is nonetheless equivalent to a merge-commit build (zero `src/`/`tests/` diff). |
 | `cli-daemon-status` | manifest literal `engram status` | **Does not exist as a subcommand** — pre-existing validator-manifest drift, already captured and reused from stash `DA0AF326` (not re-captured; positively confirmed identical finding, consistent with the 135-S/137-S precedent: real subcommands are `daemon-status`, `workspace-status`, `stats`). No live `engram daemon-status` probe was attempted against the shared dev-environment daemon (PID `30528`): per the operator's explicit recovery-facts instruction, that daemon is known to be in a benign `_health: starting`-forever readiness-latch state (deferred scope, stash `265F99BE`) and must not be queried, stopped, or otherwise touched by this closure session. **Substitute evidence**: `contract_shim_stdio_initialize` (19/19 green, includes daemon-lifecycle/terminal-classification coverage) and `contract_cli_tool_catalog_parity` (6/6 green, `142.032-T`'s own harness) both passed in isolation. |
 
 ## API (MCP protocol) surface
