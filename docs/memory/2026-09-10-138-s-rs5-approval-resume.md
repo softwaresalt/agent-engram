@@ -751,6 +751,98 @@ deferred.
     `integration_generation_activation` (28/28), `integration_read_server_startup_activation`
     (7/7), `integration_request_entry_activation` (12/12), `unit_generation_context` (4/4)
 
+## Round 9
+
+A final docs-only push (`00806f0a`, the round 7-8 memory section above) re-armed both CI and
+Copilot review at that HEAD, per the unconditional last-mile re-check (Step 5 item 15). CI went
+green (`build` PASS 6m3s, `start-launcher-windows` PASS 2m20s). Copilot's round-9 review at HEAD
+`00806f0a` raised 2 new unresolved threads, both in the same F17 activation surface this
+shipment already owns:
+
+1. **`ExistingDbLocation::new` re-hashes the database from a fresh, uncapped stat.**
+   `resolve_and_open` (round 6/7) already validates the database entry's digest via a *bounded*
+   `file_digest(target.path(), MAX_SEALED_ARTIFACT_BYTES)` call inside the sealed-inventory loop.
+   But it then calls `ExistingDbLocation::new(store.root(), &database_target)`
+   (`src/db/cozo_backend/mod.rs`), whose constructor independently re-stats the same path via
+   `metadata.len()` and passes that fresh length straight into `digest_bounded` /
+   `hash_bounded_reader`, which reads and hashes exactly that many bytes with no independent cap.
+   If the file grew between the loop's bounded check and this later constructor call, the
+   constructor would stream the full grown length unbounded, bypassing the 4 GiB per-artifact cap
+   entirely (and blocking a worker well past the intended budget).
+2. **Cumulative accounting is charged from `metadata.len()`, not from bytes actually hashed.**
+   In the same loop, `check_artifact_size` folds each entry's `metadata.len()` into
+   `cumulative_bytes` *before* `file_digest` ever opens the file. `file_digest`'s own bounded read
+   only enforces the flat `MAX_SEALED_ARTIFACT_BYTES` per-artifact cap, independent of how much
+   cumulative budget remains. Two problems compound: (a) if an artifact grows after its stat but
+   before its read, the actual bytes hashed can exceed what `metadata.len()` charged, so
+   `cumulative_bytes` under-reports the true total; and (b) even without any growth, a single
+   artifact's read was never bounded by the *remaining* cumulative budget, only by the flat
+   per-artifact cap, so the last entries in a large manifest could each consume up to the full
+   per-artifact cap even when far less than that remained of the total allowance.
+
+**P-021 C1 assessment**: both findings are in the exact F17 module (`src/services/generations/
+activation.rs` and its tightly-coupled `ExistingDbLocation` collaborator in
+`src/db/cozo_backend/mod.rs`) that 142.018-T already owns, and are the same TOCTOU/cap-enforcement
+bug class this shipment fixed in rounds 6 and 7 (bound the read itself; don't trust an earlier
+stat). Both pass C1 — fixed directly, no deferral needed.
+
+**Fix 1 — `ExistingDbLocation::new` cap enforcement** (`src/db/cozo_backend/mod.rs`):
+* Added a local `MAX_PUBLISHED_DB_BYTES` constant (4 GiB), mirroring
+  `services::generations::activation::MAX_SEALED_ARTIFACT_BYTES` in value only — this module
+  cannot import that services-layer constant without violating the same no-generation-
+  service-import layering rule already documented on `ExistingDbLocation`, so the value is
+  duplicated locally with a comment explaining why.
+* Split `pub fn new` into a thin wrapper over a new private `fn new_with_cap(generation_root,
+  published_db_path, max_len)`, which performs all the same canonicalization/containment checks
+  as before, then rejects the file if `metadata.len() > max_len` **before** `digest_bounded` ever
+  opens it. Because `hash_bounded_reader`'s read loop is inherently bounded by the `expected_len`
+  it is given (`while copied < expected_len`), capping the length passed into it is sufficient to
+  bound the total hashing work to at most `max_len` bytes, regardless of how large the file grows
+  during the read itself.
+* Parameterizing the cap (mirroring the `check_artifact_size`/`file_digest` pattern from rounds
+  5-7) lets the rejection path be regression-tested with a tiny cap instead of writing a
+  multi-gigabyte database to disk.
+* Added `existing_db_location_rejects_a_file_larger_than_the_cap_before_hashing` and
+  `existing_db_location_accepts_a_file_within_the_cap` to the in-file `mod tests` (both call the
+  private `new_with_cap` directly, which is reachable from the nested test module under normal
+  Rust private-item visibility).
+
+**Fix 2 — cumulative accounting reconciliation** (`src/services/generations/activation.rs`):
+* `file_digest`'s signature changed from `Result<String, ActivationError>` to
+  `Result<(String, u64), ActivationError>`, returning the actual bytes read alongside the digest.
+* Extracted two small helpers so the reconciliation arithmetic itself is directly unit-testable:
+  * `effective_read_cap(per_artifact_cap, cumulative_bytes, total_cap) -> u64` — returns the
+    smaller of the flat per-artifact cap and whatever cumulative budget actually remains.
+  * `reconcile_cumulative_bytes(cumulative_bytes, bytes_read, total_cap, path) ->
+    Result<(), ActivationError>` — charges `bytes_read` (not a stale `metadata.len()` estimate)
+    into `cumulative_bytes` via `checked_add`, rejecting on overflow or on exceeding `total_cap`.
+* `resolve_and_open`'s loop now: (a) still runs `check_artifact_size` against a scratch
+  `provisional_total` copy so the original fast-fail-on-stated-size behavior is preserved
+  unchanged; (b) computes `effective_read_cap` from the *real* `cumulative_bytes` before this
+  entry; (c) calls `file_digest` with that effective cap; (d) reconciles `cumulative_bytes` with
+  the actual `bytes_read` via `reconcile_cumulative_bytes`.
+* Added a new `cumulative_reconciliation_tests` module with 6 focused unit tests covering both
+  helpers: ample-budget pass-through, budget-shrunk cap, budget-exhausted zero cap, actual-bytes
+  charging, over-cap rejection after reading, and overflow rejection.
+
+**Verification**:
+* `cargo check --all-targets`: PASS
+* `cargo fmt --all` / `cargo clippy --all-targets -- -D warnings -D clippy::pedantic`: PASS, no
+  follow-up lint fixes needed this round
+* `cargo test --lib services::generations::activation::` — 12/12 passed (up from 6 pre-existing
+  across `size_cap_tests`/`bounded_manifest_read_tests`/`bounded_digest_read_tests`; adds the 6
+  new `cumulative_reconciliation_tests`)
+* `cargo test --lib db::cozo_backend::` — 41/41 passed (includes the 2 new
+  `ExistingDbLocation` cap tests)
+* Broader regression sweep, all green: `integration_generation_activation` (28/28),
+  `integration_generation_db_open` (9/9), `integration_read_server_startup_activation` (7/7),
+  `integration_request_entry_activation` (12/12), `unit_generation_context` (4/4) — 60 tests
+  total, matching round 7's sweep plus the db_open suite
+
+Committed as `8967c252` ("fix(142.018-T): cap ExistingDbLocation construction and bound
+cumulative digest accounting (round 9)") and pushed. CI and Copilot review re-poll at this HEAD
+are the next step before the halt can be finalized.
+
 ### Commit
 
 * `d907a067` — `fix(142.018-T): close TOCTOU digest gap and bound manifest reads (round 6)` —
