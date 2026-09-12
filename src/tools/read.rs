@@ -578,6 +578,15 @@ pub async fn unified_search(
     // Clamp limit to [1, 50].
     let limit = parsed.limit.clamp(1, 50);
 
+    // Pin the dispatch context (and therefore the database generation to query)
+    // BEFORE the potentially slow/lazy-loading embed_text call below. embed_text
+    // can lazily load the embedding model on first use, which is slow enough that
+    // a background generation swap could otherwise land between embedding and
+    // pinning, causing this request to observe a newer generation than the one
+    // current at handler entry — the same ordering `map_code` and
+    // `impact_analysis` already follow.
+    let (_context, queries) = pinned_queries(&state, "unified_search").await?;
+
     // Embed the query. FR-157: if embedding fails, return 5001.
     let query_embedding = embedding::embed_text(trimmed).map_err(|e| {
         EngramError::System(SystemError::DatabaseError {
@@ -585,7 +594,6 @@ pub async fn unified_search(
         })
     })?;
 
-    let (_context, queries) = pinned_queries(&state, "unified_search").await?;
     let code_results = {
         let symbols = if let Some(scope) = parsed
             .scope_to_symbol

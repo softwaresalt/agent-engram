@@ -384,7 +384,9 @@ fn migrated_report_handler_bodies_no_longer_open_or_resnapshot_directly() {
         .join("src")
         .join("tools")
         .join("read.rs");
-    let source = fs::read_to_string(source_path).expect("read src/tools/read.rs");
+    let source = fs::read_to_string(source_path)
+        .expect("read src/tools/read.rs")
+        .replace("\r\n", "\n");
 
     for function_name in [
         "get_health_report",
