@@ -15,8 +15,10 @@
 //! run has ever been persisted for the branch.
 
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 
 use serde_json::Value;
+use tokio::sync::oneshot;
 
 use crate::db::connect_db;
 use crate::db::queries::CodeGraphQueries;
@@ -37,12 +39,63 @@ struct SnapshotParts {
     config: RetrievalEvalConfig,
 }
 
+struct GenerationPinTestHook {
+    method: String,
+    reached: Option<oneshot::Sender<()>>,
+    resume: Option<oneshot::Receiver<()>>,
+}
+
+fn generation_pin_test_hook() -> &'static Mutex<Option<GenerationPinTestHook>> {
+    static HOOK: OnceLock<Mutex<Option<GenerationPinTestHook>>> = OnceLock::new();
+    HOOK.get_or_init(|| Mutex::new(None))
+}
+
+/// Install a one-shot barrier reached immediately after an eval handler pins its dispatch context.
+#[doc(hidden)]
+pub fn install_generation_pin_test_hook(
+    method: &str,
+    reached: oneshot::Sender<()>,
+    resume: oneshot::Receiver<()>,
+) {
+    let hook = GenerationPinTestHook {
+        method: method.to_owned(),
+        reached: Some(reached),
+        resume: Some(resume),
+    };
+    *generation_pin_test_hook()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hook);
+}
+
+async fn maybe_pause_generation_pin_test_hook(method: &str) {
+    let pending_resume = {
+        let mut slot = generation_pin_test_hook()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(mut hook) = slot.take() else {
+            return;
+        };
+        if hook.method != method {
+            *slot = Some(hook);
+            return;
+        }
+        if let Some(reached) = hook.reached.take() {
+            let _ = reached.send(());
+        }
+        hook.resume.take()
+    };
+
+    if let Some(resume) = pending_resume {
+        let _ = resume.await;
+    }
+}
+
 /// Resolve the workspace paths, active branch and retrieval-eval config,
 /// requiring a bound workspace.
 ///
 /// # Errors
 /// Returns [`WorkspaceError::NotSet`] when no workspace is bound.
-async fn snapshot_parts(state: &SharedState) -> Result<SnapshotParts, EngramError> {
+async fn snapshot_parts(state: &SharedState, method: &str) -> Result<SnapshotParts, EngramError> {
     // Clone the workspace binding and config under a single lock window so a
     // concurrent `set_workspace` / `set_workspace_config` cannot pair a snapshot
     // with a config from a different update (which could run or persist an
@@ -51,12 +104,22 @@ async fn snapshot_parts(state: &SharedState) -> Result<SnapshotParts, EngramErro
         .snapshot_dispatch_context()
         .await
         .ok_or(EngramError::Workspace(WorkspaceError::NotSet))?;
+    maybe_pause_generation_pin_test_hook(method).await;
     Ok(SnapshotParts {
         workspace_path: PathBuf::from(ctx.workspace.path),
         data_dir: ctx.workspace.data_dir,
         branch: ctx.workspace.branch,
         config: ctx.config.retrieval_eval,
     })
+}
+
+async fn pinned_queries(
+    state: &SharedState,
+    method: &str,
+) -> Result<(SnapshotParts, CodeGraphQueries), EngramError> {
+    let parts = snapshot_parts(state, method).await?;
+    let db = connect_db(&parts.data_dir, &parts.branch).await?;
+    Ok((parts, CodeGraphQueries::new(db)))
 }
 
 /// Serialize a report to a JSON value, mapping failures to a database error.
@@ -84,7 +147,7 @@ pub async fn run_retrieval_eval(
     state: SharedState,
     _params: Option<Value>,
 ) -> Result<Value, EngramError> {
-    let parts = snapshot_parts(&state).await?;
+    let (parts, queries) = pinned_queries(&state, "run_retrieval_eval").await?;
     if !parts.config.enabled {
         return to_value(&RetrievalEvalReport::empty(false, parts.branch));
     }
@@ -95,8 +158,6 @@ pub async fn run_retrieval_eval(
     // 084.009-T: use the LEFT-JOIN corpus so a partially-written function
     // (function_meta present, code/embedding row absent) still counts toward the
     // semantic-eval denominator (78AA205D) instead of being silently dropped.
-    let db = connect_db(&parts.data_dir, &parts.branch).await?;
-    let queries = CodeGraphQueries::new(db);
     let functions = queries.all_functions_for_eval().await?;
 
     let semantic = retrieval_eval::evaluate_semantic(&functions, &parts.config)?;
@@ -203,7 +264,7 @@ pub async fn get_retrieval_eval_report(
     state: SharedState,
     _params: Option<Value>,
 ) -> Result<Value, EngramError> {
-    let parts = snapshot_parts(&state).await?;
+    let parts = snapshot_parts(&state, "get_retrieval_eval_report").await?;
     let engram_dir = parts.workspace_path.join(".engram");
     if let Some(report) = retrieval_eval::latest_report(&engram_dir, &parts.branch).await? {
         return to_value(&report);
