@@ -258,6 +258,27 @@ fn migrated_core_handler_bodies_no_longer_open_or_resnapshot_directly() {
             "{function_name} must not re-derive workspace path/branch from AppState"
         );
     }
+
+    // unified_search additionally must pin its dispatch context (and therefore the
+    // database generation it queries) BEFORE calling embed_text, which can lazily
+    // load the embedding model on first use — a slow operation. Pinning after
+    // embedding would let a background generation publish land in that window,
+    // causing the request to observe a newer generation than the one current at
+    // handler entry. Assert the relative source order directly so this ordering
+    // regression cannot silently recur (Copilot review, PR #393, round 9/10).
+    let unified_search_body = named_function_body(&source, "unified_search");
+    let pin_pos = unified_search_body
+        .find("pinned_queries(")
+        .expect("unified_search must call pinned_queries");
+    let embed_pos = unified_search_body
+        .find("embedding::embed_text(")
+        .expect("unified_search must call embedding::embed_text");
+    assert!(
+        pin_pos < embed_pos,
+        "unified_search must pin the dispatch context via pinned_queries before calling \
+         embedding::embed_text, so a background generation publish cannot land between \
+         embedding and pinning"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
