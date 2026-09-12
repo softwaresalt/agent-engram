@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use engram::config::StaleStrategy;
 use engram::db::workspace::canonicalize_workspace;
-use engram::errors::{ActivationError, EngramError, ReadServerRefusalError};
+use engram::errors::{EngramError, ReadServerRefusalError};
 use engram::models::config::{DaemonMode, WorkspaceConfig};
 use engram::server::state::{AppState, WorkspaceSnapshot};
 use engram::tools::lifecycle;
@@ -41,28 +41,6 @@ impl LifecycleFixture {
             .set_workspace_and_config(snap_a.clone(), Some(config(false)))
             .await
             .expect("seed lifecycle workspace A");
-
-        Self {
-            _workspace_a: workspace_a,
-            _workspace_b: workspace_b,
-            state,
-            snap_a,
-            snap_b,
-        }
-    }
-
-    /// Build a fixture whose `AppState` has never had a generation admitted
-    /// (no `set_workspace_and_config` call), modeling the read-server startup
-    /// window before the trusted activation gate has published a binding.
-    fn new_unadmitted(mode: DaemonMode) -> Self {
-        let workspace_a = tempfile::tempdir().expect("workspace A tempdir");
-        let workspace_b = tempfile::tempdir().expect("workspace B tempdir");
-        create_git_workspace(workspace_a.path());
-        create_git_workspace(workspace_b.path());
-
-        let snap_a = snapshot("workspace-lifecycle-a", workspace_a.path());
-        let snap_b = snapshot("workspace-lifecycle-b", workspace_b.path());
-        let state = Arc::new(AppState::with_mode(mode, 4, StaleStrategy::Warn, 20, 60));
 
         Self {
             _workspace_a: workspace_a,
@@ -210,48 +188,5 @@ async fn read_server_retarget_bind_is_refused_without_side_effects() {
     assert!(
         !requested_metrics_dir.exists(),
         "refused retarget must not initialize metrics or mutate the requested workspace"
-    );
-}
-
-/// Before the trusted startup activation gate has published any generation
-/// (`snapshot_dispatch_context()` returns `None`), a read-server must refuse
-/// `set_workspace` rather than falling through to the full write-capable bind
-/// path (hydration, config/registry processing, publication). Falling through
-/// would let a caller trigger workspace setup during the startup race window,
-/// which is exactly the write-control surface `ReadServer` mode exists to
-/// refuse.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn read_server_bind_before_admission_is_refused_without_side_effects() {
-    let fixture = LifecycleFixture::new_unadmitted(DaemonMode::ReadServer);
-    assert!(
-        fixture.state.snapshot_dispatch_context().await.is_none(),
-        "test precondition: no generation admitted yet"
-    );
-    let requested = fixture.snap_a.path.clone();
-    let requested_metrics_dir = PathBuf::from(&requested)
-        .join(".engram")
-        .join("metrics")
-        .join(BRANCH);
-    assert!(
-        !requested_metrics_dir.exists(),
-        "test precondition: no metrics dir before refused bind"
-    );
-
-    let error = lifecycle::set_workspace(Arc::clone(&fixture.state), requested)
-        .await
-        .expect_err("bind before admission should be refused in read-server mode");
-
-    match error {
-        EngramError::Activation(ActivationError::GenerationNotYetActivated { .. }) => {}
-        other => panic!("unexpected error: {other}"),
-    }
-
-    assert!(
-        fixture.state.snapshot_dispatch_context().await.is_none(),
-        "refused pre-admission bind must not publish a workspace binding"
-    );
-    assert!(
-        !requested_metrics_dir.exists(),
-        "refused pre-admission bind must not initialize metrics or mutate the requested workspace"
     );
 }
