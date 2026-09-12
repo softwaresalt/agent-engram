@@ -16,7 +16,7 @@ use crate::db::workspace::{
     workspace_hash,
 };
 use crate::errors::{
-    EngramError, MetricsError, ReadServerRefusalError, SystemError, WorkspaceError,
+    ActivationError, EngramError, MetricsError, ReadServerRefusalError, SystemError, WorkspaceError,
 };
 use crate::models::config::DaemonMode;
 use crate::models::health::{HealthReport, ScanProgress};
@@ -410,6 +410,19 @@ async fn set_workspace_with_probe(
                 },
             ));
         }
+        // No generation has been admitted yet (startup activation has not
+        // published a binding). A read-server must never fall through to the
+        // full write-capable bind path below in this window: doing so would
+        // let a caller trigger workspace setup (hydration, config/registry
+        // processing, publication) before the trusted startup gate has run,
+        // which is exactly the write-control surface ReadServer mode exists
+        // to refuse. Refuse with the same stable F38 code used elsewhere for
+        // "no generation is open yet" rather than silently proceeding.
+        return Err(EngramError::Activation(
+            ActivationError::GenerationNotYetActivated {
+                generation_id: "<no pinned generation for 'set_workspace'>".to_owned(),
+            },
+        ));
     }
 
     let workspace_uuid = load_or_create_workspace_id(&canonical)?;
