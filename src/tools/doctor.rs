@@ -285,9 +285,13 @@ pub fn smoke_request_methods_for_mode(mode: DaemonMode) -> Vec<&'static str> {
 
 /// Run a full shim→daemon handshake round-trip for the `doctor --smoke` CLI flag.
 ///
-/// Spawns the daemon if not running, connects as a shim, exchanges the version
-/// handshake, calls `set_workspace`, then shuts down. Returns a [`SmokeResult`]
-/// indicating pass or fail with latency measurement.
+/// Spawns the daemon if not running, then connects as a shim and exchanges the
+/// version handshake. In [`DaemonMode::Managed`], additionally calls
+/// `set_workspace` and shuts the daemon down. In [`DaemonMode::ReadServer`],
+/// only re-checks readiness via `get_workspace_status` and performs neither a
+/// workspace bind nor a shutdown, since a read-server smoke run must stay
+/// non-destructive. Returns a [`SmokeResult`] indicating pass or fail with
+/// latency measurement.
 pub async fn run_smoke_test(workspace: &Path) -> Result<SmokeResult, EngramError> {
     use std::time::Duration;
 

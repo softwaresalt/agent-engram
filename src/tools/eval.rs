@@ -113,15 +113,6 @@ async fn snapshot_parts(state: &SharedState, method: &str) -> Result<SnapshotPar
     })
 }
 
-async fn pinned_queries(
-    state: &SharedState,
-    method: &str,
-) -> Result<(SnapshotParts, CodeGraphQueries), EngramError> {
-    let parts = snapshot_parts(state, method).await?;
-    let db = connect_db(&parts.data_dir, &parts.branch).await?;
-    Ok((parts, CodeGraphQueries::new(db)))
-}
-
 /// Serialize a report to a JSON value, mapping failures to a database error.
 fn to_value(report: &RetrievalEvalReport) -> Result<Value, EngramError> {
     serde_json::to_value(report).map_err(|e| {
@@ -129,6 +120,16 @@ fn to_value(report: &RetrievalEvalReport) -> Result<Value, EngramError> {
             reason: format!("failed to serialize retrieval eval report: {e}"),
         })
     })
+}
+
+/// Open a query engine against the pinned snapshot's data directory and branch.
+///
+/// Kept as a dedicated helper (rather than inlined in the caller) so `connect_db`
+/// is only ever reached through a pinned-snapshot-derived path, never called
+/// directly from a handler body.
+async fn open_queries(parts: &SnapshotParts) -> Result<CodeGraphQueries, EngramError> {
+    let db = connect_db(&parts.data_dir, &parts.branch).await?;
+    Ok(CodeGraphQueries::new(db))
 }
 
 /// `run_retrieval_eval` — compute a retrieval-evaluation run.
@@ -147,10 +148,11 @@ pub async fn run_retrieval_eval(
     state: SharedState,
     _params: Option<Value>,
 ) -> Result<Value, EngramError> {
-    let (parts, queries) = pinned_queries(&state, "run_retrieval_eval").await?;
+    let parts = snapshot_parts(&state, "run_retrieval_eval").await?;
     if !parts.config.enabled {
         return to_value(&RetrievalEvalReport::empty(false, parts.branch));
     }
+    let queries = open_queries(&parts).await?;
 
     // Read the indexed function corpus. An initialized but un-indexed workspace
     // returns an empty vector normally, so an actual query error must propagate
