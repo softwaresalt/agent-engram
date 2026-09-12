@@ -64,21 +64,25 @@ doctor_read_pin_test}.rs`. No files outside this owned set were modified.
 - `F1E5A255` — 2 additional flaky tests newly identified in the final complete
   `--no-fail-fast` run (`manifest_tool_count_matches_catalog`,
   `copilot_probe_then_handshake_completes_catalog_and_tool_call`)
+- `F0A2A478` — deferred scope candidate: `set_workspace_with_probe` cannot distinguish a
+  trusted-startup initial bind (`run_startup_driver`) from a public-handler bind
+  (`dispatch()`) without a trust signal threaded from un-owned
+  `src/daemon/startup_activation.rs` / `src/tools/mod.rs` — see the round-3 near-miss below
 
 None of these were fixed, re-triaged, or expanded into. All require Stage deliberation.
 
 ## Branch state (final)
 
 - Branch: `feat/139-s-migrate-read-and-lifecycle-handlers-to-pinned-generation-context`
-- HEAD: `679500ce73a592214fef3928717fb3bd02294d79`
-- 11 commits ahead of `origin/main` (`47eb9e1e440790768f2813a1cc549c6d2c17f394`)
+- HEAD: `3086969b19f40f8cba3b20396a7a826292c972bd`
+- 13 commits ahead of `origin/main` (`47eb9e1e440790768f2813a1cc549c6d2c17f394`)
 - PR: #393 — https://github.com/softwaresalt/agent-engram/pull/393
-- CI: `build` SUCCESS, `start-launcher-windows` SUCCESS; `mergeStateStatus: CLEAN`
-- P-018 copilot-review gate: **SATISFIED** (all 8 Copilot-authored threads across 2 review
-  rounds replied-to and resolved; 4 fixed in-scope, 4 deferred out-of-scope citing stash
-  `EFE9190A`, 1 PR-description-staleness finding addressed by rewriting the readiness block)
+- CI: `build` SUCCESS, `start-launcher-windows` SUCCESS (re-verify at final pushed HEAD)
+- P-018 copilot-review gate: re-run pending at HEAD `3086969b` (was SATISFIED at
+  `679500ce`; round 3 introduced then reverted a regression, see below — expect at least one
+  more review round on this push)
 - P-009 merge-strategy guardrail: repo allows merge-commit only (squash/rebase disabled) — compliant
-- P-014 local readiness: recorded in PR body, reviewed HEAD matches current HEAD
+- P-014 local readiness: PR body to be rewritten again to reflect HEAD `3086969b`
 
 ## Post-implementation review-fix round (discovered via Copilot PR review, addressed before halt)
 
@@ -108,6 +112,47 @@ triaged and closed:
 - Re-verified after all fixes: `cargo check --all-targets`, `cargo clippy --all-targets -D
   warnings -D clippy::pedantic`, `cargo fmt --all -- --check`, and all 6 harness test files
   (15 assertions) — all PASS at final HEAD `679500ce`.
+
+## Copilot review round 3 (HEAD `a01cedcd` → introduced-then-reverted regression)
+
+A third Copilot review pass (triggered by the docs-only session-memory push, which still
+re-arms review) flagged `src/tools/lifecycle.rs:398`: when ReadServer mode has no dispatch
+context admitted yet (`snapshot_dispatch_context()` returns `None`), the code falls through
+to the full write-capable bind path, and recommended refusing that case.
+
+I implemented the refusal (commit `f54ed718`), added a regression test, and it passed
+`cargo check`, `clippy --pedantic`, `fmt --check`, and the full `cargo dev-test` suite (702
+passed). **This was not sufficient verification.** An independent scoped code-review agent
+run against the `679500ce..f54ed718` diff caught that the fix was a critical regression:
+`run_startup_driver` (`src/daemon/startup_activation.rs`) is the production entry point for
+every daemon mode including `ReadServer`, and calls this exact function as the very first
+bind — at a point where `snapshot_dispatch_context()` is *guaranteed* to be `None`. The
+refusal fix made every `read_server`-mode daemon fail to start immediately. This was
+confirmed directly by running `read_server_mode_survives_auto_spawn_and_bounded_restart`
+(an end-to-end daemon-spawn integration test not part of the default `cargo dev-test`
+target set): it failed at `f54ed718` and passed at `679500ce`. This is exactly why an
+earlier commit in this same PR (`8bfb790e`) had deliberately made the `None` case fall
+through instead of refusing it — Copilot's round-3 suggestion reintroduced a previously-
+fixed bug.
+
+**Remediation**: reverted the fix and its test (`git revert f54ed718` → commit
+`3086969b`), re-verified `cargo check`, `clippy --pedantic`, `fmt --check`, the lifecycle
+pin test file (back to 3/3 passing), and `read_server_mode_survives_auto_spawn_and_bounded_restart`
+(passing again). Captured stash `F0A2A478` documenting the real underlying gap (production
+`ReadServer` mode has no trust-boundary separation between the trusted startup bind and the
+public `set_workspace` handler) as a distinct, deferred, P-021 C1 out-of-scope finding —
+correctly fixing it requires threading a trust signal from un-owned
+`src/daemon/startup_activation.rs`/`src/tools/mod.rs::dispatch()` into `lifecycle.rs`.
+Unresolved and re-resolved the Copilot thread with a corrected explanation citing the
+revert and the new stash entry.
+
+**Lesson for future sessions**: `cargo dev-test` alone did not catch this regression —
+the end-to-end daemon-restart integration tests are apparently excluded from (or too slow
+for) the default dev-test target set. When a fix changes control flow in a function called
+from multiple production entry points (here, both daemon startup and per-request dispatch),
+grep for all call sites of the changed function before considering the fix verified, and/or
+run the specific end-to-end test(s) covering those call sites, not just the unit/integration
+tests scoped to the changed file.
 
 ## Next steps
 
