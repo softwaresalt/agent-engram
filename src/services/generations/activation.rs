@@ -1090,6 +1090,66 @@ fn check_artifact_size(
     Ok(())
 }
 
+/// Compute the effective per-entry read cap for [`file_digest`]: the smaller
+/// of `per_artifact_cap` and whatever cumulative budget actually remains
+/// under `total_cap` given `cumulative_bytes` charged so far.
+///
+/// Bounding the read itself by the remaining budget -- not just by
+/// `per_artifact_cap` -- means a single oversized or grown artifact can never
+/// consume more than what is actually left of the cumulative allowance,
+/// closing the gap `reconcile_cumulative_bytes` alone cannot: without this,
+/// an artifact could be read up to the full per-artifact cap even when far
+/// less than that remains in the cumulative budget (F17, Fix4, round-9
+/// review).
+fn effective_read_cap(per_artifact_cap: u64, cumulative_bytes: u64, total_cap: u64) -> u64 {
+    per_artifact_cap.min(total_cap.saturating_sub(cumulative_bytes))
+}
+
+/// Charge `cumulative_bytes` with the bytes actually observed by
+/// [`file_digest`], not with an earlier `metadata.len()` estimate, and
+/// re-validate the running total against `total_cap`.
+///
+/// `check_artifact_size`'s own running-total update (against a scratch copy
+/// in [`resolve_and_open`]) only ever reasons about the *stated* size from
+/// filesystem metadata. An artifact that grows between that stat and the
+/// bounded read in `file_digest` would let the true cumulative bytes hashed
+/// exceed `total_cap` while a metadata-derived total still reported being
+/// under it. Charging the actual `bytes_read` here instead closes that gap
+/// (F17, Fix4, round-9 review).
+///
+/// # Errors
+///
+/// Returns [`ActivationError::ManifestFieldOutOfBounds`] when adding
+/// `bytes_read` to `*cumulative_bytes` would overflow, or when the resulting
+/// total exceeds `total_cap`.
+fn reconcile_cumulative_bytes(
+    cumulative_bytes: &mut u64,
+    bytes_read: u64,
+    total_cap: u64,
+    path: &Path,
+) -> Result<(), ActivationError> {
+    let updated = cumulative_bytes.checked_add(bytes_read).ok_or_else(|| {
+        out_of_bounds(
+            "inventory.files",
+            format!(
+                "cumulative sealed inventory size overflowed while accumulating {}",
+                path.display()
+            ),
+        )
+    })?;
+    if updated > total_cap {
+        return Err(out_of_bounds(
+            "inventory.files",
+            format!(
+                "cumulative sealed inventory size {updated} bytes exceeds the {total_cap} byte total cap after reading {}",
+                path.display()
+            ),
+        ));
+    }
+    *cumulative_bytes = updated;
+    Ok(())
+}
+
 /// Resolve every sealed inventory entry, revalidate its digest, and open the
 /// generation database through the F09 runtime-copy path.
 ///
@@ -1140,14 +1200,37 @@ fn resolve_and_open(
                 target.path().display()
             ))
         })?;
+        // Pre-check the *stated* size against both caps using a scratch
+        // running total: this preserves the original fast-fail behaviour
+        // (reject an artifact whose metadata alone already violates a cap,
+        // before ever opening it) without letting the stated size become the
+        // value actually charged against `cumulative_bytes` below.
+        let mut provisional_total = cumulative_bytes;
         check_artifact_size(
             target.path(),
             metadata.len(),
-            &mut cumulative_bytes,
+            &mut provisional_total,
             MAX_SEALED_ARTIFACT_BYTES,
             MAX_TOTAL_RUNTIME_COPY_BYTES,
         )?;
-        let found = file_digest(target.path(), MAX_SEALED_ARTIFACT_BYTES)?;
+        // Bound this entry's read by whichever is smaller: the per-artifact
+        // cap, or the cumulative budget actually remaining before this
+        // entry. This closes the gap where an artifact that grows between
+        // this stat and the read below could otherwise be hashed past the
+        // remaining cumulative budget even though its own per-artifact cap
+        // was not exceeded (F17, Fix4, round-9 review).
+        let effective_cap = effective_read_cap(
+            MAX_SEALED_ARTIFACT_BYTES,
+            cumulative_bytes,
+            MAX_TOTAL_RUNTIME_COPY_BYTES,
+        );
+        let (found, bytes_read) = file_digest(target.path(), effective_cap)?;
+        reconcile_cumulative_bytes(
+            &mut cumulative_bytes,
+            bytes_read,
+            MAX_TOTAL_RUNTIME_COPY_BYTES,
+            target.path(),
+        )?;
         if found != entry.sha256() {
             return Err(ActivationError::DigestMismatch {
                 path: entry.path().to_owned(),
@@ -1390,12 +1473,21 @@ async fn read_manifest_with_fingerprint_blocking(
 /// specifically so this can be regression-tested with a small cap instead of
 /// writing multi-gigabyte files to disk.
 ///
+/// Returns the digest alongside the actual number of bytes read: callers
+/// tracking a cumulative budget across multiple entries (see the
+/// `cumulative_bytes` reconciliation in [`resolve_and_open`]) must charge the
+/// budget with this observed count, not with an earlier `metadata.len()`
+/// snapshot, or an artifact that grows after its metadata check but before
+/// this read would let the true cumulative bytes hashed exceed
+/// `MAX_TOTAL_RUNTIME_COPY_BYTES` while the metadata-derived total still
+/// reports being under it (F17, Fix4, round-9 review).
+///
 /// # Errors
 ///
 /// Returns [`ActivationError::ManifestFieldOutOfBounds`] when the file
 /// actually contains more than `per_artifact_cap` bytes at read time, even if
 /// it was within the cap at the earlier metadata check.
-fn file_digest(path: &Path, per_artifact_cap: u64) -> Result<String, ActivationError> {
+fn file_digest(path: &Path, per_artifact_cap: u64) -> Result<(String, u64), ActivationError> {
     use std::io::Read as _;
 
     let mut file = File::open(path).map_err(|source| {
@@ -1421,7 +1513,7 @@ fn file_digest(path: &Path, per_artifact_cap: u64) -> Result<String, ActivationE
             ),
         ));
     }
-    Ok(hex_lower(&hasher.finalize()))
+    Ok((hex_lower(&hasher.finalize()), bytes_read))
 }
 
 fn hex_lower(bytes: &[u8]) -> String {
@@ -1501,6 +1593,93 @@ mod size_cap_tests {
 }
 
 #[cfg(test)]
+mod cumulative_reconciliation_tests {
+    //! Regression coverage for F17 Fix4 (142.018-T round-9 review):
+    //! `resolve_and_open` must charge its cumulative byte budget with the
+    //! bytes actually observed by `file_digest`, not an earlier
+    //! `metadata.len()` estimate, and must bound each entry's read by
+    //! whatever cumulative budget actually remains rather than only by the
+    //! flat per-artifact cap.
+
+    use super::{ActivationError, Path, effective_read_cap, reconcile_cumulative_bytes};
+
+    #[test]
+    fn effective_cap_is_the_per_artifact_cap_when_ample_budget_remains() {
+        assert_eq!(effective_read_cap(100, 0, 1_000), 100);
+    }
+
+    #[test]
+    fn effective_cap_shrinks_to_the_remaining_cumulative_budget() {
+        // Only 30 bytes remain of a 100-byte total budget, well under the
+        // 100-byte per-artifact cap, so the effective cap must reflect the
+        // smaller remaining budget instead.
+        assert_eq!(effective_read_cap(100, 70, 100), 30);
+    }
+
+    #[test]
+    fn effective_cap_is_zero_once_the_cumulative_budget_is_exhausted() {
+        assert_eq!(effective_read_cap(100, 100, 100), 0);
+    }
+
+    #[test]
+    fn reconciliation_charges_the_actual_bytes_read_not_a_stale_estimate() {
+        let mut cumulative_bytes: u64 = 10;
+
+        reconcile_cumulative_bytes(
+            &mut cumulative_bytes,
+            5,
+            1_000,
+            Path::new("gen-a/first.bin"),
+        )
+        .expect("charging bytes well under the total cap must succeed");
+
+        assert_eq!(
+            cumulative_bytes, 15,
+            "cumulative_bytes must reflect the actual bytes read, not a metadata estimate"
+        );
+    }
+
+    #[test]
+    fn reconciliation_rejects_a_total_that_exceeds_the_cap_after_reading() {
+        let mut cumulative_bytes: u64 = 95;
+
+        let error = reconcile_cumulative_bytes(
+            &mut cumulative_bytes,
+            10,
+            100,
+            Path::new("gen-a/second.bin"),
+        )
+        .expect_err("bytes actually read pushing the total past the cap must be rejected");
+
+        assert!(matches!(
+            error,
+            ActivationError::ManifestFieldOutOfBounds { .. }
+        ));
+        // A rejected reconciliation must not mutate the running total.
+        assert_eq!(cumulative_bytes, 95);
+    }
+
+    #[test]
+    fn reconciliation_rejects_on_overflow_rather_than_wrapping() {
+        let mut cumulative_bytes: u64 = u64::MAX;
+
+        let error = reconcile_cumulative_bytes(
+            &mut cumulative_bytes,
+            1,
+            u64::MAX,
+            Path::new("gen-a/third.bin"),
+        )
+        .expect_err("an overflowing add must be rejected rather than silently wrapping");
+
+        assert!(matches!(
+            error,
+            ActivationError::ManifestFieldOutOfBounds { .. }
+        ));
+        assert_eq!(cumulative_bytes, u64::MAX);
+    }
+}
+
+#[cfg(test)]
 mod bounded_manifest_read_tests {
     //! Regression coverage for F17 Fix2b (142.018-T round-6 review):
     //! `read_manifest_bytes_bounded` must reject a manifest exceeding
@@ -1570,10 +1749,15 @@ mod bounded_digest_read_tests {
         let path = tempdir.path().join("artifact.bin");
         std::fs::write(&path, b"small sealed artifact").expect("write artifact");
 
-        let digest =
+        let (digest, bytes_read) =
             file_digest(&path, 1_000).expect("a file within the cap must digest successfully");
 
         assert_eq!(digest.len(), 64, "SHA-256 hex digest must be 64 characters");
+        assert_eq!(
+            bytes_read,
+            u64::try_from(b"small sealed artifact".len()).unwrap_or(u64::MAX),
+            "bytes_read must reflect the actual bytes streamed through the hasher"
+        );
     }
 
     #[test]
