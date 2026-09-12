@@ -834,6 +834,71 @@ stat). Both pass C1 — fixed directly, no deferral needed.
   new `cumulative_reconciliation_tests`)
 * `cargo test --lib db::cozo_backend::` — 41/41 passed (includes the 2 new
   `ExistingDbLocation` cap tests)
+* Full regression sweep unchanged/green: `integration_generation_activation` (28/28),
+  `integration_generation_db_open` (9/9), `integration_read_server_startup_activation` (7/7),
+  `integration_request_entry_activation` (12/12), `unit_generation_context` (4/4)
+* Committed `8967c252`, pushed. Appended this Round 9 section; committed `c60af408`, pushed.
+* CI green at `c60af408`: `build` PASS 6m14s, `start-launcher-windows` PASS 2m10s. Round-9
+  threads (`PRRT_kwDORJEduc6hrAan` ExistingDbLocation cap, `PRRT_kwDORJEduc6hrAbG` cumulative
+  accounting) replied to citing `8967c252` and resolved via GraphQL `resolveReviewThread`.
+
+## Round 10 — Copilot review at HEAD `c60af408`, one new finding
+
+**Finding** (`src/tools/mod.rs:88`, `enforce_read_server_dispatch`, F21 dispatch gate,
+142.030-T): a managed-mode `ReadRequestContext` is `Some`, so it passes this read-server gate
+even though `generation()` is `None`. A caller that reaches shared dispatch without the F20
+entry seam could therefore read mutable managed state instead of a pinned generation. Copilot's
+suggested remediation: treat both a missing context and a context without generation provenance
+as `GenerationNotYetActivated`.
+
+**P-021 C1 assessment**: this is the F21 read-server dispatch gate, part of the same
+plan-unit family (F16 mode-agnostic context / F19 capability registry / F20 request entry / F21
+dispatch gate) explicitly owned by 138-S's "generation activation, request context, startup
+gate and request entry" scope, with its own dedicated contract test
+(`tests/contract/read_server_dispatch_refusal_test.rs`, task 142.030-T, one of the 14 manifest
+items). The fix completes that gate's own documented contract ("assert dispatch received a
+context this request can actually read a generation through") rather than expanding into new
+territory. **Passes C1** — fixed directly, not deferred.
+
+**Investigation**: confirmed via grep that `enforce_read_server_dispatch` currently has zero
+production callers (only exercised by its own contract test) and the real F20 admission path
+(`ReadServerStartupGate`/`admit_read` in `src/daemon/request_entry.rs`) only ever constructs a
+context via `ReadRequestContext::from_generation` (never `from_managed_state`), so the gap is
+latent rather than actively exploitable through today's wiring. It is nonetheless a real
+incompleteness in the gate's own contract: `ReadRequestContext` is mode-agnostic by design (F16),
+so a managed-mode value is a legitimate input to this function, and the function's job is
+specifically to ensure a read-server never serves a read against anything but a pinned
+generation. Checking only `context.is_none()` does not enforce that.
+
+**Fix** (`src/tools/mod.rs`): changed the check from `context.is_none()` to
+`!context.is_some_and(|context| context.generation().is_some())`, refusing with
+`ActivationError::GenerationNotYetActivated` whenever no pinned generation is present, whether
+because no context was supplied at all or because the supplied context is managed-mode. Expanded
+the function's doc comment to explain why a managed-mode context is a legitimate but incorrect
+input for this gate.
+
+**Test** (`tests/contract/read_server_dispatch_refusal_test.rs`): added
+`dispatch_refuses_a_managed_mode_context_even_though_it_is_supplied`, building a managed-mode
+context via `AppState::with_mode(DaemonMode::Managed, ...)` + `state.set_workspace(...)` +
+`ReadRequestContext::from_managed_state(&state)` (mirroring the existing pattern in
+`tests/unit/read_request_context_test.rs`), then asserting `enforce_read_server_dispatch` refuses
+it with the typed `GenerationNotYetActivated` F38 code.
+
+**Verification**:
+* `cargo check --all-targets`: PASS
+* `cargo fmt --all` / `cargo clippy --all-targets -- -D warnings -D clippy::pedantic`: PASS
+* `cargo test --test contract_read_server_dispatch_refusal` — 6/6 passed (5 pre-existing + 1 new)
+* `cargo test --test unit_read_request_context --test integration_request_entry_activation` —
+  6/6 and 12/12 passed, unaffected
+* Full suite (`cargo test --all-targets --no-fail-fast`): 267 test binaries green. Two
+  pre-existing, unrelated failures observed and independently confirmed via `git stash` to
+  reproduce identically without this round's changes: (1)
+  `integration_release_archive_smoke_workflow::archive_verifier_runs_the_unpacked_native_binary`
+  — a local-environment-only native archive smoke test unrelated to activation/dispatch code;
+  (2) `integration_backlog_hydration::backlog_index_100_items_under_5_seconds` — a timing-budget
+  flake (5.32s vs 5s budget under concurrent local test load), confirmed passing in isolation
+  (4.34s) on a clean re-run. Neither touches this shipment's owned surfaces.
+* Committed `7c9abca9`, pushed. CI/Copilot review poll at this HEAD is the next step.
 * Broader regression sweep, all green: `integration_generation_activation` (28/28),
   `integration_generation_db_open` (9/9), `integration_read_server_startup_activation` (7/7),
   `integration_request_entry_activation` (12/12), `unit_generation_context` (4/4) — 60 tests
