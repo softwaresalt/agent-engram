@@ -9,7 +9,8 @@ source_refs:
   feature: 142-F
   prs: [394, 395]
   merge_commit: 9ab53499f60a7afe3e215d10ee8c08a4278617b6
-policies: [P-001, P-005, P-009, P-012, P-014, P-016, P-017, P-018, P-020, P-021]
+policies: [P-001, P-005, P-009, P-012, P-013, P-014, P-016, P-017, P-018, P-019, P-020, P-021]
+revision: 5
 surfaces:
   - .github/policies/workflow-policies.md
   - .github/agents/_orchestrator.agent.md
@@ -311,11 +312,13 @@ Rationale:
 3. **Shared invariant.** Both must respect the §3.3 evidence-race rule — defect 2
    directly, and defect 1 because a dark-continuation auto-route must not write
    HEAD-pinned evidence into a commit either.
-4. **Near-identical domain and verification surface.** Nine of the ten tasks are
-   documentation-domain edits to `.github/`, gated by markdownlint plus the
-   topology/quality scripts. One task (the drift checker) is script-domain. No
-   source, `crates/`, or product-test changes.
-5. **Proportionate size.** The combined work decomposes into ten tasks, each
+4. **Near-identical domain and verification surface.** Twelve of the fourteen
+   tasks are documentation-domain edits to `.github/` and to the planning
+   artifacts, gated by markdownlint plus the topology/quality scripts. One task
+   (the drift checker) is script-domain; one (the parity gate) is a
+   verification-only precheck. No source, `crates/`, or product-test changes.
+5. **Proportionate size.** The combined work decomposes into fourteen tasks
+   (eleven at revision 4, plus T12/T13/T14 added in revision 5), each
    comfortably inside the 2-hour rule.
 
 The operator's conditional instruction — *"treat these as one thematic family
@@ -328,7 +331,11 @@ Intra-feature dependency edges still encode the required ordering (§5).
 **In scope:** `.github/policies/workflow-policies.md` (P-017 amendment),
 `.github/agents/_orchestrator.agent.md`, `_ship.agent.md`, `_stage.agent.md`,
 `.github/instructions/backlogit.instructions.md`, a consistency-verification
-surface, and a compound learning.
+surface, and a compound learning. *(Revision 5 adds, within the same surfaces:
+the dark-run activation record store definition — an untracked
+`.autoharness/dark-run/` runtime store plus its `.gitignore` entry — the
+closure-locator format carried in the PR body, and a task↔plan acceptance
+parity gate over the planning artifacts.)*
 
 **Out of scope (explicit):** any change to backlogit itself (B1); any change to
 `src/`, `crates/`, or `tests/`; shipments `140-S`, `141-S`, `142-S` and feature
@@ -357,6 +364,44 @@ settled rule.
 | D6 | Evidence-race avoidance | HEAD-pinned evidence in PR metadata; point-in-time wording in commits |
 | D7 | Grouping | One covering feature; intra-feature dependency edges |
 
+### 6.1 Revision-5 decisions (from the independent full-plan review of revision 4)
+
+The independent review returned **FAIL** on revision 4 with thirteen blocking
+findings. Six of them could not be resolved by wording alone — each required a
+design choice that had never been made. Those choices are recorded here so the
+plan states *what* and this document states *why*.
+
+| # | Decision | Options weighed | Outcome and rationale |
+|---|---|---|---|
+| D8 | **Where the dark-run activation record lives** (R3/H31) | (a) inside the checkpoint itself; (b) a tracked file under `.backlogit/`; (c) an untracked workspace file under `.autoharness/`; (d) environment variables only | **(c)** — `.autoharness/dark-run/activation.json` plus an append-only `history.jsonl`, untracked. (a) is disqualified outright: reading the expected lineage from the candidate makes `C-ATTRIB` **self-certifying**, which is not a weaker check but *no* check. (b) reintroduces defect 2's own root cause — run-state in git, mutating on a branch, riding merges. (d) does not survive a restart, which is the exact case the store exists for. (c) is checkout-independent, survives restarts, and follows the established `.gitignore` precedent for `.autoharness/backups/` and `.autoharness/staging/`. Cost accepted: the store is invisible to a *fresh clone*, so a continuation cannot span a re-clone — correct behaviour, since a re-clone is a new session. |
+| D9 | **The durable last-mile locator surface** (R7/H35) | (a) the resolution commit message; (b) a tracked file on the branch; (c) the PR body; (d) an append-only backlog metadata block | **(c) primary, (d) fallback.** (a) is impossible — a commit cannot contain its own SHA. (b) is not discoverable from a fresh checkout, which was the whole requirement. (c) is non-self-referential, survives a fresh checkout, is queryable via `gh pr list --state all` with **no** local clone state, and is writable *before* the commits it describes exist — which is what makes the three-phase publication possible and leaves the checkpoint-free window covered. (d) is named as the fallback for a future workspace with no PR surface. |
+| D10 | **`C-OWNEREXCL` as an invariant rather than an evaluated condition** (R11/H39) | (a) keep it as the eighth evaluated conjunct; (b) reclassify it as an asserted invariant; (c) delete it | **(b)** — but the predicate keeps its **arity of eight**, because renumbering the conditions is precisely the cross-document drift hazard H6 accepted as a risk. (a) was untenable: the condition had no observable false input, so its scenario row (S19) asserted telemetry that could never be emitted — a coverage claim that would never be exercised. (c) was rejected because the property is real and load-bearing. As an invariant it is *asserted* at the routing boundary and a violation is a **P-001 halt with a P-005 record**, which is strictly stronger than a routine decline. |
+| D11 | **Task and explicit/mixed backlog selections: normalize or declare unsupported** (R4/R-P2a) | (a) mark them unsupported for auto-continuation; (b) normalize them into the typed cursor model | **(b)** — P-017 already admits task IDs and explicit/mixed selections as legitimate scope shapes, so (a) would have left the feature inert for a scope shape the policy blesses, and silent inertness is how a safety feature becomes a dead letter. Normalization is bounded: `SCOPE_MATCH_RULES` grows from four shapes to six, and `CURSOR_TYPING_RULES` supplies typed `{kind,id}` refs with ancestry validation. The safety property is preserved *because* an identifier with no cursor counterpart **fails** rather than being ignored. |
+| D12 | **Hook wiring: automatic or opt-in** (R-P2c, Scope Auditor ADVISORY) | (a) install hooks automatically; (b) opt-in wiring via `core.hooksPath`; (c) no hooks, CI only | **(b)** — the repository's existing convention is explicit: `scripts/pre-push-quality-gates.ps1` documents that "the harness never silently overwrites your `.git/hooks`". (a) would violate that convention and mutate an operator's local git configuration without consent. (c) was rejected because the drift this shipment fixes is a *pre-merge* authoring hazard and CI-only feedback arrives after the divergence is already published. This directly answers the Scope Auditor's permanence concern: the durable artifact is the checker, which T11 asserts against the live documents; the hook is merely one optional way to invoke it. |
+| D13 | **Generated-surface authority: freeze or detect** (R-P2f, A-7) | (a) add `.github/` outputs to `harness-manifest.yaml: preserved_artifacts`; (b) detect drift and propagate upstream later | **(b) — detect, don't freeze.** (a) is superficially attractive because it prevents a reinstall from overwriting these amendments, but it also masks *legitimate* upstream improvements to the same files, permanently and silently. That trades a visible, recoverable loss for an invisible, compounding one. (b) keeps the drift checker as the detector, records the exposure as residual risk RR-3, and defers upstream template propagation as an explicit out-of-scope follow-up. The upstream templates live outside this repository, so editing them is outside both this plan's scope and Stage's role boundary. |
+
+### 6.2 Residual risks carried, not closed
+
+Recorded in full in the plan's `## Residual risks` section; summarized here
+because they are decisions to *accept* rather than to *fix*.
+
+* **RR-1 — the predicate is prose evaluated by an LLM.** The drift checker
+  proves the eight conditions are *stated identically* across the governed
+  documents. It cannot prove they are *evaluated correctly* at runtime.
+  Machine-checkable fixtures are necessary but **not sufficient**; this is the
+  single largest residual exposure in the design and is stated plainly rather
+  than papered over. *(Review item R-P2d / A-6.)*
+* **RR-2 — residual TOCTOU window.** `OWNER_SIDE_REVALIDATION` bounds but does
+  not eliminate the gap between the owner's final check and its first mutation.
+  Accepted: the window is a single agent step, and a lost race yields a
+  re-resumable state, not a corrupted one.
+* **RR-3 — generated-surface drift.** A future merge-install may overwrite the
+  `.github/` amendments; the checker detects it, upstream propagation is
+  deferred.
+* **RR-4 — the activation record is machine-local.** A continuation cannot span
+  a different working tree or a fresh clone. Accepted as correct behaviour; the
+  failure mode is a decline to the operator path, which is the safe direction.
+
 ## 7. Definition of done
 
 * P-017 authorizes the bounded auto-route and enumerates preserved fail-closed cases.
@@ -364,18 +409,50 @@ settled rule.
   (Plan hardening raised the predicate from the seven conditions enumerated by
   the operator to **eight named conditions** — see the hardening document H1/H2
   and H9–H11 — because scope membership without cursor equality, and activation
-  without provable session attribution, would both auto-resume stale work.)
+  without provable session attribution, would both auto-resume stale work.
+  Revision 5 keeps the arity at eight and instead *types* the conditions as
+  GUARD / EVALUATED / INVARIANT — H39/D10.)
+* A concrete, checkout-independent **activation record store** exists, with a
+  declared schema, single writer, atomic write, lifecycle and restart semantics;
+  the expected lineage is read **only** from it, never from the candidate
+  checkpoint or its `resume_hint`. *(H31/D8.)*
+* Cursor comparison is defined for **every** scope shape P-017 admits, including
+  mixed feature+shipment+task checkpoints; a populated identifier with no cursor
+  counterpart **fails**. *(H32/D11.)*
+* Every owner-side and overlay prerequisite accepts exactly two things: explicit
+  operator confirmation, **or** a verified Orchestrator continuation handoff
+  carrying evidence — with owner exclusivity and every fail-closed fallback
+  preserved. *(H33.)*
+* The owner independently **re-validates** mutable state immediately before
+  restore; the handoff is never treated as an authenticated capability.
+  *(H40.)*
 * Ship resolves **all** session and compensating checkpoints before the closure
   PR's final reviewed HEAD — so every resolution rides the same merge and none
-  is orphaned — records the PR-body `Reviewed HEAD` **before** re-running the
+  is orphaned — **re-runs the actual local review** at that final HEAD, records
+  the PR-body `Reviewed HEAD` from that fresh review **before** re-running the
   full current-HEAD gate set, obtains approval after that gate, and asserts both
-  at merge and at startup that the resolutions reached `main`.
+  at merge and at startup that the resolutions reached the correct target.
+  *(H38.)*
+* Orphan detection classifies **live PR state first** and picks its ancestry
+  target accordingly — open PRs are verified against the fetched PR head, not
+  `origin/main`. *(H36.)*
 * A last-mile recovery protocol covers the checkpoint-free window between the
-  final resolution and merge, using a durable shipment→PR locator and live PR
-  state rather than a checkpoint.
+  final resolution and merge, using a durable, non-self-referential
+  shipment→PR locator and live PR state rather than a checkpoint; discovery is
+  **status-independent** so archived shipments are reachable, and it is entered
+  from a zero-checkpoint Orchestrator startup **before** queue selection.
+  *(H35/H37.)*
+* Recovery conveys **no** merge authority: a complete locator, live-verified
+  approval, the full current-HEAD gate set, and `CONTINUATION_AUTHORITY_ONLY`
+  are all required, or the run halts. *(H41.)*
 * The predicate's mis-evaluation directionality is stated wherever the safety
   claim appears: false negatives fail closed; false positives are the principal
   risk and carry explicit protections and tests.
 * The evidence-race rule is durably stated where PR evidence is authored.
-* A consistency check exists so the governed documents cannot silently diverge.
+* A consistency check exists so the governed documents cannot silently diverge,
+  and a **task↔plan acceptance parity gate** runs first so the executable cards
+  can never lag the canonical plan. *(H30.)*
+* Revalidation is **phase-aware**, so a Stage continuation with no PR is a
+  supported success path rather than an unsatisfiable precondition. *(H34.)*
 * A compound learning captures both root causes.
+

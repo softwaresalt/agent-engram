@@ -2,7 +2,13 @@
 doc_type: session-memory
 agent: stage
 date: 2026-09-13
-status: complete
+status: in-progress
+revision: 5
+plan_revision: 5
+plan_status: awaiting-independent-review
+review_verdict: FAIL
+review_verdict_revision: 4
+harvest_authorized: false
 shipment: 143-S
 feature: 143-F
 stash_ids: [A1D95672, 4EF24729]
@@ -14,10 +20,19 @@ stash_ids: [A1D95672, 4EF24729]
 
 Staged a durable workflow correction for two defects at opposite ends of the
 checkpoint lifecycle. Produced a deliberation artifact, a risk-hardened
-implementation plan (revision 3, review verdict PASS), a covering feature with
-ten tasks, thirteen dependency edges, and a queued shipment `143-S` ready for
-Ship. No source, template, or agent file was modified; no branch or worktree was
-created.
+implementation plan (**revision 5**, hardening H1–H41), a covering feature with
+**fourteen tasks** and **eighteen dependency edges**, and shipment `143-S`.
+
+**Gate state: NOT harvestable.** The fresh independent full-plan review of
+revision 4 — the outstanding escalation blocker 8 — **was performed and returned
+FAIL** with thirteen blocking P1 findings. Revision 5 remediates all thirteen and
+records the P2/advisory dispositions, but **claims no PASS**. `143-F` and
+`143-S` remain **queued and unclaimed** until a further fresh independent
+full-plan review of revision 5 returns PASS.
+
+No source, template, agent, or script file was modified in this session; no
+branch or worktree was created. Only Stage-owned planning, backlog,
+deliberation, hardening, and memory artifacts were amended.
 
 ## Defects staged
 
@@ -157,27 +172,103 @@ withdrawal of the self-certified exception). **Blocker 8 remains open**: a fresh
 **independent** full-plan review of revision 4 must return PASS before harvest
 is re-authorized. Revision 3's PASS is withdrawn.
 
+## Revision 5 — the independent full-plan review returned FAIL
+
+Escalation blocker 8 is **discharged as a process obligation**: the required
+fresh independent full-plan review of revision 4 was performed, by a seven-persona
+panel (Constitution, Rust/feasibility, Scope Boundary Auditor, Learnings,
+Architecture, Agent-Native Parity, Security). **Its verdict was FAIL.**
+Constitution, Agent-Native Parity, Security and Rust returned FAIL; Architecture
+returned PASS/ADVISORY on the core routing design while *independently* finding
+the undefined activation and locator persistence; Scope and Learnings returned
+ADVISORY. Thirteen blocking P1 findings (cited as R1–R13) plus nine P2/advisory
+items.
+
+The single most consequential finding was **R2**: the executable task cards had
+drifted behind the canonical plan. Revision 4 added the false-positive
+directionality rules, the pre-route re-evaluation requirement and the
+fresh-checkout discoverability requirement to plan *prose*, but `143.001-T`,
+`143.002-T` and `143.007-T` still carried revision-3 acceptance criteria. An
+agent executing the shipment reads the **cards**, so the weaker contract would
+have been implemented and would have passed its own acceptance check. This is
+the drift failure class the shipment exists to fix, recurring inside the
+shipment's own artifacts. The structural answer is the new **T14 parity gate**
+plus the plan's task↔plan parity matrix, not another prose fix.
+
+Six findings required design decisions that had never been made, now recorded as
+deliberation D8–D13:
+
+* **D8 / R3 — activation record store.** `DARK_MODE_ACTIVE` and
+  `session_lineage_id` were load-bearing with no defined home. Without an
+  independent store the expected lineage can only be read back from the
+  candidate checkpoint, making `C-ATTRIB` **self-certifying**. Now an untracked,
+  checkout-independent `.autoharness/dark-run/` store with schema, single
+  writer, flush-before-rename atomicity, ACTIVE/HALTED/COMPLETE lifecycle and
+  restart semantics (new task `143.012-T`).
+* **D9 / R7 — closure locator surface.** Revision 4 required a commit to record
+  its own SHA (impossible) with a branch-only fallback (not fresh-checkout
+  discoverable). Now a three-phase **PR-body** locator, published at
+  `RESOLUTION_PENDING` *before* the first resolution commit.
+* **D10 / R11 — `C-OWNEREXCL` is an invariant.** It had no observable false
+  input, so its scenario row asserted telemetry that could never be emitted.
+  Reclassified as an asserted invariant whose violation is a **P-001 halt** —
+  strictly stronger than a decline. Predicate arity stays **eight**; renumbering
+  is itself the H6 drift hazard.
+* **D11 / R4 — normalize task and explicit/mixed scopes** rather than declaring
+  them unsupported. P-017 already admits them, so declaring them unsupported
+  would leave the feature silently inert for blessed scope shapes.
+* **D12 / R-P2c — opt-in hook wiring**, matching the repository's existing
+  `core.hooksPath` convention; the harness never silently overwrites
+  `.git/hooks`.
+* **D13 / R-P2f — detect, don't freeze** for generated `.github/` surfaces.
+  Adding them to `preserved_artifacts` would mask legitimate upstream
+  improvements permanently and silently; the drift checker plus residual risk
+  RR-3 are the control, and upstream propagation is a deferred out-of-scope
+  follow-up.
+
+Two findings closed gaps that had the *appearance* of a fix without the
+substance: **R10** (re-pointing a stale review verdict at a new HEAD is a false
+attestation — the review must actually be re-run) and **R12** (revision 4 closed
+the TOCTOU window before *routing*, leaving the route→owner-restore window open;
+now both Stage and Ship re-validate immediately before restore). **R8** and
+**R9** together made the recovery procedure able to reach the incident that
+motivated it: 139-S is an **archived** shipment, and discovery had been
+status-filtered with no Orchestrator entry point at all.
+
+**Residual risk RR-1 is stated plainly rather than papered over**: the predicate
+is prose evaluated by an LLM. The drift checker proves the eight conditions are
+*stated* identically; it cannot prove they are *evaluated* correctly. Fixtures
+are necessary but not sufficient.
+
 ## Traceability
 
-* Deliberation: `docs/decisions/2026-09-13-checkpoint-lifecycle-continuity-deliberation.md`
-* Plan (revision 4; revision-3 PASS withdrawn, awaiting fresh independent review):
+* Deliberation (D1–D13): `docs/decisions/2026-09-13-checkpoint-lifecycle-continuity-deliberation.md`
+* Plan (**revision 5**; revision-3 PASS withdrawn, revision-4 independent review
+  FAILED, awaiting a fresh independent review of revision 5):
   `docs/exec-plans/2026-09-13-checkpoint-lifecycle-continuity-plan.md`
-* Hardening (H1–H28): `docs/exec-plans/2026-09-13-checkpoint-lifecycle-continuity-hardening.md`
+  — includes a `## Constitution Check` (all eleven principles) and a
+  `## P-013 traceability` table added in revision 5 per finding R1.
+* Hardening (**H1–H41**): `docs/exec-plans/2026-09-13-checkpoint-lifecycle-continuity-hardening.md`
 * Ship-owned residual-risk record consulted for P-021 C5/C6 reconciliation:
   `docs/memory/2026-09-13/139-s-checkpoint-resolution-remediation.md`
 
 ## Next step
 
-**`143-S` is NOT yet claimable.** Escalation blocker 8 (fresh independent
-full-plan review of revision 4) is the outstanding gate; `143-F` and `143-S`
-remain queued and unclaimed until it returns PASS. Once it does, Ship claims
-`143-S` and executes the dependency graph recorded in the plan — note that the
-graph changed in revision 4: `143.009-T` is now **unblocked** (drift-checker
-harness and fixtures) and the new `143.011-T` carries the live-document
-assertion dependent on `143.001-T`–`143.004-T` and `143.009-T`, with
-`143.010-T` re-pointed from `143.009-T` to `143.011-T`.
+**`143-S` is NOT claimable.** A fresh **independent** full-plan review of
+**revision 5** is the outstanding gate; `143-F` and `143-S` remain queued and
+unclaimed until it returns PASS. Revision 5 claims remediation only.
+
+Once it passes, Ship claims `143-S` and executes the dependency graph recorded
+in the plan. The graph as of revision 5: **fourteen tasks, eighteen edges**, four
+roots — `143.005-T`, `143.009-T`, `143.012-T`, `143.014-T`. `143.014-T` (the
+task↔plan parity gate) is the **designated first task by instruction** and
+deliberately carries **no outgoing edges**: adding edges from it to the roots
+would re-block `143.009-T`'s test-first red phase, re-introducing the H26 defect.
+New in revision 5: `143.012-T` precedes `143.001-T`; `143.013-T` depends on
+`143.002-T` and `143.005-T` and feeds `143.011-T`.
 
 No cross-shipment dependency edges were created: adding a `blocks` edge would
 have modified `140-S`/`141-S`/`142-S`, which the operator forbade, and the
-shipment touches only `.github/` documentation and one script — zero overlap with
-those shipments' Rust source surfaces — so it is independently orderable.
+shipment touches only `.github/` documentation, `.gitignore`, and one script pair
+— zero overlap with those shipments' Rust source surfaces — so it is
+independently orderable.

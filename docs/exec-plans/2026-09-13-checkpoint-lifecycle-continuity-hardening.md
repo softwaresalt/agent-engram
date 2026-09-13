@@ -2,9 +2,10 @@
 doc_type: exec-plan-hardening
 date: 2026-09-13
 status: accepted
+revision: 5
 plan_document: docs/exec-plans/2026-09-13-checkpoint-lifecycle-continuity-plan.md
 source_document: docs/decisions/2026-09-13-checkpoint-lifecycle-continuity-deliberation.md
-policies: [P-001, P-006, P-014, P-015, P-016, P-017, P-018]
+policies: [P-001, P-006, P-013, P-014, P-015, P-016, P-017, P-018, P-019]
 ---
 
 # Checkpoint Lifecycle Continuity — Plan Hardening
@@ -16,6 +17,8 @@ silently weakened", which is the most consequential class in this harness.
 
 Findings are ranked by severity. **H1–H4 are blocking** and are folded into the
 task acceptance criteria. H5–H8 are accepted risks with stated mitigations.
+H9–H22 were added in rounds 2–3, H23–H28 in round 4 (the P-013.6 escalation),
+and **H29–H41 in round 5** (the independent full-plan review of revision 4).
 
 ## H1 (BLOCKING) — Scope membership without cursor equality auto-resumes stale in-scope work
 
@@ -518,16 +521,260 @@ crash after gates/approval but before merge, lost merge response, PR closed
 without merge, and the fully-successful path in which no post-merge resolution
 step exists to orphan. *(Escalation blocker 5.)*
 
+## Round-5 findings (from the independent full-plan review of revision 4)
+
+Seven independent reviewer personas examined revision 4 in full. Constitution,
+Agent-Native Parity, Security and Rust/feasibility returned **FAIL**;
+Architecture returned PASS/ADVISORY on the core design while independently
+finding the undefined activation and locator persistence; Scope Boundary Auditor
+and Learnings returned **ADVISORY**. Thirteen blocking findings were issued
+(cited in the plan as R1–R13). H29–H41 record them as hardening items.
+
+### H29 (BLOCKING, accepted in revision 5) — Machine-readable status contradicted the body
+
+**Risk.** The plan's frontmatter still said `revision: 3` / `status: reviewed`
+while the body said revision 4 and "escalation blocked". Every automated or
+agentic consumer reads the frontmatter, so the machine-readable record asserted
+a *reviewed* plan that had in fact had its PASS withdrawn. The session memory
+carried the same inversion. A harvest tool acting on frontmatter alone would
+have been authorized by a stale field. *(R1.)*
+
+**Mitigation.** Frontmatter is declared the single machine-readable source of
+truth and now carries `revision`, `status`, `review_verdict`,
+`review_verdict_revision`, `review_round` and `harvest_authorized` as explicit
+fields, restated in a "Machine-readable status" paragraph at the top of the
+body. `harvest_authorized: false` is the field a consumer must read. A
+`## Constitution Check` and a `## P-013 traceability` section were added, and the
+session memory frontmatter and Outcome were rewritten to match.
+
+### H30 (BLOCKING, accepted in revision 5) — Executable task cards lagged the canonical plan
+
+**Risk.** This is the **most consequential** round-5 finding, because it is the
+failure mode the whole shipment exists to prevent, occurring inside the
+shipment's own artifacts. Revision 4 added the false-positive directionality
+rules, the immediate pre-route re-evaluation requirement and the fresh-checkout
+discoverability requirement to the plan *prose*, but 143.001-T, 143.002-T and
+143.007-T — the cards an executing agent actually reads — still carried
+revision-3 acceptance criteria. An agent executing the shipment would have
+implemented the weaker contract and passed its own acceptance check. *(R2.)*
+
+**Mitigation.** The affected criteria were rewritten into the cards verbatim
+from the plan. More durably, a **`## Task↔plan acceptance parity matrix`** was
+added to the plan and a new task **T14** was created to verify it as the
+**designated first task** of the shipment: a MISMATCH halts before any
+implementation begins. T14 is deliberately given no outgoing dependency edges so
+that it cannot re-block T9's test-first red phase (the H26 defect).
+
+### H31 (BLOCKING, accepted in revision 5) — Activation-record storage was undefined
+
+**Risk.** `DARK_MODE_ACTIVE` and `session_lineage_id` were load-bearing for two
+of the eight conditions, yet nothing said where they lived, who wrote them, how
+they survived a restart, or how a checkout-independent reader found them. A
+lineage value with no independent store can only be read back from the candidate
+checkpoint itself — which makes `C-ATTRIB` **self-certifying**: any checkpoint
+claiming a lineage would match its own claim. *(R3.)*
+
+**Mitigation.** New `ACTIVATION_RECORD_STORE` canonical section and new task
+**T12**. The store is workspace-backed, checkout-independent and untracked, with
+a declared schema, a single writer (the Orchestrator), flush-before-rename
+atomicity (compound: `tokio-fs-file-flush-before-rename-2026-07-03`), a defined
+lookup, an ACTIVE/HALTED/COMPLETE lifecycle with inert terminal states, cleanup
+and invalidation rules, and restart semantics. The expected lineage is read
+**only** from that store — never from the candidate checkpoint or its
+`resume_hint` — and absent, unreadable, ambiguous or reused values fail
+`C-ATTRIB`. The token is a 128-bit CSPRNG value. Scenarios S46–S48.
+
+### H32 (BLOCKING, accepted in revision 5) — Cursor equality was impossible for real checkpoints
+
+**Risk.** Real checkpoints carry `feature_id` **and** `shipment_id` **and** a
+task ID simultaneously. Revision 4's `C-CURSOR` compared a scope-shaped cursor
+against an untyped identifier, so a mixed checkpoint had no defined comparison
+at all — and an identifier with no cursor counterpart had no defined treatment,
+the dangerous default being to ignore it. Ignoring a populated identifier is
+exactly how stale in-scope work gets resumed (the original H1 defect, returning
+in a new form). *(R4.)*
+
+**Mitigation.** New `CURSOR_TYPING_RULES`: identifiers are typed `{kind, id}`
+refs, equality requires both kind and id, a current-item identifier is
+**required** on both sides (never inferred), non-current populated identifiers
+must validate as live ancestors of the current item, and any populated
+identifier that is neither the current item nor a validated ancestor — or whose
+ancestry lookup fails or is ambiguous — **fails**. `SCOPE_MATCH_RULES` was
+extended from four to six shapes to cover task scope and explicit/mixed
+selections. Normalization fixtures and scenarios S49–S52.
+
+### H33 (BLOCKING, accepted in revision 5) — The auto-route exception was not propagated
+
+**Risk.** The exception was written into the Orchestrator's routing step but the
+owner-side and overlay documents still said "REQUIRE the operator to EXPLICITLY
+SELECT". A conscientious owner agent reading its own template would refuse the
+routed continuation; a less conscientious one would treat the contradiction as
+license. Either way the safety contract was ambiguous at the exact boundary
+where it matters. *(R5.)*
+
+**Mitigation.** New `CONTINUATION_HANDOFF_EVIDENCE` states the prerequisite as a
+closed two-branch disjunction — explicit operator confirmation **or** a verified
+Orchestrator continuation handoff carrying evidence — and every owner and
+overlay prerequisite clause is updated to that exact wording. Owner exclusivity,
+resolve-only-after-confirmed-resume, and the malformed / multiple / cross-scope
+/ non-dark fail-closed fallbacks are preserved unweakened and are listed in
+`PRESERVED_FAIL_CLOSED_CASES` so the drift checker can assert them.
+
+### H34 (BLOCKING, accepted in revision 5) — Revalidation was PR-shaped for a non-PR agent
+
+**Risk.** `LIVE_STATE_REFETCH_RULE` required a PR HEAD, thread and CI re-fetch
+before any auto-routed continuation. Stage frequently resumes mid-deliberation
+or mid-planning with **no PR in existence**. The rule was therefore
+unsatisfiable for its most common Stage case, and an agent facing an
+unsatisfiable precondition either halts (feature inert for Stage) or improvises
+(unbounded). *(R6.)*
+
+**Mitigation.** The rule is now **phase-aware**: backlog state, scope, ownership
+and substrate are **always** refreshed; PR HEAD, threads and CI are required
+**only** when a PR association exists or the resumed action is PR-related; an
+indeterminate phase takes the stricter branch. Scenario **S44** is an explicit
+*successful* Stage no-PR continuation, so the satisfiable path is proven, not
+merely permitted.
+
+### H35 (BLOCKING, accepted in revision 5) — The last-mile locator was self-referential
+
+**Risk.** Revision 4 required the resolution commit to record its own SHA, which
+is impossible — a commit's SHA is determined by its content. The fallback, a
+branch-only artifact, is not discoverable from a fresh checkout, which was the
+entire requirement the locator existed to satisfy. The recovery path was
+therefore undefined in practice. *(R7.)*
+
+**Mitigation.** New `CLOSURE_LOCATOR`: the durable surface is the **PR body**
+(an append-only backlog metadata block is the declared fallback), which is
+non-self-referential, survives a fresh checkout, and is queryable without any
+local clone state. Publication is three-phase — `RESOLUTION_PENDING` published
+**before** the first resolution commit so the checkpoint-free window is never
+uncovered, `RESOLUTION_PUBLISHED` with the SHAs **after** the push, and
+`RECONCILED` at closure. No commit ever records its own SHA. The locator is
+visible before the final checkpoint is resolved. Scenario S62.
+
+### H36 (BLOCKING, accepted in revision 5) — Open-PR ancestry contradicted the recovery rule
+
+**Risk.** T7's startup assertion demanded that every recorded resolution commit
+be an ancestor of `origin/main`. For an **open** PR that is naturally false —
+the branch has not merged yet. The assertion would have fired on every
+in-progress shipment, and an assertion that fires constantly on correct states
+is worse than none: it trains the operator to dismiss it, so the one true 139-S
+orphan is dismissed with the noise. *(R8.)*
+
+**Mitigation.** `LAST_MILE_RECOVERY` classifies **live PR state first** and
+selects the ancestry target from the classification: open → the fetched
+`refs/pull/<n>/head` (and reconcile; this is the normal case, not a defect);
+merged → `origin/main`; closed-unmerged, missing, or lookup-failed → halt. S25
+and S37–S43 reconciled; S53–S54 added.
+
+### H37 (BLOCKING, accepted in revision 5) — Recovery could not reach the case that motivated it
+
+**Risk.** Discovery was scoped to active shipments and had no entry point at
+all. The motivating incident — 139-S — is an **archived** shipment, so the
+recovery procedure written to prevent a recurrence of 139-S could not have found
+139-S. There was also no route by which an Orchestrator with zero checkpoints
+would ever enter the procedure. *(R9.)*
+
+**Mitigation.** Discovery is **status-independent**: unresolved locators are
+found regardless of shipment status, archived included, and `pr_role`
+disambiguates a distinct feature PR from a closure PR for the same shipment. New
+task **T13** adds a zero-checkpoint Orchestrator reconciliation route that runs
+**before** normal queue selection and conveys **no** merge authority. Scenarios
+S55–S56, S60–S61.
+
+### H38 (BLOCKING, accepted in revision 5) — Re-anchoring updated metadata, not evidence
+
+**Risk.** Revision 4 re-anchored the PR body's reviewed-HEAD SHA after the
+resolution commit but did not re-run the review itself. That converts the review
+record into a **false attestation**: the body would claim the final HEAD was
+reviewed when only the pointer had moved. *(R10.)*
+
+**Mitigation.** `RESOLUTION_ORDER` now requires the **actual local review to be
+re-run** at the final HEAD before the metadata is written: commit → push →
+re-run review → publish locator phase 2 → write `Reviewed HEAD` → run P-014 §1.9
+→ obtain approval → live re-fetch → merge. Scenario S22 updated. (Compound:
+`copilot-review-merge-gate-wait-for-head-review-2026-07-11`.)
+
+### H39 (BLOCKING, accepted in revision 5) — Unreachable scenarios gave false coverage
+
+**Risk.** S18 (backlogit enumeration failure) and S15 (schema anomaly) were
+described as occurring *before* predicate evaluation, which made the
+`DECLINED (C-SUBSTRATE)` telemetry those rows asserted unreachable. S19 asserted
+a `C-OWNEREXCL` decline for a condition stated as an invariant, which by
+definition has no observable false input. A scenario that cannot occur is not
+coverage — it is a coverage *claim* that will never be exercised. *(R11.)*
+
+**Mitigation.** New `PREDICATE_PRECEDENCE` ten-stage table places the substrate
+probe and enumeration **inside** the evaluation envelope, so their failures are
+genuine predicate outcomes with reachable telemetry. Conditions are typed GUARD
+/ EVALUATED / INVARIANT, each with an explicit observable-false-input column.
+`C-OWNEREXCL` is reclassified **INVARIANT** — asserted at the routing boundary,
+violation is a P-001 halt with a P-005 record, not a routine decline. S5, S18
+and S19 corrected.
+
+### H40 (BLOCKING, accepted in revision 5) — TOCTOU closed at the wrong end
+
+**Risk.** Revision 4 added re-evaluation immediately before *routing*, at the
+Orchestrator. The mutation window that matters is between the route decision and
+the **owner's** restore, where the cursor can advance, a second candidate can
+appear, or the activation record can be terminated. Closing the earlier window
+while leaving the later one open gives the appearance of a TOCTOU fix without
+the substance. (Compound:
+`concurrency-issues/rwlock-toctou-temporary-guard-lifetime-2026-04-23`.) *(R12.)*
+
+**Mitigation.** New `OWNER_SIDE_REVALIDATION`: Stage and Ship each
+**independently** re-evaluate mutable `C-CURSOR`, `C-ATTRIB`, `C-SOLE` and
+substrate state immediately before restore/resume, and decline without
+restoring, pruning or resolving if any has changed.
+`CONTINUATION_HANDOFF_EVIDENCE` states explicitly that the handoff **is not an
+authenticated capability** — it is a claim the owner must re-verify. Scenario
+**S45** is the route-to-owner mutation race.
+
+### H41 (BLOCKING, accepted in revision 5) — Recovery risked becoming an auto-merge path
+
+**Risk.** `LAST_MILE_RECOVERY` reconstructs merge-readiness evidence from
+durable state. Without an explicit bar, an agent that successfully reconstructed
+that evidence could read it as sufficient to merge — turning a *recovery*
+procedure into a second, unreviewed merge path that bypasses
+`CONTINUATION_AUTHORITY_ONLY`. This is the highest-severity residual risk in the
+design, because it converts a safety feature into an autonomy expansion. *(R13.)*
+
+**Mitigation.** A four-part merge-authority bar: a **complete** locator (an
+incomplete or unparseable one halts), a **live-verified** explicit approval or
+pre-authorization at the live HEAD (a stored or checkpointed approval is never
+sufficient), the full current-HEAD gate set, and `CONTINUATION_AUTHORITY_ONLY`
+restated as binding. Anything short of all four **halts**; an unmerged PR
+awaiting an operator is the correct outcome. Scenarios S57–S59.
+
+### Round-5 advisory dispositions
+
+| Ref | Persona / item | Decision |
+|---|---|---|
+| A-1 | **Scope Boundary Auditor (ADVISORY)** — permanent hooks and a permanent checker may exceed the minimal request | **Retained with rationale, and simplified.** Three rounds of prose-only review failed to catch the cross-document drift this shipment exists to fix; the checker is the only machine-checkable control. Simplifications: hook wiring is **opt-in** (matching the repository's existing `core.hooksPath` convention, where the harness never silently overwrites `.git/hooks`), the checker is a single-purpose phrase-presence scanner with no configuration surface, and T11 asserts it against the live documents so it cannot rot into dead code. |
+| A-2 | **Scope Boundary Auditor (ADVISORY)** — compound learning task | **Retained.** T10 is the mechanism by which this four-round review cycle becomes reusable knowledge; dropping it would repeat the cost. |
+| A-3 | **Learnings (ADVISORY)** — cite relevant compound guidance | **Accepted.** Nine compound learnings cited in the plan's `### Reinforcing context consulted`, each tied to the decision it informs. |
+| A-4 | **Architecture (PASS/ADVISORY)** — core design sound; activation and locator persistence undefined | **Accepted** — the two independent findings are H31 and H35 above. The PASS on the core routing design is recorded but does **not** constitute a plan-review PASS. |
+| A-5 | Drift-checker contract underspecified | **Accepted** — new `DRIFT_CHECKER_CONTRACT` with roots/args, canonical source, uniqueness, duplicate/conflict handling, missing/unreadable/encoding/newline behaviour, exit codes, independent hand-authored golden fixtures, and forbidden weakenings. Expected strings are never derived from the live documents (compound: `independence-guard-fixture-prose-false-positive-2026-08-22`). |
+| A-6 | Residual risk of a prose-driven LLM predicate | **Accepted and recorded** as RR-1: fixtures are necessary but **not sufficient**; static wording consistency does not prove runtime routing correctness. |
+| A-7 | Generated-template source of truth | **Decided: detect, don't freeze.** `.github/` outputs are authoritative in this workspace and are deliberately **not** added to `preserved_artifacts`, which would mask legitimate upstream improvements. The drift checker plus RR-3 are the control; upstream propagation is a deferred out-of-scope follow-up. |
+
 ## Gate outcome
 
-**Plan hardening: COMPLETE (revision 4).** H1–H4 and H9–H28 fold into task
-acceptance criteria and the canonical definitions; H5–H8 carry stated
-mitigations; H12 and H19 are recorded as superseded/completed by H23 and H26;
-H16 is recorded as reversed with its dissent.
+**Plan hardening: COMPLETE (revision 5).** H1–H4, H9–H15, H17–H28 and H29–H41
+fold into the task acceptance criteria and the canonical definitions; H5–H8
+carry stated mitigations; H12 and H19 are recorded as superseded/completed by
+H23 and H26; H16 is recorded as reversed with its dissent. H30 supersedes no
+prior item but is the recurrence, inside this shipment's own artifacts, of the
+drift failure class H5 accepted as a risk — the parity gate (T14) is the control
+that H5's mitigation lacked.
 
-**Revision 3's plan-review PASS is withdrawn.** The P-013.6 escalation returned
-`ESCALATION_BLOCKS`, and its blocker 8 — a **fresh independent full-plan
-review** of revision 4 — is the outstanding gate. The revision-3 same-reviewer
-confirmation pass does not satisfy it. `143-F` / `143-S` remain queued and
-unclaimed until that review returns PASS.
+**Revision 3's plan-review PASS remains withdrawn, and revision 4 FAILED the
+fresh independent full-plan review.** Escalation blocker 8 is discharged as a
+*process* obligation — the independent review was performed — but its verdict
+was **FAIL** (13 blocking P1 findings), so the substantive gate is still closed.
+Revision 5 remediates all thirteen and **claims no PASS**. A further fresh
+independent full-plan review of revision 5 is the outstanding gate. `143-F` /
+`143-S` remain queued and unclaimed until that review returns PASS.
+
 
