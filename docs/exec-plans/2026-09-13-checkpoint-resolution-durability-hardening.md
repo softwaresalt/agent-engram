@@ -3,8 +3,8 @@ doc_type: exec-plan-hardening
 date: 2026-09-13
 revision: 10
 scope: defect-2-only
-status: awaiting-review
-review_verdict: pending
+status: blocked
+review_verdict: FAIL
 review_verdict_revision: 10
 review_attempts: 5
 harvest_authorized: false

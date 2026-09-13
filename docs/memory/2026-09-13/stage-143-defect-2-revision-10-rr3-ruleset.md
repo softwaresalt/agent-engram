@@ -6,10 +6,11 @@ session: 143-defect-2-revision-10-rr3-ruleset-prerequisite
 pr: 396
 branch: chore/143-s-stage-checkpoint-lifecycle-continuity
 start_head: e7194c2b8adcc61b8fb9072ef4ca020a109f3672
-review_verdict: pending
+revision_head: 23731cba156b8aee3334d65b7ed58ff91837aa55
+review_verdict: FAIL
 review_attempts: 5
 harvest_authorized: false
-outcome: in-progress
+outcome: BLOCKED
 supersedes_status_of: docs/memory/2026-09-13/stage-143-defect-2-revision-9-round-9-review.md
 ---
 
@@ -137,3 +138,96 @@ No thread was replied to or resolved. That is deferred by operator direction.
 - `git log` without a revision argument defaults to `HEAD` — the ambient
   branch — which is the same class of defect as keying a safety predicate off
   the working tree.
+
+## Round-10 review outcome — FAIL / BLOCKED
+
+Revision 10 was pushed as `23731cba156b8aee3334d65b7ed58ff91837aa55` and reviewed
+by a fresh independent four-persona cross-model panel at that HEAD:
+
+| Persona | Model | Verdict |
+|---|---|---|
+| Correctness | `gpt-5.6-sol` (xhigh) | FAIL |
+| Constitution and policy | `claude-opus-4.8` (high) | FAIL |
+| Scope boundary and maintainability | `grok-4.6` (high) | FAIL |
+| Security and ops risk | `gemini-3.8-flash` (high) | FAIL |
+
+**Consensus: FAIL — 4 P0, 17 P1, 9 P2, 5 P3.** Circuit OPEN at attempt counter 5.
+Full findings appended verbatim to the plan as `## Plan Review — round 10`.
+
+### What revision 10 genuinely closed
+
+Recording this so round 11 does not relitigate it:
+
+* **The round-9 P0 (F-11) is closed.** All four reviewers independently confirmed
+  U8 AC2 now keys off the checkpoint's validated `context.pr`/`context.branch`, with
+  `gh pr list --head`, `git branch --show-current`, and `rev-parse --abbrev-ref`
+  prohibited as predicate inputs. The P-010 ambient-branch probe **passed 4 of 4**.
+* The Ship Step 5 structural extraction was independently re-derived and confirmed:
+  the duplicated item `7` is real, and 7b/7c do precede the second 7 and 8/9/10.
+* The zero-checkpoint S8 path is now genuinely satisfiable (round-9 F-04/F-05 closed).
+* The F-09 unit splits are real seams, not relabelling.
+* API-surface fail-closed behaviour is correct; `[]` is correctly read as *uncovered*.
+* Abandoned-ID hygiene is clean; frontmatter counts reconcile.
+
+### The four new P0s
+
+1. **Canonical Channel B and U13 install different protocols**, and U13 AC5
+   reinstates the "embedded `pr` equals the PR it was read from" rule that the
+   canonical PV-B4/PV-B6 split exists to prevent — so POST-B can never pass
+   provenance. Round-9 F-15 re-opened inside the unit created to fix it.
+2. **U13 AC6 halts on merged + `OPEN`**, which is the protocol's own happy-path
+   interval (merge succeeded, POST-B pending), not the 139-S orphan shape.
+3. **The `FETCH_HEAD` contract is unsatisfiable.** Canonical LMR, WP-3 and U11 AC9
+   use bare `FETCH_HEAD` with no destination refspec; U5 AC2, D11, D14 and V22
+   require unique retained refs. U11 cannot both install the canonical block and
+   pass V22. D14's discharge claim is consequently false.
+4. **U0's ruleset breaks the repository.** `deletion` with no bypass actors blocks
+   all merged-branch cleanup including `gh pr merge --delete-branch`, contradicting
+   Ship's own branch-management rule. `non_fast_forward` on `feat/**` and `chore/**`
+   makes every working branch append-only from first push, breaking rebase, squash,
+   and amend. The plan never enumerates these workflows and has no real rollback.
+
+### The structural judgement — the important part
+
+Two reviewers reached this independently. The load-bearing fix for Defect-2 is
+small and **is already fully specified**: resolve before merge, push, re-review at
+that HEAD, assert ancestry at merge, forbid post-merge resolution in Ship and Stage.
+
+Everything layered above it — the obligation record, Channel B B0–B7, PV-1…PV-8,
+OB-1…OB-8, WP-0…WP-7, the seven-part S8 bar on every merge, and now U0's
+repository-wide ruleset — *detects* a residual window rather than *preventing* the
+defect, and by the plan's own V17 the detection path terminates in a halt. Ten
+revisions of escalating residual-window machinery around a one-step ordering bug is
+itself the finding.
+
+**Panel recommendation to the operator** (advisory; no decision taken here):
+
+1. Keep the ordering fix, locator, merge-authority bar, and ancestry assertion.
+2. Replace the branch ruleset with an **immutable marker ref or annotated tag**
+   pushed at S4 and protected in its own namespace — same reachability property,
+   near-zero blast radius, no P-019 conflict, no admin-token requirement.
+3. Demote Channel B and the OB/PV invariant sets to an explicitly optional
+   hardening layer scoped to PRs bound to active shipments, or drop them and record
+   the residual honestly.
+
+### Do not repeat in round 11
+
+* Do not attempt a third in-place remediation of thirty findings. Two consecutive
+  bounded remediations have each closed the prior round's findings and surfaced a
+  deeper layer. The design question, not the prose, is what is failing.
+* Do not re-fix the round-9 P0 — it is closed and confirmed by four reviewers.
+* Do not invent a constitution mapping. The workspace Principles I–XI are
+  Safety-First Rust, Test-First Development, Workspace Isolation, CLI Workspace
+  Containment, Structured Observability, Single Responsibility, Destructive Command
+  Approval, Explicit Safety Modes, Git-Friendly Persistence, Agent Context
+  Efficiency, Merge Commit History Preservation. Revision 10 mapped a fabricated set.
+* P-019 states the harness never edits rulesets. Any ruleset design must reconcile
+  with it explicitly, and no agent should hold `Administration: write`.
+
+### Boundary confirmation
+
+No harvest, no shipment claim, no activation, no implementation, no merge, and
+**no GitHub settings mutation** occurred. All GitHub reads were read-only. The 18
+unresolved Copilot threads on PR #396 were used as review input and were **not**
+replied to or resolved, per instruction. No product code, workflow, installed agent,
+or task card was modified.

@@ -3,11 +3,11 @@ doc_type: exec-plan
 date: 2026-09-13
 revision: 10
 scope: defect-2-only
-status: awaiting-review
-review_verdict: pending
+status: blocked
+review_verdict: FAIL
 review_verdict_revision: 10
 review_attempts: 5
-escalation: P-013.6 fired at revision 8 (route gpt-5.6-sol/openai/xhigh). Rounds 6-9 all returned FAIL. Revision 10 is a second bounded remediation revision explicitly authorized by the operator, carrying the operator's RR-3 decision (an approval-gated GitHub branch-ruleset prerequisite), plus ONE fresh full independent review.
+escalation: P-013.6 fired at revision 8 (route gpt-5.6-sol/openai/xhigh). Rounds 6-10 all returned FAIL. Revision 10 was a second bounded remediation revision explicitly authorized by the operator, carrying the operator's RR-3 decision (an approval-gated GitHub branch-ruleset prerequisite), plus ONE fresh full independent review. Round 10 returned FAIL (4 P0, 17 P1) unanimously across four cross-model reviewers; the circuit is OPEN at attempt counter 5 and the panel recommends returning a narrower design to the operator rather than a further in-place remediation.
 harvest_authorized: false
 source_document: docs/decisions/2026-09-13-checkpoint-resolution-durability-decision.md
 supersedes: docs/exec-plans/2026-09-13-checkpoint-lifecycle-continuity-plan.md
@@ -32,8 +32,29 @@ become an unsupervised merge path, and now carries one **`ProposedAction`** unit
 
 **Machine-readable status.** The frontmatter is authoritative. `revision: 10`,
 `scope: defect-2-only`, `harvest_authorized: false`,
-`review_verdict: pending`, `review_verdict_revision: 10`, `review_attempts: 5`,
-`status: awaiting-review`, `contains_proposed_action: true`.
+`review_verdict: FAIL`, `review_verdict_revision: 10`, `review_attempts: 5`,
+`status: blocked`, `contains_proposed_action: true`.
+
+**Round-10 outcome — FAIL. This revision is BLOCKED and not harvestable.**
+Revision 10 was reviewed at HEAD `23731cba` by a fresh independent four-persona
+cross-model panel (correctness, constitution/policy, scope and maintainability,
+security and ops risk). All four returned **FAIL**: **4 P0**, **17 P1**, 9 P2,
+5 P3. The complete finding set is retained verbatim in `## Plan Review — round 10`
+at the end of this document. The round-9 P0 (F-11, the ambient-branch predicate)
+was independently confirmed **closed** by all four reviewers, and the Ship Step 5
+structural extraction was independently re-derived and confirmed accurate. But four
+new P0s were found: the canonical Channel B block and U13 install different
+protocols and U13 reinstates the discharge-rejection rule the canonical split
+exists to prevent; U13 AC6 halts on the protocol's own happy-path interval; the
+`FETCH_HEAD` versus retained-ref contract is unsatisfiable across the canonical
+block, U11, D14 and V22; and U0's `deletion` + `non_fast_forward` rules would break
+branch cleanup and rebase repository-wide for every contributor. The panel's
+recommendation — advisory to the operator, not a decision taken here — is to keep
+the ordering fix, replace the branch-ruleset prerequisite with a protected
+immutable marker ref, and demote the Channel B obligation machinery to an optional
+hardening layer, rather than attempt a third in-place remediation. **Read the
+sections below with that verdict in view: they record what revision 10 specifies,
+not what has been accepted.**
 
 **Round-9 outcome — FAIL, and what followed.** Revision 9 was reviewed by a fresh
 full independent seven-persona panel at HEAD `9b15fd43` and returned **FAIL**
@@ -2590,10 +2611,13 @@ were reviewed against, and it is **appended to, never rewritten**. Revision 8's
 own Round 8 review genuinely returned **FAIL** with three open P1s and left the
 circuit **OPEN** at attempt counter 3; that record stands unaltered below. The
 round-9 review returned **FAIL** with one P0 and fifteen P1s and is appended
-verbatim at the end of this document. Revision 10 remediates those findings under
+verbatim at the end of this document. Revision 10 remediated those findings under
 explicit operator authorization, but **no row below, and no earlier revision's
 verdict, may be cited as a harvest gate for revision 10**. Revision 10's own gate
-is a fresh independent full-plan review that has not yet returned.
+was a fresh independent four-persona cross-model full-plan review, appended at the
+end of this document as **round 10**. It returned **FAIL** with four P0s and
+seventeen P1s. The circuit is **OPEN at attempt counter 5**, and revision 10 is
+**not harvestable**.
 
 | Round | Reviewers | Verdict | Scope reviewed |
 |---|---|---|---|
@@ -2608,7 +2632,7 @@ is a fresh independent full-plan review that has not yet returned.
 | 8 | Independent Scope Boundary Auditor (`gpt-5.6-sol`, xhigh) | **FAIL** (3 P1, 5 P2) | revision 8. **Third consecutive FAIL. Review circuit OPEN — attempt counter 3.** P-013.6 escalation fired; Stage halted without harvesting. |
 | 8-escalation | P-013.6 escalation reviewer, route `gpt-5.6-sol` / `openai` / `xhigh`, against HEAD `bbb52b65` | **ESCALATION_BLOCKS** | revision 8. Reasoning-only. Produced findings A–E, remediated into revision 9 under explicit operator authorization for ONE bounded revision plus ONE fresh full review. |
 | 9 | Independent five-persona panel, cross-model | **FAIL** (1 P0, 15 P1, 11 P2, 6 P3) | revision 9. Returned **RR-3** as the blocking design question for an operator decision. Findings appended verbatim below and remediated into revision 10; the operator's RR-3 decision — an approval-gated GitHub branch-ruleset prerequisite — is implemented as **U0** + the rebuilt Channel B in **U13**. |
-| 10 | *(pending)* | *(not yet returned)* | revision 10. The **only** review that can gate revision 10's harvest. |
+| 10 | Independent four-persona panel, cross-model: Correctness (`gpt-5.6-sol`), Constitution/Policy (`claude-opus-4.8`), Scope Boundary and Maintainability (`grok-4.6`), Security and Ops Risk (`gemini-3.8-flash`) | **FAIL** (4 P0, 17 P1, 9 P2, 5 P3) — **unanimous** | revision 10, at HEAD `23731cba`. Confirmed the round-9 **P0 (F-11) genuinely closed** and the Ship Step 5 structural extraction accurate. Found four new P0s: the canonical/U13 Channel B divergence with the discharge-rejection bug reinstated; U13 AC6 halting on the protocol's own happy-path interval; an unsatisfiable `FETCH_HEAD` vs retained-ref contract; and repository-wide workflow breakage from U0's `deletion` + `non_fast_forward` rules. Panel recommended returning a narrower design — immutable marker ref instead of branch ruleset — to the operator. Findings appended verbatim below. **Circuit OPEN at attempt counter 5.** |
 
 ### Round 8 — outstanding findings (SUPERSEDED by revision 9; recorded as they stood)
 
@@ -3307,5 +3331,611 @@ was endorsed by the architecture review as correct. The mechanism built on it wa
 not sufficient. The narrowest honest position is the one now recorded: RR-3 stays
 open, RQ-7 stays unweakened, and the operator decides.
 
-<!-- plan-review-attempt: 4 -->
+## Plan Review — round 10
 
+- **Attempt**: 5
+- **Reviewed revision**: 10 (plan), 10 (hardening), 4 (decision)
+- **Reviewed HEAD**: `23731cba156b8aee3334d65b7ed58ff91837aa55`
+- **Panel**: four independent reviewers, cross-model (GPT-5.6 Sol — correctness;
+  Claude Opus 4.8 — constitution and policy; Grok 4.6 — scope boundary and
+  maintainability; Gemini 3.8 Flash — security and ops risk). Each read the plan,
+  hardening, decision, and the live agent/instruction files independently, with no
+  shared context and no access to each other's reports.
+- **Mandated probes**: Channel B with an emptied PR body; ruleset drift and bypass;
+  zero-checkpoint versus nonzero paths; P-020 ordering; the verbatim Ship Step 5
+  extraction; D14 discharge; P-010 ambient-branch independence. All seven were
+  executed. Results are recorded per probe below.
+- **Verdict**: **FAIL** — unanimous across all four reviewers.
+- **Counts**: **P0 = 4**, **P1 = 17**, P2 = 9, P3 = 5.
+- **Gate outcome**: **BLOCKED**. Not harvestable. Not mergeable.
+
+### What revision 10 did close
+
+Recording this first, because it is real and should not be relitigated in round 11.
+
+- **The round-9 P0 (F-11) is closed.** All four reviewers independently confirmed it.
+  U8 AC2 now derives merge-authority from the selected checkpoint's own validated
+  `context.pr` / `context.branch`, explicitly prohibits `gh pr list --head`,
+  `git branch --show-current`, and `git rev-parse --abbrev-ref` as safety-predicate
+  inputs, and permits ambient branch data only for logging. No ambient-branch read
+  survives anywhere as a predicate input. This probe passes cleanly.
+- **The Ship Step 5 structural extraction is confirmed accurate.** An independent
+  re-derivation from `.github/agents/_ship.agent.md` confirmed the duplicated item
+  number `7` and confirmed that items 7b/7c currently precede the second item 7 and
+  items 8/9/10. The structural claim is true.
+- **Fail-closed behaviour on the API surface is correct.** Empty effective-rules
+  response, 404, 403, rate limit, network error, schema error, and unencoded `/` all
+  halt. An empty `[]` is correctly read as *uncovered*, not as *unrestricted*.
+- **The F-09 splits are genuine seams, not relabelling.** U3→U3+U11, U4→U4+U12,
+  U9→U9+U13 each divide along a real boundary (discovery/recovery, Step 5/Step 6,
+  schema/discovery). Two reviewers confirmed this explicitly, while still finding the
+  residual units oversized — see F-09 below.
+- **Abandoned-ID hygiene is clean.** No unit, verification, or traceability row uses
+  `143-F`, `143-S`, or `143.001-T`…`143.014-T` as a live implementation target. The
+  plan remains harvestable into fresh IDs.
+- **Frontmatter counts reconcile.** `task_count: 14`, `sub_epic_count: 3`
+  (E1=5, E2=7, E3=2), `dependency_edge_count: 22` against the direct-edge list,
+  acyclic with roots U0 and U2.
+
+### P0 findings
+
+#### F-01 (P0) — U13 installs a different Channel B protocol than the canonical block, and reinstates the discharge-rejection bug the canonical block exists to prevent
+
+Found independently by three of four reviewers.
+
+The canonical `RESOLUTION_OBLIGATION_RECORD` Channel B defines B0–B7 as: B1 routes
+the *scan target* by PR state; B2 fetches the retained ref; B3 reads the tree
+including `docs/archive/closure/`; B4 walks history; B5 binds transitions; B6 proves
+ancestry. U13 AC3 installs a materially different sequence: B1 is an unconditional
+`origin/main` tree scan, B2 is the ruleset proof, B3 is the fetch, B4 is a tree read
+that **omits `docs/archive/closure/`**, B5 is history, B6 is binding. The plan header
+asserts the protocol is "not restated differently anywhere." It is.
+
+Worse, the canonical block splits provenance into PV-B4 (introduction) and PV-B6
+(discharge) precisely because a `CLOSED` transition is committed on
+`post-merge/{feature_slug}` while the record's embedded `pr` and `branch` still name
+the *implementation* PR — the plan's own rationale states that a single "embedded `pr`
+equals the PR it was read from" rule "structurally rejected every correct discharge."
+U13 AC5 reinstalls exactly that rejected rule: PV-B4 requires `pr` to equal the PR the
+record was read from, and PV-B6 requires `branch` to equal that PR's live
+`headRefName`. Under U13 as written, POST-B can never pass provenance validation.
+
+This is round-9 finding F-15 re-opened inside the unit that was created to fix it.
+Because task cards are declared exact (V6), an implementer installs U13's text, not
+the canonical text.
+
+**Remediation**: U13 AC3 and AC5 must reference the canonical block by name and
+reproduce it verbatim — including the `docs/archive/closure/` follow and the
+introduction/discharge provenance split — or the canonical block must be deleted and
+U13 made the single source. One of the two must go.
+
+#### F-02 (P0) — U13 AC6 halts on the exact state the residual-window machinery was built to handle
+
+U13 AC6 states that "an `OPEN` record whose PR has since merged is the 139-S shape and
+halts." That is wrong. The 139-S shape is a resolution commit that is **not** an
+ancestor of `main`. An `OPEN` record whose introducing commit *did* merge is the
+normal RQ-7 interval: the merge succeeded and POST-B has not yet been written. The
+canonical Channel B B1 routes merged PRs to `origin/main` for exactly this reason, and
+the canonical `LAST_MILE_RECOVERY` merged + `RESOLUTION_PUBLISHED` row says to assert
+ancestry against `origin/main` and then *continue the P-001 closure set*.
+
+U13 turns the protocol's own happy-path interval into a permanent operator halt.
+
+**Remediation**: Align U13 AC6 with canonical B1 and the LMR merged row — merged plus
+`OPEN` plus introducing commit ancestor of `origin/main` continues to POST-B; halt only
+when ancestry fails.
+
+#### F-03 (P0) — The fetch and ancestry contract is self-contradictory; V22 and U11 cannot both pass
+
+Found independently by two reviewers.
+
+The canonical `LAST_MILE_RECOVERY` step 1b uses
+`git merge-base --is-ancestor <sha> FETCH_HEAD`; the resolution-state classifier uses
+`git cat-file -e FETCH_HEAD:<file>`; WP-3 and U11 AC9 use
+`git fetch origin refs/pull/<pr>/head` with **no destination refspec**. Meanwhile U5
+AC2 forbids bare `FETCH_HEAD`, hardening D11 and the D14 discharge both claim the
+target is a unique retained ref, and V22 requires "zero occurrences of bare
+`FETCH_HEAD`" and "zero fetches without a `:refs/autoharness/scan/pr-<n>` destination."
+
+U11 is required to install the canonical block *and* to pass V22. Those outcomes are
+mutually exclusive. Three different fetch/ancestry protocols are specified across the
+canonical block, the units, the hardening document, and the verification suite.
+
+This also means **hardening D14's discharge claim is factually false**: it asserts U11
+fetches to a unique retained ref; U11 AC9 does not.
+
+**Remediation**: One fetch form and one ancestry target, everywhere. Retained refs are
+the correct choice (they are what makes the multi-candidate scan safe). Purge
+`FETCH_HEAD` from the canonical `LAST_MILE_RECOVERY` block, WP-3, the classifier, and
+U11 AC9; keep V22 as the enforcement grep.
+
+#### F-04 (P0) — U0's ruleset, as specified, breaks branch cleanup and rebase repository-wide, and the plan does not acknowledge it
+
+The ops prerequisite specifies `deletion` and `non_fast_forward` over
+`refs/heads/feat/**`, `refs/heads/chore/**`, and `refs/heads/post-merge/**`, with
+`bypass_actors: []` and `current_user_can_bypass: never`.
+
+- The `deletion` rule in a GitHub ruleset forbids **any** deletion of a matching ref,
+  merged or not. With no bypass actors, neither a human, nor Ship, nor GitHub's
+  `delete_branch_on_merge` automation can delete a merged `feat/*`, `chore/*`, or
+  `post-merge/*` branch. `gh pr merge --delete-branch` fails. Every branch ever created
+  accumulates permanently. This directly contradicts `_ship.agent.md`'s own branch
+  management rule, which deletes feature and closure branches after their PRs merge.
+- The `non_fast_forward` rule makes every in-progress working branch strictly
+  append-only from first push. Rebasing onto `main` to resolve conflicts, squashing WIP
+  commits, and `git commit --amend` followed by `--force-with-lease` are all rejected by
+  the forge. The repository's own `git-merge.instructions.md` prescribes rebase flows
+  that this rule would break.
+
+The plan treats force-push and deletion exclusively as adversarial erasure vectors. It
+never enumerates the legitimate workflows they also serve, never mitigates them, and
+its rollback statement ("the ruleset is re-configurable") is not a rollback procedure —
+rolling the ruleset back immediately trips OB-8 and halts every subsequent agent
+session.
+
+This is a finding against the *operator-selected mechanism*, not merely against its
+write-up. It is reported plainly per the directive's instruction to gate honestly.
+
+**Remediation, in order of preference**:
+
+1. **Narrow the ref scope.** The property actually needed is that the obligation
+   record's introducing commit stays reachable. That does not require immutability of
+   working branches. Pushing an immutable marker ref — `refs/autoharness/obligation/{shipment_id}`
+   or an annotated tag — at S4 and protecting *that namespace* delivers the same
+   reachability guarantee with near-zero blast radius. Working branches stay fully
+   rebaseable and deletable.
+2. If branch-level protection is retained, scope it to `post-merge/**` only (the branch
+   that carries the `CLOSED` transition), and permit bypass for repository
+   administrators and GitHub's branch-cleanup automation.
+3. Whatever is chosen, U0 must carry the exact API payload, the exact rollback payload,
+   and an explicit enumeration of the workflows it breaks, so the approving operator
+   approves the real consequence rather than an abstract requirement.
+
+### P1 findings
+
+#### F-05 (P1) — Channel B candidate selection is circular: PV-8 cannot be evaluated from API fields alone
+
+The candidate diagram applies PV-1, PV-2, PV-3 **and PV-8** "using API FIELDS ALONE"
+before any body or tree is read. But PV-8 admits a record "naming shipment X" only if
+the PR is shipment X's backlog-recorded implementation PR. The shipment name comes from
+*inside the record*, which has not been fetched yet. The GitHub pull-request API returns
+no shipment field. The prefilter as specified cannot run.
+
+Secondarily, no live backlog field is named that would carry the "backlog-recorded
+implementation PR" binding, and no unit populates one.
+
+**Remediation**: Prefilter with PV-1…PV-3 only; fetch and parse; then apply PV-8 against
+a specifically named, populated backlog field. Add the unit that populates it, or drop
+PV-8.
+
+#### F-06 (P1) — With PV-8 removed from the prefilter, the trusted candidate set becomes every PR in the repository, and OB-2/OB-8 then halt on ordinary contributor history
+
+This is the operational consequence of F-05, and it is severe enough to stand alone.
+Once PV-8 cannot prefilter, the trusted set is every same-repo open and closed-unmerged
+PR. Then:
+
+- Any open PR on a non-Ship branch (`docs/*`, `dependabot/*`, a hotfix) returns `[]`
+  from the effective-rules probe, and B2 halts under OB-8.
+- Any closed-unmerged PR whose head branch was deleted — GitHub's default behaviour —
+  hits B1's "if the branch is gone, that is OB-2, not clean" and halts.
+
+A single abandoned contributor PR permanently blocks every future agent session in the
+repository. The mechanism fails closed so aggressively that it becomes a
+denial-of-service on the harness itself.
+
+**Remediation**: Bound the candidate set to PRs positively bound to active shipments
+before OB-2 and OB-8 are armed. Coverage and branch-existence obligations must apply
+only to PRs the protocol actually owns.
+
+#### F-07 (P1) — An `OPEN` record on a PR that is closed without merging has no discharge path and deadlocks startup forever
+
+POST-B can only run on the `post-merge/{feature_slug}` branch of a **merged** PR. If a
+unit executes S4, publishes `OPEN`, and the PR is then abandoned — re-scoped, superseded,
+or failed — there is no defined transition to `CLOSED`, no `ABANDONED` state, and no
+authorized cancellation procedure. U13 AC6 classifies it as an unrecoverable orphan and
+halts. Every subsequent session re-discovers it and halts again.
+
+The four-row lifecycle (`none→none`, `none→OPEN`, `OPEN→CLOSED`) has no terminal state
+for abandoned work.
+
+**Remediation**: Add an explicit, authorized abandonment transition with its own
+provenance requirements, or forbid publishing `OPEN` until merge is imminent.
+
+#### F-08 (P1) — `RESOLUTION_POSTCONDITION` POST-B is ordered both before and after P-020 compaction
+
+Found independently by two reviewers.
+
+The canonical entry condition requires "the FULL required post-merge closure set" first.
+POST-B's closure PR must be merged to discharge the obligation. Yet POST-B must precede
+compaction. U12 AC5 says POST-B runs "only after the full P-001 post-merge closure set
+is complete and verified, including the P-020 compaction record"; U12 AC6 says POST-B's
+`CLOSED` write "completes before any compaction or archival that can move the closure
+artifact."
+
+Both cannot hold. Literal execution either writes POST-B after its carrier merged —
+recreating the exact orphaning defect this plan exists to fix — or violates its own
+entry condition. POST-A can also mark the locator `RECONCILED` before POST-B has merged.
+
+Round-9 F-01 and F-07 are therefore only partially closed: the "commits nothing"
+contradiction is gone, but the ordering contradiction it was entangled with is not.
+
+**Remediation**: Fix one total order — POST-B commit, then closure-branch review, push,
+merge, verify that merge, then P-020 compaction, then POST-A locator write, then final
+P-001 completion. State it once, in the canonical block, and have U12 reference it.
+
+#### F-09 (P1) — The P-020 compaction exclusion is declared on a surface that does not own candidate selection
+
+P-020 makes `compact-context` the owner of compaction candidate selection. The plan's
+changed-file set includes `operational-closure/SKILL.md` and the instructions file, but
+**not** `.github/skills/compact-context/SKILL.md`. The path-stability invariant — that
+`OPEN` and `none` artifacts are excluded from compaction candidates — is therefore
+written where it is not enforced. An unmodified `compact-context` can archive an aged
+`OPEN` closure artifact and move the record out from under OB-1.
+
+**Remediation**: Bring `compact-context/SKILL.md` into scope as its own unit, or replace
+the exclusion with an ordering guarantee that does not depend on candidate selection
+behaviour.
+
+#### F-10 (P1) — The history probes cannot detect the transitions they exist to detect
+
+Found independently by two reviewers.
+
+B4 uses `git log -S'resolution_obligation'`. Pickaxe `-S` detects a change in the number
+of occurrences of the string. The key `resolution_obligation` is present in `none`,
+`OPEN`, and `CLOSED` states alike, so its occurrence count does not change across
+`none→OPEN` or `OPEN→CLOSED`. Neither transition is found.
+
+U9 AC7 is worse: it searches `-S'"resolution_obligation": "OPEN"'` — JSON syntax —
+against the YAML schema U9 AC1 installs (`resolution_obligation:` / `  status: OPEN`).
+It can never match.
+
+The canonical recovery procedure ("Recovering resolution commits without a SHA field")
+does the right thing — walk `git log --reverse <scan_ref> -- <path>` and parse
+parent/child YAML — but U9 and B4 install something else.
+
+**Remediation**: One executable procedure: enumerate commits touching the artifact path
+on the retained scan ref and parse the YAML `status` on each side. Delete both pickaxe
+forms.
+
+#### F-11 (P1) — Channel B cannot distinguish merged from closed-unmerged PRs with the fields it collects
+
+B1 routes on `state == MERGED` versus `state == CLOSED, unmerged`. But U3's exact REST
+projection collects `state` and not `merged_at`, and the GitHub pulls-list API reports a
+merged PR as `state: "closed"` with a non-null `merged_at`. There is no `MERGED` value
+to match. The router cannot decide between scanning `origin/main`, scanning a live head,
+and reporting an unrecoverable orphan.
+
+Additionally, `origin/main` is never explicitly refreshed before the merged-history scan,
+so that scan can read a stale local ref.
+
+**Remediation**: Add `merged_at` to the projection; define merged as `merged_at != null`;
+add an explicit `git fetch origin main` before the `origin/main` scan.
+
+#### F-12 (P1) — S3.5 permits bypass actors that U0 AC3 and RQ-13 forbid
+
+Found independently by two reviewers.
+
+RQ-13 and hardening D16 require "no bypass actors" and halt on "any bypass capability."
+U0 AC3 requires `bypass_actors` to be empty. V21 and U13 use the strong wording. But the
+canonical S3.5 predicate accepts `.bypass_actors is empty OR contains no actor the acting
+identity holds, at any bypass_mode`.
+
+An administrator who later adds a CI service account or an admin team to `bypass_actors`
+leaves S3.5 passing while a third party retains the ability to force-push or delete the
+branch — defeating the only property the ruleset was bought for.
+
+**Remediation**: S3.5 must require `bypass_actors` length zero and
+`current_user_can_bypass == "never"`. Align every restatement.
+
+#### F-13 (P1) — No ruleset proof is performed on the `post-merge/*` branch that carries the `CLOSED` transition
+
+U0 AC1 includes `refs/heads/post-merge/**` on the justification that this branch carries
+the `OPEN → CLOSED` discharge. But S3.5 lives inside `RESOLUTION_PREFIX`, and the plan
+states "no step of `RESOLUTION_PREFIX` may be performed on a merged branch; the prefix
+ends before merge." U12 creates `post-merge/{feature_slug}` and commits POST-B without
+ever invoking S3.5 or any equivalent probe on it.
+
+The discharge commit is written to an unverified branch. Equally, merged records route to
+`origin/main` with no runtime re-proof that `main` is still protected, so main-ruleset
+drift is outside OB-8's implemented route.
+
+**Remediation**: Require an effective-rules proof on `post-merge/{feature_slug}` before
+POST-B is committed, and on `origin/main` before any merged-history scan is trusted.
+
+#### F-14 (P1) — The S7 late-checkpoint loop is illegal under the record lifecycle
+
+S7 sends a nonzero re-enumeration back through S3 → S3.5 → S4. After an earlier nonzero
+S4, however, the record is already `OPEN`, and the lifecycle admits only `none→none`,
+`none→OPEN`, and `OPEN→CLOSED`. There is no `OPEN→OPEN` amendment, and the locator would
+have to regress from `RESOLUTION_PUBLISHED` back to phase 1, which the three-phase
+locator forbids.
+
+The advertised race recovery is therefore executable only when the original count was
+zero — the case that needed it least.
+
+**Remediation**: Either halt on late checkpoints discovered after a nonzero S4, or define
+an explicit, auditable `OPEN` amendment transition and a locator re-publication rule.
+
+#### F-15 (P1) — Stage cannot satisfy U8's mandatory carrier binding, because Stage checkpoints predate the PR that carries them
+
+U8 makes `context.pr` and `context.branch` mandatory at every Stage checkpoint creation
+and prohibits checkpoint creation without an open staging PR. But live Stage creates
+checkpoints throughout its session (Session-continuity, mid-session checkpoints), Stage's
+own role boundary forbids it from creating or pushing PRs, and the Orchestrator creates
+the staging PR only after Stage completes. A mid-session Stage checkpoint cannot know its
+future PR number. U8 nevertheless asserts that no other Stage behaviour changes.
+
+Separately, even when an open PR does exist, the one-time `state == OPEN` read is a TOCTOU:
+the PR can merge between the read and the resolve.
+
+Note that the **round-9 P0 itself is closed** — the predicate no longer reads the ambient
+branch. This finding is about whether the replacement binding can be produced at all.
+
+**Remediation**: Name who produces and durably backfills the carrier binding and when;
+reconcile with Stage's mid-session checkpoint obligations; add a final live-state plus
+ancestry guard immediately before resolve.
+
+#### F-16 (P1) — The "standing executable" drift check V20 has no implementation and cannot run inside markdownlint
+
+Found independently by two reviewers.
+
+Round-9 F-08 required an executable drift check across the duplicated protocol surfaces.
+V20 claims semantic role extraction and comparison "run as part of V1's lint pass." V1 is
+markdownlint. The plan's own constraints forbid adding scripts. No unit adds a checker or
+a lint rule. V20 is therefore another one-time manual instruction wearing the label of a
+standing check.
+
+V20 also conflicts with U4 AC1, which requires Ship's Step 5 not to restate "any of its
+steps, orderings or rationale" — if Step 5 does not state an order, V20 has nothing to
+extract from it; if it does, AC1 fails.
+
+**Remediation**: Either bring a real checker into scope and wire it to an existing gate, or
+delete V20 and record the drift exposure honestly as a residual risk. Resolve the AC1/V20
+conflict either way.
+
+#### F-17 (P1) — Several verifications are unsatisfiable against a correct implementation
+
+- **V8** requires every enumerated PR to have a non-empty body; **V17** deliberately
+  empties one, and the live repository currently contains an empty-body PR. V8 as written
+  fails on correct behaviour.
+- **V14** asserts "the locator, the resolutions and the `OPEN` obligation record ride one
+  commit." The locator is PR-body metadata, published before and after that commit; it
+  does not ride a commit at all.
+- **V23** asserts no mutation after the S5 review except POST-A/POST-B, while live Step 6
+  performs backlog archival, closure generation, documentation updates, compound refresh,
+  compaction, and index sync.
+- **V19** parses "the schema block and its lifecycle text" as YAML; the lifecycle is a
+  markdown table and the schema uses `none | OPEN | CLOSED` as a prose union. Neither
+  parses.
+
+**Remediation**: V8 → assert body-field presence, not non-emptiness. V14 → separate
+PR-body metadata from commit contents. V23 → scope to the implementation branch and the
+review cycle it belongs to. V19 → parse the schema mapping only, or delete.
+
+#### F-18 (P1) — U4 AC6 forbids post-S4 mutation that the canonical gate-failure loop requires
+
+U4 AC6 states "no branch-mutating step remains after S4" and that every mutating item
+sits in S1 or S2. The canonical gate-failure loop pushes a remediation commit *on top of*
+the resolution commits and re-enters at S5. Step 5 item 2 (the session-memory commit) is
+mutating and is not mapped into S1 or S2 in U4's extract.
+
+**Remediation**: Scope AC6 to the ordinary path, name the remediation-loop exception
+explicitly, and map item 2.
+
+#### F-19 (P1) — The Constitution Check maps a constitution this workspace does not have
+
+Found independently by two reviewers.
+
+The plan's "Principles I–XI" table lists *Specification before implementation, Single
+source of truth, Traceability, Incremental delivery, Test/verification first,
+Reversibility, Fail closed, Least privilege, Auditability*. The actual
+`.github/instructions/constitution.instructions.md` principles are *Safety-First Rust,
+Test-First Development, Workspace Isolation and Security Boundaries, CLI Workspace
+Containment, Structured Observability, Single Responsibility, Git-Friendly Persistence,
+Agent Context Efficiency, Merge Commit History Preservation*. Only VII and VIII coincide.
+
+Round-9 F-27 asked for the workspace constitution's own principles to be mapped.
+Revision 10 answered it by inventing a plausible-sounding different rubric. F-27 is not
+discharged, and genuinely relevant principles go unchecked — notably **IV (CLI Workspace
+Containment)**, which U0 violates most directly by reaching outside the workspace to
+mutate forge settings.
+
+**Remediation**: Map the real Principles I–XI, marking genuine N/A explicitly, and add a
+real check for IV against U0.
+
+#### F-20 (P1) — P-019 states that the harness never edits rulesets; U0 is not reconciled with it, and P-019 is cited nowhere
+
+`workflow-policies.md` P-019 states verbatim that ruleset configuration "remains an
+operator configuration action — the harness never edits rulesets." U0's ProposedAction box
+says "the **implementing agent** MUST obtain explicit operator/admin approval immediately
+before **applying this change**," implying an agent applies it. P-019 appears in none of
+the three artifacts' `policies:` frontmatter and in no Constitution Check row.
+
+This compounds with a least-privilege problem: creating a ruleset requires
+`Administration: write`. If Ship applies U0, Ship must hold an admin token — a
+significant and unnecessary privilege escalation for a documentation harness. If the
+operator applies it, U0 is a human prerequisite, not one of fourteen agent tasks, and it
+must carry the exact payload the operator will execute.
+
+**Remediation**: Add P-019 to the Constitution Check. Reclassify U0 explicitly as a manual
+operator prerequisite performed outside the agent pipeline, with its exact create payload
+and exact rollback payload inline. Forbid any agent from holding ruleset-write credentials.
+
+#### F-21 (P1) — The Definition of Done can be satisfied while the load-bearing prerequisite is absent
+
+Found independently by two reviewers.
+
+Decision §7 permits the ruleset to have "been explicitly deferred with the consequence
+recorded." But S3.5 halts before obligation publication on an uncovered branch, and the
+plan's own measured evidence shows Ship source branches return `[]` today. Deferring U0
+and shipping U1–U13 yields a release that is "done" while every nonzero-checkpoint unit
+halt-loops at S3.5.
+
+This also collides with the traceability contract's "exactly one owner per requirement":
+RQ-13 is assigned to "U0 + U2."
+
+**Remediation**: DoD must require U0 applied and V21 green, or require the S3.5/RQ-13
+durability claims to be withdrawn. Remove the "deferred but done" branch. Assign RQ-13 one
+owner and classify the other as enforcement.
+
+### P2 findings
+
+#### F-22 (P2) — Same-file units are not fully serialized, and the count is wrong
+
+The file-serialization paragraph says "Four units share
+`github-pr-automation.instructions.md`" and then lists five (U2, U3, U11, U9, U13),
+calling them strictly sequential. The edge list has `U3→U11` and `U3→U9→U13` but neither
+`U11→U9` nor `U11→U13`. The claim that U11/U13 is the only pair without a direct edge is
+also false — U11/U9 lack one too. Dependency-driven execution could edit the canonical
+file concurrently.
+
+#### F-23 (P2) — U0's branch globs are stated two incompatible ways
+
+The `BRANCH_PROTECTION_PREREQUISITE` table uses `feat/*`, `chore/*`, `post-merge/*`; U0
+AC1 uses `refs/heads/feat/**`, `refs/heads/chore/**`, `refs/heads/post-merge/**`. In
+GitHub ruleset `ref_name.include`, `*` and `**` are not equivalent, and the `refs/heads/`
+prefix changes matching. One include list, derived from `_ship.agent.md` with line
+citations, must be used by U0, S3.5, and V21 alike.
+
+#### F-24 (P2) — Channel B has no adoption boundary for pre-existing closure artifacts
+
+B3 halts on any closure artifact whose schema is invalid, while OB-5 exempts only
+artifacts "created after S2" — a test that is never made deterministic. The working tree
+currently contains 177 closure and archive artifacts, none of which carry
+`resolution_obligation`. A literal implementation either halts on all of them or exempts
+them by an unspecified rule.
+
+#### F-25 (P2) — The P-009 guardrail is described as unmodified and as amended
+
+The P-018 row says "the merge-commit guardrail item is retained unmodified" and S8's tail
+says the P-009 item "applies unchanged," while U4 AC10 and V4(f) both add an API-side
+merge-commit-mode check and a two-parent assertion to that same item. This is the same
+defect class as round-9 F-02 (the "item 15 unmodified" contradiction), which revision 10
+swept for — and missed in its item-16 form.
+
+#### F-26 (P2) — The drift surface is five layers deep and V20 covers one of them
+
+One protocol rule now lives in the canonical block, in unit acceptance criteria, in
+verification expected-results, in hardening D1–D16, and in the decision's RQ table.
+Changing a single rule — "do not use `FETCH_HEAD`" — already requires six edits, and the
+canonical/unit disagreements catalogued in F-01, F-03, F-10 and F-12 are direct products
+of this. V20 compares only S1–S8 role ordering and would have caught none of them.
+
+#### F-27 (P2) — U4 AC3's zero-checkpoint omission list is narrower than the canonical rule
+
+The canonical rule omits segments S3.5 and S4 in their entirety for a zero-checkpoint
+unit. U4 AC3 enumerates five specific omissions and misses the `OPEN` record write and the
+remote-head proof.
+
+#### F-28 (P2) — The Step 5 extract is a normalized mapping presented as verbatim
+
+The structure is confirmed accurate, but the extract states that item 15 re-fetches "only"
+the P-018 verdict and `headRefOid`; the live item 15 also conditionally re-runs §1.9 when
+HEAD has changed. The table also annotates item 2 as "yes (commit)" where live item 2 says
+only to write the memory file. Both are inferences, so "verbatim" overclaims.
+
+#### F-29 (P2) — Rollback of U0 is undefined and self-trapping
+
+U0's reversibility note observes that the ruleset is re-configurable, but there is no
+rollback payload and no procedure for unwinding in-flight units. If U0 must be rolled back
+because of F-04, in-flight sessions halt at S7 and every future startup halts at B2 under
+OB-8, with no defined recovery.
+
+#### F-30 (P2) — The repository-supported ruleset fallback path is unpaginated
+
+The effective-rules probe is correct, but the `GET /rulesets` fallback is issued without
+`--paginate`. Truncation produces a false halt. This is the same defect class as round-9's
+V8 pagination finding, in a new location.
+
+### P3 findings
+
+- **F-31 (P3)** — The Constitution Check row is titled "P-011 Worktree topology"; P-011 is
+  actually named "Branch-Before-Mutation." The substance attached is right; the label is wrong.
+- **F-32 (P3)** — U12's header says "Depends on: U4, U9, U10" but the 22-edge list contains
+  only `U4→U12`; U9 and U10 reach U12 transitively. Either add the direct edges and update the
+  count, or annotate the transitivity.
+- **F-33 (P3)** — U0 declares `action_class`, `ActionRisk`, `approval_required`, approver,
+  surface, and reversibility, but never the `ActionResult` state the Action Contract expects
+  (`planned` at plan time).
+- **F-34 (P3)** — Revision 10 repeatedly describes round 9 as "15 P1"; the retained round-9
+  block contains 18 P1 headings. It also calls the seven-persona panel "five-persona" in one
+  place.
+- **F-35 (P3)** — Hardening D1–D4 cite stale U2/U4 criterion numbers after the revision-10
+  renumbering (for example, phase-1 timing is U2 AC7, not AC5; non-self-reference is AC10, not
+  AC3/AC8).
+
+### Results of the seven mandated probes
+
+| Probe | Result | Basis |
+|---|---|---|
+| Channel B with an emptied PR body | **FAIL** | The candidate set is genuinely body-independent — that part works. But PV-8 cannot prefilter (F-05), the canonical and U13 algorithms differ (F-01), the transition probes cannot match (F-10), merged/closed-unmerged cannot be distinguished (F-11), and `origin/main` is never refreshed. The procedure is not executable end to end. |
+| Ruleset drift and bypass | **FAIL** | `[]` is correctly read as uncovered and the API surface fails closed. But S3.5 permits non-acting bypass actors that RQ-13/U0 AC3 forbid (F-12), no proof runs on `post-merge/*` or `origin/main` (F-13), and an admin can disable, rewrite, and restore protection between observations. |
+| Zero-checkpoint vs nonzero | **PARTIAL / FAIL** | The zero path is now genuinely satisfiable: four always-present HEAD values, vacuous-safe ancestry, a complete-zero S7 result, and explicit POST-A/POST-B no-ops on `none`. Round-9 F-04/F-05 are closed. The **nonzero** path is not satisfiable: POST-B is ordered both before and after compaction (F-08), and a late checkpoint after a nonzero S4 cannot legally re-enter S4 (F-14). |
+| P-020 ordering | **FAIL** | F-08 (contradictory order) and F-09 (exclusion declared on a surface that does not own candidate selection). V23 also excludes Step 6 mutations that genuinely occur (F-17). |
+| Exact Ship Step 5 extraction | **PARTIAL** | Structure independently re-derived and confirmed: the duplicated item `7` is real, and 7b/7c do precede the second 7 and 8/9/10. The "item 15 re-fetches only…" claim and the item-2 commit annotation are inferences, so the "verbatim" label overclaims (F-28). |
+| D14 discharge | **FAIL** | U11 AC9–AC12, U5 AC9 and V12/V12a–g correctly invoke the named procedure rather than restating it — that structural requirement is met. But WP-3 and U11 AC9 still fetch without a destination refspec and assert against bare `FETCH_HEAD`, contradicting V22 and falsifying D14's own discharge claim (F-03). |
+| P-010 ambient-branch independence | **PASS** | Unanimous. U8 AC2 keys off the checkpoint's validated `context.pr`/`context.branch`, prohibits `gh pr list --head`, `git branch --show-current`, and `rev-parse --abbrev-ref` as predicate inputs, and confines ambient branch data to logging. The round-9 P0 is genuinely closed. The separate question of whether the binding can be produced is F-15, not a regression of F-11. |
+
+### Reviewer convergence
+
+Findings reached independently by more than one reviewer, with no shared context, and
+therefore carrying the highest confidence:
+
+| Finding | Reviewers | Models |
+|---|---|---|
+| F-01 Channel B canonical/U13 divergence | 3 of 4 | GPT-5.6 Sol, Grok 4.6, Gemini 3.8 Flash |
+| F-03 `FETCH_HEAD` contract unsatisfiable | 2 of 4 | GPT-5.6 Sol, Grok 4.6 |
+| F-08 POST-B ordering contradiction | 2 of 4 | GPT-5.6 Sol, Claude Opus 4.8 |
+| F-10 pickaxe probes cannot match | 2 of 4 | GPT-5.6 Sol, Grok 4.6 |
+| F-12 S3.5 bypass weaker than RQ-13 | 2 of 4 | GPT-5.6 Sol, Gemini 3.8 Flash |
+| F-16 V20 is not a standing check | 2 of 4 | GPT-5.6 Sol, Grok 4.6 |
+| F-19 fabricated constitution mapping | 2 of 4 | Claude Opus 4.8, Grok 4.6 |
+| F-21 DoD permits a deferred prerequisite | 2 of 4 | GPT-5.6 Sol, Grok 4.6 |
+| Residual oversizing of U2/U4/U11 | 3 of 4 | Claude Opus 4.8, Grok 4.6, GPT-5.6 Sol |
+| P-010 probe passes | 4 of 4 | all |
+
+### The structural judgement, stated plainly
+
+Two reviewers reached the same conclusion by different routes, and it is the most
+important thing in this review.
+
+The defect this plan exists to close — Defect-2 — is that Ship resolves checkpoints
+*after* the carrying PR merges, orphaning the resolution commit on a dead branch. The
+load-bearing fix is small and is already fully specified in this plan: move resolve before
+merge, push it, re-run the review at that HEAD, assert ancestry at merge, and forbid
+post-merge resolution in both Ship and Stage.
+
+Everything built on top of that — the obligation record, Channel B's B0–B7, PV-1…PV-8,
+OB-1…OB-8, `LAST_MILE_RECOVERY`'s WP-0…WP-7, the seven-part S8 bar applied to every
+merge including zero-checkpoint chores, and now U0's repository-wide ruleset — exists to
+*detect* a residual window rather than to *prevent* the defect. And by the plan's own V17,
+the detection path terminates in a halt: it does not recover, it fail-closes. The
+machinery buys detection of PR-body deletion and force-push at the cost of four P0s, a
+repository-wide workflow regression, and a startup path that halts on ordinary contributor
+history.
+
+Ten revisions of escalating residual-window machinery around a one-step ordering bug is
+itself the finding. Round 11 should not attempt to repair thirty findings in place. The
+recommendation from this panel is to take the smaller design back to the operator:
+
+1. Keep the ordering fix, the locator, the merge-authority bar, and the ancestry assertion.
+   These close Defect-2 and are the parts every reviewer found sound.
+2. Replace the branch-ruleset prerequisite with an immutable marker ref or annotated tag
+   pushed at S4 and protected in its own namespace. This delivers the same reachability
+   property with near-zero blast radius, leaves working branches rebaseable and deletable,
+   and avoids the P-019 conflict and the admin-token requirement entirely.
+3. Demote Channel B, the obligation record, and the OB/PV invariant sets to an explicitly
+   optional hardening layer scoped to PRs bound to active shipments — or drop them from this
+   unit and record the residual honestly.
+
+That is a recommendation to the operator, not a decision taken by this review. The gate
+outcome stands on the findings regardless of which design is chosen.
+
+### Gate
+
+**BLOCKED.** 4 P0 and 17 P1 findings. The plan is not harvestable, and this PR is not
+mergeable in its current state. No harvest, no shipment claim, no activation, and no merge
+was performed. The eighteen unresolved Copilot review threads on PR #396 remain
+unresolved by deliberate instruction; no comment cycle was started in this round.
+
+<!-- plan-review-attempt: 5 -->
