@@ -1,7 +1,11 @@
 ---
 doc_type: exec-plan-hardening
 date: 2026-09-13
-status: accepted
+status: superseded
+superseded_by_defect2: docs/exec-plans/2026-09-13-checkpoint-resolution-durability-plan.md
+superseded_by_defect1: docs/decisions/2026-09-13-dark-mode-continuation-auto-routing-deliberation.md
+superseded_on: 2026-09-13
+supersession_reason: operator-approved scope split; Defect 1 returned to fresh deliberation, Defect 2 reduced to its own plan
 revision: 5
 plan_document: docs/exec-plans/2026-09-13-checkpoint-lifecycle-continuity-plan.md
 source_document: docs/decisions/2026-09-13-checkpoint-lifecycle-continuity-deliberation.md

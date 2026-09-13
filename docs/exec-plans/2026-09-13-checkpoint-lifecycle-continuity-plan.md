@@ -2,7 +2,11 @@
 doc_type: exec-plan
 date: 2026-09-13
 revision: 5
-status: awaiting-independent-review
+status: superseded
+superseded_by_defect2: docs/exec-plans/2026-09-13-checkpoint-resolution-durability-plan.md
+superseded_by_defect1: docs/decisions/2026-09-13-dark-mode-continuation-auto-routing-deliberation.md
+superseded_on: 2026-09-13
+supersession_reason: operator-approved scope split; Defect 1 returned to fresh deliberation, Defect 2 reduced to its own plan
 review_verdict: FAIL
 review_verdict_revision: 4
 review_round: 5
