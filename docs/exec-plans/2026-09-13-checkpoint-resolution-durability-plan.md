@@ -3,11 +3,11 @@ doc_type: exec-plan
 date: 2026-09-13
 revision: 9
 scope: defect-2-only
-status: awaiting-independent-review
-review_verdict: pending
-review_verdict_revision: 8
-review_attempts: 3
-escalation: P-013.6 fired at revision 8; route gpt-5.6-sol/openai/xhigh; operator authorized ONE bounded remediation revision and ONE fresh full independent review
+status: halted-review-circuit-open
+review_verdict: FAIL
+review_verdict_revision: 9
+review_attempts: 4
+escalation: P-013.6 fired at revision 8 (route gpt-5.6-sol/openai/xhigh); operator authorized ONE bounded remediation revision and ONE fresh full independent review; revision 9 was that revision and its round-9 review returned FAIL, so the circuit is open again
 harvest_authorized: false
 source_document: docs/decisions/2026-09-13-checkpoint-resolution-durability-decision.md
 supersedes: docs/exec-plans/2026-09-13-checkpoint-lifecycle-continuity-plan.md
@@ -29,20 +29,28 @@ become an unsupervised merge path.
 
 **Machine-readable status.** The frontmatter is authoritative. `revision: 9`,
 `scope: defect-2-only`, `harvest_authorized: false`,
-`review_verdict: pending`, `review_verdict_revision: 8`, `review_attempts: 3`,
-`status: awaiting-independent-review`.
+`review_verdict: FAIL`, `review_verdict_revision: 9`, `review_attempts: 4`,
+`status: halted-review-circuit-open`.
+
+**Round-9 outcome — FAIL.** Revision 9 was reviewed by a fresh full independent
+seven-persona panel at HEAD `9b15fd43` and returned **FAIL** with **1 P0** and
+**15 P1** findings after dedupe, and with **RR-3 re-opened**. See
+`## Plan Review — round 9` at the end of this document for the complete finding
+set. The plan-review circuit is therefore **open again** at attempt counter 4.
+Nothing below may be read as approved. The remainder of this section describes
+what revision 9 *attempted*; the round-9 review records where those attempts did
+not hold.
 
 **What this revision is, and what it is not.** Revision 8 was independently
 reviewed and returned **FAIL** — the third consecutive FAIL (revisions 6, 7, 8) —
 the plan-review circuit opened at attempt counter 3, and the P-013.6 escalation
 fired and ran against HEAD `bbb52b65`. Revision 9 is **one bounded remediation
 revision explicitly authorized by the operator** after that circuit opened. It
-remediates the escalation's findings. It is **not** a clean bill of health:
-`review_verdict` is `pending` because revision 9 has **not** been reviewed, and
-`review_verdict_revision` still reads `8` because the last *completed* verdict
-belongs to revision 8. `harvest_authorized` stays **false** and moves only on a
-fresh independent full-plan review of **revision 9** returning PASS. No earlier
-verdict, and no part of the retained history, may be cited as a harvest gate.
+remediates the escalation's findings. It is **not** a clean bill of health: its
+own round-9 review returned **FAIL**, so `harvest_authorized` stays **false**
+and moves only on a *later* revision passing a fresh independent full-plan
+review. No earlier verdict, and no part of the retained history, may be cited as
+a harvest gate.
 
 **What changed in revision 9.** Five corrections, all from the P-013.6
 escalation:
@@ -1530,7 +1538,7 @@ concurrently-eligible units edit the same file.
 |---|---|---|
 | RR-1 | These are prose protocols executed by an LLM. Correct wording does not prove correct execution. | **Accepted and recorded.** The prior plan's answer — a static wording checker — could only prove the words had not changed, not that the protocol ran. U5's ancestry assertion is the real defence: a concrete command with a pass/fail outcome that makes a miss loud. V8 additionally proves the one discovery command that was silently wrong in revision 6. |
 | RR-2 | *(Closed in revision 7.)* Stage's session-end resolution was previously bound by P-022 with no procedural rewiring. | **Closed by U8.** The independent review held that a universal requirement with a procedural gap in one of its two named agents is not realized. U8 adds the narrow Stage qualifier without granting Stage merge authority. |
-| RR-3 | The locator lives in the PR body, which a human or bot can edit or delete. | **CLOSED in revision 9 by unit U9** (`RESOLUTION_OBLIGATION_RECORD`) **plus U10** (schema ownership), and by U4 AC11 / U5 AC6, AC7, AC8 / U6 AC1, AC3, AC5 wiring it into every discovery and discharge path. The gap was real and is restated honestly: because `RESOLUTION_PREFIX` resolves *every* checkpoint before merge, the PR body was the **sole** obligation record, deletion was undetectable, and startup would conclude "clean" — strictly worse than the pre-change still-active checkpoint, and a direct contradiction of RQ-7. The fix adds a **second, Git-tracked, history-immutable channel**: a SHA-free record written into the unit's existing `docs/closure/` pre-merge closure artifact **in the same commit as the resolutions**, pushed before the final review. It is discovered from exhaustive trusted PR/commit/tree history with provenance taken only from API fields and Git ancestry, never from the body; deletion is detected from commit history (OB-1) rather than inferred from absence; force-push/history gaps (OB-2), conflicting records (OB-3, OB-4), unparseable records (OB-5), channel disagreement (OB-6) and incomplete enumeration (OB-7) all fail closed; and discharge is only an `OPEN` → `CLOSED` transition in a later, merged, ancestry-auditable commit. **RQ-7 is not weakened, and RQ-8 is not traded** — the record carries no SHA (V19). Verified by V17, V18, V19. **No** executable persistence substrate, lock/CAS, or cross-run cursor is introduced, and no Defect-1 construct is touched. *Residual after the fix (accepted):* an actor able to force-push the branch **and** rewrite history **and** edit the PR body can still destroy both channels — but that is now a detectable, halting condition (OB-2) rather than a silent one. |
+| RR-3 | The locator lives in the PR body, which a human or bot can edit or delete. | **RE-OPENED at revision 9 — still an open, blocking design gap.** Revision 9 *attempted* to close this with `RESOLUTION_OBLIGATION_RECORD` (U9/U10, wired through U4 AC11 / U5 AC6–AC8 / U6 AC1, AC3, AC5): a SHA-free record written into the unit's existing `docs/closure/` pre-merge closure artifact in the same commit as the resolutions, discovered through a second Git-history channel. The round-9 independent review found that attempt **does not actually hold**, on three independent grounds, and the closure claim is therefore withdrawn rather than defended: **(a)** Channel B is *not* independent of the mutable PR body — its candidate set is drawn from PRs whose bodies carry the locator marker, so deleting the body removes the PR from Channel B's candidate set in exactly the residual window Channel B exists to cover (round-9 finding F-13); **(b)** Channel B's discovery commands are not executable as written — `git log --follow --diff-filter=D -- <path>` carries no commit-ish and scans only the current checkout, `FETCH_HEAD` is overwritten on each PR fetch, and a fully deleted artifact has no current-tree path to supply (F-14); **(c)** the accepted-residual sentence claiming the force-push + history-rewrite + body-edit combination is "detectable, halting (OB-2)" is **not substantiated** — because RQ-8 forbids the record from carrying any SHA, no external reference point exists to distinguish "obligation never existed" from "obligation existed and was erased" once the introducing commit is unreachable, and this needs only the PR author's own ordinary push and body-edit rights, not admin access (F-19). The gap restated honestly remains: because `RESOLUTION_PREFIX` resolves *every* checkpoint before merge, the deletable record is still effectively the sole obligation evidence, which contradicts RQ-7. **RQ-7 is not weakened and remains in force.** Closing RR-3 requires either a corroboration signal outside the erasure surface of the branch author (for example a CI-posted check run at S4, or branch protection forbidding force-push once S4 has run) or an operator decision to accept a narrower guarantee. That choice is an operator decision and is recorded in the round-9 review below as the returned blocker. |
 | RR-4 | `gh api --paginate` over all PRs grows with repository history. | **Accepted.** Cost is bounded by PR count and runs once per zero-candidate startup. Correctness was chosen over speed deliberately (RQ-9). |
 | RR-5 | A crash between locator phase 1 and the resolution commits leaves a `RESOLUTION_PENDING` locator with no commits. | **Handled, not merely accepted** — `LAST_MILE_RECOVERY` Step 1a runs the *resolution-state classification* over the locator's checkpoint list at the fetched PR head and re-enters **`RESOLUTION_PREFIX`** (at the resolve step) **only** on a reduced state of `NONE`; `PARTIAL`, `ALL` and `INDETERMINATE` all halt, as does the merged case. `RESOLUTION_POSTCONDITION` is never re-entered here — it is a Step 6 metadata write. Listed here because the handling is a recovery path, not a prevention. |
 
@@ -1734,4 +1742,539 @@ that apply to Defect 2 — R7 (self-referential locator), R8 (live-PR-state-firs
 R9 (status-independent discovery), R10 (re-run the review), R13 (merge-authority
 bar) — are all carried forward and are realized by U2–U6.
 
-<!-- plan-review-attempt: 3 -->
+## Plan Review — round 9
+
+**Plan reviewed**: `docs/exec-plans/2026-09-13-checkpoint-resolution-durability-plan.md` revision 9
+**Reviewed at HEAD**: `9b15fd4347c49c8a5f6d2277a8eba5dcd4f07242`
+**Attempt**: 4 (consecutive FAILs: revisions 6, 7, 8, 9)
+**Gate decision**: **FAIL**
+
+### Gate rationale
+
+This was a fresh, full, independent review — not a confirmation of the
+revision-8 round. Seven personas read the plan, the source decision (revision 3),
+the hardening (revision 9) and the live `.github/agents/_ship.agent.md` from
+scratch, and were told explicitly not to manufacture findings where the plan was
+sound.
+
+The gate fails on three independent grounds, any one of which is sufficient:
+
+1. **One P0.** The Stage-side safeguard in U8 AC2 keys off the ambient
+   working-tree branch instead of the selected checkpoint's carrying PR, which
+   permits the exact post-merge resolution P-022 exists to forbid.
+2. **Fifteen P1 findings after dedupe.** Four are cross-confirmed by three or
+   more independent personas.
+3. **RR-3 is re-opened, not closed.** The durable-publication mechanism that
+   revision 9 introduced to close RR-3 was found not to hold. Per the governing
+   directive, an unresolved RR-3 is itself a FAIL condition.
+
+**Plan hardening**: required (`requires_plan_hardening: yes`) and present
+(`docs/exec-plans/2026-09-13-checkpoint-resolution-durability-hardening.md`
+revision 9, D1–D15). The hardening document is not the cause of this FAIL; its
+D15 fold is invalidated as a consequence of RR-3 re-opening, not the reverse.
+
+### Panel
+
+| Persona | Model | P0 | P1 | P2 | P3 |
+|---|---|---|---|---|---|
+| Constitution Reviewer | `claude-opus-4.8` | 0 | 2 | 3 | 2 |
+| Scope Boundary Auditor | `gpt-5.6-sol` (xhigh) | 0 | 5 | 4 | 0 |
+| Correctness Reviewer | `gemini-3.8-flash` | 0 | 3 | 2 | 2 |
+| Architecture Strategist | `grok-4.6` | 0 | 3 | 4 | 1 |
+| Agent-Native Parity Reviewer | `gpt-5.6-terra` | 1 | 6 | 2 | 0 |
+| Security Lens Reviewer | `claude-sonnet-5` | 0 | 3 | 1 | 1 |
+| Learnings Researcher | `claude-haiku-4.5` | 0 | 1 | 3 | 2 |
+| **Merged, deduplicated** | — | **1** | **15** | **11** | **6** |
+
+Cross-model diversity was satisfied: six distinct models across four vendors.
+Where personas disagreed on severity, the more conservative severity was taken.
+
+### What the panel confirmed as genuinely sound
+
+Recorded so the FAIL is not read as a wholesale rejection.
+
+* **The verbatim Step 5 extract in U4 is accurate.** Two personas independently
+  re-derived it from the live `.github/agents/_ship.agent.md`: the item number
+  `7` really is duplicated, readiness items 7b/7c really do precede the mutating
+  items and the push, and item 15 really does re-run only P-018 and `headRefOid`.
+  This closes the escalation's core diagnosis and is the one structural advance
+  revision 9 genuinely delivers.
+* **Fork-PR forgery is blocked at the root.** PV-1 discards fork-originated
+  candidates for both channels before any body content is trusted, and the
+  silent-discard versus halt asymmetry is drawn correctly against outsider DoS.
+* **P-009 and P-017 hold.** Item 16 is untouched; U6 AC7's dark-mode carve-out
+  closes a real hole.
+* **P-010 role separation holds.** U8 gives Stage only a prohibition and a halt,
+  never `RESOLUTION_PREFIX` and never merge authority.
+* **No Defect-1 leakage.** The obligation record is a passive, halt-only
+  frontmatter field with no lock, CAS, cursor, or auto-routing. Three personas
+  checked this specifically.
+* **Abandoned-ID discipline holds.** No `143.*` ID is revived, re-parented, or
+  reused; replacement IDs remain unassigned.
+* **`docs/closure/` was the right surface to have chosen.** The architecture
+  review agreed it is the only per-shipment Git-tracked artifact Ship already
+  writes on the PR branch before resolution, and that the alternatives were
+  correctly rejected. The mechanism fails on execution detail, not on venue.
+
+### P0 findings
+
+#### F-11 (P0) — U8 AC2 keys the Stage safeguard off the ambient branch, not the checkpoint's carrying PR
+
+*Agent-Native Parity Reviewer. File: plan, U8 AC2.*
+
+U8 AC2 has Stage `determine the current branch, then
+gh pr list --state merged --head <branch>`. Stage is permitted to run on `main`,
+and the Checkpoint Payload Contract does not require a carrying-PR number or
+branch. A resumed Stage checkpoint created on a staging branch can therefore be
+handled while Stage sits on `main`: the query inspects `main`, returns no
+matching merged PR, and the agent proceeds to resolve a checkpoint whose
+carrying PR has already merged. That is precisely the post-merge resolution
+P-022 is written to forbid, reachable through the safeguard meant to prevent it.
+
+**Required fix.** Take the carrying PR number and branch from the selected,
+ownership-validated checkpoint context and make those fields mandatory whenever
+a Git-tracked checkpoint may be resolved. Query that exact PR
+(`gh pr view <pr> --json state,mergedAt,headRefName,baseRefName`), verify head
+and base against the stored identity, require state `OPEN`, and halt on absent,
+mismatched, closed, or merged. Never use the ambient working-tree branch as the
+authority.
+
+### P1 findings
+
+Ordered by cross-persona confirmation count, then by severity of consequence.
+
+#### F-01 (P1) — `RESOLUTION_POSTCONDITION` is self-contradictory: it both closes the record in a commit and "commits nothing"
+
+*Confirmed independently by Constitution, Scope Boundary, Architecture and
+Agent-Native Parity — four of seven personas.*
+
+The canonical block requires Ship to "set `CLOSURE_LOCATOR` to `RECONCILED` and
+close the `RESOLUTION_OBLIGATION_RECORD` in the same closure commit". The
+sentence immediately following it still says the postcondition "is a PR-body
+metadata write only and commits nothing", and RR-5 still calls it "a Step 6
+metadata write". U2 installs this block **verbatim**, so the contradiction is
+installed into the instructions file. Closing the record is a change to a
+Git-tracked `docs/closure/` file and necessarily requires a commit.
+
+The consequence is not cosmetic. If "commits nothing" governs, `OPEN` records
+are never discharged and Channel B fail-closes every future startup forever. If
+the commit governs, the canonical definition the plan installs is false. The
+plan additionally never establishes which branch may legally carry that commit:
+Ship must not commit to `main` (P-010), and the plan removed `pr_role: closure`,
+so no closure-PR path is established — which risks reintroducing the very
+"extra PR for a one-line status flip" pattern this work exists to eliminate.
+
+**Required fix.** Split the postcondition into two explicitly named mutations —
+the PR-body `RECONCILED` write (metadata, no commit) and the `OPEN` → `CLOSED`
+transition (a commit on a named, P-010-compliant closure branch that must be
+merged before the obligation is discharged). Delete the "commits nothing"
+sentence and the RR-5 phrasing that depends on it. Name the branch.
+
+#### F-02 (P1) — the Constitution Check still asserts the withdrawn "item 15 retained unmodified"
+
+*Confirmed by Constitution (P1), Scope Boundary (P2) and Architecture (P2).*
+
+The Constitution Check P-018 row reads: "Step 5's existing unconditional
+last-mile re-check (item 15) is retained unmodified." That is the exact claim
+escalation finding A identified as open finding 1 and that revision 9 withdraws
+everywhere else — S7 says "AMENDED", U4 AC9 says "Item 15 is amended, not
+retained unmodified", and hardening D5 agrees. The Constitution Check is a
+second normative statement of Step 5's shape, so an implementer or later editor
+reading it is told not to make the change U4 requires.
+
+This finding matters beyond its own content: it is a **residual instance of the
+very escalation finding revision 9 was authorized to remediate**, surviving in a
+section the revision did not sweep. It is direct evidence that the remediation
+was applied section by section rather than globally.
+
+**Required fix.** Rewrite the P-018 row: item 15 is amended per S7, P-018 is
+evaluated at S5 and re-evaluated at S7, item 16 remains unmodified. Then grep
+the whole document for every other surviving assertion about Step 5's shape.
+
+#### F-03 (P1) — V4(g) forbids the mutation that S4 requires, so every nonzero-checkpoint implementation fails its own verification
+
+*Scope Boundary Auditor.*
+
+V4(g) asserts that no branch-mutating item appears after the S3 enumeration
+proof. Canonical S4 deliberately resolves checkpoints, writes the obligation
+record, commits and pushes — all after S3. The expected-empty mutation set
+therefore makes V4 unsatisfiable for exactly the case the plan exists to handle.
+
+**Required fix.** Restate V4(g) as: no mutation after S3 **except** the
+conditional S4 resolution commit and its push; and no branch mutation at all
+after S4.
+
+#### F-04 (P1) — S8's five-way HEAD equality is unsatisfiable for zero-checkpoint units
+
+*Correctness Reviewer.*
+
+S8 condition 1 requires `live headRefOid == local HEAD == locator final_head ==
+PR-body Reviewed HEAD == approved_head`, "all five agree", under a rule that any
+doubt halts. But the plan establishes that a zero-checkpoint unit omits S4
+entirely and that "no empty locator is ever published", so `locator final_head`
+does not exist. Every zero-checkpoint PR therefore halts unconditionally at the
+merge bar and becomes unmergeable.
+
+This is a **new zero-checkpoint truthfulness defect introduced by revision 9's
+own finding-B remediation** — the remediation correctly made S5–S8 universal but
+did not make the locator-dependent clauses conditional at the same time.
+
+**Required fix.** Make the locator clause conditional: the four always-present
+heads must agree, and `locator final_head` joins them when a locator was
+published. Likewise condition 2 becomes "every recorded resolution commit, if
+any, is an ancestor".
+
+#### F-05 (P1) — `RESOLUTION_POSTCONDITION` demands an impossible transition on zero-checkpoint units
+
+*Correctness Reviewer.*
+
+On a zero-checkpoint unit no locator exists and `resolution_obligation` was
+initialized `none` at S2, so `none → OPEN` never happened. Step 6 nonetheless
+unconditionally orders Ship to set the locator `RECONCILED` and move the record
+`OPEN → CLOSED`, while U10 AC3 states those are the only permitted transitions
+and "no other transition is permitted". The agent is instructed to perform a
+transition the schema forbids on a record that is not in the required state.
+
+**Required fix.** Make `RESOLUTION_POSTCONDITION` an explicit no-op when no
+locator was published and `resolution_obligation` is `none`, leaving `none`
+intact in the closure commit. State it in the canonical definition, U4 AC7 and
+U5 AC7.
+
+#### F-06 (P1) — S7 never re-enumerates checkpoints, so the late-checkpoint race the plan claims to close stays open
+
+*Correctness Reviewer.*
+
+The plan asserts that "a checkpoint that appears after S3 completed forces
+re-evaluation from S3 before merge", and V16 tests exactly that. But S7's
+exhaustive re-fetch list — `headRefOid`, PR body, `reviewDecision`, review
+requests and reviews, every review-thread page, required checks and
+resolution-commit ancestry — does not include active checkpoints, and S8's merge
+bar never asserts a zero active-checkpoint count. An agent executing S7 and S8 as
+written will never observe a late-appearing checkpoint. The claim and V16 are
+unbacked.
+
+**Required fix.** Add "re-enumerate active checkpoints owned by this unit and
+assert count == 0; any active checkpoint forces re-evaluation from S3" to S7's
+list in both the canonical definition and U4 AC9.
+
+#### F-07 (P1) — legitimate P-020 compaction relocates the obligation record and OB-1 reads it as the deletion attack
+
+*Architecture Strategist (P1); Constitution Reviewer raised the same coupling at P2.*
+
+Channel B reads `docs/closure/`, and OB-1 halts when a record that once appeared
+in history is absent from the tree without a recorded `OPEN → CLOSED`
+transition. But `compact-context` — whose invocation U4 AC8 leaves **unmodified**
+— compacts `docs/closure/` and moves originals to `docs/archive/closure/` for
+completed-feature records older than `threshold_days` (default 14). A pre-merge
+artifact written at S2 can easily exceed 14 days by merge, and `CLOSED` is
+defined to be written *after* the full closure set, which includes P-020. So
+routine compaction archives a still-`OPEN` record, and every subsequent startup
+fail-closes permanently on what is in fact correct behaviour.
+
+**Required fix.** Add a path-stability invariant: an artifact that has ever
+carried `resolution_obligation` must not be renamed, compacted or archived while
+its status is `none` or `OPEN`. Either exclude `OPEN` records from
+compact-context candidates (and say so in U10 and the P-020 surface) or extend
+Channel B to follow `docs/archive/closure/` and treat an archive move as not
+OB-1. `CLOSED` must be written before any compaction that can touch the file.
+
+#### F-08 (P1) — S1–S8 hard-codes live item numbers with no standing drift check
+
+*Architecture Strategist.*
+
+The canonical prefix is expressed in terms of "real Step 5 items 7 (first)/7a,
+second item 7, 8, 9, 10, 7b/7c moved, item 15 amended, item 16 unchanged",
+including the live file's duplicated `7`. U4 then requires `_ship.agent.md` to
+invoke the prefix by name and not restate it. The only consistency check, V4,
+runs once at implementation time; the wording-drift checker was withdrawn as
+Defect-1. This is the *same coupling* that caused revisions 6, 7 and 8 to
+describe a Step 5 that did not exist. When Step 5 gains an item or is
+renumbered, the instructions and the agent diverge silently, and
+readiness-before-mutation can be restored without anything noticing.
+
+**Required fix.** Define S1–S8 by **role** (fix-ci loop, mutating tail,
+enumeration proof, conditional resolution, readiness gates, pinned approval,
+last-mile re-check, merge bar) with no item numbers in the instructions file, and
+keep the item-to-segment binding solely in `_ship.agent.md`. Add a standing
+invariant asserting the executable order still matches those roles. V4 is not a
+substitute for it.
+
+#### F-09 (P1) — U3, U4 and U9 each exceed the NON-NEGOTIABLE 2-hour granularity rule
+
+*Scope Boundary Auditor raised all three at P1; Constitution Reviewer raised U4
+at P3.*
+
+* **U3** combines exhaustive API discovery, seven provenance rules, duplicate
+  handling, locator-status classification, a four-state checkpoint classifier,
+  seven live-PR outcomes, a merge-authority bar and WP-1…WP-7. V8 plus
+  V12a–V12f place at least seven behavioural scenarios on it against a
+  fewer-than-four limit.
+* **U4** declares its locus as Step 5 and session end, but AC7–AC8 also modify
+  Step 6; it carries 13 acceptance criteria, moves two gates, amends item 15,
+  adds a merge bar and refresh rules, and is exercised by V4, V9 and V13–V16.
+  Raising it to M/high was honest but does not make it compliant.
+* **U9** bundles schema and identity, lifecycle, rejected alternatives,
+  two-channel enumeration, provenance, deletion archaeology and OB-1…OB-7, while
+  labelled S/medium.
+
+**Required fix.** Split each along the seams the auditor named: discovery and
+provenance apart from recovery and working-tree placement (U3); the Step 5
+reorder apart from Step 6 and session-end reconciliation (U4); record schema and
+lifecycle apart from Channel B discovery and reconciliation (U9). Re-derive
+`task_count`, the dependency graph and the verification mapping afterwards.
+
+#### F-10 (P1) — S3/S4 is not a mechanically executable `backlogit` contract
+
+*Agent-Native Parity Reviewer.*
+
+S3 says "enumerate every checkpoint owned by THIS unit" and S4 says "resolve
+every checkpoint owned by this unit", supplying neither the
+`backlogit_list_checkpoints` invocation nor a deterministic ownership predicate.
+The installed Ship and Stage recovery protocols are far stricter: call with
+`consumer_id` only, apply no `status`/`agent` API filter, inspect quarantine and
+validation anomalies *before* partitioning, and resolve only a validated
+owner-selected record after a confirmed successful handling. The registry also
+exposes no `agent` list parameter. As written, an agent could filter at the API
+call and hide quarantined records, sweep in another unit's records, or
+bulk-resolve without a per-record handling proof.
+
+**Required fix.** Add a normative S3 algorithm and a matching U4 acceptance
+criterion specifying the exact call, the no-filter rule, anomaly-before-partition
+ordering, a precise current-unit identity predicate (for example validated
+`context.shipment_id == current shipment_id` together with `agent == ship`) and a
+per-checkpoint successful-handling proof before any
+`backlogit_resolve_checkpoint`. Prohibit bulk and cross-unit resolution
+explicitly.
+
+#### F-13 (P1) — Channel B is not independent of the mutable PR body (RR-3 blocker 1)
+
+*Agent-Native Parity Reviewer.*
+
+Channel A selects "entries whose body contains `autoharness:closure-locator`".
+Channel B then scans "every PR admitted by PV-1…PV-3 of the same exhaustive
+paginated enumeration". If the body locator was deleted before merge, that PR is
+no longer a marker-bearing candidate and no instruction unambiguously admits it
+for Channel B. The claimed body-deletion recovery therefore fails in exactly the
+open-PR residual window it was designed for — which is the whole of RR-3.
+
+**Required fix.** Derive two independent candidate sets from the one paginated
+response: apply PV-1…PV-3 to every enumerated PR using API fields alone; Channel
+A may then inspect only trusted bodies carrying the marker, but Channel B must
+fetch and inspect every trusted PR head **regardless of body contents**. Add an
+executable test for an `OPEN` record on an unmerged PR whose body has been
+deleted.
+
+#### F-14 (P1) — Channel B's discovery and deletion commands are not executable (RR-3 blocker 2)
+
+*Agent-Native Parity Reviewer.*
+
+`git log --follow --diff-filter=D --format=%H -- <path>` carries no commit-ish,
+so it examines only the currently checked-out history rather than each fetched PR
+head; `FETCH_HEAD` is overwritten by every subsequent PR fetch; and a fully
+deleted artifact has no current-tree path for the preceding `ls-tree` to supply.
+`git log -S'resolution_obligation' -- docs/closure/` yields commits but the plan
+defines no procedure mapping introduction, deletion and `OPEN → CLOSED`
+transitions to a particular record identity. OB-1 and OB-2 therefore cannot be
+evaluated exhaustively from a fresh checkout.
+
+**Required fix.** Fetch each trusted PR to a unique retained local ref rather
+than relying on `FETCH_HEAD`; scan that ref and `origin/main` explicitly;
+enumerate historical artifact paths and field transitions from those explicit
+refs; parse parent and child blobs to bind each record identity to its `OPEN` and
+`CLOSED` transitions; require an ancestry check from the introducing commit to
+the retained ref or `origin/main`; halt on fetch, history or parse failure.
+Rewrite V18 to execute the whole workflow, including deletion from an open PR
+head and deletion after merge.
+
+#### F-15 (P1) — PV-B4/PV-B5 structurally reject the correct post-merge `CLOSED` transition
+
+*Agent-Native Parity Reviewer.*
+
+Channel B requires "the record's embedded `pr` equals the PR it was read from".
+The record is opened in the implementation PR and closed in a *different*
+post-merge closure PR, where its embedded `pr` and `branch` correctly still name
+the implementation PR. A correct `CLOSED` transition therefore fails PV-B4/PV-B5,
+and no alternate provenance relation for the closure PR is defined.
+
+**Required fix.** Define provenance in terms of the immutable implementation-PR
+identity, and define the authorized closure-transition carrier separately:
+validate the introduction against the implementation PR's head and history, then
+validate `CLOSED` as a descendant on a closure PR whose relationship to that
+implementation PR is explicitly recorded and checked by Git or API ancestry. Do
+not apply one "read from this PR" equality rule to both trees.
+
+#### F-16 (P1) — P-012 degraded mode is asserted but never wired for the new critical-path tools
+
+*Agent-Native Parity Reviewer.*
+
+The Constitution Check says locator discovery "is probed per P-012", but U4, U5
+and U6 add dependence on `backlogit_list_checkpoints`, `backlogit_get_checkpoint`,
+`backlogit_resolve_checkpoint`, `backlogit_create_checkpoint`, `gh api`,
+review-thread enumeration and Git history access without a single acceptance
+criterion updating Ship's tool-availability gate, and without specifying
+CLI-fallback versus halt behaviour when the registry lacks checkpoint operations.
+The dangerous case is a registry with **no** checkpoint operations being treated
+as an implicit zero-checkpoint result — a silent fail-open into the merge path.
+
+**Required fix.** Add an explicit pre-S3 and pre-startup availability contract:
+probe every required operation before entering the affected path, use only
+declared official CLI fallbacks, and otherwise halt before S3, before either
+discovery channel, before recovery and before merge. Define the
+no-checkpoint-operations registry case explicitly as a halt, never as zero.
+
+#### F-17 (P1) — a trusted decoy PR can indefinitely deny recovery for a real shipment
+
+*Security Lens Reviewer (confidence 0.75).*
+
+Both channels admit any same-repository, default-branch-targeting PR authored by
+an `OWNER`/`MEMBER`/`COLLABORATOR` as a carrier for an arbitrary real shipment
+ID. PV-6/PV-7 only check that the referenced shipment and feature exist and that
+checkpoint filenames look plausible; PV-4/PV-5/PV-B4/PV-B5 only check internal
+self-consistency. Nothing checks that the PR *is* the shipment's designated
+implementation PR. A trusted-but-careless or compromised collaborator can
+therefore open an unrelated decoy PR carrying a fabricated record or locator
+naming a real in-flight shipment; any field difference then trips OB-3 or the
+duplicate-locator rule and halts that shipment's every future startup until a
+human disambiguates. No fork and no admin access is needed, and the risk is
+disclosed nowhere in the residual-risks table.
+
+**Required fix.** Add PV-8/OB-8 binding a discovered locator or record to the
+shipment's backlog-recorded implementation PR number, and **discard** — not halt
+on — candidates whose PR number does not match that binding. At minimum, record
+it as an explicit accepted residual risk.
+
+#### F-18 (P1) — S8 is check-then-act; the merge call does not pin the observed HEAD
+
+*Security Lens Reviewer (confidence 0.65).*
+
+S8 requires five values to agree at the moment of evaluation but never requires
+the merge invocation itself to be atomic against that observation. Between the S8
+read and the merge API call, a push by the author, a bot, or any app with write
+access can advance `headRefOid`. GitHub's merge endpoint accepts an expected-head
+`sha` parameter for exactly this purpose and the plan does not use it, so the
+six-part bar is a TOCTOU pattern rather than a guarantee.
+
+**Required fix.** Require S8 (and item 16 / P-009) to pass the S8-observed HEAD
+as the expected head SHA to the merge call so GitHub refuses server-side on
+mismatch.
+
+#### F-19 (P1) — the RR-3 "detectable, halting" claim is unsubstantiated (RR-3 blocker 3)
+
+*Security Lens Reviewer (confidence 0.68).*
+
+Revision 9's accepted-residual sentence claims the force-push + history-rewrite +
+body-edit combination is now "a detectable, halting condition (OB-2) rather than
+a silent one". It is not. The record deliberately carries no SHA anywhere (RQ-8),
+and Channel B's probes scan only currently reachable history. Force-push the
+branch to before the resolution commit and edit the body, and both probes return
+empty — indistinguishable from the obligation never having existed. No checksum,
+prior-observed SHA or reflog check exists anywhere in the design to tell the two
+apart. This needs only the PR author's own ordinary push and body-edit rights on
+their own open branch: no admin, no fork.
+
+**Required fix.** Correct the disposition to state honestly that this combination
+is *not* detectable once both channels are erased by the same actor, and then
+either require branch protection forbidding force-push once S4 has run (for
+example through a required status check set at resolution time) or introduce a
+corroboration signal outside that actor's erasure surface — a CI check run or
+deployment status posted at S4 is not deletable by an account that can
+force-push. **This is an operator decision, not a Stage decision.**
+
+#### F-21 (P1) — the plan ignores established prior art on post-merge worktree isolation
+
+*Learnings Researcher, confidence medium. Prior art:
+`docs/compound/workflow-issues/post-merge-worktree-regenerate-ignored-task-gate-evidence-2026-08-02.md`.*
+
+The established pattern uses two distinct worktree paths — an implementation
+worktree and a clean post-merge worktree spawned at the merge SHA — with an
+explicit rule not to mutate the primary working tree. WP-1…WP-7 describes
+fetching `refs/pull/<n>/head` and switching, but never states whether Ship's
+pre-merge resolution commit is made in the implementation worktree or a separate
+space. The compound library already solved this and the plan does not reuse it.
+
+**Required fix.** State explicitly which worktree carries the resolution commit
+and reconcile WP-1…WP-7 with the recorded pattern, or record why it does not
+apply here.
+
+### P2 findings
+
+| Ref | Finding | Raised by |
+|---|---|---|
+| F-20 | U2 AC3 requires the canonical text "including its four ordering invariants" while the canonical definition declares **eight**. U2 installs the block verbatim and V6 checks exactness, so the criterion has no satisfiable reading and an implementer could drop invariants 5–8 — which are the RQ-6 reorder, pinned approval, explicit check evaluation and the RQ-12 record. Fix: say eight, and have V6/V2 assert all eight headings. | Scope, Correctness, Architecture, Agent-Native (4×) |
+| F-22 | U1's heading still carries `*(root)*` and has no `Depends on: U2`, contradicting the dependency section's `U2→U1` edge and single-root-U2 statement. An extractor would run U1 first and create the dangling `RESOLUTION_PREFIX` reference the edge exists to prevent. | Correctness |
+| F-23 | U5 AC9 restates all seven WP steps although U3 owns the canonical procedure and U5 is meant to invoke it by name. The duplicate can drift undetected because V2 only guards S1–S8 restatements. | Scope |
+| F-24 | V19 is not a runnable grep: the file legitimately contains `resolution_commits` and `final_head` in the adjacent locator definition, and a plain grep cannot honour the "within this subsection" boundary. Extract the fenced schema or parse its YAML keys instead. | Scope |
+| F-25 | U10 is a behaviour change, not a schema-only change: initializing `none` is new skill behaviour, AC2/AC3 restate a lifecycle U9 owns, and a re-run of `operational-closure` in `pre-merge` may clobber `OPEN`. The graph also lets U4 and U10 run concurrently after U9 — the exact unowned-squatter window U10 exists to close. Add edge `U10→U4`; require create-only initialization; forbid clobbering `OPEN`/`CLOSED`. | Architecture |
+| F-26 | The `LAST_MILE_RECOVERY` entry rule requires both channels, but U3 — which owns that rule — has no acceptance criterion mentioning Channel B, the record, or OB-6. U3 can pass with a single mutable channel still installed. | Architecture |
+| F-27 | The Constitution Check maps only workflow policies P-001…P-020 and never the workspace constitution's own Principles I–XI, though the Governance clause requires it. Principles VII (destructive-command approval) and VIII (explicit safety modes) are unmapped despite WP performing fetch, branch create/switch, fast-forward and commit. | Constitution |
+| F-28 | WP-1 asserts only a clean tree and omits the P-011/P-016 worktree-topology gate before a committing re-entry that creates or switches branches and commits. P-011 is absent from both the Constitution Check and the frontmatter policy list. | Constitution |
+| F-29 | OB-7 defines incomplete enumeration only as a non-zero exit or a truncated page. A shallow or grafted clone makes `git log` exit 0 while silently omitting commits past the horizon, so a deletion beyond it scans clean. Require `git rev-parse --is-shallow-repository` and fail closed or unshallow first. | Security |
+| F-30 | Step 5 item 16 requires confirming the GitHub merge button in the rendered UI, which U4 AC9 retains unmodified. There is no agent-runnable equivalent, so the new S8 path depends on a human-only check. Verify merge-commit capability and mergeability by API, invoke merge explicitly in merge-commit mode, and assert two parents afterwards. | Agent-Native |
+| F-31 | Three coupling points flagged from prior art: Step 5 reordering versus Step 6's assumptions about backlogit record state; WP-1…WP-7 versus the linked-worktree bounded-startup pattern; and the standing `backlogit shipment ship` non-termination risk whose P-015 safe-close fallback the plan does not mention. | Learnings |
+
+### P3 findings
+
+| Ref | Finding | Raised by |
+|---|---|---|
+| F-32 | Hardening D5's fold cites `U2 acceptance criterion 6`, which concerns locator phase-1 timing (D2). The criterion installing S1–S8 is U2 AC3. | Correctness |
+| F-33 | `*(corrected in revision 9; see B below)*` has no referent — the document labels that item Round 8 finding **2**, not B. | Correctness |
+| F-34 | `none` is used as a lifecycle state but the schema union is only `OPEN \| CLOSED`. Make it `none \| OPEN \| CLOSED` and state that an omitted field after S2 is OB-5, not "no obligation". | Architecture |
+| F-35 | WP-4 passes a locator-sourced branch name to git without requiring argv-array execution or a `--` separator. Git's ref-naming rules limit exploitability, but the plan should foreclose shell interpolation explicitly. | Security |
+| F-36 | Describing revision 9 as "bounded" while it adds two units, a requirement, a hardening and an in-scope file is generous. It is sanctioned by escalation finding D and decision revision 3, but the plan should say so explicitly so the framing is auditable. | Constitution |
+| F-37 | Prior-art advisories: resolution-commit side effects on `.backlogit/stash.jsonl` and `docs/memory/**` must be committed or carried forward to avoid a dirty-worktree classification next session; and WP re-entry must leave no fetched branch or worktree state on disk before the next claim. | Learnings |
+
+### Runtime verification and operational closure
+
+Explicitly assessed, as the skill requires.
+
+* **Runtime verification** is *specified* (V1–V19 including V12a–V12f) but two
+  checks are **unsatisfiable as written** — V4(g) contradicts S4 (F-03) and V19
+  is not a runnable grep (F-24) — and one check, **V16, tests behaviour the
+  specification does not contain** (F-06). V18 does not execute the workflow it
+  claims to verify (F-14). The verification suite therefore cannot currently
+  discharge the plan.
+* **Operational closure** is the principal structural gap. The plan makes
+  `docs/closure/` load-bearing for a merge-gating obligation without reconciling
+  it against the two mechanisms that already own that directory's lifecycle:
+  `operational-closure` re-invocation (F-25) and P-020 `compact-context` archival
+  (F-07). Closure readiness is **not** demonstrated.
+
+### Required disposition
+
+Per the governing directive and the gate table:
+
+1. **FAIL.** Do **not** harvest. Do **not** assemble or claim a shipment. Do
+   **not** activate, implement or merge. `harvest_authorized` stays `false`.
+2. **RR-3 is re-opened** and recorded as unresolved in `## Residual risks`. Its
+   closure requires an operator decision between a branch-protection remedy and
+   an out-of-band corroboration signal (F-19), because both options reach past
+   the reduced Defect-2 boundary this plan is confined to.
+3. **The circuit is open again** at `review_attempts: 4`. This is the fourth
+   consecutive FAIL. Stage does **not** self-authorize a fifth attempt; the
+   remediation of these findings requires fresh operator authorization, and the
+   RR-3 decision must be made before another revision is attempted, because
+   F-13, F-14 and F-15 are all consequences of the mechanism RR-3 selects.
+
+### Honest assessment for the operator
+
+Revision 9 is a real advance on revision 8 in one specific, important way: the
+verbatim Step 5 extract ends the four-round pattern of planning against a Step 5
+that did not exist, and both personas who checked it confirmed it is accurate.
+Escalation findings A, C and E are substantially remediated.
+
+It fails on the other two. Finding B's remediation was correct in principle —
+making S5–S8 universal — but introduced two *new* zero-checkpoint defects (F-04,
+F-05) because the locator-dependent clauses were not made conditional at the same
+time. And finding D's remediation, the RR-3 closure, does not hold: three
+independent reviewers found the second channel is neither independent of the
+first (F-13) nor executable (F-14) nor honest about its residual (F-19).
+
+The directive anticipated this outcome: *"If no existing owned state surface can
+safely support this without expanding into Defect 1 or new executable
+persistence, do not fabricate a solution."* The venue chosen — `docs/closure/` —
+was endorsed by the architecture review as correct. The mechanism built on it was
+not sufficient. The narrowest honest position is the one now recorded: RR-3 stays
+open, RQ-7 stays unweakened, and the operator decides.
+
+<!-- plan-review-attempt: 4 -->
+

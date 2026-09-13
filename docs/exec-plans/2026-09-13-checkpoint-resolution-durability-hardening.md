@@ -3,10 +3,10 @@ doc_type: exec-plan-hardening
 date: 2026-09-13
 revision: 9
 scope: defect-2-only
-status: awaiting-independent-review
-review_verdict: pending
-review_verdict_revision: 8
-review_attempts: 3
+status: halted-review-circuit-open
+review_verdict: FAIL
+review_verdict_revision: 9
+review_attempts: 4
 harvest_authorized: false
 plan_document: docs/exec-plans/2026-09-13-checkpoint-resolution-durability-plan.md
 supersedes: docs/exec-plans/2026-09-13-checkpoint-lifecycle-continuity-hardening.md
@@ -30,11 +30,18 @@ attempt counter 3 and the P-013.6 escalation fired.
 **Revision 9 is one bounded remediation revision explicitly authorized by the
 operator** after that circuit opened. It rewrites **D5** against a verbatim
 extract of the real Ship Step 5, discharges **D14** through existing units U3/U5
-plus verification V12, and adds **D15** closing the RR-3 durable-publication
-blocker. It has **not** been reviewed: `review_verdict` is `pending`,
-`review_verdict_revision` still reads `8` because that is the last *completed*
-verdict, and `harvest_authorized` stays **false** pending a fresh independent
-full-plan review of revision 9. This document authorizes no harvest.
+plus verification V12, and attempted to close the RR-3 durable-publication
+blocker through **D15**.
+
+**Round-9 outcome — FAIL.** Revision 9 was reviewed by a fresh full independent
+seven-persona panel at HEAD `9b15fd43` and returned **FAIL** with 1 P0 and 15 P1
+findings; the complete finding set is recorded in the plan's
+`## Plan Review — round 9` section. `review_verdict` is now `FAIL`,
+`review_verdict_revision` reads `9`, `review_attempts` reads `4`, the plan-review
+circuit is **open again**, and `harvest_authorized` stays **false**. D5's rewrite
+survived the round (the verbatim extract was independently confirmed accurate);
+**D15 did not** — see the D15 status note below. This document authorizes no
+harvest.
 
 **Relationship to the prior hardening document.** The combined hardening document
 (`2026-09-13-checkpoint-lifecycle-continuity-hardening.md`, H1–H41) covered both
@@ -436,6 +443,25 @@ read-only ancestry assertions are not burdened with a switch.
 
 *Added in revision 9, from the P-013.6 escalation (finding D, RR-3 / RQ-7).*
 
+> **NOT discharged — OPEN blocking hardening (round-9 review, findings F-13,
+> F-14, F-19).** The required correction stated below is correct and stands. The
+> *mechanism* revision 9 folded it into does **not** satisfy it. Three
+> independent reviewers found that (a) Channel B's candidate set is drawn from
+> PRs whose bodies carry the locator marker, so it is **not independent of the
+> mutable PR body** in the residual window it exists to cover; (b) its discovery
+> and deletion commands are **not executable as written** — no commit-ish, an
+> overwritten `FETCH_HEAD`, and no procedure binding history transitions to a
+> record identity; and (c) the accepted-residual claim that force-push plus
+> history-rewrite plus body-edit is "detectable, halting (OB-2)" is
+> **unsubstantiated**, because RQ-8's no-SHA rule leaves no external reference
+> point to distinguish "never existed" from "erased", and the attack needs only
+> the PR author's own ordinary push and body-edit rights. RR-3 is therefore
+> **re-opened** in the plan. Closing D15 requires an operator decision between a
+> branch-protection remedy and an out-of-band corroboration signal outside the
+> branch author's erasure surface; both reach past the reduced Defect-2
+> boundary, so Stage cannot select one. The requirement text below is retained
+> unchanged as the specification any future mechanism must meet.
+
 **Risk.** `RESOLUTION_PREFIX` resolves **every** checkpoint before merge. That is
 the fix — and it is also what makes the PR-body `CLOSURE_LOCATOR` the **sole**
 record of an outstanding closure obligation. A PR body is mutable: a human or bot
@@ -515,7 +541,14 @@ add, **U9** and **U10**, exist solely to discharge **D15**, which revision 8 did
 not have at all because RR-3 was then an undesigned open blocker.
 
 **This coverage claim is a statement about fold completeness, not a verdict.**
-It asserts that each hardening now has a named home in a task criterion and a
-verification check. Whether those criteria are *adequate* is precisely what the
-pending fresh independent review of revision 9 decides. `harvest_authorized`
-remains **false** until it returns PASS.
+It asserts that each hardening has a named home in a task criterion and a
+verification check. Whether those criteria are *adequate* is what the independent
+review decides — and the round-9 review answered **no**. **D15 is NOT
+discharged**: round-9 findings F-13, F-14 and F-19 establish that the mechanism
+D15 folds into is neither independent of the mutable PR body, nor executable as
+specified, nor honest about its residual, so RR-3 is **re-opened** in the plan.
+D15 therefore reverts to the status D14 held at revision 8 — a **recorded,
+undischarged blocking hardening**. D5's fold survived the round; D14's discharge
+through U3/U5/V12 was not contradicted, though F-09 and F-21 require U3 to be
+split and WP-1…WP-7 to be reconciled with the recorded post-merge worktree
+pattern before it can be relied on. `harvest_authorized` remains **false**.

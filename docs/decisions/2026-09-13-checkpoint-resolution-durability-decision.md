@@ -189,7 +189,7 @@ executable persistence substrate (Defect-1 scope, explicitly forbidden here).
 | `PRRT_kwDORJEduc6h3sTs` | **Fixed** — same as `3aDl`. |
 | `PRRT_kwDORJEduc6h3sTz` | **Fixed** — manifest validation asserts exact membership, never order. |
 | `PRRT_kwDORJEduc6h3sT4` | **Fixed** — the locator protocol is called **three-phase** consistently. |
-| `PRRT_kwDORJEduc6h6juv` *(carried forward)* | **Fixed in revision 3 of this decision** — RQ-12 plus plan units U9/U10 close RR-3 with a durable Git-tracked obligation record. The gap is not silently weakened: RQ-7 is made true and RQ-8 is preserved (the record carries no SHA). |
+| `PRRT_kwDORJEduc6h6juv` *(carried forward — STILL OPEN)* | **Attempted in revision 3 of this decision** — RQ-12 plus plan units U9/U10 were intended to close RR-3 with a durable Git-tracked obligation record. **The round-9 independent review found the mechanism does not hold** (findings F-13, F-14, F-19: Channel B is not independent of the mutable PR body, its commands are not executable as written, and the accepted-residual claim is unsubstantiated), so **RR-3 is re-opened**. RQ-7 remains in force and is **not** weakened, and RQ-8 is still preserved (the record carries no SHA) — but RQ-12 is **not yet satisfied by any specified mechanism**. Closure requires an operator decision between a branch-protection remedy and an out-of-band corroboration signal outside the branch author's erasure surface; both reach past the reduced Defect-2 boundary. |
 
 ## 7. Definition of done
 
