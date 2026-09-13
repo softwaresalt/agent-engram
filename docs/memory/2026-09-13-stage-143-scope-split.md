@@ -22,7 +22,12 @@ Executed the operator-approved split of the 143 release unit.
 - PR #396 body updated (metadata only): outcome stays `BLOCKED`, Reviewed HEAD
   refreshed to the pushed SHA. This refresh is **per-push**, not one-time — the
   body's `Reviewed HEAD` must be re-pointed via PR metadata after every
-  subsequent push, or the current-HEAD evidence contract is violated.
+  subsequent push, or the current-HEAD evidence contract is violated. The
+  refresh must also be **verified against live `headRefOid` after the push
+  completes**: an automated reviewer snapshots the body when its run starts, so
+  a review submitted after the refresh can still quote the pre-refresh value.
+  Such a report is a snapshot artifact, and it is dispositioned against live
+  state rather than by re-editing an already-correct body.
 
 ## Why it halted
 
@@ -62,7 +67,7 @@ in items 7–10) is more entangled than the description admits.
 
 ## Bounded Copilot remediation passes (no harvest, no claim)
 
-Three operator-authorized bounded passes addressed published-PR review findings
+Four operator-authorized bounded passes addressed published-PR review findings
 only. None closed any of the three open P1s above; none changed the circuit
 state; none harvested, claimed, activated, merged, or created a replacement
 shipment.
@@ -71,7 +76,8 @@ shipment.
 |---|---|---|
 | 1 | 14 threads at `8a8fda8e` | Honesty corrections, supersession links |
 | 2 | 15 threads at `f5215703` | Specification hardening, D14 un-claimed |
-| 3 | 3 threads (this pass) | Review-attribution accuracy, hardening-coverage exception, per-push PR-body evidence rule |
+| 3 | 3 threads at `b2872e7f` | Review-attribution accuracy, hardening-coverage exception, per-push PR-body evidence rule |
+| 4 | 1 thread (this pass) | Superseded-finding disposition; per-push rule hardened with post-push verification |
 
 Pass 3 specifics:
 
@@ -81,6 +87,24 @@ Pass 3 specifics:
   previously asserted blanket completeness while its own D14 row said `none`.
 - Recorded that the PR body's `Reviewed HEAD` refresh is a **per-push**
   obligation.
+
+Pass 4 specifics:
+
+- The single finding reported the per-push contract as violated, citing a
+  `Reviewed HEAD` of `f5215703` against a live head of `b2872e7f` and a
+  validation record naming 22 changed files against GitHub's 27.
+- **Both premises were already superseded when the comment posted.** The body
+  was refreshed to `b2872e7f` at `18:43:20Z`; the review carrying the finding
+  was submitted at `18:46:57Z`, inside the same run that began at the
+  `18:41:30Z` push. No `22 changed files` string exists in the body or the
+  repository. The body was therefore **not** re-edited to a value it already
+  held, and no false correction was recorded.
+- The finding's substantive ask — re-run and re-record validation at the
+  current head — was honoured: markdownlint was re-run at this head and the
+  changed-file count re-recorded from GitHub as **27**.
+- The per-push bullet above now carries the post-push verification clause, so
+  the snapshot race that produced this report is described rather than
+  repeated. Outcome stays `BLOCKED`; the three P1s are untouched.
 
 ## Recommended next step
 
