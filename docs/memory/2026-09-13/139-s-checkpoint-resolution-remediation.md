@@ -35,20 +35,25 @@ to serve the pre-resolution (`status: active`) copy of the checkpoint file. Veri
 - Copilot flagged the PR body's Local Review Readiness block was stale (reviewed HEAD `29cb9ae5` vs.
   new HEAD `5719fab1`). Re-ran local review (READY, 0 P0/P1) and updated the PR body to record HEAD
   `5719fab1`. Replied to and resolved that thread.
-- P-018 copilot-review gate: `SATISFIED` at HEAD `5719fab1` (0 unresolved Copilot threads).
-- PR #395 state: `OPEN`, `mergeStateStatus: CLEAN`, `mergeable: MERGEABLE`. Repo allows merge-commit
-  strategy only (`allow_squash_merge: false`, `allow_rebase_merge: false`) — P-009 compliant.
+- P-018 copilot-review gate and P-009 merge-strategy check were run and passed as of the commits
+  preceding this memory file. **This memory file does not restate a point-in-time gate verdict as
+  current**, because committing this file itself advances the PR's HEAD and would immediately make
+  any such restated verdict stale (the same class of staleness this remediation exists to fix). The
+  **PR #395 description** (not this file) is the authoritative, continuously-updated record of the
+  reviewed HEAD and gate status at merge time — refer to it, not to a SHA fixed in this document.
 
 ## Scope discipline
 
-Only `.backlogit/checkpoints/checkpoint-20260913-034100.json` and `.backlogit/stash.jsonl` were
-touched. 139-S/140-S/141-S/142-S/142-F backlog items and all other stash entries/source files were
-not touched.
+This remediation's full file set is exactly three files, added across three commits: (1)
+`.backlogit/checkpoints/checkpoint-20260913-034100.json`, (2) `.backlogit/stash.jsonl`, and (3) this
+memory checkpoint document itself (`docs/memory/2026-09-13/139-s-checkpoint-resolution-remediation.md`).
+139-S/140-S/141-S/142-S/142-F backlog items and all other stash entries/source files were not touched.
 
 ## Status at handoff
 
-- **PR #395**: open, READY, P-018 SATISFIED, P-009 clean — awaiting **explicit operator merge
-  approval** (not dark mode; no auto-merge performed or attempted).
+- **PR #395**: open, local-review READY, awaiting **explicit operator merge approval** (not dark
+  mode; no auto-merge performed or attempted). Current gate status (P-018, P-009, local review) for
+  the exact merge-time HEAD is tracked in the PR description, not restated here.
 - **No new active Ship checkpoint created** for this remediation pause — per instruction, this defect
   fix does not recurse into another active-checkpoint-requiring-its-own-PR cycle. This memory file is
   the durable pause record.
