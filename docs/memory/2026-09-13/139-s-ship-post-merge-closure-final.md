@@ -52,10 +52,22 @@ was acted upon or modified by this closure session.
 
 Closure PR #394 merge-approval gate. The operator's prior signal ("PR 393: Merge
 approved") is explicitly scoped to PR #393 only and does not authorize merging #394.
-Ship is paused awaiting a **separate, explicit** operator approval for PR #394. A
-best-effort checkpoint (`checkpoint-20260913-014349.json`, session
-`ship-139-s-closure-pr-approval-pause-20260913`) was written capturing full resume
-context.
+Ship is paused awaiting a **separate, explicit** operator approval for PR #394.
+
+**Superseded-reference correction (2026-09-13, comment-remediation continuation)**:
+this file originally cited `checkpoint-20260913-014349.json` as the resume record for
+this halt. That checkpoint has since been marked `resolved` (commit `6488cb80`) after a
+first round of Copilot review-comment remediation (commit `c42fe67a`), and a further
+round (commit `b2cd6e01`) has since run. The **active** checkpoint as of this
+continuation is `checkpoint-20260913-034100.json` (predecessor
+`checkpoint-20260913-033145.json` was itself marked `resolved` in the same commit that
+added `034100`). This "final" memory file is a point-in-time record, not a live pointer:
+**on any resume, re-fetch the live PR #394 state (headRefOid, unresolved review
+threads) and the live checkpoint directory rather than trusting a specific filename
+cited here or in any prior checkpoint** — additional Copilot review rounds can and did
+post asynchronously after each checkpoint in this chain was written. The underlying
+halt condition (awaiting a separate, explicit operator approval to merge PR #394)
+remains unchanged and still applies.
 
 ## Explicitly out of scope this session
 
