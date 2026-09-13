@@ -1,0 +1,458 @@
+---
+doc_type: deliberation
+date: 2026-09-13
+status: accepted
+depth: deep
+stash_ids: [A1D95672, 4EF24729]
+source_refs:
+  shipment: 139-S
+  feature: 142-F
+  prs: [394, 395]
+  merge_commit: 9ab53499f60a7afe3e215d10ee8c08a4278617b6
+policies: [P-001, P-005, P-009, P-012, P-013, P-014, P-016, P-017, P-018, P-019, P-020, P-021]
+revision: 5
+surfaces:
+  - .github/policies/workflow-policies.md
+  - .github/agents/_orchestrator.agent.md
+  - .github/agents/_ship.agent.md
+  - .github/agents/_stage.agent.md
+  - .github/instructions/backlogit.instructions.md
+  - .github/instructions/github-pr-automation.instructions.md
+---
+
+# Checkpoint Lifecycle Continuity — Deliberation
+
+## 1. Framing
+
+Two operator-reported defects sit at **opposite ends of the same checkpoint
+lifecycle**, and both force avoidable human or process overhead:
+
+| End | Stash | Defect |
+|---|---|---|
+| **Restore / route** | `A1D95672` | In dark factory mode, the Orchestrator demands the operator re-type a checkpoint filename to continue the *same bounded run*. |
+| **Resolve / persist** | `4EF24729` | A checkpoint resolved after its closure PR merged strands the resolution on a merged branch; `main` keeps reporting `active`, forcing a closure-of-closure PR. |
+
+The lifecycle is `create → restore/route → resolve/persist`. Defect 1 makes
+*entering* a checkpoint needlessly interactive; defect 2 makes *exiting* one
+needlessly recursive. Both are defects in durable `.github/` workflow documents,
+not in product code.
+
+### 1.1 Confirmed repository facts
+
+These were verified, not assumed:
+
+* **No `templates/` directory exists in this repository.** `.tmpl` references in
+  `_stage.agent.md` L344 and `_ship.agent.md` L827 are stale provenance pointers
+  to the upstream autoharness generator. **The installed `.github/` tree is the
+  only durable, editable surface here.**
+* **Checkpoint JSON files are git-tracked.** `git check-ignore -v
+  .backlogit/checkpoints/checkpoint-20260913-034100.json` exits 1 (no ignore
+  rule); `git ls-files --error-unmatch` resolves the path. The root `.gitignore`
+  ignores `.backlogit/backlogit.db*` and telemetry only — `checkpoints/*.json`
+  is deliberately absent from the ignore list.
+* **`backlogit checkpoint resolve` has no non-git persistence path.** Its only
+  argument is `<filename>`; there is no `--no-commit`, no DB-only mode.
+  backlogit is an **external tool** (v1.10.1), not vendored in `crates/`.
+* **The only automated gate on a `.github/*.md` edit is markdownlint**
+  (`.markdownlint.json` + `scripts/pre-commit-markdownlint.*`), plus the
+  pipeline-topology and pre-push quality-gate scripts. There is no frontmatter
+  schema, link checker, or agent-template content validator.
+
+## 2. Defect 1 — Dark-mode continuation demands repeated operator selection
+
+### 2.1 Root cause: a category error
+
+`_orchestrator.agent.md` Step 0.0b encodes two **unconditional** gates:
+
+* Step 4: *"the Orchestrator NEVER auto-picks… REQUIRE EXPLICIT OPERATOR
+  SELECTION of a SINGLE checkpoint by filename."*
+* Step 8: *"REQUIRES EXPLICIT OPERATOR CONFIRMATION before any restore or prune."*
+
+Step 9 states the justifying rationale: *"CheckpointV1 exposes no heartbeat,
+session-lock, or lease field — only `created_at`/`updated_at` — so age alone
+cannot distinguish a live session from a dead one."*
+
+That rationale is **sound for the case it was written for**: a *cold start*
+discovering an *unknown, possibly-live foreign session*. It is a **category
+error** when applied to a *warm continuation of the current bounded dark run*,
+where the checkpoint is the run's own deliberate pause marker, inside a scope
+the operator already pre-authorized at `DARK_MODE_START`.
+
+The discriminator is not age and not liveness. It is **attribution**: is this
+checkpoint provably the current run's own, or is it a foreign session's?
+Step 9's objection dissolves exactly when attribution is provable, because
+there is then no *other* session to hijack.
+
+This also explains the observed inconsistency the operator reported: later in
+the same 139-S run the Orchestrator *did* safely auto-route an immediate
+same-scope continuation. The correct behaviour was already being performed by
+judgment; only the durable document never authorized it. Codifying it removes
+the divergence between documented and actual behaviour.
+
+### 2.2 Options
+
+**Option A1 — Blanket dark-mode bypass.** Whenever `DARK_MODE_ACTIVE`, skip
+selection and confirmation.
+
+*Rejected.* This would auto-resume **stale, out-of-scope** checkpoints. Stash
+`AA5698E3` records two genuinely stale ship-owned checkpoints
+(`checkpoint-20260808-030834.json` from 110-S, `checkpoint-20260715-181946.json`
+from 081-S) still active in this very repository. Under A1 a dark run would
+auto-route one of those. This directly violates the operator's binding
+constraint: *"must never auto-resume stale work outside the exact recorded dark
+scope."*
+
+**Option A2 — Conjunctive-predicate auto-route.** *(Recommended.)* Auto-route
+only when **every** condition in a closed AND-gate holds; any false condition
+falls through to the **existing, unchanged** fail-closed operator path.
+
+*Accepted.* It is the minimal change that satisfies the operator requirement
+while keeping every current safety property. The blast radius is bounded because
+the predicate is conjunctive and defaults to the existing behaviour — **but that
+bound holds only under correct evaluation, and the two error directions are not
+symmetric**:
+
+* A **false negative** (a genuinely-true condition evaluates false) degrades
+  safely: the gate declines, control falls through to the existing, unchanged
+  fail-closed operator path, and the only cost is *more* operator interaction.
+* A **false positive** (a genuinely-false condition evaluates true) is the
+  **principal safety risk**. Because each condition is *necessary*, a single
+  false-positive conjunct satisfies the entire gate and **removes** operator
+  interaction, auto-routing an ineligible checkpoint — potentially resuming the
+  **wrong** checkpoint. A false-positive `C-CURSOR` resumes completed or
+  out-of-scope work; `C-ATTRIB` resumes a foreign or prior run; `C-SOLE` chooses
+  among competing candidates; `C-OWNEREXCL` lets the wrong role act.
+
+Conjunctivity is therefore a defence against *ineligibility*, not against
+*evaluation error*. The design consequently requires that any condition which
+cannot be **proven** true evaluates false: missing, malformed, ambiguous, stale,
+or failed lookups all decline, incomplete candidate enumeration is an error
+rather than evidence of sole candidacy, and every mutable conjunct is
+re-evaluated immediately before routing to bound the TOCTOU window. Verification
+must exercise the false-positive direction explicitly (plan scenarios S28–S35
+and one-condition-false/seven-true cases for all eight conjuncts), not only the
+declining direction. *(Corrected in revision 4 — hardening H27; PR #396 thread
+`PRRT_kwDORJEduc6h3Q61`.)*
+
+**Option A3 — Introduce a new policy (P-022) for checkpoint continuation.**
+
+*Rejected.* P-017 already owns dark-mode authority semantics. A second policy
+would fragment the dark-mode authority contract across two documents, creating
+two places an agent must check before deciding what dark mode permits — a known
+source of drift. This is an **amendment to P-017**, not a new policy.
+
+### 2.3 Accepted design — a conjunctive AND gate
+
+Auto-route a checkpoint without repeated operator selection/confirmation **only
+when every condition holds**. The operator enumerated seven necessary
+conditions; plan hardening added a further condition and sharpened one of them
+(see the hardening document H1, H2, H10, H11), yielding the **eight named
+conditions** that the implementation plan carries as the authoritative form.
+Because the gate is conjunctive, adding a condition can only restrict routing,
+never expand it.
+
+1. `C-DARK` — `DARK_MODE_ACTIVE` is in force in the current session state.
+2. `C-OWNER` — checkpoint `agent` is exactly `stage` or `ship`.
+3. `C-CURSOR` — **cursor equality**: the checkpoint's scope item equals the
+   recorded `DARK_MODE_SCOPE` cursor's **current** position. Scope membership
+   alone is insufficient, and a scope item already recorded **completed** fails
+   this condition even though it remains inside the scope set.
+4. `C-ATTRIB` — **current-run attribution**: the checkpoint is provably the
+   current run's own, established by session lineage rather than inferred.
+5. `C-VALID` — candidate is structurally valid and not quarantined; the existing
+   full-enumeration anomaly scan (Step 0.0b step 2) runs **before** this path and
+   is **never** weakened by it.
+6. `C-SOLE` — exactly one active candidate exists across all agents.
+7. `C-SUBSTRATE` — backlogit reachable, **and** engram reachable when
+   `agent-engram` is installed. Either unreachable → fail closed, no prune and no
+   resume (preserving the P-012 / `ENGRAM_DEGRADED` posture).
+8. `C-OWNEREXCL` — ownership routing remains owner-exclusive: the Orchestrator
+   only *routes*; the owning agent performs restore/prune/resolve. P-001 role
+   separation is untouched.
+
+The plan's `SCOPE_MATCH_RULES` and `ATTRIBUTION_RULES` give the operational
+resolution of `C-CURSOR` and `C-ATTRIB`.
+
+### 2.4 Explicitly preserved fail-closed cases
+
+Auto-routing is **unavailable** — existing explicit selection and confirmation
+stand unchanged — for: multiple candidates; malformed or quarantined records;
+cross-scope candidates; **non-dark sessions**; ambiguous or non-`stage`/`ship`
+ownership; missing required substrates; and **any authority expansion**.
+
+### 2.5 Authority boundary (non-negotiable)
+
+Auto-routing conveys **continuation authority only**. It expressly does **not**
+imply merge approval, admin fallback, or destructive-action approval. Those
+remain governed by the unchanged P-017 "Merge approval and admin fallback"
+clauses and by P-014. Resuming a checkpoint whose `resume_hint` says a merge is
+pending grants **no** merge authority — the run resumes *into* the existing
+merge gates, it does not resume *past* them. P-001, P-009, P-014, P-016, P-017,
+and P-020 are all preserved.
+
+## 3. Defect 2 — Checkpoint resolution stranded on a merged branch
+
+### 3.1 Root cause: structural ordering
+
+Three facts compose into the defect:
+
+1. Checkpoint JSONs are **git-tracked** (§1.1), so every `resolve` is a
+   working-tree change that must be committed and merged to reach `main`.
+2. `_ship.agent.md` Step 6.0 mandates that **all** post-merge closure commits
+   ride a **new `post-merge/*` branch created after merge** (L722–741).
+3. `_ship.agent.md` places checkpoint resolution at **session end** (L1055–1058),
+   i.e. inside that post-merge phase.
+
+Therefore the resolution commit lands on a branch whose PR has **already
+merged**. Commits to a merged branch never reach `main` without a brand-new PR.
+Confirmed: commit `43e70430` resolved the checkpoint but
+`git merge-base --is-ancestor 43e70430 main` exits 1 — it is not on `main`. `main`
+kept serving `status: active`, and PR #395 was required for a one-line flip.
+
+### 3.2 Options
+
+**Option B1 — Non-recursive tool-managed persistence** (gitignore checkpoints /
+DB-only resolution).
+
+*Rejected for this shipment.* Blocked on two independent grounds. (a) It requires
+changing **backlogit**, an external tool with no such flag — outside this
+repository's authority and outside Stage's role boundary. (b) Untracking
+checkpoints would destroy the on-`main` audit trail that makes crash recovery
+auditable in the first place. Recorded as a deferred upstream feature request,
+not abandoned.
+
+**Option B2 — Ordering fix.** Resolve the session's checkpoint **before the
+closure PR's final reviewed HEAD**, so the resolution rides the same merge.
+
+*Accepted as the primary fix.* It is achievable entirely within the documents
+this repository owns, and it removes the defect at its structural source.
+
+**Option B3 — Post-merge orphan-detection assertion.** After merge, assert
+`git merge-base --is-ancestor <resolution_commit> origin/main`; if it fails,
+surface the orphan explicitly instead of closing silently.
+
+*Accepted as a companion.* B2 prevents the defect; B3 **detects** any residual
+occurrence. B2 alone is a process instruction that can be missed; B3 makes a
+miss loud rather than silent. Adopt **B2 + B3**.
+
+### 3.3 The self-referential evidence race — and why B2 does not recreate it
+
+B2 has a non-obvious hazard the operator explicitly flagged. Moving the
+resolution earlier means the resolution **commit itself advances HEAD**. Since
+P-014/P-018 evidence is pinned to an exact HEAD, a naive placement invalidates
+the readiness evidence it was meant to precede — and re-recording that evidence
+in another *commit* advances HEAD again. That is an infinite regress.
+
+This race is real and already observed on PR #395, in two Copilot threads:
+
+* `PRRT_kwDORJEduc6h2uOQ` — *"Local Review Readiness still records HEAD
+  `29cb9ae…`, but this entry was subsequently changed in `5719fab1…`… rerun the
+  local review and update the PR body before merge."*
+* `PRRT_kwDORJEduc6h2viu` — *"adding this file advanced the PR to HEAD
+  `9390bead`, while the latest Copilot review is still on `5719fab1`… Because
+  P-018 is bound to the exact HEAD, record that the current HEAD still requires
+  the gate rather than presenting it as merge-ready."*
+
+**The escape is that HEAD-pinned evidence lives in PR metadata, not in a
+commit.** `github-pr-automation.instructions.md` already requires `Reviewed
+HEAD: <sha>` in the **PR body** (L331, L366), and updating a PR body does
+**not** advance `headRefOid`. So the terminating order is:
+
+```text
+implement  →  resolve session checkpoint     (commit; advances HEAD)
+           →  resolve compensating checkpoint (commit; advances HEAD; LAST commit)
+           →  record Reviewed HEAD in PR BODY (metadata; does not advance HEAD)
+           →  run local readiness gate AT that HEAD, against that body
+           →  obtain approval at that HEAD
+           →  merge
+```
+
+Resolution is placed **before** the final gate run, never after. The gate then
+runs once, at the final HEAD, and its verdict is recorded in metadata. No
+regress.
+
+Two refinements were added in revision 4 after the PR #396 review and the
+P-013.6 escalation *(hardening H23, H25)*:
+
+* **Every** checkpoint resolution — including the *compensating* checkpoint's —
+  must precede the final HEAD, so all resolutions ride the same merge. An
+  earlier form resolved the compensating checkpoint *after* merge, which
+  stranded that commit on an already-merged branch and recreated the very defect
+  under discussion, recursively. Nothing Git-tracked can be resolved after merge.
+* The **PR-body record must precede the readiness gate**, not follow it. P-014
+  §1.9 reads the body and requires `Reviewed HEAD == headRefOid`; running the
+  gate before the body is updated is unsatisfiable once the resolution commits
+  have advanced HEAD, and obtaining approval before a valid readiness record
+  exists inverts the evidence chain. Because a PR-body edit is metadata, writing
+  it first still terminates without commit churn.
+
+A corollary rule generalizes this and is worth stating durably:
+
+> **Any artifact whose own commit advances HEAD MUST NOT restate a HEAD-pinned
+> verdict.** HEAD-pinned evidence belongs in PR metadata. Where a committed
+> document must refer to a gate outcome, it must use point-in-time wording
+> ("as of commit `X`, the gate passed") or point to the PR body as authoritative.
+
+This is not theoretical: commit `54a7abf6` ("make memory checkpoint
+self-consistent … no restated HEAD-pinned gate verdict") is precisely this
+correction applied by hand. Codifying it prevents the next recurrence.
+
+## 4. Grouping decision — one covering feature
+
+**Decision: one covering feature, not two with a dependency.**
+
+Rationale:
+
+1. **Shared mutable surface.** Both defects edit `.github/agents/_ship.agent.md`
+   (owner-side crash-resumption for defect 1; resolution ordering for defect 2).
+   Splitting them into two shipments guarantees a merge conflict in that file and
+   forces an artificial sequencing dependency purely to avoid it.
+2. **Shared conceptual model.** They are the entry and exit of one lifecycle.
+   A reader of either fix needs the same model of what a checkpoint *is*.
+3. **Shared invariant.** Both must respect the §3.3 evidence-race rule — defect 2
+   directly, and defect 1 because a dark-continuation auto-route must not write
+   HEAD-pinned evidence into a commit either.
+4. **Near-identical domain and verification surface.** Twelve of the fourteen
+   tasks are documentation-domain edits to `.github/` and to the planning
+   artifacts, gated by markdownlint plus the topology/quality scripts. One task
+   (the drift checker) is script-domain; one (the parity gate) is a
+   verification-only precheck. No source, `crates/`, or product-test changes.
+5. **Proportionate size.** The combined work decomposes into fourteen tasks
+   (eleven at revision 4, plus T12/T13/T14 added in revision 5), each
+   comfortably inside the 2-hour rule.
+
+The operator's conditional instruction — *"treat these as one thematic family
+if architecture and task granularity permit; otherwise explicitly separate them
+with dependencies"* — is therefore satisfied by the single-family branch.
+Intra-feature dependency edges still encode the required ordering (§5).
+
+### 4.1 Scope boundary
+
+**In scope:** `.github/policies/workflow-policies.md` (P-017 amendment),
+`.github/agents/_orchestrator.agent.md`, `_ship.agent.md`, `_stage.agent.md`,
+`.github/instructions/backlogit.instructions.md`, a consistency-verification
+surface, and a compound learning. *(Revision 5 adds, within the same surfaces:
+the dark-run activation record store definition — an untracked
+`.autoharness/dark-run/` runtime store plus its `.gitignore` entry — the
+closure-locator format carried in the PR body, and a task↔plan acceptance
+parity gate over the planning artifacts.)*
+
+**Out of scope (explicit):** any change to backlogit itself (B1); any change to
+`src/`, `crates/`, or `tests/`; shipments `140-S`, `141-S`, `142-S` and feature
+`142-F`; stash `AA5698E3` (stale-checkpoint *cleanup* is a distinct concern) and
+every other unrelated stash entry.
+
+## 5. Dependency reasoning
+
+P-017 is the authority source; the agent templates implement it. The policy
+amendment must therefore land first — implementing an auto-route the policy does
+not yet authorize would itself be a P-017 violation. Orchestrator routing must
+precede the owner-side protocols it routes into. Verification depends on all
+edited surfaces existing. Defect 2's ordering fix depends on the evidence-race
+rule being stated first, so the ordering it introduces is written against a
+settled rule.
+
+## 6. Decision record
+
+| # | Decision | Outcome |
+|---|---|---|
+| D1 | Bypass style for dark continuation | Conjunctive AND gate, eight named conditions (A2) |
+| D2 | Where authority lives | Amend P-017; **no** new policy (A3 rejected) |
+| D3 | Auto-route authority scope | Continuation only; **no** merge/admin/destructive implication |
+| D4 | Resolution defect fix | Ordering fix **plus** orphan-detection assertion (B2+B3) |
+| D5 | Non-git persistence | Deferred upstream to backlogit (B1 rejected here) |
+| D6 | Evidence-race avoidance | HEAD-pinned evidence in PR metadata; point-in-time wording in commits |
+| D7 | Grouping | One covering feature; intra-feature dependency edges |
+
+### 6.1 Revision-5 decisions (from the independent full-plan review of revision 4)
+
+The independent review returned **FAIL** on revision 4 with thirteen blocking
+findings. Six of them could not be resolved by wording alone — each required a
+design choice that had never been made. Those choices are recorded here so the
+plan states *what* and this document states *why*.
+
+| # | Decision | Options weighed | Outcome and rationale |
+|---|---|---|---|
+| D8 | **Where the dark-run activation record lives** (R3/H31) | (a) inside the checkpoint itself; (b) a tracked file under `.backlogit/`; (c) an untracked workspace file under `.autoharness/`; (d) environment variables only | **(c)** — `.autoharness/dark-run/activation.json` plus an append-only `history.jsonl`, untracked. (a) is disqualified outright: reading the expected lineage from the candidate makes `C-ATTRIB` **self-certifying**, which is not a weaker check but *no* check. (b) reintroduces defect 2's own root cause — run-state in git, mutating on a branch, riding merges. (d) does not survive a restart, which is the exact case the store exists for. (c) is checkout-independent, survives restarts, and follows the established `.gitignore` precedent for `.autoharness/backups/` and `.autoharness/staging/`. Cost accepted: the store is invisible to a *fresh clone*, so a continuation cannot span a re-clone — correct behaviour, since a re-clone is a new session. |
+| D9 | **The durable last-mile locator surface** (R7/H35) | (a) the resolution commit message; (b) a tracked file on the branch; (c) the PR body; (d) an append-only backlog metadata block | **(c) primary, (d) fallback.** (a) is impossible — a commit cannot contain its own SHA. (b) is not discoverable from a fresh checkout, which was the whole requirement. (c) is non-self-referential, survives a fresh checkout, is queryable via `gh pr list --state all` with **no** local clone state, and is writable *before* the commits it describes exist — which is what makes the three-phase publication possible and leaves the checkpoint-free window covered. (d) is named as the fallback for a future workspace with no PR surface. |
+| D10 | **`C-OWNEREXCL` as an invariant rather than an evaluated condition** (R11/H39) | (a) keep it as the eighth evaluated conjunct; (b) reclassify it as an asserted invariant; (c) delete it | **(b)** — but the predicate keeps its **arity of eight**, because renumbering the conditions is precisely the cross-document drift hazard H6 accepted as a risk. (a) was untenable: the condition had no observable false input, so its scenario row (S19) asserted telemetry that could never be emitted — a coverage claim that would never be exercised. (c) was rejected because the property is real and load-bearing. As an invariant it is *asserted* at the routing boundary and a violation is a **P-001 halt with a P-005 record**, which is strictly stronger than a routine decline. |
+| D11 | **Task and explicit/mixed backlog selections: normalize or declare unsupported** (R4/R-P2a) | (a) mark them unsupported for auto-continuation; (b) normalize them into the typed cursor model | **(b)** — P-017 already admits task IDs and explicit/mixed selections as legitimate scope shapes, so (a) would have left the feature inert for a scope shape the policy blesses, and silent inertness is how a safety feature becomes a dead letter. Normalization is bounded: `SCOPE_MATCH_RULES` grows from four shapes to six, and `CURSOR_TYPING_RULES` supplies typed `{kind,id}` refs with ancestry validation. The safety property is preserved *because* an identifier with no cursor counterpart **fails** rather than being ignored. |
+| D12 | **Hook wiring: automatic or opt-in** (R-P2c, Scope Auditor ADVISORY) | (a) install hooks automatically; (b) opt-in wiring via `core.hooksPath`; (c) no hooks, CI only | **(b)** — the repository's existing convention is explicit: `scripts/pre-push-quality-gates.ps1` documents that "the harness never silently overwrites your `.git/hooks`". (a) would violate that convention and mutate an operator's local git configuration without consent. (c) was rejected because the drift this shipment fixes is a *pre-merge* authoring hazard and CI-only feedback arrives after the divergence is already published. This directly answers the Scope Auditor's permanence concern: the durable artifact is the checker, which T11 asserts against the live documents; the hook is merely one optional way to invoke it. |
+| D13 | **Generated-surface authority: freeze or detect** (R-P2f, A-7) | (a) add `.github/` outputs to `harness-manifest.yaml: preserved_artifacts`; (b) detect drift and propagate upstream later | **(b) — detect, don't freeze.** (a) is superficially attractive because it prevents a reinstall from overwriting these amendments, but it also masks *legitimate* upstream improvements to the same files, permanently and silently. That trades a visible, recoverable loss for an invisible, compounding one. (b) keeps the drift checker as the detector, records the exposure as residual risk RR-3, and defers upstream template propagation as an explicit out-of-scope follow-up. The upstream templates live outside this repository, so editing them is outside both this plan's scope and Stage's role boundary. |
+
+### 6.2 Residual risks carried, not closed
+
+Recorded in full in the plan's `## Residual risks` section; summarized here
+because they are decisions to *accept* rather than to *fix*.
+
+* **RR-1 — the predicate is prose evaluated by an LLM.** The drift checker
+  proves the eight conditions are *stated identically* across the governed
+  documents. It cannot prove they are *evaluated correctly* at runtime.
+  Machine-checkable fixtures are necessary but **not sufficient**; this is the
+  single largest residual exposure in the design and is stated plainly rather
+  than papered over. *(Review item R-P2d / A-6.)*
+* **RR-2 — residual TOCTOU window.** `OWNER_SIDE_REVALIDATION` bounds but does
+  not eliminate the gap between the owner's final check and its first mutation.
+  Accepted: the window is a single agent step, and a lost race yields a
+  re-resumable state, not a corrupted one.
+* **RR-3 — generated-surface drift.** A future merge-install may overwrite the
+  `.github/` amendments; the checker detects it, upstream propagation is
+  deferred.
+* **RR-4 — the activation record is machine-local.** A continuation cannot span
+  a different working tree or a fresh clone. Accepted as correct behaviour; the
+  failure mode is a decline to the operator path, which is the safe direction.
+
+## 7. Definition of done
+
+* P-017 authorizes the bounded auto-route and enumerates preserved fail-closed cases.
+* Orchestrator, Stage, and Ship state the **same** named conditions with no drift.
+  (Plan hardening raised the predicate from the seven conditions enumerated by
+  the operator to **eight named conditions** — see the hardening document H1/H2
+  and H9–H11 — because scope membership without cursor equality, and activation
+  without provable session attribution, would both auto-resume stale work.
+  Revision 5 keeps the arity at eight and instead *types* the conditions as
+  GUARD / EVALUATED / INVARIANT — H39/D10.)
+* A concrete, checkout-independent **activation record store** exists, with a
+  declared schema, single writer, atomic write, lifecycle and restart semantics;
+  the expected lineage is read **only** from it, never from the candidate
+  checkpoint or its `resume_hint`. *(H31/D8.)*
+* Cursor comparison is defined for **every** scope shape P-017 admits, including
+  mixed feature+shipment+task checkpoints; a populated identifier with no cursor
+  counterpart **fails**. *(H32/D11.)*
+* Every owner-side and overlay prerequisite accepts exactly two things: explicit
+  operator confirmation, **or** a verified Orchestrator continuation handoff
+  carrying evidence — with owner exclusivity and every fail-closed fallback
+  preserved. *(H33.)*
+* The owner independently **re-validates** mutable state immediately before
+  restore; the handoff is never treated as an authenticated capability.
+  *(H40.)*
+* Ship resolves **all** session and compensating checkpoints before the closure
+  PR's final reviewed HEAD — so every resolution rides the same merge and none
+  is orphaned — **re-runs the actual local review** at that final HEAD, records
+  the PR-body `Reviewed HEAD` from that fresh review **before** re-running the
+  full current-HEAD gate set, obtains approval after that gate, and asserts both
+  at merge and at startup that the resolutions reached the correct target.
+  *(H38.)*
+* Orphan detection classifies **live PR state first** and picks its ancestry
+  target accordingly — open PRs are verified against the fetched PR head, not
+  `origin/main`. *(H36.)*
+* A last-mile recovery protocol covers the checkpoint-free window between the
+  final resolution and merge, using a durable, non-self-referential
+  shipment→PR locator and live PR state rather than a checkpoint; discovery is
+  **status-independent** so archived shipments are reachable, and it is entered
+  from a zero-checkpoint Orchestrator startup **before** queue selection.
+  *(H35/H37.)*
+* Recovery conveys **no** merge authority: a complete locator, live-verified
+  approval, the full current-HEAD gate set, and `CONTINUATION_AUTHORITY_ONLY`
+  are all required, or the run halts. *(H41.)*
+* The predicate's mis-evaluation directionality is stated wherever the safety
+  claim appears: false negatives fail closed; false positives are the principal
+  risk and carry explicit protections and tests.
+* The evidence-race rule is durably stated where PR evidence is authored.
+* A consistency check exists so the governed documents cannot silently diverge,
+  and a **task↔plan acceptance parity gate** runs first so the executable cards
+  can never lag the canonical plan. *(H30.)*
+* Revalidation is **phase-aware**, so a Stage continuation with no PR is a
+  supported success path rather than an unsatisfiable precondition. *(H34.)*
+* A compound learning captures both root causes.
+
