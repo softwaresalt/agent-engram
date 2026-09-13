@@ -243,9 +243,12 @@ Three defects in revision 1's T6/H3:
 *Correction*: `RESOLUTION_ORDER` re-runs P-014 **and** required CI **and** P-018
 when engaged; anchors merge approval to the post-resolution HEAD; and **inverts
 the write order** so the compensating checkpoint precedes the resolve mutation,
-eliminating the crash window entirely. The compensating checkpoint's full
-lifecycle — including its own post-merge resolution and a double-resolution
-guard in its `resume_hint` — is specified.
+eliminating the crash window entirely.
+
+> **Superseded in revision 4 by H23.** H12's correction left the compensating
+> checkpoint with its own **post-merge** resolution, which reproduced the very
+> orphaning defect the plan exists to fix. The compensating checkpoint's
+> lifecycle now terminates in a **pre-merge** resolution. See H23.
 
 ### H13 (BLOCKING, accepted) — Merge-path-only orphan detection cannot catch the abandoned-merge case
 
@@ -329,6 +332,11 @@ Fixture work has no predecessor, so test-first is satisfiable immediately; only
 the final live-document assertion depends on T1–T4. The dependency graph is
 updated to split those two obligations.
 
+> **Completed in revision 4 by H26.** H19 stated the split in prose but left
+> both obligations inside a single task whose frontmatter depended on T1–T4, so
+> the contradiction persisted in the executable backlog. The two obligations are
+> now **separate tasks** (T9 unblocked, T11 dependent). See H26.
+
 ### H20 (accepted in revision 3) — Orphan detection had no durable input
 
 T7's assertions referenced "the recorded resolution commit" without saying where
@@ -392,10 +400,134 @@ re-evaluation at the current HEAD. Folded into T3, T4, and cross-referenced in T
 * **Remove the T8 upstream-request note** (scope audit, P2). **Accepted** — T8
   trimmed; the B1 rejection rationale stays in the deliberation.
 
+## Round-4 findings (from the P-013.6 escalation and PR #396 review)
+
+Source: the mandatory P-013.6 escalation (route `gpt-5.6-sol` / `openai` /
+`xhigh`, verdict `ESCALATION_BLOCKS`) and the nine GitHub Copilot review threads
+on staging PR #396. Full escalation record lives in the plan's *Plan review
+record*.
+
+### H23 (BLOCKING, accepted in revision 4) — Compensating checkpoint resolved after merge
+
+H12's accepted mitigation assigned the compensating checkpoint its **own
+post-merge resolution**. Because checkpoint JSONs are Git-tracked, that
+resolution commit lands on an already-merged branch with no unmerged PR able to
+carry it to `main` — the exact defect demonstrated by 139-S commit `43e70430`
+and repaired only by the additional PR #395. The mitigation therefore recreated
+the defect one level down, recursively: every compensating checkpoint would
+require a further closure PR.
+
+*Correction*: **no checkpoint resolution may occur after merge.** Both the
+session checkpoint and the compensating checkpoint are resolved **before** the
+final HEAD-bound gates, so both resolutions ride the same merge. The
+compensating checkpoint's lifecycle terminates pre-merge. Its `resume_hint`
+still carries the double-resolution guard. The option of a non-Git persistence
+path was re-examined and remains blocked (backlogit is external, `checkpoint
+resolve` offers no DB-only mode — see the deliberation's B1 rejection), so
+pre-merge resolution is the only available correct ordering.
+*(Copilot threads `PRRT_kwDORJEduc6h3Q50`, `PRRT_kwDORJEduc6h3Q6G`,
+`PRRT_kwDORJEduc6h3Q6S`; escalation blocker 1.)*
+
+### H24 (BLOCKING, accepted in revision 4) — Checkpoint-free residual window was undefined
+
+Resolving the compensating checkpoint before merge necessarily leaves a window
+between that resolution and merge completion in which **no active checkpoint
+exists**. A crash there yields zero active candidates at restart, which S20
+correctly classifies as *normal startup* — so the workflow would silently
+believe nothing was in flight while an unmerged PR carrying two resolution
+commits sat open. Live re-fetch alone does not close this: it answers "what is
+the current state" only once the in-flight work has been *rediscovered*.
+
+*Correction*: new `LAST_MILE_RECOVERY` canonical definition. Recovery in this
+window uses a **durable last-mile locator** — the shipment's PR association plus
+the T7-recorded resolution commit SHAs, discoverable from a fresh checkout with
+zero active checkpoints — and an explicit live-PR-state reconciliation table
+covering open-at-expected-HEAD, open-at-different-HEAD, merged, closed-unmerged,
+lookup-failed, and lost-merge-response. Failed lookups fail closed; merge status
+is never inferred; no blind second merge is ever issued. Live-state recovery
+restores readiness evidence only and never conveys merge authority.
+*(Escalation blocker 2; T7 startup-discoverability advisory.)*
+
+### H25 (BLOCKING, accepted in revision 4) — Readiness ordering was unsatisfiable under P-014 §1.9
+
+`RESOLUTION_ORDER` ran the P-014 gate, then obtained approval, then recorded
+`Reviewed HEAD` in the PR body. P-014 §1.9 reads the PR body and requires
+`Reviewed HEAD == headRefOid`; since the resolution commits had already advanced
+HEAD past whatever the body recorded, the gate could never pass as ordered, and
+approval was obtained before any valid readiness record existed. Task
+`143.006-T` carried a *different* wrong order (body before approval but still
+after the gate), so plan and task had also drifted apart.
+
+*Correction*: the sequence is **record PR-body `Reviewed HEAD` at the final HEAD
+→ run the §1.9 gate against it → obtain approval → re-fetch live state → merge.**
+This terminates without self-referential commit churn precisely because a PR-body
+edit is metadata and does not advance `headRefOid` (`HEAD_EVIDENCE_RULE`). The
+body records already-produced local review evidence; the gate then verifies it.
+Plan and `143.006-T` are reconciled to this single order.
+*(Copilot thread `PRRT_kwDORJEduc6h3Q6h`; escalation blocker 3.)*
+
+### H26 (BLOCKING, accepted in revision 4) — T9 dependencies blocked its own red phase
+
+H19 asserted in prose that fixture work has no predecessor, but T9 remained a
+**single task** whose frontmatter declared `dependencies: 143.001-T …
+143.004-T`. The executable backlog therefore blocked the entire task — fixtures
+included — behind T1–T4, contradicting both the plan's own claim and the
+required test-first red phase.
+
+*Correction*: split into **T9** (`143.009-T`, drift-checker harness and
+fixtures, **no dependencies**, red phase satisfiable immediately) and **T11**
+(`143.011-T`, live-document assertion and hook wiring, dependent on T1–T4 and on
+T9). Dependency graph, shipment manifest, and T10's dependencies are updated to
+match. Both tasks remain within the 2-hour rule and single-domain.
+*(Copilot thread `PRRT_kwDORJEduc6h3Q6e`; escalation blocker 1 of the T9 set.)*
+
+### H27 (BLOCKING, accepted in revision 4) — False-positive safety claim was incorrect
+
+The plan-linked artifacts asserted that "a mis-evaluation can only ever produce
+**more** operator interaction, never less." This is false. It holds only for
+**false negatives**. Because the gate is a conjunction of *necessary* conditions,
+a single **false-positive** conjunct satisfies the whole gate and *removes*
+operator interaction, auto-routing an ineligible checkpoint — a false-positive
+`C-CURSOR` resumes completed or out-of-scope work, `C-ATTRIB` resumes a foreign
+run, `C-SOLE` chooses among competing candidates, `C-OWNEREXCL` lets the wrong
+role act. Conjunctivity bounds blast radius only *under correct evaluation*; it
+is not a defence against evaluation error. The incorrect claim appeared in the
+deliberation, the session memory, and feature `143-F`, where Ship would have
+consumed it as implementation guidance.
+
+*Correction*: new `MIS_EVALUATION_DIRECTIONALITY` canonical definition
+separating the two error directions, propagated to every artifact that carried
+the claim. Mandatory protections folded into T1/T2 acceptance criteria: missing,
+malformed, ambiguous, stale, or failed lookups evaluate **false**; incomplete
+enumeration is an error, never zero-or-sole candidacy; mutable inputs are
+re-evaluated immediately before routing (TOCTOU); and verification adds
+false-positive scenarios S28–S35 plus one-condition-false/seven-true cases for
+all eight conjuncts. T9's checker must additionally fail a weakening that would
+admit a false positive, not merely a wording change.
+*(Copilot threads `PRRT_kwDORJEduc6h3Q6x`, `PRRT_kwDORJEduc6h3Q61`,
+`PRRT_kwDORJEduc6h3Q67`; escalation blocker 4.)*
+
+### H28 (BLOCKING, accepted in revision 4) — Crash-boundary coverage was incomplete
+
+The matrix covered the write/resolve boundary (S24) and the never-merged case
+(S25) but not the boundaries created by the corrected ordering.
+
+*Correction*: scenarios **S36–S43** added for crash after session resolution,
+crash after compensating resolution, crash before/after the PR-body update,
+crash after gates/approval but before merge, lost merge response, PR closed
+without merge, and the fully-successful path in which no post-merge resolution
+step exists to orphan. *(Escalation blocker 5.)*
+
 ## Gate outcome
 
-**Plan hardening: COMPLETE (revision 3).** H1–H4 and H9–H22 fold into task
+**Plan hardening: COMPLETE (revision 4).** H1–H4 and H9–H28 fold into task
 acceptance criteria and the canonical definitions; H5–H8 carry stated
-mitigations; H16 is recorded as reversed with its dissent. The plan is cleared
-for plan-review round 3.
+mitigations; H12 and H19 are recorded as superseded/completed by H23 and H26;
+H16 is recorded as reversed with its dissent.
+
+**Revision 3's plan-review PASS is withdrawn.** The P-013.6 escalation returned
+`ESCALATION_BLOCKS`, and its blocker 8 — a **fresh independent full-plan
+review** of revision 4 — is the outstanding gate. The revision-3 same-reviewer
+confirmation pass does not satisfy it. `143-F` / `143-S` remain queued and
+unclaimed until that review returns PASS.
 

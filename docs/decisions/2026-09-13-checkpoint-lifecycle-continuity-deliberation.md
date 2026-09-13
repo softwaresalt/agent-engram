@@ -106,9 +106,32 @@ only when **every** condition in a closed AND-gate holds; any false condition
 falls through to the **existing, unchanged** fail-closed operator path.
 
 *Accepted.* It is the minimal change that satisfies the operator requirement
-while keeping every current safety property. Because the predicate is
-conjunctive and defaults to the existing behaviour, the blast radius is bounded:
-a mis-evaluation can only ever produce *more* operator interaction, never less.
+while keeping every current safety property. The blast radius is bounded because
+the predicate is conjunctive and defaults to the existing behaviour — **but that
+bound holds only under correct evaluation, and the two error directions are not
+symmetric**:
+
+* A **false negative** (a genuinely-true condition evaluates false) degrades
+  safely: the gate declines, control falls through to the existing, unchanged
+  fail-closed operator path, and the only cost is *more* operator interaction.
+* A **false positive** (a genuinely-false condition evaluates true) is the
+  **principal safety risk**. Because each condition is *necessary*, a single
+  false-positive conjunct satisfies the entire gate and **removes** operator
+  interaction, auto-routing an ineligible checkpoint — potentially resuming the
+  **wrong** checkpoint. A false-positive `C-CURSOR` resumes completed or
+  out-of-scope work; `C-ATTRIB` resumes a foreign or prior run; `C-SOLE` chooses
+  among competing candidates; `C-OWNEREXCL` lets the wrong role act.
+
+Conjunctivity is therefore a defence against *ineligibility*, not against
+*evaluation error*. The design consequently requires that any condition which
+cannot be **proven** true evaluates false: missing, malformed, ambiguous, stale,
+or failed lookups all decline, incomplete candidate enumeration is an error
+rather than evidence of sole candidacy, and every mutable conjunct is
+re-evaluated immediately before routing to bound the TOCTOU window. Verification
+must exercise the false-positive direction explicitly (plan scenarios S28–S35
+and one-condition-false/seven-true cases for all eight conjuncts), not only the
+declining direction. *(Corrected in revision 4 — hardening H27; PR #396 thread
+`PRRT_kwDORJEduc6h3Q61`.)*
 
 **Option A3 — Introduce a new policy (P-022) for checkpoint continuation.**
 
@@ -235,15 +258,32 @@ HEAD: <sha>` in the **PR body** (L331, L366), and updating a PR body does
 **not** advance `headRefOid`. So the terminating order is:
 
 ```text
-implement  →  resolve checkpoint (commit; advances HEAD)
-           →  run local readiness gate AT that HEAD
+implement  →  resolve session checkpoint     (commit; advances HEAD)
+           →  resolve compensating checkpoint (commit; advances HEAD; LAST commit)
            →  record Reviewed HEAD in PR BODY (metadata; does not advance HEAD)
+           →  run local readiness gate AT that HEAD, against that body
+           →  obtain approval at that HEAD
            →  merge
 ```
 
 Resolution is placed **before** the final gate run, never after. The gate then
 runs once, at the final HEAD, and its verdict is recorded in metadata. No
 regress.
+
+Two refinements were added in revision 4 after the PR #396 review and the
+P-013.6 escalation *(hardening H23, H25)*:
+
+* **Every** checkpoint resolution — including the *compensating* checkpoint's —
+  must precede the final HEAD, so all resolutions ride the same merge. An
+  earlier form resolved the compensating checkpoint *after* merge, which
+  stranded that commit on an already-merged branch and recreated the very defect
+  under discussion, recursively. Nothing Git-tracked can be resolved after merge.
+* The **PR-body record must precede the readiness gate**, not follow it. P-014
+  §1.9 reads the body and requires `Reviewed HEAD == headRefOid`; running the
+  gate before the body is updated is unsatisfiable once the resolution commits
+  have advanced HEAD, and obtaining approval before a valid readiness record
+  exists inverts the evidence chain. Because a PR-body edit is metadata, writing
+  it first still terminates without commit churn.
 
 A corollary rule generalizes this and is worth stating durably:
 
@@ -325,9 +365,17 @@ settled rule.
   the operator to **eight named conditions** — see the hardening document H1/H2
   and H9–H11 — because scope membership without cursor equality, and activation
   without provable session attribution, would both auto-resume stale work.)
-* Ship resolves session checkpoints before the closure PR's final reviewed HEAD,
-  re-runs the full current-HEAD gate set, and asserts both at merge and at
-  startup that the resolution reached `main`.
+* Ship resolves **all** session and compensating checkpoints before the closure
+  PR's final reviewed HEAD — so every resolution rides the same merge and none
+  is orphaned — records the PR-body `Reviewed HEAD` **before** re-running the
+  full current-HEAD gate set, obtains approval after that gate, and asserts both
+  at merge and at startup that the resolutions reached `main`.
+* A last-mile recovery protocol covers the checkpoint-free window between the
+  final resolution and merge, using a durable shipment→PR locator and live PR
+  state rather than a checkpoint.
+* The predicate's mis-evaluation directionality is stated wherever the safety
+  claim appears: false negatives fail closed; false positives are the principal
+  risk and carry explicit protections and tests.
 * The evidence-race rule is durably stated where PR evidence is authored.
 * A consistency check exists so the governed documents cannot silently diverge.
 * A compound learning captures both root causes.

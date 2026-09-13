@@ -60,9 +60,28 @@ created.
   Resolving before merge, if the merge never happens, converts a *noisy,
   recoverable* defect into a *silent, unrecoverable* one. Inverting the write
   order eliminates the crash window.
-* **Fail-open direction is safe.** Any false condition falls through to the
-  *existing, unchanged* operator path, so a mis-evaluation can only ever produce
-  **more** operator interaction, never less.
+* **No checkpoint resolution may occur after merge** (H23, revision 4).
+  Checkpoint JSONs are Git-tracked, so a post-merge resolution commit strands
+  itself on a merged branch. Revision 3 still resolved the *compensating*
+  checkpoint after merge, recreating the defect one level down. Both the session
+  and compensating checkpoints are now resolved **before** the final HEAD-bound
+  gates so they ride the same merge. The resulting checkpoint-free window
+  between compensating resolution and merge is covered by `LAST_MILE_RECOVERY`
+  (durable shipment→PR locator plus a live-PR-state reconciliation table), not
+  by a checkpoint — a Git-tracked checkpoint provably cannot cover a post-merge
+  window. *(PR #396 threads `PRRT_kwDORJEduc6h3Q50`, `…6G`, `…6S`.)*
+* **Mis-evaluation is directional, and only one direction is safe.** A **false
+  negative** falls through to the *existing, unchanged* operator path and costs
+  only **more** operator interaction. A **false positive** is the principal
+  safety risk: a single wrongly-true conjunct satisfies the whole AND gate,
+  **removes** operator interaction, and can auto-route the **wrong** checkpoint.
+  Conjunctivity bounds ineligibility, not evaluation error. Unprovable
+  conditions must therefore evaluate false, incomplete enumeration is an error
+  rather than sole candidacy, and mutable conjuncts are re-evaluated immediately
+  before routing. *(Corrected in revision 4 — hardening H27; PR #396 thread
+  `PRRT_kwDORJEduc6h3Q67`. The earlier "fail-open direction is safe" phrasing
+  was also inverted terminology: the safe behaviour being described is
+  fail-**closed**.)*
 
 ## The self-referential evidence race and its escape
 
@@ -72,10 +91,14 @@ another *commit* advances HEAD again — infinite regress. **The escape is that
 HEAD-pinned evidence lives in PR metadata, not in a commit.**
 `github-pr-automation.instructions.md` already requires `Reviewed HEAD: <sha>` in
 the **PR body**, and updating a PR body does not advance `headRefOid`.
-Terminating order: implement → resolve → run gates *at* that HEAD → record
-Reviewed HEAD in the PR body → merge. Observed on PR #395 threads
+Terminating order (corrected in revision 4 — H25): implement → resolve session
+checkpoint → resolve compensating checkpoint → **record Reviewed HEAD in the PR
+body at that final HEAD** → run the P-014 §1.9 gate *against that body* → obtain
+approval at that HEAD → merge. The body must precede the gate because §1.9 reads
+the body and requires `Reviewed HEAD == headRefOid`; revision 3 ran the gate
+first, which was unsatisfiable. Observed on PR #395 threads
 `PRRT_kwDORJEduc6h2uOQ` and `PRRT_kwDORJEduc6h2viu`; commit `54a7abf6` is the
-correction applied by hand.
+correction applied by hand. *(PR #396 thread `PRRT_kwDORJEduc6h3Q6h`.)*
 
 ## Reviewer disagreement resolved by judgment
 
@@ -104,18 +127,57 @@ list. Dissent recorded in hardening H16.
 * **0 active checkpoints** at session start (24 total: 18 resolved, 6 abandoned),
   so `C-SOLE` is satisfiable and the feature would be live on merge.
 
+## PR #396 review remediation and the P-013.6 escalation (revision 4)
+
+Nine Copilot threads on staging PR #396 were remediated in place. One was a
+**process** finding, and it was correct: the plan's revision-3 "escalation note"
+self-certified an exception to the P-013.6 consecutive-failure threshold at
+plan-review attempt 3, then relied on a **same-reviewer** confirmation pass.
+The Stage template allows no such exception — the threshold triggers on the
+third consecutive FAIL, not on the author's classification of it.
+
+The escalation has now been **executed**. Route resolved fresh from
+`.autoharness/config.yaml` via the nested per-role override
+`model_routing.stage.escalation` (F02FD596 precedence; the legacy flat route is
+empty, so no both-present ambiguity): `gpt-5.6-sol` / `openai` / `xhigh`, versus
+the active Stage route `claude-opus-5` / `anthropic` / `high`. The tuples differ
+in all three fields, so the **same-route guard did not fire** and this was not
+`ESCALATION_DEGRADED`. The payload (threshold kind and count, round 1–3 failure
+summary, artifact refs, telemetry pointers, resumption checkpoint ref) was handed
+to an independent read-only reviewer under declared authority limits.
+
+**Verdict: `ESCALATION_BLOCKS`.** The reviewer held that the round-3 FAIL was
+only partly clerical — the `session_id`/`session_lineage_id` inconsistency, the
+impossible S19 row, and the S4/T2 telemetry contradiction were safety- or
+oracle-relevant — and that a same-reviewer confirmation is remediation evidence,
+not independent validation, and cannot reset the attempt counter. It
+independently confirmed the substantive defects Copilot raised and issued eight
+blocking corrections. Seven are fixed in revision 4 (hardening H23–H28 plus the
+withdrawal of the self-certified exception). **Blocker 8 remains open**: a fresh
+**independent** full-plan review of revision 4 must return PASS before harvest
+is re-authorized. Revision 3's PASS is withdrawn.
+
 ## Traceability
 
 * Deliberation: `docs/decisions/2026-09-13-checkpoint-lifecycle-continuity-deliberation.md`
-* Plan (revision 3, PASS): `docs/exec-plans/2026-09-13-checkpoint-lifecycle-continuity-plan.md`
-* Hardening (H1–H22): `docs/exec-plans/2026-09-13-checkpoint-lifecycle-continuity-hardening.md`
+* Plan (revision 4; revision-3 PASS withdrawn, awaiting fresh independent review):
+  `docs/exec-plans/2026-09-13-checkpoint-lifecycle-continuity-plan.md`
+* Hardening (H1–H28): `docs/exec-plans/2026-09-13-checkpoint-lifecycle-continuity-hardening.md`
 * Ship-owned residual-risk record consulted for P-021 C5/C6 reconciliation:
   `docs/memory/2026-09-13/139-s-checkpoint-resolution-remediation.md`
 
 ## Next step
 
-Ship claims `143-S`. Execution order is the dependency graph recorded in the
-plan. No cross-shipment dependency edges were created: adding a `blocks` edge
-would have modified `140-S`/`141-S`/`142-S`, which the operator forbade, and the
+**`143-S` is NOT yet claimable.** Escalation blocker 8 (fresh independent
+full-plan review of revision 4) is the outstanding gate; `143-F` and `143-S`
+remain queued and unclaimed until it returns PASS. Once it does, Ship claims
+`143-S` and executes the dependency graph recorded in the plan — note that the
+graph changed in revision 4: `143.009-T` is now **unblocked** (drift-checker
+harness and fixtures) and the new `143.011-T` carries the live-document
+assertion dependent on `143.001-T`–`143.004-T` and `143.009-T`, with
+`143.010-T` re-pointed from `143.009-T` to `143.011-T`.
+
+No cross-shipment dependency edges were created: adding a `blocks` edge would
+have modified `140-S`/`141-S`/`142-S`, which the operator forbade, and the
 shipment touches only `.github/` documentation and one script — zero overlap with
 those shipments' Rust source surfaces — so it is independently orderable.
