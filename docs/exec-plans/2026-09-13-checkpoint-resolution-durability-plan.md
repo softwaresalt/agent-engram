@@ -28,9 +28,18 @@ governed by P-014/P-018 and adds a startup route that could, if mis-specified,
 become an unsupervised merge path.
 
 **Machine-readable status.** The frontmatter is authoritative. `revision: 8`,
-`scope: defect-2-only`, `harvest_authorized: false`, `review_verdict: none`.
-Revision 8 claims **no** review verdict; a fresh independent full-plan review is
-the gate that authorizes harvest.
+`scope: defect-2-only`, `harvest_authorized: false`,
+`review_verdict: FAIL`, `review_verdict_revision: 8`, `review_attempts: 3`,
+`status: halted-review-circuit-open`.
+
+Revision 8 has **already been independently reviewed and that review returned
+FAIL** — three P1 findings remain open and are recorded under *Round 8 —
+outstanding findings* below. This is the **third consecutive FAIL** (revisions 6,
+7, 8), the plan-review circuit is **OPEN** at attempt counter 3, and the P-013.6
+escalation has fired. Do **not** read this revision as merely unreviewed: it is a
+**failed** revision. Harvest is gated on remediating the three open P1s and then
+obtaining a fresh independent full-plan review that returns PASS; neither has
+happened.
 
 **What changed in revision 8.** Revision 7 was reviewed by the same independent
 four-persona panel and returned **FAIL** again — Scope, Correctness and Parity
@@ -212,8 +221,14 @@ RESOLUTION_PREFIX  (invoked by Ship Step 5, BEFORE the readiness gates)
 
         ── existing approval / re-fetch / merge steps run UNCHANGED ──
         (obtain approval at final_head; re-fetch live HEAD/threads/CI;
-         merge only if unchanged. These already exist in Ship Step 5 and
-         are NOT restated or duplicated by this definition.)
+         merge only if unchanged.)
+        !! OPEN P1 (Round 8, finding 1): this "already exist in Ship
+           Step 5 and are unchanged" assertion is NOT TRUE of the real
+           Step 5. Item 15 re-runs the P-018 gate and re-queries
+           headRefOid only -- it never re-fetches required CI, and it
+           does not refresh all review threads when P-018 is disabled.
+           RQ-6 therefore has no executable enforcement path today.
+           Do not implement this block as written; see Round 8 below.
 
 RESOLUTION_POSTCONDITION  (a Step 6 closure postcondition)
   → after the FULL required post-merge closure set is complete AND verified
@@ -309,12 +324,54 @@ because the obvious formulation is silently wrong:
 gh api --paginate \
    -H "Accept: application/vnd.github+json" \
    "repos/{owner}/{repo}/pulls?state=all&per_page=100" \
-   --jq '.[] | {number, state, body}'
+   --jq '.[] | {number, state, body, author_association,
+                head_repo: .head.repo.full_name, head_ref: .head.ref,
+                base_repo: .base.repo.full_name, base_ref: .base.ref}'
   → select entries whose body contains `autoharness:closure-locator`
-  → parse each block; keep those whose status is NOT RECONCILED
+  → apply PV-1 … PV-7 provenance validation (below); discard untrusted
+  → parse each TRUSTED block; keep those whose status is NOT RECONCILED
 ```
 
-**Why not `gh pr list`.** `gh pr list --state all` does **not** return PR bodies
+**Provenance validation — required before a locator participates in recovery.**
+Enumeration is exhaustive over `state=all`, which necessarily includes **fork
+PRs opened by untrusted authors**. A PR body is attacker-controlled text, so
+"contains the marker" is an insufficient admission test: without the checks
+below, any account able to open a PR can forge a locator and either halt every
+startup (denial of service) or steer Ship's recovery onto an attacker-chosen
+branch, PR number, and checkpoint set. Marker presence establishes only that a
+*candidate* block exists — never that it is authentic.
+
+A parsed candidate is **TRUSTED** only when **all** of the following hold. They
+are evaluated on API response fields, never on the body text, because the body
+is the very thing under suspicion:
+
+| # | Check | Field | Fail action |
+|---|---|---|---|
+| PV-1 | The PR is **same-repository**: `head.repo.full_name == base.repo.full_name == {owner}/{repo}`. Any fork-originated PR is rejected outright. | `head.repo.full_name`, `base.repo.full_name` | **Discard** as untrusted |
+| PV-2 | The PR **base** is the repository's default branch. | `base.ref` | **Discard** as untrusted |
+| PV-3 | The PR author is trusted: `author_association` is `OWNER`, `MEMBER`, or `COLLABORATOR`. | `author_association` | **Discard** as untrusted |
+| PV-4 | The locator's embedded `pr` equals the PR number the block was read from. | block `pr` vs. API `number` | **Halt to operator** — a self-inconsistent locator on a trusted PR is corruption, not noise |
+| PV-5 | The locator's embedded `branch` equals the PR's own head ref. | block `branch` vs. `head.ref` | **Halt to operator** |
+| PV-6 | The locator's `shipment` and `feature` exist in this workspace's backlog and the shipment owns that feature. | backlog lookup | **Halt to operator** |
+| PV-7 | Every filename in the locator's checkpoint list is a checkpoint this workspace could own (resolvable path shape, `agent` field `ship` or `stage`). | checkpoint lookup | **Halt to operator** |
+
+**Discard versus halt is deliberate and must not be collapsed.** PV-1…PV-3 are
+*authenticity* filters: a failing candidate is simply **not ours**, is discarded
+**silently**, and MUST NOT halt the session — otherwise any outsider could
+permanently deny startup by opening a fork PR containing the marker. PV-4…PV-7
+run only on candidates that already passed PV-1…PV-3, so a failure there means a
+**trusted** locator is internally inconsistent, which is exactly the corruption
+the halt-on-incomplete rule exists to catch.
+
+Discarded (untrusted) candidates MUST NOT be counted toward the
+multiple-locator P-001 check below, MUST NOT be acted on, and MUST NOT be
+treated as evidence of an outstanding obligation. They SHOULD be logged with
+their PR number and the failing check so a genuine misconfiguration is
+diagnosable. Every subsequent rule in this section — the P-001 multiplicity
+check, `LAST_MILE_RECOVERY` entry, and every action table row — operates
+**exclusively over the TRUSTED set**.
+
+
 unless `--json ... ,body` is supplied, and it has **no** `--paginate` flag — it
 takes a bounded `--limit` that defaults to **30**. The naive formulation
 therefore returns thirty bodiless records, finds zero locators, and reports a
@@ -340,9 +397,33 @@ one, and it is precisely the failure this requirement exists to prevent. `gh api
 * **More than one distinct shipment carrying a non-`RECONCILED` locator is a
   P-001 violation and halts immediately.** P-001 permits exactly one release unit
   in flight; two outstanding closure obligations mean an earlier unit was
-  abandoned mid-closure. Recovery must not silently pick one and proceed. Two
-  locators for the *same* shipment are **not** this
-  case and are handled normally.
+  abandoned mid-closure. Recovery must not silently pick one and proceed. This
+  check is evaluated over the **TRUSTED** set only (see *Provenance validation*),
+  so a discarded fork-authored forgery can neither manufacture a P-001 halt nor
+  mask a genuine one.
+* **Two or more TRUSTED non-`RECONCILED` locators naming the *same* shipment
+  halt to the operator unless they are byte-identical.** The previous wording —
+  "handled normally" — was undefined and unsafe. Same-shipment duplicates are
+  *not* a P-001 violation, but they are not automatically benign either: they may
+  disagree on `branch`, `pr`, the checkpoint filename set, `status`, or
+  `final_head`, and no rule can rank them, because both are equally authentic
+  under PV-1…PV-7 and the locator carries no revision, sequence, or signature
+  field to canonicalize on. `updated_at` MUST NOT be used as a tie-breaker: it is
+  body text, so a stale duplicate can carry the later timestamp. The rule is
+  therefore mechanical and fail-closed:
+
+  1. Normalize each block (strip trailing whitespace; compare fields, not layout).
+  2. If every duplicate is **field-for-field identical**, they are one logical
+     locator recorded twice. Proceed on that single record; log the duplication.
+  3. If any field differs — *including* `status`, and *including* the case where
+     one is `RESOLUTION_PENDING` and another `RESOLUTION_PUBLISHED` — **halt to
+     the operator** and present every conflicting copy. Do not merge, do not
+     prefer the more advanced status, and do not re-resolve.
+
+  Rationale: an ambiguous same-shipment pair means an earlier session published
+  a locator the current one cannot account for. Guessing between them risks
+  merging a branch whose resolution commits were never enumerated — the exact
+  orphaning failure the locator exists to prevent *(RQ-7, RQ-11)*.
 
 ### `LAST_MILE_RECOVERY` *(RQ-10, RQ-11)*
 
@@ -376,13 +457,51 @@ present it for merge. Treat it separately and first:
 
 | Locator status | Live PR state | Required action |
 |---|---|---|
-| `RESOLUTION_PENDING` | **Open** | Resolution has not been published. Do **not** update the locator, do **not** re-establish readiness, do **not** approach the merge bar. Place the working tree on the PR branch (see *Working-tree placement* below), then verify whether resolution commits exist on the fetched PR head. **None exist** → re-enter `RESOLUTION_PREFIX` at the resolve step. **Some exist** (crash after push, before the phase-2 locator update) → do **not** re-resolve; **halt to operator**, because the locator cannot be trusted to enumerate them. If the working tree cannot be placed on the branch, **halt**. |
+| `RESOLUTION_PENDING` | **Open** | Resolution has not been published. Do **not** update the locator, do **not** re-establish readiness, do **not** approach the merge bar. Place the working tree on the PR branch (see *Working-tree placement* below), then run the **resolution-state classification** (below) over the locator's checkpoint list at the fetched PR head. **`NONE`** → re-enter `RESOLUTION_PREFIX` at the resolve step. **`PARTIAL`, `ALL`, or `INDETERMINATE`** → do **not** re-resolve; **halt to operator**, because the locator cannot be trusted to enumerate them. If the working tree cannot be placed on the branch, **halt**. |
 | `RESOLUTION_PENDING` | **Merged** | **Unrecoverable orphan — halt to operator immediately.** The PR merged carrying unresolved checkpoints. Never run closure, never mark `RECONCILED`. An empty `resolution_commits` list makes every ancestry assertion vacuously pass, so the merged row below must never be reached in this state. |
 | `RESOLUTION_PENDING` | any other | **Halt to operator**, per the rows below. |
 | `RESOLUTION_PUBLISHED` | — | Proceed to Step 1b. |
 | `RECONCILED` | — | Not discovered; terminal. |
 
-**Working-tree placement (required before any re-entry that commits).** Recovery
+**Resolution-state classification (executable; required by the
+`RESOLUTION_PENDING` / Open row).** A `RESOLUTION_PENDING` locator deliberately
+carries **no** `resolution_commits` and an empty `final_head` *(RQ-8 — the
+locator is never self-referential)*, so "have the resolution commits been made?"
+cannot be answered from the locator. It MUST be answered from **checkpoint
+state at the fetched PR head**, over the locator's own `checkpoints` list, which
+is the only enumeration that exists in this phase.
+
+Run after working-tree placement, at the fetched `refs/pull/<pr>/head`, for
+**every** filename in the locator's `checkpoints` list:
+
+```text
+git fetch origin refs/pull/<pr>/head          # already done by placement
+for each <file> in locator.checkpoints:
+    git cat-file -e FETCH_HEAD:<file> 2>/dev/null   # does it exist at PR head?
+      → absent            ⇒ state(<file>) = MISSING
+      → present: read it; parse CheckpointV1
+          → parse failure / schema-invalid    ⇒ state(<file>) = UNPARSEABLE
+          → status == "resolved"              ⇒ state(<file>) = RESOLVED
+          → status == "active"                ⇒ state(<file>) = UNRESOLVED
+          → any other status value            ⇒ state(<file>) = UNPARSEABLE
+```
+
+Classify the **whole list**, never a sample, then reduce:
+
+| Reduced state | Condition | Required action |
+|---|---|---|
+| `NONE` | **every** listed checkpoint is `UNRESOLVED` | Resolution never started. **Re-enter `RESOLUTION_PREFIX` at the resolve step.** This is the only branch that resumes. |
+| `PARTIAL` | at least one `RESOLVED` **and** at least one `UNRESOLVED` | Crash mid-resolution. **Halt to operator.** Re-resolving would re-commit already-resolved records and the locator cannot enumerate what was done. |
+| `ALL` | **every** listed checkpoint is `RESOLVED` | Crash after resolution, before the phase-2 locator update. **Halt to operator** — the locator under-reports the branch's true state and must be reconciled by hand. |
+| `INDETERMINATE` | any `MISSING` or `UNPARSEABLE`, **or** the `checkpoints` list is empty, **or** any `git`/read command exits non-zero | **Halt to operator.** Missing or unreadable evidence is never "nothing was done". |
+
+**Precedence is strict**: evaluate `INDETERMINATE` **first**, then `PARTIAL`,
+then `ALL`, then `NONE`. A single unreadable file therefore halts rather than
+being silently skipped into a `NONE` verdict — the failure mode this
+classification exists to close, in which a partially-resolved branch is
+re-classified as untouched and resolved a second time.
+
+
 is entered at session start, when the working tree is normally on `main` and may
 be a fresh checkout. Committing a resolution on `main` is forbidden (P-010), and
 staying on `main` makes the re-entry undischargeable. Before re-entering
@@ -600,8 +719,16 @@ creates a residual-window checkpoint.
 3. The entry condition is stated as *the unit owns at least one active checkpoint
    and all branch-mutating work is complete except the resolution-dependent final
    gates*. The circular "PR merge-ready" wording is **not** used. When the unit
-   owns zero active checkpoints the prefix is skipped and the pre-existing path
-   runs unchanged.
+   owns zero active checkpoints, **locator publication and checkpoint resolution
+   are skipped** — but the unit still runs the **newly ordered** common readiness
+   path established by AC2/AC4. **OPEN P1 (Round 8, finding 2):** this criterion
+   previously claimed such units run "the pre-existing path unchanged", which is
+   false — real Step 5 places readiness items 7b/7c *before* runtime
+   verification, closure-artifact generation, follow-up writes and the push
+   (items 7–10), so moving every mutating item ahead of the readiness gate
+   changes the common path for **every** unit, zero-checkpoint units included.
+   The honest statement is recorded here; the corresponding re-specification of
+   AC2/AC4 is **not** yet done.
 4. **No branch-mutating step remains between the prefix's exit and merge.** Any
    existing Step 5 item that mutates the branch (runtime verification,
    operational-closure artifact generation, follow-up stash writes, the push)
@@ -862,9 +989,9 @@ No two concurrently-eligible units edit the same file.
 |---|---|---|
 | RR-1 | These are prose protocols executed by an LLM. Correct wording does not prove correct execution. | **Accepted and recorded.** The prior plan's answer — a static wording checker — could only prove the words had not changed, not that the protocol ran. U5's ancestry assertion is the real defence: a concrete command with a pass/fail outcome that makes a miss loud. V8 additionally proves the one discovery command that was silently wrong in revision 6. |
 | RR-2 | *(Closed in revision 7.)* Stage's session-end resolution was previously bound by P-022 with no procedural rewiring. | **Closed by U8.** The independent review held that a universal requirement with a procedural gap in one of its two named agents is not realized. U8 adds the narrow Stage qualifier without granting Stage merge authority. |
-| RR-3 | The locator lives in the PR body, which a human or bot can edit or delete. | **Accepted.** The mitigation is the halt-on-incomplete-locator rule: a damaged locator stops the session rather than being silently ignored. A *deleted* locator is indistinguishable from one that was never published, and would fall back to pre-change behaviour — no worse than today. |
+| RR-3 | The locator lives in the PR body, which a human or bot can edit or delete. | **OPEN — not accepted; carried as a blocking design gap (PR #396 thread `PRRT_kwDORJEduc6h6juv`).** The previous disposition claimed a deleted locator "would fall back to pre-change behaviour — no worse than today". That is **false and contradicts RQ-7**. Under this design `RESOLUTION_PREFIX` resolves *every* checkpoint **before** merge, so the PR body marker becomes the **sole** record of an outstanding closure obligation. Deleting it leaves startup with zero active checkpoints **and** zero discoverable locators, and `LAST_MILE_RECOVERY` — whose entry is wired into the zero-candidate branch — concludes "clean startup" and selects new queue work. Pre-change behaviour left a still-active checkpoint behind, which is strictly *safer*: the obligation remained discoverable. The design therefore **removes** the pre-change safety net and replaces it with a deletable one, which RQ-7 forbids ("discoverable through closure"). The halt-on-incomplete rule does not mitigate this: a *damaged* locator halts, but a *deleted* one is indistinguishable from one that never existed. **Required fix (not yet designed):** a durable publication record whose prior existence — and therefore its deletion — is detectable through verified closure, independent of mutable PR-body text. Until that exists, this risk is **not** dispositioned and must not be counted as accepted. |
 | RR-4 | `gh api --paginate` over all PRs grows with repository history. | **Accepted.** Cost is bounded by PR count and runs once per zero-candidate startup. Correctness was chosen over speed deliberately (RQ-9). |
-| RR-5 | A crash between locator phase 1 and the resolution commits leaves a `RESOLUTION_PENDING` locator with no commits. | **Handled, not merely accepted** — `LAST_MILE_RECOVERY` Step 1a re-enters `RESOLUTION_ORDER` for the open case and halts for the merged case. Listed here because the handling is a recovery path, not a prevention. |
+| RR-5 | A crash between locator phase 1 and the resolution commits leaves a `RESOLUTION_PENDING` locator with no commits. | **Handled, not merely accepted** — `LAST_MILE_RECOVERY` Step 1a runs the *resolution-state classification* over the locator's checkpoint list at the fetched PR head and re-enters **`RESOLUTION_PREFIX`** (at the resolve step) **only** on a reduced state of `NONE`; `PARTIAL`, `ALL` and `INDETERMINATE` all halt, as does the merged case. `RESOLUTION_POSTCONDITION` is never re-entered here — it is a Step 6 metadata write. Listed here because the handling is a recovery path, not a prevention. |
 
 ## Out of scope
 
@@ -881,7 +1008,10 @@ No two concurrently-eligible units edit the same file.
 ## Retained review history
 
 This section is **evidence, not authority**. It records what previous revisions
-were reviewed against. None of it authorizes harvest of revision 7.
+were reviewed against. None of it authorizes harvest of **revision 8** — the
+current document — whose own Round 8 review returned **FAIL** with three open
+P1s and left the review circuit **OPEN** at attempt counter 3. No row below, and
+no earlier revision's verdict, may be cited as a harvest gate.
 
 | Round | Reviewers | Verdict | Scope reviewed |
 |---|---|---|---|
@@ -912,10 +1042,28 @@ These three P1s remain open and are carried to escalation:
 | 3 | **D14 is not actually folded into a task criterion.** D14 requires reading `branch`/`pr`, fetching the PR head, checking out a local branch, confirming the checkout and halting on failure. Its cited U5 AC2 lists only `gh pr view`, `git fetch` and `git merge-base` — no checkout, no verification — and no V-check covers it. Because task-card criteria are declared exact, U5 could pass while recovery is still sitting on `main`. This re-opens the very hazard D14 was written to close. | Add a U5 acceptance criterion requiring the by-name working-tree placement, checkout and verification before any committing re-entry, plus a matching verification check; then repoint D14's fold reference. |
 
 Open P2s: V2 is unsatisfiable as written (it forbids verbs U1/U8 are required to
-use); V8's reference command lacks `--paginate` so its comparison is invalid;
-several hardening `Folds into` AC references are still stale; and the decision
-document's in-scope list omits `_stage.agent.md`, says "7-task plan", and still
-names the retired `RESOLUTION_ORDER`.
+use); and V8's reference command lacks `--paginate` so its comparison is invalid.
+
+**Closed on 2026-09-13** (PR #396 Copilot review remediation pass, commit
+recorded in the PR): the decision document's in-scope list now carries
+`_stage.agent.md`, says **eight units (U1–U8)** instead of "7-task plan", and no
+longer names the retired `RESOLUTION_ORDER`; hardening D14's stale `Folds into`
+reference is withdrawn along with its incorrect "applied" status.
+
+### Additional findings from the PR #396 Copilot review (remediated in this pass)
+
+These were raised on the published PR rather than by the four-persona panel.
+They are **specification hardenings and honesty corrections**; none of them
+closes any of the three open P1s above, and none changes the circuit state.
+
+| Thread | Finding | Disposition |
+|---|---|---|
+| `PRRT_kwDORJEduc6h6juE` | The "exhaustive and trusted" read protocol validated no provenance, so a fork PR could forge a locator and halt startup or steer recovery. | **Fixed.** New *Provenance validation* block: PV-1…PV-7, with untrusted candidates **discarded silently** (so an outsider cannot deny startup) and trusted-but-inconsistent ones **halting**. All downstream rules operate over the TRUSTED set only. |
+| `PRRT_kwDORJEduc6h6juv` | RR-3's "no worse than today" disposition contradicts RQ-7. | **Fixed by honest reclassification.** RR-3 is now **OPEN**, not accepted: resolving every checkpoint pre-merge makes the deletable PR-body marker the *sole* obligation record, which is strictly worse than the pre-change still-active checkpoint. The required durable publication record is **not yet designed**. |
+| `PRRT_kwDORJEduc6h6jv7` | Body status said `review_verdict: none` while frontmatter said FAIL. | **Fixed.** The status paragraph now states the round-8 FAIL, the three open P1s, attempt counter 3 and the open circuit. |
+| `PRRT_kwDORJEduc6h6jv-` | Retained-history note still said "revision 7". | **Fixed.** Now names revision 8 and its FAIL verdict. |
+| `PRRT_kwDORJEduc6h6ldd` | "Handled normally" undefined for two locators naming the same shipment. | **Fixed.** Byte-identical duplicates collapse to one record; **any** field difference halts. `updated_at` explicitly barred as a tie-breaker (it is body text). |
+| `PRRT_kwDORJEduc6h6ldr` | "Resolution commits exist" had no executable definition on the `RESOLUTION_PENDING` path. | **Fixed.** New *Resolution-state classification*: per-checkpoint state at the fetched PR head, reduced to `NONE` / `PARTIAL` / `ALL` / `INDETERMINATE`, with strict precedence. Only `NONE` resumes; the other three halt. |
 
 ## Escalation record (P-013.6)
 

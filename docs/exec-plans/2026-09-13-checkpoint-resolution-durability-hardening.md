@@ -3,7 +3,11 @@ doc_type: exec-plan-hardening
 date: 2026-09-13
 revision: 8
 scope: defect-2-only
-status: awaiting-independent-review
+status: reviewed-fail-circuit-open
+review_verdict: FAIL
+review_verdict_revision: 8
+review_attempts: 3
+harvest_authorized: false
 plan_document: docs/exec-plans/2026-09-13-checkpoint-resolution-durability-plan.md
 supersedes: docs/exec-plans/2026-09-13-checkpoint-lifecycle-continuity-hardening.md
 policies: [P-005, P-006, P-009, P-014, P-016, P-018]
@@ -16,6 +20,14 @@ Hardening applied under P-006 to
 declares `requires_plan_hardening: yes` because it changes merge-adjacent
 ordering governed by P-014/P-018 and introduces a startup route that could, if
 mis-specified, become an unsupervised merge path.
+
+**Review status (frontmatter is authoritative).** This hardening has **already
+undergone** the revision-8 independent review. That review returned **FAIL** —
+three P1 findings, one of which (`D14`) is a defect **in this document**. It was
+the **third consecutive FAIL** (revisions 6, 7, 8); the plan-review circuit is
+**OPEN** at attempt counter 3 and the P-013.6 escalation has fired. This document
+is therefore **reviewed-and-failed**, not awaiting a first review, and it
+authorizes no harvest.
 
 **Relationship to the prior hardening document.** The combined hardening document
 (`2026-09-13-checkpoint-lifecycle-continuity-hardening.md`, H1–H41) covered both
@@ -333,10 +345,30 @@ the operator if any step fails, rather than proceeding on the wrong branch.
 Read-only ancestry assertions require the fetch but not the checkout, and must
 not be burdened with one.
 
-**Folds into**: plan `LAST_MILE_RECOVERY` *Working-tree placement*; U3 acceptance
-criterion 7; U5 acceptance criterion 2.
+**Folds into**: plan `LAST_MILE_RECOVERY` *Working-tree placement*. **No task
+acceptance criterion yet carries it.**
 
-**Status**: applied.
+**Status**: **NOT applied — OPEN P1 (Round 8, finding 3).** The previous
+"applied" claim, and its `U3 AC7 / U5 AC2` fold reference, were **incorrect** and
+are withdrawn. U5 AC2 names only `gh pr view`, `git fetch` and `git merge-base`:
+it requires **no** checkout of the PR branch and **no** verification that the
+checkout succeeded, and **no** V-check covers the placement. Because task-card
+acceptance criteria are declared exact, U5 could pass in full while recovery is
+still sitting on `main` — re-opening precisely the hazard D14 exists to close.
+
+**Required before this may be marked applied** (all three, none yet done):
+
+1. Add a **U5 acceptance criterion** requiring, by name, the working-tree
+   placement sequence — read `branch`/`pr` from the locator, `git fetch origin
+   refs/pull/<pr>/head`, check out a local branch at that tip, **confirm the
+   checkout succeeded**, and **halt to the operator** if any step fails — as a
+   precondition of any committing re-entry.
+2. Add a matching **verification check** that inspects U5's criteria for that
+   sequence and its halt clause.
+3. **Repoint this fold reference** at the new criterion and the new V-check.
+
+Until all three land, D14 is an outstanding blocking finding and MUST NOT be
+counted as folded, applied, or discharged.
 
 ## Hardening coverage
 
@@ -355,7 +387,7 @@ criterion 7; U5 acceptance criterion 2.
 | D11 | `LAST_MILE_RECOVERY` Step 1b advanced-HEAD row | U3 |
 | D12 | Unit U8 | U8 |
 | D13 | Unit U6 scoping; P-001 row | U6 |
-| D14 | `LAST_MILE_RECOVERY` working-tree placement | U3, U5 |
+| D14 | `LAST_MILE_RECOVERY` working-tree placement | **none — OPEN P1, not folded into any task criterion** |
 
 Every blocking hardening folds into at least one task acceptance criterion. No
 hardening is left as narrative-only.

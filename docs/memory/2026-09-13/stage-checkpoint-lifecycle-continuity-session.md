@@ -2,33 +2,75 @@
 doc_type: session-memory
 agent: stage
 date: 2026-09-13
-status: in-progress
+status: superseded
+superseded_on: 2026-09-13
+superseded_by: docs/memory/2026-09-13-stage-143-scope-split.md
+superseded_reason: operator-approved scope split; the revision-5 combined plan and its 14-task/143-S decomposition are obsolete
 revision: 5
-plan_revision: 5
-plan_status: awaiting-independent-review
+plan_revision: 8
+plan_document: docs/exec-plans/2026-09-13-checkpoint-resolution-durability-plan.md
+plan_status: halted-review-circuit-open
 review_verdict: FAIL
-review_verdict_revision: 4
+review_verdict_revision: 8
+review_attempts: 3
 harvest_authorized: false
+resume_allowed: false
 shipment: 143-S
+shipment_status: abandoned
 feature: 143-F
-stash_ids: [A1D95672, 4EF24729]
+stash_ids: [4EF24729]
+defect1_returned_to: docs/decisions/2026-09-13-dark-mode-continuation-auto-routing-deliberation.md
 ---
 
 # Stage session — checkpoint lifecycle continuity
 
+> **SUPERSEDED — DO NOT RESUME FROM THIS HANDOFF.**
+>
+> This memory records the **revision-5 combined-plan** session. An
+> operator-approved **scope split** on 2026-09-13 invalidated its handoff:
+> Defect 1 was removed from implementation scope and Defect 2 was reduced to its
+> own plan. Resuming from the body below would direct the next agent to the
+> **obsolete fourteen-task `143-S` shipment**, which has since been moved to
+> `status: abandoned`.
+>
+> **Authoritative successor handoff:**
+> `docs/memory/2026-09-13-stage-143-scope-split.md`
+>
+> **Current artifacts — read these instead of the body below:**
+>
+> | Concern | Current artifact | State |
+> |---|---|---|
+> | Defect 2 plan | `docs/exec-plans/2026-09-13-checkpoint-resolution-durability-plan.md` | revision 8, `review_verdict: FAIL`, 3 open P1s, circuit **OPEN** (attempt 3), `harvest_authorized: false` |
+> | Defect 2 hardening | `docs/exec-plans/2026-09-13-checkpoint-resolution-durability-hardening.md` | `reviewed-fail-circuit-open`; D14 **not** applied |
+> | Defect 2 decision | `docs/decisions/2026-09-13-checkpoint-resolution-durability-decision.md` | eight units U1–U8 |
+> | Defect 1 | `docs/decisions/2026-09-13-dark-mode-continuation-auto-routing-deliberation.md` | `status: open`; stash `A1D95672` archived `returned-to-deliberation` |
+> | Superseded combined plan | `docs/exec-plans/2026-09-13-checkpoint-lifecycle-continuity-plan.md` | `status: superseded` — evidence only |
+>
+> **Next action is NOT harvest.** The plan-review circuit is open and the
+> P-013.6 escalation has fired. `143-F` and `143-S` are **DO NOT CLAIM**. The
+> body below is retained **as evidence only**.
+
 ## Outcome
+
+> *Historical — describes the superseded revision-5 session. Every gate claim in
+> this section has been overtaken by the scope split and by review rounds 6–8.*
 
 Staged a durable workflow correction for two defects at opposite ends of the
 checkpoint lifecycle. Produced a deliberation artifact, a risk-hardened
 implementation plan (**revision 5**, hardening H1–H41), a covering feature with
 **fourteen tasks** and **eighteen dependency edges**, and shipment `143-S`.
+*(All now obsolete: the plan is superseded, the fourteen-task decomposition is
+abandoned, and `143-S` is `status: abandoned`.)*
 
 **Gate state: NOT harvestable.** The fresh independent full-plan review of
 revision 4 — the outstanding escalation blocker 8 — **was performed and returned
 FAIL** with thirteen blocking P1 findings. Revision 5 remediates all thirteen and
-records the P2/advisory dispositions, but **claims no PASS**. `143-F` and
-`143-S` remain **queued and unclaimed** until a further fresh independent
-full-plan review of revision 5 returns PASS.
+records the P2/advisory dispositions, but **claims no PASS**.
+
+*(Superseded: the "until a further review of revision 5 returns PASS" condition
+no longer applies — revision 5 was never re-reviewed; it was **split**. The
+reduced Defect-2 plan then failed rounds 6, 7 and 8, opening the review circuit.
+`143-F` and `143-S` are not merely unclaimed but **abandoned**.)*
 
 No source, template, agent, or script file was modified in this session; no
 branch or worktree was created. Only Stage-owned planning, backlog,

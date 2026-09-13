@@ -168,5 +168,14 @@ This deliberation may close only when **all** hold:
 * An independent review of the resulting decision returns PASS.
 
 Only then may an implementation plan be written, and only then may Defect 1 be
-harvested into backlog items. Until then stash `A1D95672` remains **active and
-unharvested**.
+harvested into backlog items.
+
+**Source-of-truth state of the originating stash entry.** Stash `A1D95672` is
+**not** in the active stash. It was **archived** on 2026-09-13 with
+`reason: returned-to-deliberation` and
+`returned_to: docs/decisions/2026-09-13-dark-mode-continuation-auto-routing-deliberation.md`,
+and exists only at `.backlogit/archive/stash.jsonl:185`. The Defect-1 obligation
+is therefore carried by **this deliberation document**, not by an active stash
+entry, and no triage pass will resurface it. Until this deliberation reaches a
+reviewed PASS decision naming a feasible executable substrate, Defect 1 remains
+**unharvested** and the operator-reported malfunction remains **uncorrected**.

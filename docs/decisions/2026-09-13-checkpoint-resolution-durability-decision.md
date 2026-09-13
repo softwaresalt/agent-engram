@@ -109,6 +109,10 @@ durable, non-self-referential locator and a bounded last-mile recovery rule.
 * `.github/policies/workflow-policies.md` (one new policy section)
 * `.github/instructions/github-pr-automation.instructions.md` (two new subsections)
 * `.github/agents/_ship.agent.md` (two existing sections rewired)
+* `.github/agents/_stage.agent.md` (U8 — both Stage resolve sites: *Session end*
+  item 2 and the `OWNER-SCOPED RESOLUTION` block, which receive the narrow P-022
+  merged-PR prohibition and the executable merged-PR predicate). Stage gains
+  **no** merge authority from this; see the out-of-scope note below.
 * `.github/agents/_orchestrator.agent.md` (zero-candidate startup branch)
 * `docs/compound/workflow-issues/` (one new learning)
 
@@ -125,18 +129,22 @@ durable, non-self-referential locator and a bounded last-mile recovery rule.
   police, and a permanent checker plus hooks for four prose paragraphs is
   scope the Scope Boundary Auditor already flagged (R-P2c′).
 * The task↔plan acceptance parity gate (former T14). It was introduced because a
-  14-task plan had drifted from its cards. A 7-task plan whose cards are
-  mechanically derived from the plan sections does not need a runtime gate, and
-  the former gate could not in fact enforce first-task ordering (PR #396 thread
-  `PRRT_kwDORJEduc6h3sTk`).
+  14-task plan had drifted from its cards. The reduced plan's **eight units
+  (U1–U8)**, whose cards are mechanically derived from the plan sections, do not
+  need a runtime gate, and the former gate could not in fact enforce first-task
+  ordering (PR #396 thread `PRRT_kwDORJEduc6h3sTk`).
 * backlogit tool changes; `src/`; `crates/`; shipments 140-S / 141-S / 142-S;
   feature 142-F; upstream autoharness template propagation.
 * Upstream autoharness template propagation.
-* Stage does **not** execute `RESOLUTION_ORDER` — it holds no merge authority
-  (P-010). Stage receives only the narrow P-022 prohibition (never resolve into
-  an already-merged carrying PR), which unit U8 installs. This closes the
-  procedural gap that would otherwise leave an agent-agnostic policy
-  contradicted by one of its two named agents' own procedure.
+* Stage does **not** execute `RESOLUTION_PREFIX` — it holds no merge authority
+  (P-010) — and does not perform `RESOLUTION_POSTCONDITION`, which is a Ship
+  Step 6 closure metadata write. (Revision 8 retired the single
+  `RESOLUTION_ORDER` construct and split it into these two; the retired name has
+  no definition in the canonical plan and must not be cited.) Stage receives only
+  the narrow P-022 prohibition (never resolve into an already-merged carrying
+  PR), which unit U8 installs. This closes the procedural gap that would
+  otherwise leave an agent-agnostic policy contradicted by one of its two named
+  agents' own procedure.
 
 ## 6. Disposition of the PR #396 review findings
 

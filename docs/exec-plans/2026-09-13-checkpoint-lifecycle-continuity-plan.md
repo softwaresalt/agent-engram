@@ -26,13 +26,26 @@ dependency_edge_count: 18
 **Requires plan hardening**: **yes** — this plan modifies safety gates governing
 autonomous execution (P-017) and merge-adjacent ordering (P-014/P-018).
 
-**Machine-readable status.** The frontmatter above is authoritative and is kept
-in lockstep with this body: `revision: 5`, `status: awaiting-independent-review`,
-`review_verdict: FAIL` against **revision 4**, `harvest_authorized: false`.
-Revision 5 makes **no** PASS claim. It remediates the thirteen blocking findings
-of the independent revision-4 full-plan review and records the disposition of
-that review's advisory findings; the gate that authorizes harvest is a **fresh
-independent full-plan review of revision 5**, which has not yet been run.
+**Machine-readable status.** The frontmatter above is authoritative:
+`status: superseded`. **This combined revision-5 plan is SUPERSEDED and must not
+be resumed, reviewed, or harvested.** The operator approved a scope split on
+2026-09-13 and this document was replaced by **two** artifacts:
+
+* **Defect 2** → `docs/exec-plans/2026-09-13-checkpoint-resolution-durability-plan.md`
+  (revision 8, Defect 2 only). That plan's own round-8 independent review
+  returned **FAIL**; the review circuit is **OPEN** at attempt counter 3 and
+  `harvest_authorized: false`.
+* **Defect 1** → `docs/decisions/2026-09-13-dark-mode-continuation-auto-routing-deliberation.md`
+  (`status: open`). Defect 1 was **removed from implementation scope** and
+  returned to a fresh deliberation. It must not be implemented until that
+  deliberation reaches a reviewed decision.
+
+The body below is **retained unchanged as evidence** of what revision 5
+contained and what it was reviewed against. It is **no longer kept in lockstep**
+with any active gate state, and its fourteen-task / eighteen-edge decomposition
+and shipment `143-S` are **obsolete**. `143-S` has been moved to
+`status: abandoned`. Do **not** resume the revision-5 harvest path from any
+statement below.
 
 **Revision 5** resolves the independent revision-4 full-plan review (Constitution,
 Rust/feasibility, Scope, Learnings, Architecture, Agent-Native Parity, and
