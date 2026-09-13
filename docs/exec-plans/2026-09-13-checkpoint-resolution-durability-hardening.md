@@ -3,10 +3,13 @@ doc_type: exec-plan-hardening
 date: 2026-09-13
 revision: 11
 scope: defect-2-only
-status: under-review
-review_verdict: pending
+status: review-failed
+review_verdict: FAIL
 review_verdict_revision: 11
-review_attempts: 5
+review_attempts: 6
+review_p0_count: 0
+review_p1_count: 21
+review_circuit: OPEN
 harvest_authorized: false
 plan_document: docs/exec-plans/2026-09-13-checkpoint-resolution-durability-plan.md
 supersedes: docs/exec-plans/2026-09-13-checkpoint-lifecycle-continuity-hardening.md

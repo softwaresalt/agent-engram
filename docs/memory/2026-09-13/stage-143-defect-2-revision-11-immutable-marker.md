@@ -5,7 +5,7 @@ session: stage-143-defect-2-revision-11
 phase: plan-revision
 historical_shipment: 143-S
 pr: 396
-status: revision-pushed-awaiting-round-11-review
+status: round-11-FAIL-circuit-open
 ---
 
 # Stage — Defect 2 plan revision 11 (protected immutable marker)
@@ -168,9 +168,65 @@ Plan lines 1148+ (`## Retained review history`) and hardening lines 490+
 under explicit **SUPERSEDED** banners. `143.*` identifiers remain abandoned
 historical evidence and must not be reused at harvest.
 
-## Next steps
+## Round-11 review outcome — FAIL, circuit OPEN
 
-1. Round-11 full plan review (cross-model, all required personas).
-2. Append the review, update verdict frontmatter, commit and push.
-3. Update the PR body `Reviewed HEAD` after the push.
-4. Any P0/P1 ⇒ FAIL and open the circuit. Never harvest or merge in this cycle.
+Revision 11 pushed at `21dffd63e86add818b0c5237a7009c13109f838c`. One fresh full
+plan review was run over that commit with seven personas across six models:
+Constitution Reviewer (`claude-opus-4.8`), Architecture Strategist
+(`gpt-6-astra`), Scope Boundary Auditor (`gpt-5.6-sol`), Agent-Native Parity
+Reviewer (`grok-4.6`), Security Lens Reviewer (`claude-opus-4.7`), Correctness
+Reviewer (`claude-sonnet-5`), Learnings Researcher (`claude-haiku-4.5`).
+
+**Result: 0 P0, 21 P1, 23 P2, 7 P3. Verdict FAIL. Circuit OPEN.** This was
+attempt 3 of 3 under the operator's bounded outcome cycle; no fourth remediation
+attempt is authorized. Disposition of PR #396 returns to the operator.
+
+### What round 11 genuinely fixed
+
+All four round-10 P0s are closed by **deletion**, confirmed unanimously. The
+verbatim Step 5 extraction was independently diffed against the live file by two
+reviewers and is faithful. The Git semantics (empty-value lease, atomic
+either-ref rejection, `T` vs peeled `C`, the lease-skip gotcha) drew **zero**
+challenges. The RQ-7 / P-001 separation holds at every point of use, checked
+independently by five reviewers. U0's never-agent-executed boundary is
+consistent. RR-3a/RR-3b were found honest — no overclaim, which was itself a
+round-10 defect class. Zero contradictions with the compound library.
+
+### Why it still failed — three defect families
+
+1. **Four NEW unsatisfiable verification rows** (the round-10 F-17 class
+   recurring in a revision that explicitly rewrote V25/V27 to eliminate it):
+   the zero path fails U4 AC6's unconditional marker-object check; V24 forbids
+   the branch mutation the nonzero path requires; V25's permitted classes admit
+   deletion *tables* but not the revision's own deletion *prose*; V6 forbids
+   commits that the mandated order already made.
+2. **Load-bearing inputs with no defined source**: `workspace_id` (a primary-key
+   component) names no file and no field and does not exist in
+   `.autoharness/config.yaml`; the "recorded ruleset ID" has no committed home
+   because U0 touches no file; the checkpoint-selection predicate references a
+   carrying-PR binding that U6 AC1 forbids storing; canonical JSON is
+   under-specified against a byte-identity requirement.
+3. **Contracts contradicting the live harness**: `pr-lifecycle/SKILL.md` Steps
+   5b–5d can execute the merge before Ship publishes the marker (verified
+   directly); Ship's checkpoint-*creation* obligations were never reconciled
+   with the post-publication freeze; and **`.github/instructions/constitution.instructions.md`
+   EXISTS** with principles I–XI — revision 11 over-corrected round-10 F-19 into
+   a false denial of it, deleting a mandated Constitution Check.
+
+Two findings are recurrences of exactly what this revision was commissioned to
+eliminate: the four F-17-class rows above, and a crash window during resolution
+*preparation* that would silently reproduce the original 139-S defect the plan
+exists to prevent.
+
+### Meta-pattern across three rounds
+
+The plan's self-checks pass where an independent panel does not. Any future
+attempt should invert the order: establish the missing input contracts and diff
+every claim against the live harness files FIRST, and write the verification
+rows LAST, against a concrete implementation rather than an intended one.
+
+### Boundary confirmation
+
+No harvest, no claim, no activation, no implementation, no GitHub settings
+mutation, no thread reply or resolution, no merge. Only the three planning
+artifacts, this memory record, and PR-body metadata were touched.

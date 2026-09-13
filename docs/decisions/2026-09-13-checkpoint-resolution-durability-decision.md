@@ -3,6 +3,9 @@ doc_type: decision
 date: 2026-09-13
 revision: 5
 status: accepted
+downstream_plan_verdict: FAIL (round 11; 0 P0, 21 P1)
+downstream_plan_circuit: OPEN
+harvest_authorized: false
 supersedes_scope_of: docs/decisions/2026-09-13-checkpoint-lifecycle-continuity-deliberation.md
 supersedes_normative_design_of: revision 4 of this document
 scope: defect-2-only

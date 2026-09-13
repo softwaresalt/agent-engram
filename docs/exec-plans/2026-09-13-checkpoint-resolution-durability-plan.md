@@ -3,11 +3,14 @@ doc_type: exec-plan
 date: 2026-09-13
 revision: 11
 scope: defect-2-only
-status: under-review
-review_verdict: pending
+status: review-failed
+review_verdict: FAIL
 review_verdict_revision: 11
-review_attempts: 5
-escalation: P-013.6 fired at revision 8 (route gpt-5.6-sol/openai/xhigh). Rounds 6-10 all returned FAIL. Revision 11 is the THIRD and final bounded remediation revision under the operator's authorized outcome cycle for PR #396, carrying the architecture-validated protected immutable annotated-tag design that replaces revision 10's branch-history/closure-record machinery, plus ONE fresh full independent review. If round 11 returns any P0 or P1 the circuit OPENS and the design returns to the operator.
+review_attempts: 6
+review_p0_count: 0
+review_p1_count: 21
+review_circuit: OPEN
+escalation: P-013.6 fired at revision 8 (route gpt-5.6-sol/openai/xhigh). Rounds 6-10 all returned FAIL. Revision 11 is the THIRD and final bounded remediation revision under the operator's authorized outcome cycle for PR #396, carrying the architecture-validated protected immutable annotated-tag design that replaces revision 10's branch-history/closure-record machinery, plus ONE fresh full independent review. Round 11 returned 0 P0 and 21 P1 from a seven-persona, six-model panel. The circuit is now OPEN. No fourth remediation attempt is authorized by this cycle; disposition of PR #396 returns to the operator.
 harvest_authorized: false
 source_document: docs/decisions/2026-09-13-checkpoint-resolution-durability-decision.md
 supersedes: docs/exec-plans/2026-09-13-checkpoint-lifecycle-continuity-plan.md
@@ -1136,6 +1139,183 @@ never reused.
 * backlogit tool changes; `src/`; `crates/`.
 * Shipments 140-S, 141-S, 142-S; feature 142-F.
 * Upstream autoharness template propagation.
+
+## Plan Review — round 11
+
+**Plan revision reviewed**: 11
+**Commit reviewed**: `21dffd63e86add818b0c5237a7009c13109f838c`
+**Reviewed HEAD at review time**: `21dffd63e86add818b0c5237a7009c13109f838c`
+**Date**: 2026-09-13
+**Gate**: `plan-review` (full, multi-persona, cross-model)
+
+### Verdict — **FAIL**
+
+| Severity | Count (raw) | Count (deduplicated) |
+|---|---|---|
+| **P0** | **0** | **0** |
+| **P1** | **21** | **18** |
+| P2 | 23 | ~19 |
+| P3 | 7 | 7 |
+
+**Zero P0 findings.** The four round-10 P0s are confirmed genuinely closed by
+deletion, unanimously, by every reviewer that examined them. The replacement
+mechanism is sound in its core: no reviewer challenged the annotated-tag
+architecture itself.
+
+**Twenty-one P1 findings block harvest.** Under the operator's bounded outcome
+cycle, any P0 or P1 is a FAIL. **The review circuit is opened.** This was
+attempt 3 of 3.
+
+### Reviewer panel
+
+Seven personas across six distinct models, for genuine cross-model diversity.
+
+| Persona | Model | P0 | P1 | P2 | P3 |
+|---|---|---|---|---|---|
+| Constitution Reviewer | `claude-opus-4.8` | 0 | 1 | 1 | 2 |
+| Architecture Strategist | `gpt-6-astra` | 0 | 6 | 5 | 0 |
+| Scope Boundary Auditor | `gpt-5.6-sol` | 0 | 6 | 3 | 0 |
+| Agent-Native Parity Reviewer | `grok-4.6` | 0 | 4 | 3 | 0 |
+| Security Lens Reviewer | `claude-opus-4.7` | 0 | 2 | 2 | 2 |
+| Correctness Reviewer | `claude-sonnet-5` | 0 | 2 | 6 | 1 |
+| Learnings Researcher | `claude-haiku-4.5` | 0 | 0 | 3 | 2 |
+
+### What round 11 demonstrably fixed
+
+Recorded because it is real progress and should not be re-litigated if this plan
+is ever resumed.
+
+* **All four round-10 P0s are closed by deletion, not repair.** No Channel B, no
+  `OPEN`/`CLOSED` lifecycle, no `FETCH_HEAD` destination, no broad branch
+  ruleset. U0 targets **tags only** at an exact path with creation unrestricted,
+  so the repository-wide branch-cleanup and rebase blast radius (F-04) is gone.
+* **The verbatim Step 5 extraction is faithful.** Two reviewers independently
+  diffed it against the live `_ship.agent.md` and confirmed the duplicated item
+  `7`, the 7a/7b/7c placement, and item 15's actual content. This was the defect
+  class that sank rounds 9 and 10.
+* **Git semantics are correct and empirically grounded.** The empty-value lease
+  as an absence assertion, atomic either-ref rejection, the annotated tag OID
+  `T` versus peeled commit `C`, and the already-up-to-date lease-skip gotcha
+  were all validated and are handled correctly. No reviewer challenged them.
+* **RQ-7 / P-001 separation holds everywhere.** Five reviewers checked it
+  independently; none found a path where a discharged marker substitutes for a
+  closure gate or authorizes the next shipment.
+* **U0 is never agent-executed**, never dark-mode-approved, and Ship is never
+  granted ruleset-write credentials. Confirmed consistent across all three
+  documents.
+* **Squash/rebase cannot falsely discharge** — confirmed correct.
+* **RR-3a and RR-3b are honest.** No reviewer found an overclaim of a guarantee
+  stronger than the server enforces. This was a round-10 defect class.
+* **Prior-art check is clean**: zero contradictions with the compound library.
+
+### P1 findings (deduplicated) — all block harvest
+
+Findings confirmed by two or more independent reviewers are marked **[×2]**.
+
+#### Cluster A — Verification criteria that a correct implementation would fail
+
+This is the round-10 **F-17 defect class recurring**. The revision explicitly
+set out to fix it, rewrote V25 and V27 for it, and still shipped four more
+instances. This is the single most damning result of the round.
+
+| ID | Finding |
+|---|---|
+| **F11-01** **[×2]** | *(A-01, S-02)* **Zero-checkpoint path is unsatisfiable at the last mile.** U4 AC6 requires item 15 to re-evaluate "unconditionally … all of" the marker object (`ref OID == T`, `peel == C`, `type tag`) and `C`-ancestry. On a proven-zero path neither `C` nor `T` exists. AC10 and V5 exempt the `C`-ancestry term but do **not** exempt the marker-object checks. A correct zero-path implementation fails its own gate. |
+| **F11-02** | *(S-03)* **V24 is unsatisfiable.** It requires "no branch-mutating item after the freeze other than review remediation", but the required nonzero path creates commit `C` and pushes the branch *after* the freeze. U4 AC5 has the correct boundary (no mutation after **publication**); V24 states the wrong one. |
+| **F11-03** | *(S-04)* **V25 is still unsatisfiable** despite being rewritten for exactly this reason. Its five permitted hit classes admit deletion **tables** but not the revision-11 **narrative prose**, and that prose contains `RESOLUTION_OBLIGATION_RECORD`, `POST-A`, `POST-B`, `Channel A` and `Channel B` outside every permitted class. The row's own claim that all hits were classified into (a)–(e) is therefore false as written. |
+| **F11-04** | *(S-05)* **V6 is unsatisfiable.** It requires "no commit" after a malformed enumeration, but the mandated Step 5 order completes ordinary mutating commits (session memory, runtime verification, operational closure) *before* enumeration. The correct bar is "no resolution commit `C`, no tag, no post-enumeration branch mutation, no merge". |
+
+#### Cluster B — Load-bearing inputs with no defined source
+
+| ID | Finding |
+|---|---|
+| **F11-05** **[×2]** | *(A-06, N-02)* **`workspace_id` has no defined owner or retrieval contract.** It is one of three primary-key components and the ref name is a digest over it, so determinism is load-bearing. The plan says "the workspace identifier recorded in the repository's own committed configuration" but names **no file and no field**. `.autoharness/config.yaml` has no such field; `.autoharness/workspace-profile.yaml` carries only a machine-local `workspace_path`. Two competent agents hash different strings, produce different refs, and idempotent recovery degrades into a conflict halt. |
+| **F11-06** | *(N-03)* **The "recorded ruleset ID" has no durable, agent-readable home.** U0 touches no repository file, name-based rediscovery is forbidden, and marker publication is a permanent Ship duty — so every future session is told to "read ruleset ID X" with no committed X. The task card is not a store. |
+| **F11-07** | *(N-04)* **The checkpoint-selection predicate is not deterministic.** "Checkpoints whose recorded context binds them to the current shipment and the **carrying PR**" has no field, no equality rule, and no halt-versus-exclude rule — and U6 AC1 forbids storing the PR at creation. Three plausible agent behaviours diverge, one of which silently reproduces the original 139-S defect by classifying leftover actives as a proven zero. |
+| **F11-08** **[×2]** | *(A-05; SEC-03 at P2)* **Canonical JSON is under-specified.** "UTF-8, no BOM, sorted keys, LF, no insignificant whitespace" does not fix Unicode normalization, numeric encoding, string-escape policy, duplicate-key handling, or the sort's code-unit basis. Because idempotence requires **byte-identical** payloads and conflicts can never be repaired, any serializer drift becomes a permanent conflict halt. Recommend RFC 8785 (JCS) plus fixed test vectors. |
+
+#### Cluster C — Contracts that contradict the live harness
+
+| ID | Finding |
+|---|---|
+| **F11-09** **[×2]** | *(N-01; R-08 at P2)* **Round-10 F-15 is not closed.** The ambient-derivation hole *is* closed in text (AC4's prohibitions hold, and Stage gains no merge authority — P-010 is preserved). But U6 requires a **caller-supplied carrying PR**, and **no such caller exists in Stage's control flow**: Stage's inputs are stash/deliberation/plan/preview, Stage is forbidden from opening PRs, and the Orchestrator step that creates the staging PR runs *after* Stage completes. A compliant agent therefore halts on every ordinary Stage session end; a non-compliant one invents a carrier and reopens F-15. |
+| **F11-10** | *(A-03)* **The claimed total order is not enforced — a delegated skill can merge first.** U4 describes Step 5 item 6 as "`pr-lifecycle` — create/update the PR" with no branch mutation. The real `.github/skills/pr-lifecycle/SKILL.md` pushes in Step 1 and runs its own approval, last-mile and **merge execution** in Steps 5b–5d, including admin fallback. *Verified directly during this review.* Nothing in U4 restricts that invocation to returning before merge, so the nested workflow can merge before Ship publishes the marker. |
+| **F11-11** | *(A-04)* **The freeze is not reconciled with the checkpoint producers.** Live Ship requires checkpoints when review produces findings, when CI remediation resolves or blocks, and at session end. U5 removes resolution sites but not these **creation** obligations, so the post-publication "late checkpoint halts" rule collides with instructions that mandate creating exactly such checkpoints. |
+| **F11-12** | *(C-01)* **The Constitution Check is premised on a false statement of workspace fact.** The plan asserts the workspace "does not carry" an eleven-principle constitution and deletes the mapping, citing round-10 F-19. *Verified directly during this review*: `.github/instructions/constitution.instructions.md` **exists**, is active (`applyTo: '**'`), and carries principles **I–XI** plus a NON-NEGOTIABLE **Task Granularity** section. Principle **XI (Merge Commit History Preservation, NON-NEGOTIABLE)** governs exactly the P-009 work this plan touches, and the constitution's Governance clause makes the Constitution Check a hard MUST. Revision 11 over-corrected F-19 into the opposite error. |
+
+#### Cluster D — Recovery, lifecycle and trust-model gaps
+
+| ID | Finding |
+|---|---|
+| **F11-13** **[×2]** | *(A-02, R-01)* **Unhandled crash window during resolution *preparation*.** "Prepare all resolutions without committing them" is silent on whether preparation mutates checkpoint state. If it does, a crash after preparation but before `git commit` leaves every checkpoint locally resolved with nothing committed or pushed; on restart the exhaustive enumeration finds zero actives, takes the zero path, creates no marker, and **silently reproduces the exact 139-S defect this plan exists to prevent**. RR-5 covers only the post-`C` window. |
+| **F11-14** | *(S-01)* **The ambiguous-push contract is self-contradictory.** U1 AC12 requires that "any ambiguity must leave both refs unchanged and halt", but V9 handles a lost response where the marker *is* already present — i.e. the push succeeded and both refs changed. A client cannot force an already-successful immutable publication back to unchanged. Rejection and indeterminate transport must be separated. |
+| **F11-15** | *(R-02)* **A legitimately abandoned shipment permanently blocks all future work.** Its carrying PR closes unmerged (an ordinary event), so its marker can never become DISCHARGED; ref hygiene forbids deleting or updating it; and U5 AC1 makes a PENDING marker block new shipment work. No unit defines an operator recovery path. |
+| **F11-16** | *(SEC-01)* **Namespace-poisoning denial of service.** Creation is deliberately unrestricted, deletion is restricted with empty bypass actors. Any push-capable identity can create a wrong-identity tag under the prefix; discovery's rule 5 **halts** on it rather than skipping it, and nothing in the protocol can remove it. Every startup and pre-queue halts until an administrator disables U0, deletes the tag, and reinstates it. Undisclosed in the residual risks. |
+| **F11-17** | *(SEC-02)* **Deterministic-ref pre-emption.** All three primary-key inputs are public or committed, so an adversary can compute the next shipment's exact ref and pre-plant a conflicting payload. The conflict rule correctly halts Ship — but the ref cannot then be removed by the protocol *or* by a non-admin operator, and the plan's "the operator resolves it" has no defined procedure. |
+| **F11-18** | *(S-06)* **RQ-13 violates the table's own exactly-one-owner rule**, listing "U0 … + U1" in the Owning-unit column. |
+
+### P2 and P3 findings
+
+Recorded for completeness; they do not change the verdict. Principal items:
+Principle IX tension undocumented (C-02); discovery cost is linear in **all
+retained markers**, not "at most one live marker" as RR-4 claims (A-08, S-09,
+**[×2]**); fixed-point scan overstates its synchronization guarantee (A-07);
+no explicit same-repository binding precondition for fork-headed PRs (A-09);
+single-file authoring used as a proxy for bounded effort (A-10); hardening D15′
+reintroduces a PR-body provenance dependency the architecture removed (A-11);
+unspecified retry bounds (S-07); V27 passes against renamed equivalents (S-08);
+U7's insertion locus is not a real Orchestrator step (N-05); merge pin does not
+name `--match-head-commit` (N-06); "prove atomic push capability" has no command
+(N-07); Ship's ruleset read needs `Administration: Read`, one toggle from write
+(SEC-04); unbounded candidate fetches before the halt classification (SEC-05);
+advisory `repo_owner`/`repo_name` not forbidden as routing inputs (SEC-06);
+commit-to-pulls eventual consistency conflated with permanent absence (R-03);
+**a revert of the merge leaves the marker permanently DISCHARGED** though the
+effect was undone (R-04); "current checkpoint count" comparison semantics
+undefined at the last mile (R-05); the enumeration/commit race is narrowed, not
+closed, and is not carried as a residual (R-06); a workspace-ID rename
+permanently orphans every prior marker as an unfixable wrong-identity halt
+(R-07); five compound-library prior-art references the plan should cite
+(L-01…L-05).
+
+### Gate decision and circuit state
+
+**FAIL.** Harvest is **not** authorized. `harvest_authorized` stays `false`.
+
+Per the operator's bounded outcome cycle, this was **attempt 3 of 3** and both
+prior attempts also failed. **The review circuit is now OPEN.** No fourth
+remediation attempt is authorized by this cycle. Disposition of PR #396 returns
+to the operator.
+
+### Assessment for the operator
+
+The mechanism is not the problem. Round 11 replaced a design that failed on
+**four architectural P0s** with one that drew **zero P0s** from a seven-persona,
+six-model panel, and the reviewers independently confirmed its hardest technical
+claims — Git lease and atomic semantics, tag-object identity, ancestry-derived
+status, squash/rebase safety, and the RQ-7 boundary. That is a genuine and
+substantial improvement.
+
+What failed is **specification completeness at the seams**. The 21 P1s are
+overwhelmingly of three kinds: inputs the protocol depends on but never sources
+(`workspace_id`, the ruleset ID, the checkpoint-selection predicate, the Stage
+caller); verification rows that a correct implementation would fail; and
+contracts that contradict the live harness the plan must edit (`pr-lifecycle`'s
+merge authority, the checkpoint-creation obligations, the constitution's actual
+existence).
+
+Two findings deserve particular operator attention because they are recurrences
+of the precise defect classes this revision was commissioned to eliminate:
+**F11-01/02/03/04** are four new instances of round-10's F-17 unsatisfiable-
+verification class, in a revision that explicitly rewrote two rows to fix it;
+and **F11-13** describes a crash window that would silently reproduce the
+original 139-S defect the entire plan exists to prevent.
+
+A recurring meta-pattern across three rounds is that the plan's self-checks pass
+where an independent panel does not. Any future attempt should invert the order:
+establish the missing input contracts and diff every claim against the live
+harness files **first**, and write the verification rows **last**, against a
+concrete implementation rather than against an intended one.
 
 ---
 
