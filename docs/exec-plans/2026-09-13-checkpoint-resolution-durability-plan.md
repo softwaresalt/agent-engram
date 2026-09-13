@@ -371,7 +371,7 @@ diagnosable. Every subsequent rule in this section — the P-001 multiplicity
 check, `LAST_MILE_RECOVERY` entry, and every action table row — operates
 **exclusively over the TRUSTED set**.
 
-
+**Why not `gh pr list`.** `gh pr list --state all` does **not** return PR bodies
 unless `--json ... ,body` is supplied, and it has **no** `--paginate` flag — it
 takes a bounded `--limit` that defaults to **30**. The naive formulation
 therefore returns thirty bodiless records, finds zero locators, and reports a
@@ -646,13 +646,30 @@ subsection.
 
 **Acceptance criteria**
 
-1. The read protocol gives the **exact executable command**
+1. The read protocol gives the **exact executable command**, whose `--jq`
+   projection carries **every field the provenance checks are evaluated on** —
+   never the pre-provenance `{number, state, body}` form:
    `gh api --paginate -H "Accept: application/vnd.github+json"
-   "repos/{owner}/{repo}/pulls?state=all&per_page=100" --jq '.[] | {number, state, body}'`,
-   and explicitly records **why `gh pr list` is forbidden**: it returns no body
+   "repos/{owner}/{repo}/pulls?state=all&per_page=100" --jq '.[] | {number,
+   state, body, author_association, head_repo: .head.repo.full_name, head_ref:
+   .head.ref, base_repo: .base.repo.full_name, base_ref: .base.ref}'`. It
+   explicitly records **why `gh pr list` is forbidden**: it returns no body
    without `--json ...,body` and has no `--paginate` flag, only a bounded
    `--limit` defaulting to 30, so the naive form silently reports a clean
-   startup.
+   startup. It further requires that **`PV-1`…`PV-7` provenance validation runs
+   on every marker-bearing candidate before that candidate participates in
+   recovery**, evaluated on API response fields rather than body text, and
+   reproduces the **discard-versus-halt split without collapsing it**: `PV-1`
+   (same-repository), `PV-2` (base is the default branch) and `PV-3` (author
+   `OWNER`/`MEMBER`/`COLLABORATOR`) are authenticity filters whose failures are
+   **discarded silently and MUST NOT halt**, or an outsider could permanently
+   deny startup with a fork PR carrying the marker; `PV-4`…`PV-7` (locator `pr`
+   matches, `branch` matches head ref, shipment/feature resolve, checkpoint
+   filenames are ownable) run only on candidates that already passed
+   `PV-1`…`PV-3` and **halt to the operator**, because a trusted-but-inconsistent
+   locator is corruption. Discarded candidates MUST NOT be counted toward the
+   P-001 multiplicity check, acted on, or treated as evidence of an outstanding
+   obligation, and every downstream rule operates over the **TRUSTED set only**.
 2. A non-zero exit, a truncated or rate-limited page, or an unparseable response
    is stated to be an **error that halts**, never evidence that nothing is
    outstanding.
