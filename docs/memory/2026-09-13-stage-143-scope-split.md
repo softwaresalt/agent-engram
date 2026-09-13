@@ -7,8 +7,9 @@
 > the "rev 8" artifact versions, the three outstanding P1s, and the four
 > bounded-Copilot-pass table below are all **point-in-time**. Revision 9 and
 > revision 10 followed, each with its own independent review; the round-9 review
-> returned FAIL with 1 P0 and 15 P1 findings and is recorded verbatim in the
-> plan. For current state read the plan's frontmatter and its
+> returned FAIL with 1 P0 and 15 P1 findings, and the round-10 review returned
+> FAIL with 4 P0 and 17 P1 findings. Both are recorded verbatim in the plan. For
+> current state read the plan's frontmatter and its
 > `## Retained review history` section, and the revision-10 session record at
 > `docs/memory/2026-09-13/stage-143-defect-2-revision-10-rr3-ruleset.md`. The
 > **Do not repeat** section at the end remains valid and is the durable value of
