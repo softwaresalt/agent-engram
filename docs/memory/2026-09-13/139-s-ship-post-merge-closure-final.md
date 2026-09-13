@@ -69,6 +69,18 @@ post asynchronously after each checkpoint in this chain was written. The underly
 halt condition (awaiting a separate, explicit operator approval to merge PR #394)
 remains unchanged and still applies.
 
+**Further superseded-reference correction (2026-09-13, comment-remediation round 3/4)**:
+the paragraph above cites `b2cd6e01` as the most recent commit "has since run." Two
+further remediation commits have landed since then — `513ec98a` (checkpoint-provenance
+and stale-HEAD corrections) and `fc1871d3` (stash/pop-round provenance and monitoring-
+claim corrections) — and a still-later Copilot review pass has since raised three more
+threads (`PRRT_kwDORJEduc6h2O7Y`, `PRRT_kwDORJEduc6h2O7b`, `PRRT_kwDORJEduc6h2O7k`)
+addressed in a further remediation round. Per the guidance already given above, this
+paragraph is itself a further instance of the same point-in-time-snapshot problem it
+warns about: **do not treat `b2cd6e01`, `513ec98a`, or `fc1871d3` as the final HEAD —
+always re-fetch the live PR #394 `headRefOid` and the live unresolved-thread list**
+before acting on any commit SHA cited anywhere in this file.
+
 ## Explicitly out of scope this session
 
 140-S, 141-S, 142-S were not read, claimed, or touched. None of the 15 cited P-021
