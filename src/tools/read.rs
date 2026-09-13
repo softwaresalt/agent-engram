@@ -1,48 +1,133 @@
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use serde::Deserialize;
 use serde_json::{Value, json};
+use tokio::sync::oneshot;
 
 use crate::db::connect_db;
 use crate::db::queries::{CodeGraphQueries, FindPathResult, QueryGraphResult, SymbolFilter};
 use crate::errors::{CodeGraphError, EngramError, QueryError, SystemError, WorkspaceError};
 use crate::models::TraversalDirection;
-use crate::server::state::SharedState;
+use crate::server::state::{DispatchSnapshot, SharedState};
 use crate::services::embedding;
 use crate::services::metrics;
 use crate::services::search::{SearchCandidate, hybrid_search};
 use crate::services::search::{SearchRegion, UnifiedSearchResult, merge_unified_results};
 
-async fn ensure_workspace(state: &SharedState) -> Result<(), EngramError> {
-    if state.snapshot_workspace().await.is_none() {
-        return Err(EngramError::Workspace(WorkspaceError::NotSet));
-    }
-    Ok(())
+struct GenerationPinTestHook {
+    reached: Option<oneshot::Sender<()>>,
+    resume: Option<oneshot::Receiver<()>>,
 }
 
-async fn workspace_db(state: &SharedState) -> Result<(PathBuf, String), EngramError> {
-    if let Some(snapshot) = state.snapshot_workspace().await {
-        return Ok((snapshot.data_dir.clone(), snapshot.branch.clone()));
-    }
-    Err(EngramError::Workspace(WorkspaceError::NotSet))
+/// Registry of per-method one-shot test barriers, keyed by handler method
+/// name. A single shared slot (rather than one entry per method) would let
+/// two `#[tokio::test]` functions running concurrently in the same binary
+/// stomp on each other's installed hook: whichever `install` call landed
+/// second would silently discard the first, leaving the first test's
+/// `reached_rx` waiting forever. Keying by method name isolates concurrent
+/// tests that pin different handlers from one another.
+fn generation_pin_test_hooks() -> &'static Mutex<HashMap<String, GenerationPinTestHook>> {
+    static HOOKS: OnceLock<Mutex<HashMap<String, GenerationPinTestHook>>> = OnceLock::new();
+    HOOKS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-async fn workspace_snapshot_path_and_branch(
-    state: &SharedState,
-) -> Result<(PathBuf, String), EngramError> {
-    let snapshot = state
-        .snapshot_workspace()
-        .await
-        .ok_or(EngramError::Workspace(WorkspaceError::NotSet))?;
-    Ok((PathBuf::from(snapshot.path), snapshot.branch))
+/// Install a one-shot barrier reached immediately after a handler pins its dispatch context.
+#[doc(hidden)]
+pub fn install_generation_pin_test_hook(
+    method: &str,
+    reached: oneshot::Sender<()>,
+    resume: oneshot::Receiver<()>,
+) {
+    let hook = GenerationPinTestHook {
+        reached: Some(reached),
+        resume: Some(resume),
+    };
+    generation_pin_test_hooks()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(method.to_owned(), hook);
 }
 
-async fn load_registry_status(state: &SharedState) -> Result<Option<Value>, EngramError> {
-    let Some(snapshot) = state.snapshot_workspace().await else {
-        return Ok(None);
+async fn maybe_pause_generation_pin_test_hook(method: &str) {
+    let pending_resume = {
+        let mut hooks = generation_pin_test_hooks()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(mut hook) = hooks.remove(method) else {
+            return;
+        };
+        if let Some(reached) = hook.reached.take() {
+            let _ = reached.send(());
+        }
+        hook.resume.take()
     };
 
-    let workspace_path = std::path::PathBuf::from(snapshot.path);
+    if let Some(resume) = pending_resume {
+        let _ = resume.await;
+    }
+}
+
+async fn pinned_dispatch_context(
+    state: &SharedState,
+    method: &str,
+) -> Result<DispatchSnapshot, EngramError> {
+    let context = state
+        .snapshot_dispatch_context()
+        .await
+        .ok_or(EngramError::Workspace(WorkspaceError::NotSet))?;
+    maybe_pause_generation_pin_test_hook(method).await;
+    Ok(context)
+}
+
+async fn maybe_pinned_dispatch_context(
+    state: &SharedState,
+    method: &str,
+) -> Option<DispatchSnapshot> {
+    let context = state.snapshot_dispatch_context().await;
+    if context.is_some() {
+        maybe_pause_generation_pin_test_hook(method).await;
+    }
+    context
+}
+
+async fn pinned_queries(
+    state: &SharedState,
+    method: &str,
+) -> Result<(DispatchSnapshot, CodeGraphQueries), EngramError> {
+    let context = pinned_dispatch_context(state, method).await?;
+    let db = connect_db(&context.workspace.data_dir, &context.workspace.branch).await?;
+    Ok((context, CodeGraphQueries::new(db)))
+}
+
+/// Open (and, on first access, bootstrap) the code-graph queries for an
+/// already-pinned dispatch context.
+///
+/// Callers that must validate request params before touching storage should
+/// pin the context via [`pinned_dispatch_context`], deserialize and validate
+/// params, and only then call this helper — `connect_db` creates directories,
+/// acquires the open lock, and bootstraps schema, so opening it before params
+/// are known to be well-formed lets a malformed request mutate storage or
+/// surface a database/lock error instead of `InvalidParams`.
+async fn queries_from_context(context: &DispatchSnapshot) -> Result<CodeGraphQueries, EngramError> {
+    let db = connect_db(&context.workspace.data_dir, &context.workspace.branch).await?;
+    Ok(CodeGraphQueries::new(db))
+}
+
+async fn pinned_workspace_path_and_branch(
+    state: &SharedState,
+    method: &str,
+) -> Result<(PathBuf, String), EngramError> {
+    let context = pinned_dispatch_context(state, method).await?;
+    Ok((
+        PathBuf::from(context.workspace.path),
+        context.workspace.branch,
+    ))
+}
+
+async fn load_registry_status(workspace_path: &Path) -> Result<Option<Value>, EngramError> {
+    let workspace_path = workspace_path.to_path_buf();
     let registry_path = workspace_path.join(".engram").join("registry.yaml");
 
     tokio::task::spawn_blocking(move || {
@@ -85,16 +170,12 @@ pub async fn get_workspace_statistics(
     state: SharedState,
     _params: Option<Value>,
 ) -> Result<Value, EngramError> {
-    ensure_workspace(&state).await?;
-
     // Read-only: code graph counters may reflect partial data while indexing
     // is in progress, but returning potentially-incomplete statistics is
     // more useful than an IndexInProgress error. Callers can inspect
     // `scan_status.running` in workspace_status to detect mid-index state.
 
-    let (data_dir, branch) = workspace_db(&state).await?;
-    let db = connect_db(&data_dir, &branch).await?;
-    let cg_queries = CodeGraphQueries::new(db);
+    let (context, cg_queries) = pinned_queries(&state, "get_workspace_statistics").await?;
 
     let code_files = cg_queries.count_code_files().await.unwrap_or(0);
     let functions = cg_queries.count_functions().await.unwrap_or(0);
@@ -103,7 +184,7 @@ pub async fn get_workspace_statistics(
     let edges = cg_queries.count_code_edges().await.unwrap_or(0);
 
     let embedding_status = embedding::status(Some(&cg_queries)).await?;
-    let registry_status = load_registry_status(&state).await?;
+    let registry_status = load_registry_status(Path::new(&context.workspace.path)).await?;
 
     let mut result = serde_json::Map::from_iter([
         ("code_files".to_owned(), json!(code_files)),
@@ -139,8 +220,6 @@ fn default_limit() -> usize {
 }
 
 pub async fn query_memory(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
-    ensure_workspace(&state).await?;
-
     // Read-only: content records may be partially written during a background
     // index. Returning available data is more useful than an error; the
     // caller can check scan_status.running in workspace_status if freshness matters.
@@ -155,9 +234,7 @@ pub async fn query_memory(state: SharedState, params: Option<Value>) -> Result<V
     // Validate query length before any DB or model work.
     embedding::validate_query_length(&parsed.query)?;
 
-    let (data_dir, branch) = workspace_db(&state).await?;
-    let db = connect_db(&data_dir, &branch).await?;
-    let queries = CodeGraphQueries::new(db);
+    let (_context, queries) = pinned_queries(&state, "query_memory").await?;
     let mut candidates: Vec<SearchCandidate> = Vec::new();
     let content_records = queries
         .select_content_records(parsed.content_type.as_deref())
@@ -236,10 +313,7 @@ const fn default_map_max_nodes() -> usize {
 /// Falls back to vector search when the exact symbol name is not found.
 /// Returns full source bodies for all nodes (FR-148).
 pub async fn map_code(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
-    // 092.004-T: one atomic (workspace, config) capture via the shared graph-
-    // handler seam replaces the separate presence check, config read, and
-    // workspace_db read so a concurrent bind cannot tear the pair consumed below.
-    let ctx = crate::tools::snapshot_graph_handler_context(&state).await?;
+    let context = pinned_dispatch_context(&state, "map_code").await?;
 
     // Read-only: graph state may be partially written during a background
     // index. Returning available symbol graph context is more useful than
@@ -252,16 +326,16 @@ pub async fn map_code(state: SharedState, params: Option<Value>) -> Result<Value
             })
         })?;
 
-    // Clamp depth and max_nodes to config limits (FR-149). Config, data_dir, and
-    // branch all derive from the single atomic snapshot above (092.004-T).
-    let config = ctx.config;
-    let effective_depth = parsed.depth.clamp(1, config.code_graph.max_traversal_depth);
-    let effective_max_nodes = parsed.max_nodes.min(config.code_graph.max_traversal_nodes);
+    let effective_depth = parsed
+        .depth
+        .clamp(1, context.config.code_graph.max_traversal_depth);
+    let effective_max_nodes = parsed
+        .max_nodes
+        .min(context.config.code_graph.max_traversal_nodes);
 
-    let data_dir = ctx.workspace.data_dir;
-    let branch = ctx.workspace.branch;
-    let db = connect_db(&data_dir, &branch).await?;
-    let cg_queries = CodeGraphQueries::new(db);
+    // Params are well-formed — safe to open (and, on first access, bootstrap)
+    // storage now.
+    let cg_queries = queries_from_context(&context).await?;
 
     // Exact-name lookup across all symbol tables
     let matches = cg_queries.find_symbols_by_name(&parsed.symbol_name).await?;
@@ -389,8 +463,6 @@ const fn default_list_limit() -> usize {
 /// Enables agents to discover valid symbol names before invoking
 /// `map_code`, `link_task_to_code`, or `impact_analysis`.
 pub async fn list_symbols(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
-    ensure_workspace(&state).await?;
-
     // Read-only: symbol list may be incomplete during a background index.
     // Returning partial results is more useful than an IndexInProgress error.
 
@@ -404,9 +476,7 @@ pub async fn list_symbols(state: SharedState, params: Option<Value>) -> Result<V
     // Clamp limit
     let limit = parsed.limit.clamp(1, 500);
 
-    let (data_dir, branch) = workspace_db(&state).await?;
-    let db = connect_db(&data_dir, &branch).await?;
-    let cg_queries = CodeGraphQueries::new(db);
+    let (_context, cg_queries) = pinned_queries(&state, "list_symbols").await?;
 
     let filter = SymbolFilter {
         file_path: parsed.file_path,
@@ -485,8 +555,6 @@ pub async fn unified_search(
     state: SharedState,
     params: Option<Value>,
 ) -> Result<Value, EngramError> {
-    ensure_workspace(&state).await?;
-
     let parsed: UnifiedSearchParams =
         serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
             EngramError::System(SystemError::InvalidParams {
@@ -528,6 +596,15 @@ pub async fn unified_search(
     // Clamp limit to [1, 50].
     let limit = parsed.limit.clamp(1, 50);
 
+    // Pin the dispatch context (and therefore the database generation to query)
+    // BEFORE the potentially slow/lazy-loading embed_text call below. embed_text
+    // can lazily load the embedding model on first use, which is slow enough that
+    // a background generation swap could otherwise land between embedding and
+    // pinning, causing this request to observe a newer generation than the one
+    // current at handler entry — the same ordering `map_code` and
+    // `impact_analysis` already follow.
+    let (_context, queries) = pinned_queries(&state, "unified_search").await?;
+
     // Embed the query. FR-157: if embedding fails, return 5001.
     let query_embedding = embedding::embed_text(trimmed).map_err(|e| {
         EngramError::System(SystemError::DatabaseError {
@@ -535,9 +612,6 @@ pub async fn unified_search(
         })
     })?;
 
-    let (data_dir, branch) = workspace_db(&state).await?;
-    let db = connect_db(&data_dir, &branch).await?;
-    let queries = CodeGraphQueries::new(db);
     let code_results = {
         let symbols = if let Some(scope) = parsed
             .scope_to_symbol
@@ -755,10 +829,7 @@ pub async fn impact_analysis(
     state: SharedState,
     params: Option<Value>,
 ) -> Result<Value, EngramError> {
-    // 092.004-T: one atomic (workspace, config) capture via the shared graph-
-    // handler seam replaces the separate presence check, config read, and
-    // workspace_db read so a concurrent bind cannot tear the pair consumed below.
-    let ctx = crate::tools::snapshot_graph_handler_context(&state).await?;
+    let context = pinned_dispatch_context(&state, "impact_analysis").await?;
 
     // Read-only: graph may be partially populated during a background index.
     // Returning available impact data is more useful than an IndexInProgress error.
@@ -770,19 +841,17 @@ pub async fn impact_analysis(
             })
         })?;
 
-    // FR-149: clamp depth to config limits. Config, data_dir, and branch all
-    // derive from the single atomic snapshot above (092.004-T).
-    let config = ctx.config;
-    let effective_depth = parsed.depth.clamp(1, config.code_graph.max_traversal_depth);
+    let effective_depth = parsed
+        .depth
+        .clamp(1, context.config.code_graph.max_traversal_depth);
     let effective_max_nodes = parsed
         .max_nodes
         .clamp(1, 100)
-        .min(config.code_graph.max_traversal_nodes);
+        .min(context.config.code_graph.max_traversal_nodes);
 
-    let data_dir = ctx.workspace.data_dir;
-    let branch = ctx.workspace.branch;
-    let db = connect_db(&data_dir, &branch).await?;
-    let cg_queries = CodeGraphQueries::new(db);
+    // Params are well-formed — safe to open (and, on first access, bootstrap)
+    // storage now.
+    let cg_queries = queries_from_context(&context).await?;
 
     // Power BI root selection (C3): an explicit `powerbi_node_id` pins the root
     // to exactly one node and bypasses name resolution entirely.
@@ -1063,8 +1132,10 @@ pub async fn get_health_report(
     let version = env!("CARGO_PKG_VERSION");
     let uptime_secs = state.uptime_seconds();
     let connections = state.active_connections();
-    let workspace_snapshot = state.snapshot_workspace().await;
-    let workspace_id = workspace_snapshot.as_ref().map(|s| s.workspace_id.clone());
+    let dispatch_context = maybe_pinned_dispatch_context(&state, "get_health_report").await;
+    let workspace_id = dispatch_context
+        .as_ref()
+        .map(|context| context.workspace.workspace_id.clone());
     let tool_call_count = state.tool_call_count();
     let (p50, p95, p99) = state.latency_percentiles().await;
     let (watcher_events, last_watcher_event) = state.watcher_stats().await;
@@ -1074,12 +1145,13 @@ pub async fn get_health_report(
 
     // Collect embedding status — no workspace needed for the basic availability check.
     let embedding_status = embedding::status(None).await?;
-    let metrics_summary = if let Some(snapshot) = &workspace_snapshot {
-        let wp = PathBuf::from(&snapshot.path);
-        let br = snapshot.branch.clone();
+    let metrics_summary = if let Some(context) = dispatch_context {
+        let branch = context.workspace.branch.clone();
+        let wp = PathBuf::from(&context.workspace.path);
+        let br = branch.clone();
         match tokio::task::spawn_blocking(move || metrics::compute_summary(&wp, &br)).await {
             Ok(Ok(summary)) => serde_json::to_value(json!({
-                "branch": snapshot.branch,
+                "branch": branch,
                 "summary": summary,
             }))
             .unwrap_or(Value::Null),
@@ -1135,7 +1207,8 @@ pub async fn get_branch_metrics(
             reason: error.to_string(),
         })
     })?;
-    let (workspace_path, current_branch) = workspace_snapshot_path_and_branch(&state).await?;
+    let (workspace_path, current_branch) =
+        pinned_workspace_path_and_branch(&state, "get_branch_metrics").await?;
     let branch_name = parsed.branch_name.unwrap_or(current_branch);
     let wp = workspace_path.clone();
     let br = branch_name.clone();
@@ -1194,7 +1267,8 @@ pub async fn get_token_savings_report(
     state: SharedState,
     _params: Option<Value>,
 ) -> Result<Value, EngramError> {
-    let (workspace_path, branch) = workspace_snapshot_path_and_branch(&state).await?;
+    let (workspace_path, branch) =
+        pinned_workspace_path_and_branch(&state, "get_token_savings_report").await?;
     let wp = workspace_path.clone();
     let br = branch.clone();
     // Load events once, then derive both the summary and the (report-only)
@@ -1396,6 +1470,7 @@ fn build_find_path_json(from: &str, to: &str, result: FindPathResult) -> Value {
 /// traverse all types.
 #[tracing::instrument(name = "tool.query_graph", skip(state, params))]
 pub async fn query_graph(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
+    let context = pinned_dispatch_context(&state, "query_graph").await?;
     let raw = params.unwrap_or_default();
 
     // Legacy compat: if `query` field is present without `operation`, return a helpful error
@@ -1417,9 +1492,9 @@ pub async fn query_graph(state: SharedState, params: Option<Value>) -> Result<Va
         })
     })?;
 
-    let (data_dir, branch) = workspace_db(&state).await?;
-    let db = connect_db(&data_dir, &branch).await?;
-    let cg_queries = CodeGraphQueries::new(db);
+    // Params are well-formed — safe to open (and, on first access, bootstrap)
+    // storage now.
+    let cg_queries = queries_from_context(&context).await?;
 
     match gq {
         GraphQuery::Neighborhood {
@@ -1498,11 +1573,7 @@ pub async fn query_changes(
 ) -> Result<Value, EngramError> {
     use chrono::DateTime;
 
-    let (data_dir, branch) = if let Some(snap) = state.snapshot_workspace().await {
-        (snap.data_dir.clone(), snap.branch.clone())
-    } else {
-        return Err(EngramError::Workspace(WorkspaceError::NotSet));
-    };
+    let context = pinned_dispatch_context(&state, "query_changes").await?;
 
     // Read-only: git-graph tables may be partially written during a background
     // index. Returning available commit data is more useful than blocking the caller.
@@ -1516,8 +1587,6 @@ pub async fn query_changes(
 
     let limit = parsed.limit.unwrap_or(20);
 
-    let db = connect_db(&data_dir, &branch).await?;
-    let queries = CodeGraphQueries::new(db);
     let since_dt = parsed
         .since
         .as_deref()
@@ -1546,12 +1615,14 @@ pub async fn query_changes(
         })
         .transpose()?;
 
+    // Params are well-formed — safe to open (and, on first access, bootstrap)
+    // storage now.
+    let queries = queries_from_context(&context).await?;
+
     // If a symbol is provided, resolve its file path via the code graph so we
     // can filter commits by file. Symbol not found → CodeGraphError::SymbolNotFound.
     let effective_file_path: Option<String> = if let Some(ref sym) = parsed.symbol {
-        let cg_db = connect_db(&data_dir, &branch).await?;
-        let cg = CodeGraphQueries::new(cg_db);
-        let syms = cg.find_symbols_by_name(sym).await?;
+        let syms = queries.find_symbols_by_name(sym).await?;
         if syms.is_empty() {
             return Err(EngramError::CodeGraph(CodeGraphError::SymbolNotFound {
                 name: sym.clone(),
@@ -1609,8 +1680,10 @@ pub async fn get_evaluation_report(
     state: SharedState,
     _params: Option<Value>,
 ) -> Result<Value, EngramError> {
-    let (workspace_path, branch) = workspace_snapshot_path_and_branch(&state).await?;
-    let config = state.evaluation_config().await.unwrap_or_default();
+    let context = pinned_dispatch_context(&state, "get_evaluation_report").await?;
+    let workspace_path = PathBuf::from(&context.workspace.path);
+    let branch = context.workspace.branch.clone();
+    let config = context.config.evaluation.clone();
 
     let wp = workspace_path.clone();
     let br = branch.clone();

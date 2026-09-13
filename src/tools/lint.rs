@@ -8,8 +8,12 @@
 //! tool is read-only and daemon-backed (the resolved schema is required, per
 //! decision D1).
 
+use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
+
 use serde::Deserialize;
 use serde_json::Value;
+use tokio::sync::oneshot;
 
 use crate::errors::{EngramError, SystemError, WorkspaceError};
 use crate::models::registry::ContentSourceStatus;
@@ -26,6 +30,66 @@ struct LintDaxParams {
     model_path: Option<String>,
 }
 
+struct GenerationPinTestHook {
+    method: String,
+    reached: Option<oneshot::Sender<()>>,
+    resume: Option<oneshot::Receiver<()>>,
+}
+
+fn generation_pin_test_hook() -> &'static Mutex<Option<GenerationPinTestHook>> {
+    static HOOK: OnceLock<Mutex<Option<GenerationPinTestHook>>> = OnceLock::new();
+    HOOK.get_or_init(|| Mutex::new(None))
+}
+
+/// Install a one-shot barrier reached immediately after the lint handler pins its dispatch context.
+#[doc(hidden)]
+pub fn install_generation_pin_test_hook(
+    method: &str,
+    reached: oneshot::Sender<()>,
+    resume: oneshot::Receiver<()>,
+) {
+    let hook = GenerationPinTestHook {
+        method: method.to_owned(),
+        reached: Some(reached),
+        resume: Some(resume),
+    };
+    *generation_pin_test_hook()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hook);
+}
+
+async fn maybe_pause_generation_pin_test_hook(method: &str) {
+    let pending_resume = {
+        let mut slot = generation_pin_test_hook()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(mut hook) = slot.take() else {
+            return;
+        };
+        if hook.method != method {
+            *slot = Some(hook);
+            return;
+        }
+        if let Some(reached) = hook.reached.take() {
+            let _ = reached.send(());
+        }
+        hook.resume.take()
+    };
+
+    if let Some(resume) = pending_resume {
+        let _ = resume.await;
+    }
+}
+
+async fn pinned_workspace_root(state: &SharedState, method: &str) -> Result<PathBuf, EngramError> {
+    let context = state
+        .snapshot_dispatch_context()
+        .await
+        .ok_or(EngramError::Workspace(WorkspaceError::NotSet))?;
+    maybe_pause_generation_pin_test_hook(method).await;
+    Ok(PathBuf::from(context.workspace.path))
+}
+
 /// Lint the DAX in the bound workspace's indexed Power BI model(s).
 ///
 /// Returns `{ conformant, findings[] }` where each finding carries a `rule`,
@@ -40,10 +104,7 @@ struct LintDaxParams {
 ///   decoded as UTF-8 (the registry could not be validated, or a serialization
 ///   failure occurred).
 pub async fn lint_dax(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
-    let snapshot = state
-        .snapshot_workspace()
-        .await
-        .ok_or(EngramError::Workspace(WorkspaceError::NotSet))?;
+    let workspace_root = pinned_workspace_root(&state, "lint_dax").await?;
 
     let parsed: LintDaxParams = match params {
         Some(value) if !value.is_null() => serde_json::from_value(value).map_err(|e| {
@@ -54,7 +115,6 @@ pub async fn lint_dax(state: SharedState, params: Option<Value>) -> Result<Value
         _ => LintDaxParams::default(),
     };
 
-    let workspace_root = std::path::PathBuf::from(snapshot.path);
     let model_path = parsed
         .model_path
         .map(|path| path.trim().to_owned())

@@ -1,10 +1,13 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::{Mutex, OnceLock};
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+use tokio::sync::oneshot;
 
 use crate::db::connect_db;
 use crate::db::queries::CodeGraphQueries;
@@ -12,7 +15,10 @@ use crate::db::workspace::{
     canonicalize_workspace, load_or_create_workspace_id, resolve_data_dir, resolve_git_branch,
     workspace_hash,
 };
-use crate::errors::{EngramError, MetricsError, SystemError, WorkspaceError};
+use crate::errors::{
+    EngramError, MetricsError, ReadServerRefusalError, SystemError, WorkspaceError,
+};
+use crate::models::config::DaemonMode;
 use crate::models::health::{HealthReport, ScanProgress};
 use crate::server::state::CoordinatorCell;
 use crate::server::state::{
@@ -50,6 +56,13 @@ pub struct DaemonStatus {
     pub health: HealthReport,
     /// Process-level reliability counters (029-F WS-8).
     pub telemetry: ReliabilitySnapshot,
+    /// The daemon's actual live `DaemonMode` (`"managed"` or `"read_server"`,
+    /// per [`DaemonMode::as_str`]), as reported by the running process
+    /// itself. Callers that need to select mode-dependent behavior for an
+    /// already-running (possibly reused) daemon must read this field rather
+    /// than re-resolving mode from on-disk configuration, since the two can
+    /// diverge if configuration changed after the daemon started.
+    pub mode: String,
 }
 
 /// Serializable snapshot of `ReliabilityCounters` for `DaemonStatus`.
@@ -88,6 +101,57 @@ pub struct CodeGraphStats {
     pub classes: u64,
     pub interfaces: u64,
     pub edges: u64,
+}
+
+struct GenerationPinTestHook {
+    method: String,
+    reached: Option<oneshot::Sender<()>>,
+    resume: Option<oneshot::Receiver<()>>,
+}
+
+fn generation_pin_test_hook() -> &'static Mutex<Option<GenerationPinTestHook>> {
+    static HOOK: OnceLock<Mutex<Option<GenerationPinTestHook>>> = OnceLock::new();
+    HOOK.get_or_init(|| Mutex::new(None))
+}
+
+/// Install a one-shot barrier reached immediately after a lifecycle handler pins its dispatch context.
+#[doc(hidden)]
+pub fn install_generation_pin_test_hook(
+    method: &str,
+    reached: oneshot::Sender<()>,
+    resume: oneshot::Receiver<()>,
+) {
+    let hook = GenerationPinTestHook {
+        method: method.to_owned(),
+        reached: Some(reached),
+        resume: Some(resume),
+    };
+    *generation_pin_test_hook()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hook);
+}
+
+async fn maybe_pause_generation_pin_test_hook(method: &str) {
+    let pending_resume = {
+        let mut slot = generation_pin_test_hook()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(mut hook) = slot.take() else {
+            return;
+        };
+        if hook.method != method {
+            *slot = Some(hook);
+            return;
+        }
+        if let Some(reached) = hook.reached.take() {
+            let _ = reached.send(());
+        }
+        hook.resume.take()
+    };
+
+    if let Some(resume) = pending_resume {
+        let _ = resume.await;
+    }
 }
 
 #[derive(Default)]
@@ -336,6 +400,25 @@ async fn set_workspace_with_probe(
 
     let canonical = canonicalize_workspace(&path)?;
     let canonical_path = canonical.display().to_string();
+
+    if state.mode() == DaemonMode::ReadServer {
+        if let Some(active) = state.snapshot_dispatch_context().await {
+            if active.workspace.path == canonical_path {
+                return Ok(WorkspaceBinding {
+                    workspace_id: active.workspace.workspace_id,
+                    path: active.workspace.path,
+                    hydrated: true,
+                    pending_scan: false,
+                });
+            }
+            return Err(EngramError::ReadServerRefusal(
+                ReadServerRefusalError::WorkspaceRetargetRefused {
+                    requested_workspace: canonical_path,
+                },
+            ));
+        }
+    }
+
     let workspace_uuid = load_or_create_workspace_id(&canonical)?;
     let branch = resolve_git_branch(&canonical).unwrap_or_else(|_| "default".to_string());
     let workspace_id = workspace_hash(&canonical, &branch);
@@ -945,6 +1028,7 @@ pub async fn get_daemon_status(state: &AppState) -> Result<DaemonStatus, EngramE
         model_name,
         health,
         telemetry,
+        mode: state.mode().as_str().to_owned(),
     })
 }
 
@@ -962,6 +1046,7 @@ pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, E
     let Some(ctx) = state.snapshot_dispatch_context().await else {
         return Err(EngramError::Workspace(WorkspaceError::NotSet));
     };
+    maybe_pause_generation_pin_test_hook("get_workspace_status").await;
     let snapshot = ctx.workspace;
     let retrieval_eval_enabled = ctx.config.retrieval_eval.enabled;
 

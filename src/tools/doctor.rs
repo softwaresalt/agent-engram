@@ -6,11 +6,89 @@
 //! for the `doctor --smoke` CLI subcommand).
 
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
+
+use tokio::sync::oneshot;
 
 use crate::errors::EngramError;
+use crate::models::config::DaemonMode;
 use crate::models::health::{HealthCheck, HealthReport, HealthStatus, SmokeResult};
-use crate::server::state::AppState;
+use crate::server::state::{AppState, DispatchSnapshot};
 use crate::shim::version::ENGRAM_PROTOCOL_VERSION;
+
+struct GenerationPinTestHook {
+    method: String,
+    reached: Option<oneshot::Sender<()>>,
+    resume: Option<oneshot::Receiver<()>>,
+}
+
+fn generation_pin_test_hook() -> &'static Mutex<Option<GenerationPinTestHook>> {
+    static HOOK: OnceLock<Mutex<Option<GenerationPinTestHook>>> = OnceLock::new();
+    HOOK.get_or_init(|| Mutex::new(None))
+}
+
+/// Install a one-shot barrier reached immediately after a doctor handler pins its dispatch context.
+#[doc(hidden)]
+pub fn install_generation_pin_test_hook(
+    method: &str,
+    reached: oneshot::Sender<()>,
+    resume: oneshot::Receiver<()>,
+) {
+    let hook = GenerationPinTestHook {
+        method: method.to_owned(),
+        reached: Some(reached),
+        resume: Some(resume),
+    };
+    *generation_pin_test_hook()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hook);
+}
+
+async fn maybe_pause_generation_pin_test_hook(method: &str) {
+    let pending_resume = {
+        let mut slot = generation_pin_test_hook()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(mut hook) = slot.take() else {
+            return;
+        };
+        if hook.method != method {
+            *slot = Some(hook);
+            return;
+        }
+        if let Some(reached) = hook.reached.take() {
+            let _ = reached.send(());
+        }
+        hook.resume.take()
+    };
+
+    if let Some(resume) = pending_resume {
+        let _ = resume.await;
+    }
+}
+
+struct HealthInputs {
+    dispatch: Option<DispatchSnapshot>,
+    last_indexed_at: Option<chrono::DateTime<chrono::Utc>>,
+    tool_call_count: u64,
+    watcher_events: u64,
+}
+
+async fn snapshot_health_inputs(state: &AppState, method: &str) -> HealthInputs {
+    let dispatch = state.snapshot_dispatch_context().await;
+    if dispatch.is_some() {
+        maybe_pause_generation_pin_test_hook(method).await;
+    }
+    let last_indexed_at = state.last_indexed_at().await;
+    let tool_call_count = state.tool_call_count();
+    let (watcher_events, _) = state.watcher_stats().await;
+    HealthInputs {
+        dispatch,
+        last_indexed_at,
+        tool_call_count,
+        watcher_events,
+    }
+}
 
 // ── Individual health checks ─────────────────────────────────────────────────
 
@@ -37,14 +115,14 @@ fn check_pid_liveness() -> HealthCheck {
     }
 }
 
-async fn check_workspace_identity(state: &AppState) -> HealthCheck {
-    match state.snapshot_workspace().await {
-        Some(snap) => HealthCheck {
+fn check_workspace_identity(inputs: &HealthInputs) -> HealthCheck {
+    match inputs.dispatch.as_ref() {
+        Some(dispatch) => HealthCheck {
             name: "workspace_identity".to_owned(),
             status: HealthStatus::Green,
             message: Some(format!(
                 "workspace {} bound at {}",
-                snap.workspace_id, snap.path
+                dispatch.workspace.workspace_id, dispatch.workspace.path
             )),
             remediation: None,
         },
@@ -68,8 +146,8 @@ fn check_pipe_reachability() -> HealthCheck {
     }
 }
 
-async fn check_registry_validity(state: &AppState) -> HealthCheck {
-    match state.workspace_config().await {
+fn check_registry_validity(inputs: &HealthInputs) -> HealthCheck {
+    match inputs.dispatch.as_ref() {
         None => HealthCheck {
             name: "registry_validity".to_owned(),
             status: HealthStatus::Yellow,
@@ -85,15 +163,15 @@ async fn check_registry_validity(state: &AppState) -> HealthCheck {
     }
 }
 
-async fn check_offline_scan(state: &AppState) -> HealthCheck {
-    match state.snapshot_workspace().await {
+fn check_offline_scan(inputs: &HealthInputs) -> HealthCheck {
+    match inputs.dispatch.as_ref() {
         None => HealthCheck {
             name: "offline_scan".to_owned(),
             status: HealthStatus::Yellow,
             message: Some("offline scan skipped — no workspace bound".to_owned()),
             remediation: Some("call set_workspace before requesting an offline scan".to_owned()),
         },
-        Some(snap) if snap.stale_files => HealthCheck {
+        Some(dispatch) if dispatch.workspace.stale_files => HealthCheck {
             name: "offline_scan".to_owned(),
             status: HealthStatus::Yellow,
             message: Some("workspace has stale files since last flush".to_owned()),
@@ -110,11 +188,8 @@ async fn check_offline_scan(state: &AppState) -> HealthCheck {
     }
 }
 
-async fn check_session_resume(state: &AppState) -> HealthCheck {
-    let has_workspace = state.snapshot_workspace().await.is_some();
-    let last_indexed = state.last_indexed_at().await;
-
-    match (has_workspace, last_indexed) {
+fn check_session_resume(inputs: &HealthInputs) -> HealthCheck {
+    match (inputs.dispatch.is_some(), inputs.last_indexed_at) {
         (false, _) => HealthCheck {
             name: "session_resume".to_owned(),
             status: HealthStatus::Yellow,
@@ -138,9 +213,9 @@ async fn check_session_resume(state: &AppState) -> HealthCheck {
     }
 }
 
-async fn check_telemetry_health(state: &AppState) -> HealthCheck {
-    let tool_calls = state.tool_call_count();
-    let (watcher_events, _) = state.watcher_stats().await;
+fn check_telemetry_health(inputs: &HealthInputs) -> HealthCheck {
+    let tool_calls = inputs.tool_call_count;
+    let watcher_events = inputs.watcher_events;
 
     if tool_calls == 0 && watcher_events == 0 {
         HealthCheck {
@@ -184,26 +259,43 @@ fn derive_overall(checks: &[HealthCheck]) -> HealthStatus {
 /// `pipe_reachability`, `registry_validity`, `offline_scan`,
 /// `session_resume`, `telemetry_health`.
 pub async fn get_health_report_for_daemon(state: &AppState) -> Result<HealthReport, EngramError> {
+    let inputs = snapshot_health_inputs(state, "get_health_report_for_daemon").await;
     let checks = vec![
         check_binary_version(),
         check_pid_liveness(),
-        check_workspace_identity(state).await,
+        check_workspace_identity(&inputs),
         check_pipe_reachability(),
-        check_registry_validity(state).await,
-        check_offline_scan(state).await,
-        check_session_resume(state).await,
-        check_telemetry_health(state).await,
+        check_registry_validity(&inputs),
+        check_offline_scan(&inputs),
+        check_session_resume(&inputs),
+        check_telemetry_health(&inputs),
     ];
 
     let overall = derive_overall(&checks);
     Ok(HealthReport { overall, checks })
 }
 
+#[doc(hidden)]
+pub fn smoke_request_methods_for_mode(mode: DaemonMode) -> Vec<&'static str> {
+    match mode {
+        DaemonMode::Managed => vec!["get_daemon_status", "set_workspace", "_shutdown"],
+        DaemonMode::ReadServer => vec!["get_daemon_status", "get_workspace_status"],
+    }
+}
+
 /// Run a full shim→daemon handshake round-trip for the `doctor --smoke` CLI flag.
 ///
-/// Spawns the daemon if not running, connects as a shim, exchanges the version
-/// handshake, calls `set_workspace`, then shuts down. Returns a [`SmokeResult`]
-/// indicating pass or fail with latency measurement.
+/// Spawns or reuses the daemon, then connects as a shim and exchanges the
+/// version handshake via `get_daemon_status`. The daemon mode used to select
+/// the remaining smoke sequence is read from that live response (not from
+/// on-disk configuration), so a reused daemon's actual mode always governs
+/// behavior even if configuration changed after it started. In
+/// [`DaemonMode::Managed`], additionally calls `set_workspace` and shuts the
+/// daemon down. In [`DaemonMode::ReadServer`], only re-checks readiness via
+/// `get_workspace_status` and performs neither a workspace bind nor a
+/// shutdown, since a read-server smoke run must stay non-destructive.
+/// Returns a [`SmokeResult`] indicating pass or fail with latency
+/// measurement.
 pub async fn run_smoke_test(workspace: &Path) -> Result<SmokeResult, EngramError> {
     use std::time::Duration;
 
@@ -234,15 +326,22 @@ pub async fn run_smoke_test(workspace: &Path) -> Result<SmokeResult, EngramError
         })?
         .to_owned();
 
-    // Step 2: Version exchange — get_daemon_status.
-    let status_req = IpcRequest {
+    // Step 2: always probe get_daemon_status first and read the *actual live
+    // daemon's* reported mode from its response, rather than trusting
+    // on-disk configuration via `resolve_daemon_mode`. `ensure_daemon_running`
+    // may have reused an already-running daemon whose mode was fixed at its
+    // own startup; if configuration changed on disk afterward, selecting the
+    // remaining smoke sequence from stale on-disk config could send a
+    // write-capable `set_workspace` + `_shutdown` sequence to a live
+    // ReadServer daemon, violating its non-destructive smoke contract.
+    let status_request = IpcRequest {
         jsonrpc: "2.0".to_owned(),
         id: Some(Value::Number(serde_json::Number::from(1))),
         method: "get_daemon_status".to_owned(),
         params: None,
     };
-    let status_resp = send_request(&endpoint, &status_req, Duration::from_secs(10)).await?;
-    if let Some(err) = &status_resp.error {
+    let status_response = send_request(&endpoint, &status_request, Duration::from_secs(10)).await?;
+    if let Some(err) = &status_response.error {
         let latency_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
         return Ok(SmokeResult {
             passed: false,
@@ -250,38 +349,75 @@ pub async fn run_smoke_test(workspace: &Path) -> Result<SmokeResult, EngramError
             latency_ms: Some(latency_ms),
         });
     }
+    let observed_mode_str = status_response
+        .result
+        .as_ref()
+        .and_then(|result| result.get("mode"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            crate::errors::EngramError::Daemon(crate::errors::DaemonError::SpawnFailed {
+                reason: "smoke test: get_daemon_status response missing mode field".to_owned(),
+            })
+        })?;
+    let mode = DaemonMode::resolve(Some(observed_mode_str)).map_err(|e| {
+        crate::errors::EngramError::Daemon(crate::errors::DaemonError::SpawnFailed {
+            reason: format!("smoke test: daemon reported unrecognized mode: {e}"),
+        })
+    })?;
 
-    // Step 3: set_workspace round-trip.
-    let bind_req = IpcRequest {
-        jsonrpc: "2.0".to_owned(),
-        id: Some(Value::Number(serde_json::Number::from(2))),
-        method: "set_workspace".to_owned(),
-        params: Some(json!({ "path": workspace_str })),
-    };
-    let bind_resp = send_request(&endpoint, &bind_req, Duration::from_secs(10)).await?;
-    if let Some(err) = &bind_resp.error {
-        let latency_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-        return Ok(SmokeResult {
-            passed: false,
-            message: format!("set_workspace failed: {}", err.message),
-            latency_ms: Some(latency_ms),
-        });
+    // Step 3: run the remaining mode-appropriate methods. get_daemon_status
+    // (always index 0 in `smoke_request_methods_for_mode`) was already sent
+    // above using the live-observed mode, so skip it here.
+    let remaining_methods = &smoke_request_methods_for_mode(mode)[1..];
+    for (offset, method) in remaining_methods.iter().enumerate() {
+        let index = offset + 2;
+        let request = match *method {
+            "get_workspace_status" => IpcRequest {
+                jsonrpc: "2.0".to_owned(),
+                id: Some(Value::Number(serde_json::Number::from(index))),
+                method: "get_workspace_status".to_owned(),
+                params: None,
+            },
+            "set_workspace" => IpcRequest {
+                jsonrpc: "2.0".to_owned(),
+                id: Some(Value::Number(serde_json::Number::from(index))),
+                method: "set_workspace".to_owned(),
+                params: Some(json!({ "path": workspace_str })),
+            },
+            "_shutdown" => IpcRequest {
+                jsonrpc: "2.0".to_owned(),
+                id: Some(Value::Number(serde_json::Number::from(index))),
+                method: "_shutdown".to_owned(),
+                params: None,
+            },
+            other => unreachable!("unexpected smoke workflow method: {other}"),
+        };
+
+        let response = send_request(&endpoint, &request, Duration::from_secs(10)).await?;
+        if let Some(err) = &response.error {
+            let latency_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+            return Ok(SmokeResult {
+                passed: false,
+                message: format!("{method} failed: {}", err.message),
+                latency_ms: Some(latency_ms),
+            });
+        }
     }
 
-    // Step 4: Graceful shutdown.
-    let shutdown_req = IpcRequest {
-        jsonrpc: "2.0".to_owned(),
-        id: Some(Value::Number(serde_json::Number::from(3))),
-        method: "_shutdown".to_owned(),
-        params: None,
-    };
-    let _ = send_request(&endpoint, &shutdown_req, Duration::from_secs(5)).await;
-
     let latency_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let message = match mode {
+        DaemonMode::Managed => {
+            "Smoke test passed: version exchange, workspace bind, and shutdown all succeeded"
+                .to_owned()
+        }
+        DaemonMode::ReadServer => {
+            "Smoke test passed: version exchange and workspace-status readiness succeeded without write or shutdown"
+                .to_owned()
+        }
+    };
     Ok(SmokeResult {
         passed: true,
-        message: "Smoke test passed: version exchange, workspace bind, and shutdown all succeeded"
-            .to_owned(),
+        message,
         latency_ms: Some(latency_ms),
     })
 }
