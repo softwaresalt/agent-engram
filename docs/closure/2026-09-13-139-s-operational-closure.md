@@ -123,10 +123,25 @@ service). The daemon's existing structured JSON logs, `get_health_report`,
 and `get_daemon_status` remain the monitoring surface for handler
 dispatch/param-validation/storage-open ordering outcomes.
 
+**Observability correction (stash `3F1AEFE1`)**: the two SLIs below are
+aspirational, not currently log-queryable through the named surfaces.
+`HealthReport` exposes only the eight fixed checks documented in
+`src/models/health.rs:51-62` (no per-handler error-class breakdown), and
+`UsageEvent` (`src/models/metrics.rs`) records only a generic
+success/error `outcome`, not an error class or the entry/read generation
+IDs either threshold needs. Adding those structured fields is out of
+scope per P-021 C1 for this shipment's handler-migration work; it is
+captured as stash `3F1AEFE1` for Stage to deliberate as its own release
+unit. Until that instrumentation exists, both rows below are an
+**unresolved releasability condition**, not an active, executable
+monitor. The Owner column is also corrected: the Ship session that
+authored this closure cannot literally remain a responder for a 7-day
+window, so the operator is the sole owner of record.
+
 | SLI | Baseline | Alert / rollback threshold | Owner | Validation window |
 |---|---|---|---|---|
-| Rate of `InvalidParams` vs. storage/lock errors on malformed requests to a migrated handler (`map_code`, `impact_analysis`, `query_graph`, `query_changes`, report/lifecycle/eval/lint/doctor handlers), observed via structured JSON logs | 0 storage/lock errors for malformed requests (pre-migration and post-migration baseline are identical: `InvalidParams` only) | Any single observed storage/lock error (instead of `InvalidParams`) for a malformed request to a migrated handler triggers the rollback trigger below | Ship agent (this session) for the duration below; thereafter the operator monitoring `get_health_report`/`get_daemon_status` output during normal use | 7 days of normal developer usage following merge to `main` (matches the "Standard PR review + CI window" cited under Validation window below; this table makes that window's duration and owner explicit) |
-| `unified_search` observing a database generation newer than the one current at handler entry (dispatch-context pin violation), observed via structured JSON logs / `get_health_report` | 0 occurrences (pinning is intended to make this structurally impossible) | Any single observed occurrence triggers the rollback trigger below | Ship agent (this session) for the duration below; thereafter the operator | 7 days of normal developer usage following merge to `main` |
+| Rate of `InvalidParams` vs. storage/lock errors on malformed requests to a migrated handler (`map_code`, `impact_analysis`, `query_graph`, `query_changes`, report/lifecycle/eval/lint/doctor handlers) — **not currently log-queryable; requires the error-class instrumentation captured in stash `3F1AEFE1`** | 0 storage/lock errors for malformed requests (pre-migration and post-migration baseline are identical: `InvalidParams` only) | Any single observed storage/lock error (instead of `InvalidParams`) for a malformed request to a migrated handler triggers the rollback trigger below, once the operator can observe it (manual code review / ad hoc log inspection until stash `3F1AEFE1` lands) | Operator monitoring `get_health_report`/`get_daemon_status` output and structured JSON logs during normal use (not the Ship session, which ends at closure) | 7 days of normal developer usage following merge to `main` (matches the "Standard PR review + CI window" cited under Validation window below; this table makes that window's duration and owner explicit) |
+| `unified_search` observing a database generation newer than the one current at handler entry (dispatch-context pin violation) — **not currently log-queryable; requires the generation-ID instrumentation captured in stash `3F1AEFE1`** | 0 occurrences (pinning is intended to make this structurally impossible) | Any single observed occurrence triggers the rollback trigger below, once the operator can observe it (manual code review / ad hoc log inspection until stash `3F1AEFE1` lands) | Operator monitoring `get_health_report`/`get_daemon_status` output and structured JSON logs during normal use (not the Ship session, which ends at closure) | 7 days of normal developer usage following merge to `main` |
 
 ## Failure signals
 
@@ -221,6 +236,8 @@ implementation session, none blocking this closure)
 | `7A596F8C` | low | Pre-existing flaky test (unrelated to 139-S) under full parallel `cargo dev-test`: `contract_shim_stdio_initialize::t3_missing_result_is_terminal`. |
 | `652C3104` | low | Deferred scope expansion: a Copilot round-4 finding on `src/tools/capabilities.rs` (`DOCTOR_SMOK...` truncated), reused/deferred per P-021 C2/C3 — out of scope for this shipment's manifest. |
 | `DA0AF326` | (cited, not re-captured) | `.autoharness/workspace-profile.yaml` runtime-validation probe commands have drifted from the actual CLI/test surface — pre-existing, unrelated to 139-S; re-confirmed again this session (`engram status` still does not exist). |
+| `76153F55` | high | **Deferred scope expansion**: closing 139-S via manual safe-close (`archived_status: done`, never a literal `status: shipped` transition) may leave queued successor shipment 140-S ineligible under the dependency-eligibility rule in `.github/instructions/backlogit.instructions.md:63-65`, which requires a `blocks`-type predecessor to have reached `shipped`. Third occurrence of the same recurring class already captured as `77A4E71C` (135-S/PR #384) and `F35EA0E6` (137-S/PR #389); resolving whether this literally blocks 140-S in practice requires either mutating 140-S or redesigning backlogit's shipment-lifecycle semantics — both out of scope per P-021 C1 for 139-S's own closure. Recommend Stage resolve this recurring class workspace-wide together with the two prior occurrences. |
+| `3F1AEFE1` | medium | **Deferred scope expansion**: the Monitoring section's two SLIs (`InvalidParams` vs. storage/lock error rate; `unified_search` stale-generation occurrence) are not currently log-queryable — `HealthReport` exposes only 8 fixed checks (`src/models/health.rs:51-62`) and `UsageEvent` records only a generic success/error `outcome`, not error class or entry/read generation IDs. Adding that instrumentation is out of scope per P-021 C1 for this shipment's handler-migration work. Recorded as an unresolved releasability condition in the Monitoring section above pending Stage deliberation. |
 
 All out-of-scope findings above are `requires deliberation` and await Stage
 triage/harvest. None represent a regression introduced by, or a gap in,

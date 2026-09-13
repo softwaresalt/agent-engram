@@ -32,6 +32,8 @@ follow_up_stash:
   - "7A596F8C"
   - "652C3104"
   - "DA0AF326"
+  - "76153F55"
+  - "3F1AEFE1"
 blocking_stash: null
 shipment_record_status: "archived (archived_status: done) — manual safe-close performed 2026-09-13 on post-merge/139-s-migrate-read-and-lifecycle-handlers-to-pinned-generation-context"
 ---
