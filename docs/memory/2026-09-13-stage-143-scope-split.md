@@ -1,9 +1,23 @@
 # Stage session — 143 scope split (Defect 2 reduced, Defect 1 returned)
 
+> **HISTORICAL RECORD — superseded in part.** This file records the scope-split
+> session as it stood at commit `48e4f49c` (plan/hardening revision 8). It is
+> **not** a live status page and must not be read as current state (PR #396
+> threads `PRRT_kwDORJEduc6h79es` and `PRRT_kwDORJEduc6h79e4`). Specifically:
+> the "rev 8" artifact versions, the three outstanding P1s, and the four
+> bounded-Copilot-pass table below are all **point-in-time**. Revision 9 and
+> revision 10 followed, each with its own independent review; the round-9 review
+> returned FAIL with 1 P0 and 15 P1 findings and is recorded verbatim in the
+> plan. For current state read the plan's frontmatter and its
+> `## Retained review history` section, and the revision-10 session record at
+> `docs/memory/2026-09-13/stage-143-defect-2-revision-10-rr3-ruleset.md`. The
+> **Do not repeat** section at the end remains valid and is the durable value of
+> this file.
+
 **Date**: 2026-09-13
 **Branch**: `chore/143-s-stage-checkpoint-lifecycle-continuity`
 **Commit**: `48e4f49cbb5bc37ec3d1b117e8552c66efaf39c8`
-**Outcome**: HALTED — plan-review circuit open, no harvest
+**Outcome (as of that commit)**: HALTED — plan-review circuit open, no harvest
 
 ## What was done
 
@@ -53,7 +67,7 @@ that step, while the real item ordering (readiness items 7b/7c sitting before
 runtime verification, closure-artifact generation, follow-up writes and the push
 in items 7–10) is more entangled than the description admits.
 
-## Outstanding P1s carried to escalation
+## Outstanding P1s carried to escalation *(as of revision 8 — all three have since been remediated; see the plan's retained review history)*
 
 1. **RQ-6 has no executable enforcement path.** Real Step 5 item 15 re-runs the
    P-018 gate and re-queries `headRefOid` only — it never re-fetches required CI
@@ -106,10 +120,13 @@ Pass 4 specifics:
   the snapshot race that produced this report is described rather than
   repeated. Outcome stays `BLOCKED`; the three P1s are untouched.
 
-## Recommended next step
+## Recommended next step *(as of revision 8 — done in revision 9)*
 
 Decompose U4 against a **verbatim extract of the real Step 5 item list** rather
 than a prose description of it, then re-review. This is the escalation question.
+**Outcome**: revision 9 did exactly this; two independent round-9 personas
+re-derived the extract from the live file and confirmed it accurate, and it is
+carried unchanged into revision 10.
 
 ## Do not repeat
 

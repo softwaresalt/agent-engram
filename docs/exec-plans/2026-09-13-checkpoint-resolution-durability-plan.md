@@ -1,59 +1,148 @@
 ---
 doc_type: exec-plan
 date: 2026-09-13
-revision: 9
+revision: 10
 scope: defect-2-only
-status: halted-review-circuit-open
-review_verdict: FAIL
-review_verdict_revision: 9
-review_attempts: 4
-escalation: P-013.6 fired at revision 8 (route gpt-5.6-sol/openai/xhigh); operator authorized ONE bounded remediation revision and ONE fresh full independent review; revision 9 was that revision and its round-9 review returned FAIL, so the circuit is open again
+status: awaiting-review
+review_verdict: pending
+review_verdict_revision: 10
+review_attempts: 5
+escalation: P-013.6 fired at revision 8 (route gpt-5.6-sol/openai/xhigh). Rounds 6-9 all returned FAIL. Revision 10 is a second bounded remediation revision explicitly authorized by the operator, carrying the operator's RR-3 decision (an approval-gated GitHub branch-ruleset prerequisite), plus ONE fresh full independent review.
 harvest_authorized: false
 source_document: docs/decisions/2026-09-13-checkpoint-resolution-durability-decision.md
 supersedes: docs/exec-plans/2026-09-13-checkpoint-lifecycle-continuity-plan.md
 stash_ids: [4EF24729]
-policies: [P-001, P-003, P-005, P-006, P-008, P-009, P-010, P-012, P-014, P-015, P-016, P-017, P-018, P-020, P-022]
+policies: [P-001, P-003, P-005, P-006, P-008, P-009, P-010, P-011, P-012, P-014, P-015, P-016, P-017, P-018, P-020, P-022]
 requires_plan_hardening: yes
 hardening_document: docs/exec-plans/2026-09-13-checkpoint-resolution-durability-hardening.md
-task_count: 10
-dependency_edge_count: 16
-sub_epic_count: 2
+task_count: 14
+dependency_edge_count: 22
+sub_epic_count: 3
+contains_proposed_action: true
+proposed_action_units: [U0]
 ---
 
-# Checkpoint Resolution Durability — Implementation Plan (revision 9, Defect 2 only)
+# Checkpoint Resolution Durability — Implementation Plan (revision 10, Defect 2 only)
 
 **Source document**: `docs/decisions/2026-09-13-checkpoint-resolution-durability-decision.md`
 **Requires plan hardening**: **yes** — this plan changes merge-adjacent ordering
-governed by P-014/P-018 and adds a startup route that could, if mis-specified,
-become an unsupervised merge path.
+governed by P-014/P-018, adds a startup route that could, if mis-specified,
+become an unsupervised merge path, and now carries one **`ProposedAction`** unit
+(U0) that mutates GitHub repository settings.
 
-**Machine-readable status.** The frontmatter is authoritative. `revision: 9`,
+**Machine-readable status.** The frontmatter is authoritative. `revision: 10`,
 `scope: defect-2-only`, `harvest_authorized: false`,
-`review_verdict: FAIL`, `review_verdict_revision: 9`, `review_attempts: 4`,
-`status: halted-review-circuit-open`.
+`review_verdict: pending`, `review_verdict_revision: 10`, `review_attempts: 5`,
+`status: awaiting-review`, `contains_proposed_action: true`.
 
-**Round-9 outcome — FAIL.** Revision 9 was reviewed by a fresh full independent
-seven-persona panel at HEAD `9b15fd43` and returned **FAIL** with **1 P0** and
-**15 P1** findings after dedupe, and with **RR-3 re-opened**. See
-`## Plan Review — round 9` at the end of this document for the complete finding
-set. The plan-review circuit is therefore **open again** at attempt counter 4.
-Nothing below may be read as approved. The remainder of this section describes
-what revision 9 *attempted*; the round-9 review records where those attempts did
-not hold.
+**Round-9 outcome — FAIL, and what followed.** Revision 9 was reviewed by a fresh
+full independent seven-persona panel at HEAD `9b15fd43` and returned **FAIL**
+with **1 P0** and **15 P1** findings after dedupe, with **RR-3 re-opened**. That
+complete finding set is retained verbatim in `## Plan Review — round 9`. The
+operator then made the **RR-3 decision** the round-9 review returned as a
+blocker, and authorized a **second bounded remediation revision plus one fresh
+full independent review**. Revision 10 is that revision. Its own review has
+**not yet returned**, so nothing below may be read as approved and
+`harvest_authorized` stays **false**.
 
-**What this revision is, and what it is not.** Revision 8 was independently
-reviewed and returned **FAIL** — the third consecutive FAIL (revisions 6, 7, 8) —
-the plan-review circuit opened at attempt counter 3, and the P-013.6 escalation
-fired and ran against HEAD `bbb52b65`. Revision 9 is **one bounded remediation
-revision explicitly authorized by the operator** after that circuit opened. It
-remediates the escalation's findings. It is **not** a clean bill of health: its
-own round-9 review returned **FAIL**, so `harvest_authorized` stays **false**
-and moves only on a *later* revision passing a fresh independent full-plan
-review. No earlier verdict, and no part of the retained history, may be cited as
-a harvest gate.
+**The operator's RR-3 decision (the load-bearing change in revision 10).** RR-3
+is closed by an **approval-gated GitHub branch-ruleset prerequisite** — *not* by
+a CI-check persistence substrate, and *not* by weakening RQ-7. The decision has
+three parts:
 
-**What changed in revision 9.** Five corrections, all from the P-013.6
-escalation:
+1. **A repository ruleset must cover every permitted resolution-bearing Ship
+   branch pattern** with both `deletion` and `non_fast_forward` rules, no bypass
+   actors, and no current-user bypass. Configuring it is an **external GitHub
+   settings change**, so it is carried by a distinct unit **U0**, classified
+   `ProposedAction` / `ActionRisk: high` / `approval_required: true`. **This
+   planning PR does not apply the setting**; U0 requires explicit operator or
+   admin approval at implementation time.
+2. **Ship must prove the protection is live before it publishes any obligation**,
+   by querying the effective-rules API for the **actual live `headRefName`**.
+   API unavailable, ambiguous rules, uncovered branch, or any relevant bypass
+   capability **halts before obligation publication** (new segment **S3.5**,
+   new requirement **RQ-13**).
+3. **Channel B is made independent of the PR body** and is rebuilt on the
+   protected head: it enumerates trusted PRs exhaustively from API fields alone,
+   fetches each to a **unique retained local ref**, and scans the **full
+   reachable history** of that ref by canonical path and record identity. The
+   ruleset's `non_fast_forward` + `deletion` rules are what make an
+   ordinary later deletion commit still detectable, because the introducing
+   commit stays reachable and the branch cannot vanish.
+
+**Measured evidence behind that decision (read-only, gathered at revision 10).**
+Repository ruleset `PR-Required` (id `12812291`) is `active` but targets
+`~DEFAULT_BRANCH` only. `GET /repos/{owner}/{repo}/rules/branches/main` returns
+`["deletion","non_fast_forward","pull_request","copilot_code_review"]`; the same
+endpoint for this plan's own source branch
+`chore/143-s-stage-checkpoint-lifecycle-continuity` returns `[]`. **Ship source
+branches are therefore unprotected today**, and no part of this plan may assume
+source-branch history immutability until U0 has been applied and S3.5 has proven
+it per branch at run time.
+
+**Honest framing of revision 10's size.** This is not a small revision, and
+calling it "bounded" would be generous without saying what bounds it. It is
+bounded by *authorization*, not by diff size: the operator authorized one
+revision carrying the RR-3 decision plus the round-9 P0/P1 remediation, and
+revision 10 does exactly that and nothing else. It adds four units (U0 plus the
+three mandated granularity splits), one requirement (RQ-13), and one hardening
+(D16), and it re-scopes two existing units. It allocates **no** backlog IDs,
+implements nothing, and changes **no** GitHub settings.
+
+**What changed in revision 10.** Every round-9 P0 and P1, the P2s that block a
+clean PASS, and the RR-3 decision:
+
+1. **RR-3 closed by the ruleset prerequisite** (F-13, F-14, F-15, F-19) — new
+   unit **U0**, new requirement **RQ-13**, new segment **S3.5**, rebuilt
+   Channel B in **U13**, new hardening **D16**.
+2. **F-11 (P0) fixed** — the Stage safeguard now keys off the **selected
+   checkpoint's carrying PR**, recorded in the checkpoint payload, never the
+   ambient working-tree branch.
+3. **F-01 fixed** — `RESOLUTION_POSTCONDITION` is split into two explicitly
+   named mutations: a PR-body metadata write that commits nothing, and an
+   `OPEN` → `CLOSED` commit on the **named `post-merge/{feature_slug}` closure
+   branch** Ship already creates. The "commits nothing" sentence is deleted.
+4. **F-02 fixed** — the Constitution Check P-018 row no longer asserts "item 15
+   retained unmodified"; the whole document was grepped for every restatement.
+5. **F-03, F-04, F-05, F-06 fixed** — V4(g) now permits the S4 mutation; S8's
+   locator terms and the postcondition are explicitly **conditional**, giving
+   zero-checkpoint units a satisfiable common path; S7 re-enumerates checkpoints
+   and the race response is defined.
+6. **F-07 fixed** — P-020 compaction is ordered after the `CLOSED` transition,
+   with a path-stability invariant and an archive-following rule so legitimate
+   compaction can never trip OB-1.
+7. **F-08 fixed** — S1…S8 are defined by **role**, with no live item numbers in
+   the instructions file, plus a standing executable drift check (**V20**).
+8. **F-09 fixed** — U3, U4 and U9 are split along the seams the auditor named,
+   restoring the 2-hour / single-domain rule.
+9. **F-10, F-16, F-17, F-18, F-21 fixed** — a normative S3 algorithm and
+   ownership predicate; an explicit P-012 availability contract with the
+   no-checkpoint-operations registry defined as a **halt**; PV-8/OB-8 binding
+   discovery to the shipment's designated implementation PR; an expected-head
+   SHA pinned on the merge call; and WP reconciled with the recorded post-merge
+   worktree-isolation prior art.
+10. **P2 sweep** — F-20 (**nine** invariants), F-22 (U1 is not a root), F-23,
+    F-24 (V19 parses YAML), F-25 (`U10→U4` edge), F-26, F-27 (Principles I–XI),
+    F-28 (P-011), F-29 (shallow-clone check), F-30 (API-side merge
+    verification), F-31 (recorded as **RR-6**); plus the P3s F-32…F-37. V2's verb
+    prohibition and V8's missing `--paginate`, both fixed in revision 9, are
+    re-verified unchanged.
+
+**Abandoned-ID notice.** `143-F`, `143-S` and `143.001-T` … `143.014-T` are
+machine-state **abandoned**. They appear in this document **only** as historical
+evidence of what was previously attempted. They are **never** to be revived,
+re-parented, or reused, and no future-tense statement in this plan depends on
+them. Replacement IDs stay **unassigned** until a later authorized harvest.
+Where a section below still needs to name the release-unit shape, it does so
+structurally (top-level release unit → three sub-epics → fourteen tasks) rather
+than by citing an abandoned ID as a live target.
+
+**What changed in revision 9** *(historical record — superseded in part by
+revision 10; counts stated here are revision-9 counts and are **not** the live
+contract. Where this list and the sections above disagree, the sections above
+govern: the merge bar is now **seven**-part, the invariants **nine**, the
+zero-checkpoint omission set **five**, and the unit count **fourteen**.)* Five
+corrections, all from the P-013.6 escalation:
 
 1. **RQ-6 gained an executable enforcement path against the *real* Step 5.**
    Every prior round described Step 5 in prose and mismatched it. U4 now carries
@@ -98,15 +187,6 @@ escalation:
    retained as historical evidence only and no longer appear as implementation
    targets; and the revision counter is incremented with
    `harvest_authorized: false` held.
-
-**Abandoned-ID notice.** `143-F`, `143-S` and `143.001-T` … `143.014-T` are
-machine-state **abandoned**. They appear in this document **only** as historical
-evidence of what was previously attempted. They are **never** to be revived,
-re-parented, or reused, and no future-tense statement in this plan depends on
-them. Replacement IDs stay **unassigned** until a later authorized harvest.
-Where a section below still needs to name the release-unit shape, it does so
-structurally (top-level release unit → two sub-epics → ten tasks) rather than by
-citing an abandoned ID as a live target.
 
 **What changed in revision 8.** Revision 7 was reviewed by the same independent
 four-persona panel and returned **FAIL** again — Scope, Correctness and Parity
@@ -190,42 +270,72 @@ discoverable and safely recoverable without conferring merge authority.
 
 ## Constraints
 
-* Documentation-only. No `src/`, no `crates/`, no scripts, no build system.
+* Documentation-only **except U0**. No `src/`, no `crates/`, no scripts, no
+  build system. **U0 is the single exception**: it changes GitHub repository
+  settings, changes no file, and is gated on explicit operator/admin approval.
 * Installed harness surfaces only: `.github/policies/`, `.github/instructions/`,
   `.github/agents/`, **one field declaration in
   `.github/skills/operational-closure/SKILL.md`** (added in revision 9 by U10, so
-  the RR-3 obligation record lives on an *owned* schema rather than squatting on
+  the RQ-12 obligation record lives on an *owned* schema rather than squatting on
   someone else's artifact), plus one `docs/compound/` learning.
 * No backlogit tool change. No shipment status outside `queued`/`active`.
 * Every unit is single-domain and under two hours of human-equivalent effort.
+  Revision 10 splits U3, U4 and U9 to restore this after round-9 finding F-09.
 * **No implementation unit introduces or depends on a Defect-1 construct.**
   Defect-1 names appear in this document only in the revision summary, the
   out-of-scope list, and the retained review history — as documentary exclusions,
   never as implementation targets. V7 enforces the distinction by scanning the
   *changed files*, not this plan.
+* **No unit in this plan mutates GitHub settings at plan time.** U0 *specifies*
+  a settings change and requires approval before it is applied; producing this
+  plan applies nothing.
 
 ## Constitution Check
 
+### Workflow policies
+
 | Principle | Check |
 |---|---|
-| P-001 Single-release-unit completion | P-001 requires that no previously merged release unit is still awaiting required post-merge closure. `CLOSURE_LOCATOR` discovery at zero-candidate startup (U6, U5) is the mechanism that makes that precondition *checkable* rather than assumed. `RECONCILED` is defined to require the full P-001 closure set. Composed with, not weakened. |
-| P-003 Decomposition chain | P-003 precondition item 4 requires that **every task references its parent sub-epic**. Revision 7 asserted a flat feature-direct decomposition on the strength of workspace precedent; precedent is not policy text, and the Violation Action is Halt at pre-harvest. Revision 8 restored the tier and revision 9 keeps it, stated **structurally** because the former IDs are abandoned: source document → this plan → **one top-level release unit** → **two sub-epics** → **ten tasks**. Sub-epic **E1 — Ordering contract** covers the prevention half (U1, U2, U4, U8); sub-epic **E2 — Discovery and recovery** covers the recovery half (U3, U5, U6, U9, U10, U7). The split is the plan's own prevention/recovery structure, not an artificial tier. Each sub-epic references this plan and the top-level release unit; each task references its sub-epic and carries acceptance criteria. **No ID is assigned here** — `143-F`, `143-S` and `143.001-T` … `143.014-T` are abandoned and must not be revived or reused; replacement IDs are allocated only at a later authorized harvest. |
+| P-001 Single-release-unit completion | P-001 requires that no previously merged release unit is still awaiting required post-merge closure. Two-channel discovery at zero-candidate startup (U5, U6, U13) is the mechanism that makes that precondition *checkable* rather than assumed. `RECONCILED` is defined to require the full P-001 closure set. Composed with, not weakened. |
+| P-003 Decomposition chain | P-003 precondition item 4 requires that **every task references its parent sub-epic**. Stated **structurally**, because the former IDs are abandoned: source document → this plan → **one top-level release unit** → **three sub-epics** → **fourteen tasks**. Sub-epic **E1 — Ordering contract** covers the prevention half (U1, U2, U4, U12, U8); **E2 — Discovery and recovery** covers the recovery half (U3, U11, U9, U13, U10, U5, U6); **E3 — Prerequisite and closure** covers the ops prerequisite and the closure deliverable (U0, U7). The split follows the plan's own structure, not an artificial tier. Each sub-epic references this plan and the top-level release unit; each task references its sub-epic and carries acceptance criteria. **No ID is assigned here** — `143-F`, `143-S` and `143.001-T` … `143.014-T` are abandoned and must not be revived or reused; replacement IDs are allocated only at a later authorized harvest. |
 | P-005 Policy telemetry | No gate is bypassed; the review gate is explicitly open. U1 requires P-022's Violation Action to record P-005 telemetry, matching neighbouring policies. |
-| P-006 Plan hardening | `requires_plan_hardening: yes`; hardening document exists and is reduced in lockstep. |
-| P-008 Markdown conformance | Engaged by every unit: each carries a `markdownlint passes` acceptance criterion and V1 runs it across all changed files. Satisfied by construction. |
-| P-009 Merge-commit-only | Untouched. U4 does not alter Step 5's P-009 guardrail (item 16); U3/U6 confer no merge authority and therefore cannot select a merge strategy. |
-| P-010 Role boundary | Stage plans; Ship executes. No source mutation planned by Stage. **U8 adds only a prohibition to Stage** — do not resolve into a merged staging PR, do not create an undischargeable checkpoint — and confers no merge authority, no locator obligation, and no `RESOLUTION_PREFIX` execution. U6 has the Orchestrator *route* to Ship rather than perform recovery. |
-| P-012 Tool availability | Locator discovery adds a required `gh api` capability to the startup critical path. It is probed per P-012, and its failure mode is the fail-closed halt already required by RQ-11 — never a silent fall-through to ad hoc filesystem scanning. |
+| P-006 Plan hardening | `requires_plan_hardening: yes`; hardening document exists and is revised in lockstep (D1–D16). |
+| P-008 Markdown conformance | Engaged by every file-changing unit: each carries a `markdownlint passes` acceptance criterion and V1 runs it across all changed files. U0 changes no file and is exempt, stated explicitly rather than silently. |
+| P-009 Merge-commit-only | Untouched as a *guardrail*. U4 does not weaken Step 5's P-009 requirement; revision 10 adds an **API-side** verification path beside the existing rendered-UI confirmation (F-30) so the guardrail is agent-checkable, and requires the merge call to be made in merge-commit mode with two parents asserted afterwards. U3/U6/U11/U13 confer no merge authority and therefore cannot select a merge strategy. |
+| P-010 Role boundary | Stage plans; Ship executes. No source mutation planned by Stage. **U8 adds only a prohibition to Stage** — do not resolve into a merged carrying PR, do not create an undischargeable checkpoint — and confers no merge authority, no locator obligation, and no `RESOLUTION_PREFIX` execution. U6 has the Orchestrator *route* to Ship rather than perform recovery. **U0 is an operator/admin action**, not a Stage action: the plan specifies it and requires approval; Stage neither applies nor can apply it. |
+| P-011 Worktree topology | **Added in revision 10 (round-9 finding F-28).** `Working-tree placement` performs fetch, branch create/switch, fast-forward and commit, so it crosses the P-011 topology boundary. WP-0 now runs the P-011/P-016 worktree-topology gate **before** WP-1, and WP reconciles with the recorded post-merge worktree-isolation prior art (F-21): the resolution commit is made in the **implementation worktree** on the PR head, and post-merge closure uses the separate `post-merge/{feature_slug}` branch Ship already creates. |
+| P-012 Tool availability | **Wired, not merely asserted (round-9 finding F-16).** U11 AC13 installs an explicit availability contract covering every operation this plan puts on the critical path: `backlogit_list_checkpoints`, `backlogit_get_checkpoint`, `backlogit_resolve_checkpoint`, `backlogit_create_checkpoint`, `gh api` (including the effective-rules endpoint), review-thread enumeration, and Git history access. Each is probed before the path that needs it; only declared official CLI fallbacks may be used; anything else **halts**. A registry exposing **no** checkpoint operations is defined as a **halt**, never as an implicit zero enumeration — that silent fail-open into the merge path is the dangerous case. |
 | P-014 Local review readiness | **This plan introduces a §1.9 hazard and then closes it.** Today §1.9 is trivially satisfiable because resolution happens post-merge and the reviewed HEAD is stable. Moving resolution pre-merge advances HEAD past the reviewed HEAD, which — left unmitigated — would defeat §1.9 while appearing to satisfy it (hardening D4) or cause the gate to be quietly skipped (D5). The mitigation is specific and mandatory: re-run the actual review at the final pushed HEAD, write the PR-body record, *then* gate. P-014 is **preserved by construction**, not strengthened. |
-| P-015 Single-artifact shipment closure | Untouched. The locator records shipment identity but does not alter shipment-closure sequencing and introduces no cascade-close behaviour. |
-| P-016 No parallel branches | The recovery path routes one owner to one PR; it never opens a second branch or worktree. |
-| P-017 Dark factory | `LAST_MILE_RECOVERY` is auto-entered at startup and walks to a merge bar, so dark mode could otherwise supply approval for it. A recovered obligation belongs to a **prior** unit and is outside the current run's declared dark scope: U6 AC7 states that a dark approval for the current scope does **not** satisfy the merge bar for a prior unit's recovered obligation. |
-| P-018 Copilot review gate | Re-run at the final HEAD is explicit in `RESOLUTION_PREFIX`. The resolution push naturally re-arms P-018, and Step 5's existing unconditional last-mile re-check (item 15) is retained unmodified. |
-| P-020 Post-merge context compaction | U4 edits Ship Step 5 and Session end — **not** Step 6's `compact-context` invocation. U4 carries an explicit acceptance criterion that the P-020 invocation remains present and unmodified, and `RECONCILED` is defined to require the P-020 compaction record, so the locator cannot discharge an obligation P-020 has not yet met. |
+| P-015 Single-artifact shipment closure | Untouched. The locator and the obligation record record shipment identity but do not alter shipment-closure sequencing and introduce no cascade-close behaviour. The standing `backlogit shipment ship` non-termination risk and its P-015 safe-close fallback are recorded as a coupling point in RR-6 (F-31). |
+| P-016 No parallel branches | The recovery path routes one owner to one PR; it never opens a second implementation branch. The one additional working space this plan touches is the `post-merge/{feature_slug}` closure branch Ship's Step 6.0 **already** creates — reused, not invented. |
+| P-017 Dark factory | `LAST_MILE_RECOVERY` is auto-entered at startup and walks to a merge bar, so dark mode could otherwise supply approval for it. A recovered obligation belongs to a **prior** unit and is outside the current run's declared dark scope: U6 AC7 states that a dark approval for the current scope does **not** satisfy the merge bar for a prior unit's recovered obligation. **U0 is never dark-approvable**: a `ProposedAction` at `ActionRisk: high` requires an explicit human approval and P-017 dark mode must not supply it. |
+| P-018 Copilot review gate | Re-run at the final HEAD is explicit in `RESOLUTION_PREFIX`. The resolution push naturally re-arms P-018. **Step 5's last-mile re-check is AMENDED, not retained unmodified** — it currently re-runs only the P-018 verdict and `headRefOid`, which is exactly why RQ-6 had no executable enforcement path. P-018 is evaluated at S5 and **re-evaluated** at S7; the merge-commit guardrail item is retained unmodified. *(Revision 10 corrects the withdrawn "item 15 retained unmodified" claim that survived in this row through revision 9 — round-9 finding F-02.)* |
+| P-020 Post-merge context compaction | U4 edits Step 5; **U12** edits Step 6 and Session end — neither removes Step 6's `compact-context` invocation, and U12 carries an explicit acceptance criterion that it remains present and unmodified. **Revision 10 fixes the ordering hazard (round-9 finding F-07)**: the `OPEN` → `CLOSED` transition is written **before** any compaction that can touch the closure artifact, a path-stability invariant forbids renaming/compacting/archiving an artifact whose record is `none` or `OPEN`, and Channel B additionally follows `docs/archive/closure/` so an archive move is never misread as the OB-1 deletion attack. |
+| P-022 Checkpoint resolution durability | Introduced by this plan (U1). Self-consistently applied: every surface references the canonical definition by name rather than restating it, and V2/V20 enforce that. |
+
+### Workspace constitution — Principles I–XI
+
+*Added in revision 10 (round-9 finding F-27): the Governance clause requires the
+workspace constitution's own principles to be mapped, not only the workflow
+policies.*
+
+| Principle | Check |
+|---|---|
+| I — Specification before implementation | Satisfied: decision → plan → hardening → review gate, with no implementation authorized. |
+| II — Single source of truth | The `Canonical ownership` table names exactly one installed home per definition; V2 and V20 enforce non-restatement. |
+| III — Traceability | Every requirement RQ-1…RQ-13 maps to one owning unit plus enforcing units; U7 is labelled a closure deliverable rather than given an invented requirement. |
+| IV — Incremental delivery | Fourteen single-domain units, each under two hours, with an acyclic dependency graph. |
+| V — Test/verification first | V1–V20 are specified with expected results, and revision 10 makes V4(g), V16, V18 and V19 actually satisfiable. |
+| VI — Reversibility | Every documentation unit is revertible by revert. **U0 is the one partially irreversible action** — a ruleset is re-configurable but its absence window cannot be retro-actively closed — which is precisely why it is `ActionRisk: high` and approval-gated. |
+| VII — Destructive-command approval | Engaged by WP (fetch, branch create/switch, fast-forward, commit) and by U0. WP **forbids** `git reset --hard`, force checkout and rebase outright; U0 requires explicit approval. No destructive command is auto-approved. |
+| VIII — Explicit safety modes | U0 is declared `ProposedAction` with `ActionRisk: high` and `approval_required: true`; P-017 dark mode is explicitly barred from satisfying it. |
+| IX — Fail closed | Every discovery, provenance, ruleset-proof and ancestry failure halts. OB-1…OB-8, PV-1…PV-8 and S3.5 are all fail-closed, and "absence" is never read as "discharged". |
+| X — Least privilege | The recovery path confers **no** merge authority (RQ-10). U0 grants no bypass actors and no current-user bypass. Stage receives a prohibition only. |
+| XI — Auditability | The obligation record's whole lifecycle is Git-tracked and ancestry-checkable; the ruleset makes the introducing commit provably reachable; review history is appended, never rewritten. |
 
 ## Canonical definitions
 
-These five definitions are the single source of truth. Task cards quote them;
+These six definitions are the single source of truth. Task cards quote them;
 they are not restated differently anywhere.
 
 **Canonical ownership — one installed surface per definition.** Each definition
@@ -236,10 +346,11 @@ cannot drift into two different orders.
 | Definition | Canonical installed home | Referencing surfaces |
 |---|---|---|
 | `HEAD_EVIDENCE_RULE` | `github-pr-automation.instructions.md` (U2) | — |
-| `RESOLUTION_PREFIX` / `RESOLUTION_POSTCONDITION` | `github-pr-automation.instructions.md` (U2) | `workflow-policies.md` P-022 (U1); `_ship.agent.md` Step 5 and Step 6 (U4); `_stage.agent.md` (U8) |
+| `RESOLUTION_PREFIX` / `RESOLUTION_POSTCONDITION` | `github-pr-automation.instructions.md` (U2) | `workflow-policies.md` P-022 (U1); `_ship.agent.md` Step 5 (U4) and Step 6 (U12); `_stage.agent.md` (U8) |
+| `BRANCH_PROTECTION_PREREQUISITE` | `github-pr-automation.instructions.md` (U2) | `_ship.agent.md` (U4); repository settings (U0) |
 | `CLOSURE_LOCATOR` | `github-pr-automation.instructions.md` (U2, U3) | `_ship.agent.md` (U4, U5); `_orchestrator.agent.md` (U6) |
-| `RESOLUTION_OBLIGATION_RECORD` | `github-pr-automation.instructions.md` (U9) | `_ship.agent.md` (U4, U5); `_orchestrator.agent.md` (U6); `operational-closure/SKILL.md` (U10, schema field only) |
-| `LAST_MILE_RECOVERY` | `github-pr-automation.instructions.md` (U3) | `_ship.agent.md` (U5); `_orchestrator.agent.md` (U6) |
+| `RESOLUTION_OBLIGATION_RECORD` | `github-pr-automation.instructions.md` (U9 schema/lifecycle, U13 discovery) | `_ship.agent.md` (U4, U12, U5); `_orchestrator.agent.md` (U6); `operational-closure/SKILL.md` (U10, schema field only) |
+| `LAST_MILE_RECOVERY` | `github-pr-automation.instructions.md` (U11) | `_ship.agent.md` (U5); `_orchestrator.agent.md` (U6) |
 
 ### `HEAD_EVIDENCE_RULE`
 
@@ -261,59 +372,79 @@ Ship Step 5 and it runs for **every** unit. It is explicitly **not** gated on "P
 merge-ready" — readiness is established *by* this sequence, so gating entry on it
 would be circular.
 
-**The checkpoint count selects one conditional segment, not the whole
-sequence** *(corrected in revision 9; see B below)*. The unit's active-checkpoint
-count selects **only** segment **S4** — locator publication, checkpoint
+**The checkpoint count selects one conditional segment pair, not the whole
+sequence.** The unit's active-checkpoint count selects **only** segments **S3.5**
+and **S4** — the branch-protection proof, locator publication, checkpoint
 resolution, the resolution commit, its push, and the phase-2 locator
 publication. **Every other segment — S1, S2, S3, S5, S6, S7, S8 — runs
 identically for every unit, zero-checkpoint units included.** A unit with a
-**complete** zero enumeration omits S4 and nothing else. There is no
+**complete** zero enumeration omits S3.5 and S4 and nothing else. There is no
 "pre-existing path unchanged" bypass and no unit escapes the reordered common
-finalization tail; the revision-8 claim to the contrary was false and is
-withdrawn.
+finalization tail.
 
 **Zero is a proven result, never a default.** S3 must *prove* the enumeration
 complete. An enumeration that fails, returns a malformed or quarantined record,
-or is ambiguous in any way is **not zero** — it **halts**. A checkpoint that
-appears after S3 completed forces re-evaluation from S3 before merge. No empty
-locator is ever published: when S4 is omitted there is no locator, not a locator
-with an empty checkpoint list.
+or is ambiguous in any way is **not zero** — it **halts**. A registry exposing no
+checkpoint operations at all is **not zero** — it **halts** (P-012). A checkpoint
+that appears after S3 completed forces re-evaluation from S3 before merge, and S7
+re-enumerates specifically to detect that. No empty locator is ever published:
+when S4 is omitted there is no locator, not a locator with an empty checkpoint
+list.
 
 This is scoped to the **Ship unit's own** pre-merge obligation. Stage's
 crash-resumption startup recovery is a **separate** protocol and is not altered,
 subsumed, or gated by anything in this definition.
 
+**Segments are defined by ROLE, not by live item number** *(revision 10, round-9
+finding F-08)*. The canonical text installed in the instructions file names each
+segment by the **role** it plays. It contains **no** `_ship.agent.md` item
+numbers at all. The item-to-segment binding lives **solely** in `_ship.agent.md`,
+where the items actually are, and a standing invariant (**V20**) asserts that the
+executable order in that file still matches these roles. This is deliberate: the
+previous form hard-coded live item numbers — including the live file's
+**duplicated** `7` — into a second file, which is the same coupling that caused
+revisions 6, 7 and 8 to describe a Step 5 that did not exist.
+
 ```text
-RESOLUTION_PREFIX  (the finalization tail of Ship Step 5)
+RESOLUTION_PREFIX  (the finalization tail of Ship's PR-lifecycle step)
   entry: all in-scope task work complete
          (NOT gated on "PR merge-ready" — readiness is produced here)
 
-  S1  complete the existing CI / review fix loop
-        real Step 5 items 7 (fix-ci) and 7a (shadow review).
+  S1  ROLE: the CI / review fix loop
+        the existing automated CI-fix and optional shadow-review loops.
         These MAY commit and push. They run to completion FIRST.
 
-  S2  complete every remaining branch-mutating item
-        real Step 5 second item 7 (runtime verification),
-        item 8 (operational closure), item 9 (follow-up stash writes),
-        item 10 (the ordinary push).
+  S2  ROLE: the remaining branch-mutating tail
+        runtime verification, operational-closure artifact generation,
+        follow-up stash writes, and the ordinary branch push.
         After S2 no ordinary work remains that can mutate the branch.
 
-  S3  prove current-unit checkpoint enumeration COMPLETE
-        enumerate every checkpoint owned by THIS unit.
-        complete + count == 0        → skip S4 only; continue at S5
-        complete + count >= 1        → run S4
-        failed / malformed / quarantined / ambiguous
+  S3  ROLE: prove current-unit checkpoint enumeration COMPLETE
+        (normative algorithm below — it is not a prose instruction)
+        complete + count == 0        → skip S3.5 and S4; continue at S5
+        complete + count >= 1        → run S3.5, then S4
+        failed / malformed / quarantined / ambiguous / tooling absent
                                      → HALT (this is NOT zero)
 
-  S4  CONDITIONAL — runs only on a complete NONZERO enumeration
+  S3.5 CONDITIONAL — ROLE: prove the branch protection is LIVE   (RQ-13)
+      runs only on a complete NONZERO enumeration, and ONLY BEFORE any
+      obligation is published. See BRANCH_PROTECTION_PREREQUISITE below.
+      → query the effective-rules API for the ACTUAL LIVE headRefName
+      → prove `deletion` AND `non_fast_forward` both apply
+      → prove no relevant bypass exists for the acting identity
+      → API unavailable / ambiguous / branch uncovered / bypass present
+            → HALT BEFORE obligation publication. Never publish first
+              and verify afterwards.
+
+  S4  CONDITIONAL — runs only after S3.5 has PASSED
       → publish CLOSURE_LOCATOR to the PR body, status RESOLUTION_PENDING
             (metadata write; MUST precede the first resolution commit, so
              the checkpoint-free window is never uncovered)
       → resolve every checkpoint owned by this unit, and write the
-            RESOLUTION_OBLIGATION_RECORD, in ONE commit
+            RESOLUTION_OBLIGATION_RECORD at OPEN, in ONE commit,
+            in the IMPLEMENTATION worktree on the PR head
             (the Git-tracked durable obligation record; see its canonical
-             definition below — it rides the SAME commit, carries NO SHA,
-             and is what survives deletion of the PR body)
+             definition below — it rides the SAME commit and carries NO SHA)
       → PUSH that commit
       → prove the remote PR head now equals the local HEAD
             (nothing downstream may derive evidence from an unpushed commit)
@@ -324,38 +455,69 @@ RESOLUTION_PREFIX  (the finalization tail of Ship Step 5)
       → RE-RUN THE ACTUAL LOCAL REVIEW at that pushed HEAD
             (a real review pass over the final diff — never a restatement
              of an earlier verdict)
-      → publish the final locator resolution state, if a locator exists
+      → publish the final locator resolution state, IF a locator exists
       → record Reviewed HEAD in the PR BODY at that HEAD
             (metadata write; does NOT advance headRefOid)
       → run, in this order:
-            P-014 §1.9 local readiness   (real Step 5 item 7b, MOVED here)
+            P-014 §1.9 local readiness       (MOVED here, after the push)
             EXPLICIT required-check evaluation — each required check
               enumerated and evaluated green, or explicitly PROVEN
               non-applicable; "no red" is not an evaluation
-            P-018 copilot-review gate    (real Step 5 item 7c, MOVED here)
+            P-018 copilot-review gate        (MOVED here, after the push)
 
-  S6  record approval, pinned  (real Step 5 item 14)
+  S6  ROLE: record approval, pinned
       → obtain explicit operator approval and record `approved_head`
             equal to the S5 HEAD. An approval without a recorded
             approved_head is not an approval.
 
-  S7  strengthened last-mile re-check  (real Step 5 item 15, AMENDED)
+  S7  ROLE: strengthened last-mile re-check   (the existing last-mile
+      re-check item, AMENDED — it currently re-runs only the P-018
+      verdict and headRefOid)
       → re-fetch and re-evaluate, all of them, unconditionally:
             headRefOid; the PR body; reviewDecision;
             review requests and reviews; EVERY review-thread page to
-            exhaustion; required checks; and the ancestry of every
-            recorded resolution commit.
+            exhaustion; required checks; the ancestry of every recorded
+            resolution commit; AND a RE-ENUMERATION of active checkpoints
+            owned by this unit.
+      → RACE RESPONSE: if the re-enumeration returns a NONZERO count, or
+            is incomplete/ambiguous by the S3 algorithm, the unit RETURNS
+            TO S3 and re-runs S3 → S3.5 → S4 → S5 → S6 → S7. The prior
+            S6 approval is VOID and a fresh approved_head is required.
+            This loop is bounded: re-entry is permitted at most twice,
+            after which the session HALTS to the operator.
+      → if the unit is under S3.5 protection, also RE-PROVE the ruleset
+            still applies; ruleset drift since S3.5 HALTS.
 
   S8  merge bar — merge ONLY when ALL hold
-      1. live headRefOid == local HEAD == locator final_head
-             == PR-body Reviewed HEAD == approved_head  (all five agree)
-      2. every recorded resolution commit is an ancestor of that HEAD
+      1. HEAD AGREEMENT. The four ALWAYS-PRESENT values agree:
+             live headRefOid == local HEAD
+                             == PR-body Reviewed HEAD
+                             == approved_head
+         AND, CONDITIONALLY, when a locator was published (that is, when
+         S4 ran), locator final_head joins them and must agree too.
+         On a zero-checkpoint unit no locator exists, so the locator term
+         is ABSENT rather than empty, and its absence is NOT a failure.
+      2. every recorded resolution commit, IF ANY WERE RECORDED, is an
+         ancestor of that HEAD. On a zero-checkpoint unit the set is
+         empty and this condition is VACUOUSLY SATISFIED, which is
+         correct here precisely because condition 1 pins the HEAD by
+         four independent always-present values.
       3. review-thread pagination COMPLETED to exhaustion
       4. no blocking review thread and no blocking review exists
       5. required checks pass, or are explicitly PROVEN non-applicable
       6. P-018 passes
-      Any doubt at any of the six — HALT. Then real Step 5 item 16 (P-009)
-      and item 17 (P-017) apply unchanged.
+      7. the S7 checkpoint re-enumeration returned a COMPLETE ZERO
+      Any doubt at any of the seven — HALT.
+      → THE MERGE CALL ITSELF MUST PIN THE OBSERVED HEAD. Pass the
+        S8-observed headRefOid to the merge API as the expected head SHA
+        so GitHub refuses server-side if the branch advanced between the
+        S8 read and the call. An unpinned merge call is a TOCTOU hole,
+        not a guarantee.
+      → merge in MERGE-COMMIT mode (P-009), verified by API rather than
+        only by the rendered UI, and assert the resulting commit has TWO
+        parents afterwards.
+      Then the P-009 guardrail item and the P-017 dark-mode item apply
+      unchanged.
 
   REFRESH RULES (no stale approval may ever be reused)
     * Any HEAD change at any point requires a FRESH cycle:
@@ -364,17 +526,41 @@ RESOLUTION_PREFIX  (the finalization tail of Ship Step 5)
     * A thread or check change WITHOUT a HEAD change requires the
       affected gates to be re-run and the S6 approval to be refreshed.
 
-RESOLUTION_POSTCONDITION  (a Step 6 closure postcondition)
-  → after the FULL required post-merge closure set is complete AND verified
-  → set CLOSURE_LOCATOR to RECONCILED and close the
-    RESOLUTION_OBLIGATION_RECORD in the same closure commit
+RESOLUTION_POSTCONDITION  (post-merge; TWO separately named mutations)
+  entry: the FULL required post-merge closure set is complete AND verified
+
+  POST-A  the PR-body RECONCILED write          — METADATA, NO COMMIT
+      → set CLOSURE_LOCATOR status to RECONCILED in the PR body.
+      → this is a metadata write. It creates no commit and advances no
+        headRefOid.
+      → CONDITIONAL: performed only if a locator was published. When no
+        locator exists, POST-A is a NO-OP.
+
+  POST-B  the OPEN -> CLOSED transition          — A COMMIT, ON A NAMED
+                                                   CLOSURE BRANCH
+      → CONDITIONAL: performed only when resolution_obligation is OPEN.
+        When the field is `none` (the zero-checkpoint case), POST-B is an
+        explicit NO-OP: `none` is LEFT INTACT and is NEVER transitioned.
+        `none -> CLOSED` is not a permitted transition and must not be
+        attempted.
+      → When OPEN: set status CLOSED and write closed_at, as a COMMIT on
+        the `post-merge/{feature_slug}` closure branch that Ship's
+        post-merge closure step ALREADY creates. Ship MUST NOT commit
+        this to the default branch (P-010).
+      → That closure branch's PR MUST BE MERGED before the obligation is
+        discharged. An unmerged CLOSED transition discharges nothing.
+      → ORDERING AGAINST P-020: POST-B MUST complete BEFORE any
+        compaction or archival that can move the closure artifact. See
+        the path-stability invariant in RESOLUTION_OBLIGATION_RECORD.
 ```
 
-**No step of either part may be performed on a merged branch.** The prefix ends
-before merge; the postcondition is a PR-body metadata write only and commits
-nothing.
+**No step of `RESOLUTION_PREFIX` may be performed on a merged branch.** The
+prefix ends before merge. `RESOLUTION_POSTCONDITION` runs after merge and is the
+only part that may: POST-A writes PR metadata, and POST-B commits to the separate
+`post-merge/{feature_slug}` closure branch — never to the merged implementation
+branch and never to the default branch.
 
-Eight ordering invariants are load-bearing:
+Nine ordering invariants are load-bearing:
 
 1. **No checkpoint resolution may occur after merge** *(RQ-1)*. Checkpoint JSONs
    are Git-tracked, so a post-merge resolution commit sits on an already-merged
@@ -399,7 +585,7 @@ Eight ordering invariants are load-bearing:
    ordinary mutation — CI/review fixes, runtime verification, closure-artifact
    generation, follow-up stash writes, and the ordinary push. The readiness
    gates (§1.9, required-check evaluation, P-018) **move** from their current
-   real-Step-5 position at items 7b/7c to **after** that push, in S5. This is
+   position *before* those mutating items to **after** that push, in S5. This is
    the reorder, and it applies to **every** unit, not only checkpoint-owning
    ones.
 6. **Approval is pinned to a HEAD** *(RQ-6)*. S6 records `approved_head`. An
@@ -409,7 +595,7 @@ Eight ordering invariants are load-bearing:
    requires the affected gates plus a refreshed approval.
 7. **Required checks are evaluated, never assumed** *(RQ-6)*. S5 and S8 require
    each required check to be enumerated and evaluated green or **proven**
-   non-applicable. The real Step 5 item 15 re-runs P-018 and re-queries
+   non-applicable. The live last-mile re-check item re-runs P-018 and re-queries
    `headRefOid` only; "no red observed" is not an evaluation, and S7 is the
    amendment that closes that gap.
 8. **The durable obligation record rides the resolution commit** *(RQ-12)*. The
@@ -417,6 +603,121 @@ Eight ordering invariants are load-bearing:
    the checkpoint resolutions and pushed with them, so the obligation is
    recorded in Git history — not only in mutable PR-body metadata. See its
    canonical definition below.
+9. **Protection is proven before the obligation is published** *(RQ-13, added in
+   revision 10)*. S3.5 runs **before** S4. Publishing an obligation record onto
+   a branch whose history can still be rewritten, or which can still be deleted,
+   produces a record that its own author can erase without trace — which is
+   exactly the RR-3 gap. Proving the protection **after** publication would be
+   useless, because the unprotected window is the window the attack occupies.
+
+### `BRANCH_PROTECTION_PREREQUISITE` *(RQ-13)*
+
+**This definition is revision 10's answer to RR-3**, and it implements the
+operator's decision directly. It replaces the revision-9 mechanism that the
+round-9 review invalidated (F-13, F-14, F-19). It is **not** a CI-check
+persistence substrate, and it does **not** weaken RQ-7.
+
+**The problem, stated exactly.** The `RESOLUTION_OBLIGATION_RECORD` is Git-tracked
+and therefore durable *against ordinary edits* — a later commit that deletes it
+is itself a detectable history event. But durability against *history rewriting*
+is not a property of Git; it is a property of the **forge's branch protection**.
+If the PR author can force-push the branch back past the introducing commit, or
+delete the branch entirely, then both the record and the evidence that it ever
+existed vanish together, and no SHA-free record can distinguish "never existed"
+from "erased" (F-19). The fix therefore has to come from outside the branch
+author's erasure surface — and the narrowest such mechanism that GitHub already
+provides is a **repository ruleset**.
+
+**Measured current state (read-only, at revision 10).**
+
+| Probe | Result |
+|---|---|
+| `GET /repos/{owner}/{repo}/rulesets` | one ruleset, `PR-Required`, id `12812291`, `enforcement: active`, `target: branch` |
+| That ruleset's `conditions.ref_name.include` | `~DEFAULT_BRANCH` only |
+| `GET /repos/{owner}/{repo}/rules/branches/main` | `["deletion","non_fast_forward","pull_request","copilot_code_review"]` |
+| `GET /repos/{owner}/{repo}/rules/branches/chore%2F143-s-stage-checkpoint-lifecycle-continuity` | `[]` — **uncovered** |
+| Legacy branch-protection endpoint for `main` and for the source branch | `404` on both |
+
+**Conclusion, recorded so no later reader re-assumes it**: Ship source branches
+carry **no** `deletion` or `non_fast_forward` protection today. Every claim in
+this plan that depends on source-branch history immutability is therefore
+conditional on U0 having been applied, and must be **re-proven per branch at run
+time** by S3.5. The plan must not assume it.
+
+**Part 1 — the ops prerequisite (unit U0, `ProposedAction`, approval-gated).**
+A repository ruleset must cover **every permitted resolution-bearing Ship branch
+pattern**. Those patterns are derived from the installed Ship agent's own branch
+naming, not guessed:
+
+| Pattern | Source in `_ship.agent.md` | Why it is resolution-bearing |
+|---|---|---|
+| `feat/*` | shipment branch for features — `git checkout -b feat/{feature-slug}` | carries the S4 resolution commit and the `OPEN` record |
+| `chore/*` | shipment branch for chores — the `chore/` variant of the same step | same |
+| `post-merge/*` | `git checkout -b post-merge/{feature_slug}` for all Step 6 closure work | carries the POST-B `OPEN` → `CLOSED` transition |
+
+The ruleset must declare both `deletion` and `non_fast_forward` rules, **no
+bypass actors**, and must resolve to `current_user_can_bypass: never`. It must be
+`enforcement: active`. It does **not** add a `pull_request` rule to these
+patterns: requiring PR review on every Ship working branch would break Ship's own
+push loop, and the obligation record needs only immutability, not review.
+
+**Part 2 — the per-run proof (segment S3.5).** A configured ruleset is not a
+proof that *this* branch is covered *now*: patterns can drift, the ruleset can be
+disabled, and a bypass actor can be added later. Ship therefore proves it per
+run, against the **actual live `headRefName`** — never against a locally assumed
+branch name:
+
+```text
+# Preferred form — the effective-rules endpoint, which resolves ALL rulesets
+# that actually apply to the branch, rather than enumerating configuration.
+gh api "repos/{owner}/{repo}/rules/branches/{live_headRefName}"
+
+  → REQUIRE an entry with .type == "deletion"
+  → REQUIRE an entry with .type == "non_fast_forward"
+  → For each matched rule, resolve its ruleset via
+        .ruleset_id  →  gh api "repos/{owner}/{repo}/rulesets/{id}"
+    and REQUIRE:
+        .enforcement == "active"
+        .bypass_actors is empty OR contains no actor the acting identity
+          holds, at any bypass_mode
+        .current_user_can_bypass == "never"
+
+  HALT BEFORE OBLIGATION PUBLICATION on ANY of:
+    - the endpoint is unavailable, errors, rate-limits, or is not
+      supported by this repository/plan tier
+    - either required rule type is absent
+    - the branch is not covered by any ruleset (an empty [] response)
+    - enforcement is anything other than "active"
+    - any bypass actor is present that the acting identity could hold
+    - current_user_can_bypass is anything other than "never"
+    - the response is ambiguous or cannot be parsed
+```
+
+**`{live_headRefName}` MUST be read from the PR API** (`gh pr view <n> --json
+headRefName`) immediately before the probe, and MUST be URL-encoded — Ship branch
+names contain `/`. Using the locally checked-out branch name is forbidden: it is
+the same ambient-state error as round-9 finding F-11.
+
+**Repository-supported equivalent.** If this repository or plan tier does not
+expose `GET /rules/branches/{branch}`, the permitted equivalent is to enumerate
+`GET /rulesets` with `includes_parents=true`, resolve each ruleset's
+`conditions.ref_name` against the live `headRefName`, and apply the same four
+requirements. If **neither** form is available, that is the "API unavailable"
+row: **halt**. It is never an assumption of coverage.
+
+**What this buys, stated without overclaiming.** With `non_fast_forward` and
+`deletion` in force and no bypass:
+
+* an ordinary later commit that **deletes** the obligation record is still
+  detectable, because the introducing commit remains **reachable** from the
+  branch head and the branch cannot disappear (this is what makes OB-1 real);
+* a **force-push** that would unreach the introducing commit is refused by the
+  forge, so OB-2's "unverifiable ancestry" case becomes rare rather than routine;
+* the residual is honestly bounded below in **RR-3**: an actor who can *change
+  the ruleset itself* (a repository admin) is outside this mechanism's reach.
+  That is a strictly smaller and better-audited surface than "anyone who can push
+  to their own branch", which was the revision-9 residual, and the reduction is
+  the entire point of the change.
 
 **Gate-failure remediation loop.** "These are the LAST commits on the branch"
 describes the *intended* terminal state, not a prohibition on remediation. If a
@@ -445,6 +746,69 @@ could only be resolved by a further commit, which needs a further PR once this
 one merges: the original defect, one level down, recursively. The window is
 covered by `CLOSURE_LOCATOR`, the `RESOLUTION_OBLIGATION_RECORD`, and
 `LAST_MILE_RECOVERY` instead.
+
+### `S3_ENUMERATION_ALGORITHM` — normative, not prose *(round-9 finding F-10)*
+
+Revision 9 said only "enumerate every checkpoint owned by THIS unit" and "resolve
+every checkpoint owned by this unit", supplying neither an invocation nor an
+ownership predicate. That is weaker than the recovery protocols **already
+installed** in Ship and Stage, and it permits three concrete failures: filtering
+at the API call and hiding quarantined records; sweeping in another unit's
+records; and bulk-resolving without a per-record handling proof. The algorithm is
+therefore stated executably, and mirrors the installed protocols rather than
+inventing a second dialect.
+
+```text
+S3  ENUMERATION  (proof obligation: COMPLETE, and correctly SCOPED)
+
+ 1. AVAILABILITY (P-012, before anything else)
+      probe backlogit_list_checkpoints / _get_checkpoint / _resolve_checkpoint.
+      registry declares NO checkpoint operations   → HALT
+        (this is NOT an implicit zero — that is the fail-open into merge)
+      operation present but failing, no declared official CLI fallback → HALT
+      declared official CLI fallback present       → use ONLY that fallback
+
+ 2. ENUMERATE WITHOUT FILTERING
+      backlogit_list_checkpoints  with consumer_id ONLY.
+      Apply NO `status` filter and NO `agent` filter at the API call.
+        Rationale, identical to the installed protocols: a parse-failure or
+        schema-invalid record is returned as a QUARANTINED summary with an
+        empty agent/status, and an API-side filter silently drops exactly
+        those records. The registry exposes no `agent` list parameter anyway.
+      non-zero exit / truncated / unparseable response  → HALT (not zero)
+
+ 3. ANOMALIES BEFORE PARTITION  (order is load-bearing)
+      Inspect EVERY enumerated summary for a validation error, a quarantine
+      flag, or a missing/malformed required field — regardless of its
+      (possibly empty) agent/status.
+      ANY anomaly → HALT. Do not partition, do not count, do not proceed.
+
+ 4. PARTITION BY CURRENT-UNIT IDENTITY  (only after step 3 is clean)
+      A record belongs to THIS unit when ALL hold:
+        validated CheckpointV1
+        AND  agent == "ship"
+        AND  status == "active"
+        AND  context.shipment_id == the current shipment_id
+      Records failing the identity predicate belong to ANOTHER unit and are
+      NEITHER counted NOR resolved. Cross-unit resolution is PROHIBITED.
+      A record that is ship-owned and active but whose context.shipment_id
+      is absent or unparseable is an ANOMALY → HALT (step 3's rule, applied
+      to a field only reachable after validation).
+
+ 5. PROVE THE COUNT
+      count == 0  → the enumeration is a COMPLETE ZERO. Skip S3.5 and S4.
+      count >= 1  → proceed to S3.5, then S4.
+
+S4  RESOLUTION  (per record, never in bulk)
+      For EACH record admitted by step 4, IN TURN:
+        a. backlogit_get_checkpoint  — re-read and re-validate it
+        b. handle it (write its resolution into the resolution commit)
+        c. PROVE the handling succeeded for THAT record
+        d. only then backlogit_resolve_checkpoint for THAT record
+      BULK resolution is PROHIBITED. Resolving without a per-record
+      successful-handling proof is PROHIBITED. Resolving any record not
+      admitted by step 4 is PROHIBITED.
+```
 
 ### `RESOLUTION_OBLIGATION_RECORD` *(RQ-12)*
 
@@ -481,91 +845,264 @@ substrate is Defect-1 scope and is forbidden here.
 # canonical identity (shipment_id, pr) — exactly one OPEN record per shipment
 
 resolution_obligation:
-  status: OPEN | CLOSED      # 'none' when the unit had zero checkpoints
-  shipment: <id>
+  status: none | OPEN | CLOSED   # 'none' is a real lifecycle state, not an
+                                 # absence: the skill initializes it at S2.
+                                 # An OMITTED field after S2 is OB-5, and is
+                                 # NEVER read as "no obligation".
+  shipment_id: <id>              # canonical field name; matches the identity
   feature: <id>
   pr: <number>
   branch: <branch>
   checkpoints: [<filename>, ...]
-  opened_at: <RFC3339 UTC>
-  closed_at: <RFC3339 UTC>   # present only when status is CLOSED
+  opened_at: <RFC3339 UTC>       # present only when status is OPEN or CLOSED
+  closed_at: <RFC3339 UTC>       # present only when status is CLOSED
 ```
+
+*Revision 10 corrects two schema defects: the field was declared `shipment` while
+the canonical identity and U9 called it `shipment_id` (PR #396 Copilot thread
+`PRRT_kwDORJEduc6h79c6`), and `none` was used as a lifecycle state while the
+status union admitted only `OPEN | CLOSED` (round-9 finding F-34).*
 
 **It carries NO SHA.** `resolution_commits` and `final_head` stay in the
 `CLOSURE_LOCATOR` and appear nowhere in this record. The record is written
 *inside* the resolution commit, so a SHA field would be self-referential — RQ-8
-is preserved intact, not traded away. Recovery re-derives the SHAs from
-checkpoint state at the fetched PR head using the existing *resolution-state
-classification*, which is exactly the enumeration that already exists for the
-`RESOLUTION_PENDING` path.
+is preserved intact, not traded away. Recovery re-derives the SHAs from Git
+history — see *Recovering resolution commits* below, which replaces revision 9's
+claim that the resolution-state classification could supply them.
 
 **Lifecycle.**
 
 | Transition | When | Commit that carries it |
 |---|---|---|
-| absent → `none` | S2, when `operational-closure` creates the artifact | the ordinary S2 closure commit |
-| `none` → `OPEN` | S4, in the **same commit** as the checkpoint resolutions | the resolution commit, pushed in S4 |
-| `OPEN` → `CLOSED` | `RESOLUTION_POSTCONDITION`, after the full verified P-001 closure set | the post-merge closure commit, merged by the closure PR |
+| absent → `none` | S2, when `operational-closure` **creates** the artifact (create-only; it must never overwrite an existing `OPEN` or `CLOSED`) | the ordinary S2 closure commit |
+| `none` → `OPEN` | S4, in the **same commit** as the checkpoint resolutions, on the protected implementation branch | the resolution commit, pushed in S4 |
+| `OPEN` → `CLOSED` | `RESOLUTION_POSTCONDITION` **POST-B**, after the full verified P-001 closure set | a commit on the `post-merge/{feature_slug}` closure branch, which must itself be **merged** |
+| `none` → *(unchanged)* | `RESOLUTION_POSTCONDITION` POST-B is an explicit **no-op** on a zero-checkpoint unit | no commit |
 
 `OPEN` → `CLOSED` is the **only** permitted way to discharge the record, it
 happens in a **later** commit whose ancestry stays auditable, and that commit
 must itself be **merged**. Deleting the record is never a discharge.
+`none` → `CLOSED` is **not** a permitted transition and must never be attempted
+*(round-9 finding F-05)*.
 
-**Two-channel discovery — the Git channel does not read the PR body.**
-Discovery runs **both** channels and takes the union; neither may be skipped
-because the other returned nothing:
+**Path-stability invariant — the P-020 interaction** *(round-9 finding F-07)*.
+`compact-context` compacts `docs/closure/` and moves originals to
+`docs/archive/closure/` for records older than `threshold_days` (default 14). A
+pre-merge artifact written at S2 can easily exceed that by merge, and `CLOSED` is
+written only *after* the full closure set — which includes P-020 itself. Left
+unhandled, routine compaction archives a still-`OPEN` record and every subsequent
+startup fail-closes permanently on **correct** behaviour. Three rules, together,
+close it:
 
-* **Channel A (mutable, fast)** — the `CLOSURE_LOCATOR` in the PR body, per the
-  read protocol below.
-* **Channel B (durable, history-backed)** — for every PR admitted by
-  **PV-1…PV-3** of the same exhaustive paginated enumeration, plus the default
-  branch, fetch the head and read `docs/closure/` from the **tree**:
+1. **Ordering.** POST-B writes `CLOSED` **before** any compaction or archival
+   that can touch the artifact. This is stated in `RESOLUTION_POSTCONDITION` and
+   carried by U12.
+2. **Stability.** An artifact that has ever carried `resolution_obligation` MUST
+   NOT be renamed, compacted, or archived while its status is `none` or `OPEN`.
+   `OPEN` and `none` records are **excluded from `compact-context` candidate
+   selection**, stated on the P-020 surface and in U10.
+3. **Tolerance.** Channel B additionally follows `docs/archive/closure/` as well
+   as `docs/closure/`, and an archive **move** — the same record identity present
+   at the archive path, with its history intact — is explicitly **not** OB-1.
+   Only a genuine disappearance with no `OPEN` → `CLOSED` transition is.
+
+**Recovering resolution commits without a SHA field** *(PR #396 Copilot thread
+`PRRT_kwDORJEduc6h79dC`)*. S7 and S8 assert ancestry for "every recorded
+resolution commit". When the locator is intact those SHAs come from the locator.
+When the PR body has been deleted, they must come from Git, and revision 9's
+resolution-state classification cannot supply them — it returns only
+`RESOLVED`/`UNRESOLVED` per file and derives no commit. The executable recovery
+is:
 
 ```text
-# post-merge / default-branch tree
-git ls-tree -r --name-only origin/main -- docs/closure/
-  → read resolution_obligation from each artifact; keep status OPEN
-
-# still-open PRs (the pre-merge window, where the record is not yet on main)
-git fetch origin refs/pull/<pr>/head        # for each PV-1..PV-3-admitted PR
-git ls-tree -r --name-only FETCH_HEAD -- docs/closure/
-  → read resolution_obligation from each artifact; keep status OPEN
-
-# deletion detection — absence from the tree is NEVER "no obligation"
-git log --follow --diff-filter=D --format=%H -- <artifact path>
-git log --format=%H -S'resolution_obligation' -- docs/closure/
-  → any record that ever appeared in history and is now absent from the
-    tree WITHOUT a recorded OPEN → CLOSED transition is a DELETION → HALT
+# for the retained scan ref of the PR that carries the OPEN record:
+#   the resolution commit is the commit that introduced status: OPEN
+git log --format=%H --reverse <scan_ref> -- <closure_artifact_path>
+  → for each candidate commit C, in order:
+        git show C:<closure_artifact_path>   → parse YAML
+        git show C^:<closure_artifact_path>  → parse YAML (absent ⇒ treat none)
+        the FIRST C where parent.status != OPEN and child.status == OPEN
+          is the resolution commit for this record identity.
+  → additionally, the checkpoint resolutions ride the SAME commit, so
+    assert that C also changes at least one path in the record's
+    `checkpoints` list:
+        git show --name-only --format= C
+  → ZERO such C, or MORE THAN ONE such C for one record identity  → HALT
+  → any git or parse failure                                      → HALT
 ```
 
-Channel B's provenance is established **entirely** from API response fields and
-Git ancestry — **PV-1** (same repository), **PV-2** (base is the default
-branch), **PV-3** (trusted `author_association`) — and **never** from PR-body
-text. That is what makes it independent of the surface under suspicion. PV-4 and
-PV-5 (which compare against locator body fields) are **not** applicable to
-Channel B; the Channel-B analogues are **PV-B4** (the record's embedded `pr`
-equals the PR it was read from) and **PV-B5** (the record's `branch` equals that
-PR's head ref), both evaluated against API fields. PV-6 and PV-7 apply
-unchanged.
+**Two-channel discovery — Channel B does not read the PR body at all.**
+*(Rebuilt in revision 10 from round-9 findings F-13, F-14, F-15 and PR #396
+Copilot threads `PRRT_kwDORJEduc6h79dQ`, `…dW`, `…dn`.)* Discovery runs **both**
+channels and takes the union; neither may be skipped because the other returned
+nothing.
+
+**The candidate sets are derived independently from ONE paginated enumeration.**
+This is the specific defect that made revision 9's Channel B dependent on the
+very surface it was meant to bypass: Channel A selected "entries whose body
+contains the marker", and Channel B then re-used *that* set, so deleting the body
+removed the PR from Channel B too.
+
+```text
+ONE exhaustive paginated enumeration  (the U3 read-protocol command)
+        │
+        ├── apply PV-1, PV-2, PV-3, PV-8 using API FIELDS ALONE
+        │     → the TRUSTED set. Body text is never consulted here.
+        │
+        ├── CHANNEL A  (mutable, fast)
+        │     from the TRUSTED set, inspect ONLY bodies carrying the
+        │     `autoharness:closure-locator` marker; then PV-4…PV-7.
+        │
+        └── CHANNEL B  (durable, history-backed)
+              from the TRUSTED set, take EVERY open or closed-unmerged PR
+              — REGARDLESS OF BODY CONTENTS, marker or no marker, empty
+              body or no body — plus the default branch.
+```
+
+**Channel B procedure — executable, with explicit refs.** Revision 9's commands
+were not executable: they carried no commit-ish, so `git log` scanned the current
+checkout; `FETCH_HEAD` was overwritten by each subsequent fetch; and a fully
+deleted artifact had no current-tree path for `ls-tree` to supply.
+
+```text
+B0. SHALLOW-HISTORY GUARD  (round-9 finding F-29)
+      git rev-parse --is-shallow-repository   → must be "false"
+      test -e "$(git rev-parse --git-dir)/info/grafts"  → must be absent
+      A shallow or grafted clone makes `git log` exit 0 while silently
+      omitting commits past the horizon, so a deletion beyond it scans
+      clean. Either unshallow first (`git fetch --unshallow`) or HALT.
+      Exiting 0 is NOT evidence of completeness here.
+
+B1. STATE-AWARE ROUTING  (round-9 finding F-15; Copilot thread …dQ)
+      For each TRUSTED PR, route by its API state:
+        state == MERGED            → scan `origin/main` ONLY.
+              Its head branch may be deleted, and the record's correct
+              final state lives on main. Re-scanning a merged PR's stale
+              head would rediscover the OPEN record forever, even after a
+              valid CLOSED transition landed on main.
+        state == OPEN              → scan its live protected head (B2).
+        state == CLOSED, unmerged  → scan its live head (B2) if it still
+              exists; if the branch is gone, that is OB-2, not "clean".
+
+B2. FETCH TO A UNIQUE RETAINED REF — never FETCH_HEAD
+      git fetch origin \
+        "+refs/pull/<n>/head:refs/autoharness/scan/pr-<n>"
+      Each candidate gets its OWN ref. `FETCH_HEAD` is overwritten by the
+      next fetch, so a loop over candidates that reads FETCH_HEAD reads
+      the LAST one every time. Using it across candidates is PROHIBITED.
+      fetch non-zero exit → HALT (OB-7).
+      These refs are cleaned up per the lifecycle rule below.
+
+B3. READ THE TREE, THEN READ THE FILE
+      git ls-tree -r --name-only <ref> -- docs/closure/ docs/archive/closure/
+      `ls-tree --name-only` returns PATHS ONLY and never parses anything
+      (Copilot thread …dW), so for EVERY returned path:
+        git show <ref>:<path>   → parse YAML → read resolution_obligation
+      keep records whose status is OPEN.
+      any read, YAML, or schema error → HALT (OB-5).
+
+B4. SCAN THE FULL REACHABLE HISTORY — with an explicit root
+      Both probes take the explicit <ref> (or origin/main) as their
+      revision root. Omitting it (revision 9's form) scans the CURRENT
+      CHECKOUT instead, so a record deleted on a PR head is invisible
+      (Copilot thread …dn).
+        git log --format=%H <ref> --diff-filter=D --name-only \
+            -- docs/closure/ docs/archive/closure/
+        git log --format=%H <ref> -S'resolution_obligation' \
+            -- docs/closure/ docs/archive/closure/
+      This scans the FULL reachable history from the protected head,
+      independently of whether the current tree still contains the path
+      and independently of the PR body.
+
+B5. BIND EVERY TRANSITION TO A RECORD IDENTITY
+      A commit list is not an obligation. For each commit C the probes
+      return, parse the parent and child blobs:
+        git show C^:<path>   and   git show C:<path>
+      and classify the transition for the (shipment_id, pr) identity the
+      blob declares:
+        absent/none → OPEN     = INTRODUCTION
+        OPEN        → CLOSED   = DISCHARGE
+        OPEN/CLOSED → absent   = DELETION
+        path A      → path B, same identity, both readable = MOVE
+                       (an archive move; NOT a deletion)
+      Unparseable parent or child, or an identity that changes across a
+      move → HALT (OB-5).
+
+B6. ANCESTRY + RECONCILIATION
+      Every INTRODUCTION commit MUST be an ancestor of the ref it was
+      found on (or of origin/main for a merged PR):
+        git merge-base --is-ancestor <C> <ref>
+      Unverifiable ancestry → HALT (OB-2).
+      A record retains status OPEN unless a DISCHARGE commit exists that
+      is (a) bound to the SAME identity and (b) a DESCENDANT of the
+      INTRODUCTION commit. A valid descendant DISCHARGE on origin/main
+      reconciles an older OPEN found elsewhere; it is NOT a conflict.
+
+B7. REF LIFECYCLE
+      On completion — success OR halt — delete every
+      refs/autoharness/scan/* ref created by this scan. The scan leaves
+      no fetched branch, worktree, or ref state on disk. Failure to clean
+      up is reported but does not itself discharge anything.
+```
+
+**Provenance for Channel B is established entirely from API response fields and
+Git ancestry**, never from PR-body text — that is what makes it independent of
+the surface under suspicion. **PV-1** (same repository), **PV-2** (base is the
+default branch), **PV-3** (trusted `author_association`) and **PV-8** (the
+implementation-PR binding, below) are the admission filters. PV-4 and PV-5, which
+compare against locator *body* fields, are **not applicable** to Channel B.
+
+**Provenance of the CLOSED transition is separate from provenance of the
+INTRODUCTION** *(round-9 finding F-15)*. Revision 9 applied one "the record's
+embedded `pr` equals the PR it was read from" rule to both, which structurally
+rejected every correct discharge: the record is opened on the implementation PR
+and closed on a **different** `post-merge/*` closure PR, where its embedded `pr`
+and `branch` correctly still name the implementation PR.
+
+| Check | Applies to | Rule |
+|---|---|---|
+| PV-B4 | the **INTRODUCTION** commit only | the record's embedded `pr` equals the PR whose head the introduction was found on, and `branch` equals that PR's head ref |
+| PV-B6 | the **DISCHARGE** commit | the record's embedded `pr` and `branch` still name the **implementation** PR (they are immutable identity, not a location), **and** the discharge commit is a Git **descendant** of the introduction commit, **and** it is reachable from `origin/main` or from a trusted `post-merge/*` PR head whose relationship to the implementation PR is recorded in the closure artifact and checked |
+
+PV-6 and PV-7 apply unchanged to both.
+
+**PV-8 — bind discovery to the shipment's designated implementation PR**
+*(round-9 finding F-17)*. Both channels previously admitted **any** trusted
+same-repository PR as a carrier for an **arbitrary** shipment ID, so a
+trusted-but-careless or compromised collaborator could open an unrelated decoy PR
+carrying a fabricated record naming a real in-flight shipment; any field
+difference then tripped OB-3 and halted that shipment's every future startup. No
+fork and no admin access were needed.
+
+> **PV-8.** A discovered locator or obligation record naming shipment `X` is
+> admitted **only** if the PR it was found on **is** shipment `X`'s
+> backlog-recorded implementation PR (or, for a discharge, that shipment's
+> `post-merge/*` closure PR). A candidate whose PR number does not match that
+> binding is **DISCARDED silently** — never halted on. Discarding is essential:
+> halting would hand the denial-of-service back to the decoy author. If the
+> backlog records no implementation PR for the shipment, that specific candidate
+> cannot be bound and is **held for operator review** rather than either trusted
+> or silently dropped.
 
 **Fail-closed rules.** Each of these **halts to the operator**:
 
 | # | Condition | Why it cannot be tolerated |
 |---|---|---|
-| OB-1 | An artifact that carried a record in history is absent from the tree with no `OPEN` → `CLOSED` transition | This is the deletion attack. Absence is never evidence of discharge. |
-| OB-2 | Force-push, rebase, or shallow/grafted history makes the record's introducing commit unreachable or its ancestry unverifiable | An unverifiable record cannot be trusted either way; guessing re-opens the orphan. |
-| OB-3 | Two or more **conflicting** `OPEN` records for the same shipment | No field can rank them. Identical duplicates collapse to one and are logged; **any** field difference halts. `opened_at` MUST NOT be a tie-breaker. |
+| OB-1 | An artifact that carried a record in history is absent from **both** `docs/closure/` and `docs/archive/closure/` with no bound `OPEN` → `CLOSED` transition | This is the deletion attack. Absence is never evidence of discharge. An archive **move** with intact history is explicitly *not* this. |
+| OB-2 | Force-push, rebase, branch disappearance, or shallow/grafted history makes the record's introducing commit unreachable or its ancestry unverifiable | An unverifiable record cannot be trusted either way. S3.5's ruleset makes this rare; it does not make it impossible. |
+| OB-3 | Two or more **conflicting** `OPEN` records for the same shipment, after PV-8 binding and after B6 reconciliation | No field can rank them. Identical duplicates collapse to one and are logged; **any** field difference halts. `opened_at` MUST NOT be a tie-breaker. |
 | OB-4 | `OPEN` records for more than one distinct shipment | A P-001 violation, exactly as for the locator. |
-| OB-5 | A record is unparseable, or is missing a field its declared status requires | Partial evidence is not evidence. |
+| OB-5 | A record is unparseable, missing a field its declared status requires, **or omitted entirely from an artifact created after S2** | Partial evidence is not evidence. An omitted field is OB-5, never "no obligation". |
 | OB-6 | Channel A and Channel B **disagree** — a locator says `RECONCILED` while an `OPEN` record exists, or a locator is absent while an `OPEN` record exists | The disagreement is the signal. Never prefer the mutable channel, and never let a missing locator discharge a live record. |
-| OB-7 | Channel B enumeration is incomplete — a fetch, `ls-tree`, or `log` exits non-zero, or PR pagination is truncated | Identical to RQ-9's rule for Channel A. |
+| OB-7 | Channel B enumeration is incomplete — a fetch, `ls-tree`, `show`, or `log` exits non-zero, or PR pagination is truncated | Identical to RQ-9's rule for Channel A. |
+| OB-8 | **Ruleset drift**: a unit that published an `OPEN` record under S3.5 protection is later found on a branch that no longer satisfies `BRANCH_PROTECTION_PREREQUISITE` | The durability guarantee the record was published under has been withdrawn beneath it. Continuing would treat a now-erasable record as durable. |
 
 **What this deliberately does not do.** It adds **no** executable persistence
-substrate, **no** lock or compare-and-swap, and **no** cross-run cursor. It is a
-frontmatter field on a file the workspace already writes, read with `git
-ls-tree` and `git log`. It implements **no** part of Defect 1 — no continuation
-predicate, no activation record store, no auto-routing. Its only authority is to
-**halt**; it confers no merge authority (RQ-10 is untouched).
+substrate, **no** lock or compare-and-swap, and **no** cross-run cursor. It
+implements **no** part of Defect 1 — no continuation predicate, no activation
+record store, no auto-routing, and no lineage or cursor auto-routing of any kind.
+Its only authority is to **halt**; it confers no merge authority (RQ-10 is
+untouched).
 
 ### `CLOSURE_LOCATOR` *(RQ-7 … RQ-9)*
 
@@ -637,14 +1174,17 @@ is the very thing under suspicion:
 | PV-5 | The locator's embedded `branch` equals the PR's own head ref. | block `branch` vs. `head.ref` | **Halt to operator** |
 | PV-6 | The locator's `shipment` and `feature` exist in this workspace's backlog and the shipment owns that feature. | backlog lookup | **Halt to operator** |
 | PV-7 | Every filename in the locator's checkpoint list is a checkpoint this workspace could own (resolvable path shape, `agent` field `ship` or `stage`). | checkpoint lookup | **Halt to operator** |
+| PV-8 | The PR **is** the named shipment's backlog-recorded implementation PR (or, for a discharge, that shipment's `post-merge/*` closure PR). *(Added in revision 10, round-9 finding F-17.)* | backlog lookup vs. API `number` | **Discard** as not-ours — never halt, or a decoy author gains a denial-of-service. If the backlog records no implementation PR, **hold for operator review**. |
 
-**Discard versus halt is deliberate and must not be collapsed.** PV-1…PV-3 are
-*authenticity* filters: a failing candidate is simply **not ours**, is discarded
-**silently**, and MUST NOT halt the session — otherwise any outsider could
-permanently deny startup by opening a fork PR containing the marker. PV-4…PV-7
-run only on candidates that already passed PV-1…PV-3, so a failure there means a
-**trusted** locator is internally inconsistent, which is exactly the corruption
-the halt-on-incomplete rule exists to catch.
+**Discard versus halt is deliberate and must not be collapsed.** PV-1…PV-3 and
+**PV-8** are *authenticity and binding* filters: a failing candidate is simply
+**not ours**, is discarded **silently**, and MUST NOT halt the session —
+otherwise any outsider could permanently deny startup by opening a fork PR
+containing the marker, and any trusted-but-careless collaborator could do the
+same with a decoy PR naming a real shipment. PV-4…PV-7 run only on candidates
+that already passed PV-1…PV-3 and PV-8, so a failure there means a **trusted,
+correctly bound** locator is internally inconsistent, which is exactly the
+corruption the halt-on-incomplete rule exists to catch.
 
 Discarded (untrusted) candidates MUST NOT be counted toward the
 multiple-locator P-001 check below, MUST NOT be acted on, and MUST NOT be
@@ -789,9 +1329,7 @@ classification exists to close, in which a partially-resolved branch is
 re-classified as untouched and resolved a second time.
 
 **Working-tree placement — committing re-entry only.** *(The canonical name;
-referenced by that exact phrase from U5 and V12. Revision 8 left this paragraph
-with its heading lost, so it was an unnamed fragment that no acceptance
-criterion could cite — the mechanical half of open finding 3.)*
+referenced by that exact phrase from U11 and V12.)*
 
 `LAST_MILE_RECOVERY` is entered at session start, when the working tree is
 normally on `main` and may be a fresh checkout. Committing a resolution on
@@ -800,15 +1338,47 @@ undischargeable. This procedure is **required before any committing re-entry**
 and is **not** required — and must not be performed — for read-only steps: every
 ancestry assertion in Step 1b needs the fetch but **no** switch.
 
+**Worktree topology — reconciled with the recorded prior art** *(round-9 findings
+F-21 and F-28)*. The compound library already solved this shape in
+`docs/compound/workflow-issues/post-merge-worktree-regenerate-ignored-task-gate-evidence-2026-08-02.md`,
+which uses **two distinct worktree paths** — an implementation worktree and a
+clean post-merge worktree spawned at the merge SHA — with an explicit rule not to
+mutate the primary working tree. This plan reuses that pattern rather than
+inventing a third:
+
+* the **S4 resolution commit** is made in the **implementation worktree**, on the
+  PR head — it is pre-merge work on the implementation branch;
+* the **POST-B `CLOSED` transition** is made on the `post-merge/{feature_slug}`
+  branch that Ship's post-merge closure step already creates — it is post-merge
+  work and must not touch the implementation branch;
+* `LAST_MILE_RECOVERY`'s committing re-entry re-creates the **implementation**
+  placement only, because the only re-entry that commits is the S4 resolve step;
+* no *additional* parallel implementation branch or worktree is created by
+  anything in this plan (P-016).
+
 | # | Step | Fail action |
 |---|---|---|
+| WP-0 | Run the **P-011 / P-016 worktree-topology gate** for this shipment before any branch mutation. *(Added in revision 10: WP creates/switches branches and commits, so it crosses the topology boundary and must not bypass the gate.)* | **Halt** on gate failure or on a detected parallel implementation worktree. |
 | WP-1 | Assert the working tree is **clean** (no staged, unstaged, or untracked changes that a switch would carry or clobber) | **Halt.** Never stash, never discard. |
-| WP-2 | Read `branch` and `pr` from a locator that already passed PV-1…PV-7, or from an obligation record that already passed PV-1…PV-3 + PV-B4/PV-B5. An untrusted or unvalidated source is never used | **Halt.** |
+| WP-2 | Read `branch` and `pr` from a locator that already passed PV-1…PV-8, or from an obligation record that already passed PV-1…PV-3, PV-8 and PV-B4. An untrusted or unvalidated source is never used | **Halt.** |
 | WP-3 | `git fetch origin refs/pull/<pr>/head` | **Halt** on non-zero exit. |
-| WP-4 | Place the tree on that tip: if no local branch of that name exists, create it at `FETCH_HEAD` and switch; if one exists, switch and **fast-forward only** to `FETCH_HEAD` | **Halt** on switch failure, and **halt** on any non-fast-forward/divergence. Never `git reset --hard`, never force checkout, never rebase. |
+| WP-4 | Place the tree on that tip: if no local branch of that name exists, create it at the fetched tip and switch; if one exists, switch and **fast-forward only** to it | **Halt** on switch failure, and **halt** on any non-fast-forward/divergence. Never `git reset --hard`, never force checkout, never rebase. |
 | WP-5 | Assert the **current branch name** equals the locator/record `branch` | **Halt** on mismatch. |
-| WP-6 | Assert `HEAD == FETCH_HEAD` | **Halt** on mismatch. |
+| WP-6 | Assert `HEAD` equals the fetched tip | **Halt** on mismatch. |
 | WP-7 | Assert HEAD is **not** the default branch and **not** detached | **Halt.** |
+
+**Argument safety** *(round-9 finding F-35)*. `branch` and `pr` are read from a
+locator or record and passed to Git. Every such invocation MUST use **argv-array
+execution** (no shell string interpolation) and MUST place a `--` separator
+before any ref or path operand. Git's ref-naming rules limit exploitability, but
+the plan forecloses shell interpolation explicitly rather than relying on them.
+
+**Side effects and cleanup** *(round-9 finding F-37)*. A committing re-entry can
+leave side effects in `.backlogit/stash.jsonl` and `docs/memory/**`. These MUST
+be either committed with the resolution commit or explicitly carried forward, so
+the next session does not classify the tree as dirty at WP-1. On completion or
+halt, WP leaves **no** fetched scan ref and **no** extra worktree state on disk
+(the same lifecycle rule as Channel B's B7).
 
 **After any WP failure the session performs no resolution and no commit.** It
 does not retry with a reset, a force checkout, or a discard; it halts to the
@@ -857,12 +1427,94 @@ is an unmerged PR awaiting an operator, never an unsupervised merge.
 
 ## Implementation units
 
-Ten units. Each edits **one file**, is **documentation-domain only**, and is
-sized for well under two hours. Acceptance criteria below are the *exact* text
-carried into the task cards.
+Fourteen units. Each edits **one file** — except **U0**, which edits **no** file
+and changes GitHub repository settings instead. Every unit is **single-domain**
+and sized for well under two hours. Acceptance criteria below are the *exact*
+text carried into the task cards.
 
-### U1 — State the resolution-durability policy *(root)*
+*Revision 10 raised the count from ten to fourteen: **U0** carries the operator's
+RR-3 ops prerequisite, and round-9 finding **F-09** required U3, U4 and U9 to be
+split along their natural seams (producing **U11**, **U12** and **U13**) because
+each exceeded the NON-NEGOTIABLE 2-hour / single-domain granularity rule.*
 
+### U0 — Configure the resolution-branch protection ruleset *(ops prerequisite; `ProposedAction`)*
+
+**Depends on**: nothing. U0 is a **root** alongside U2.
+**File**: **none.** This unit changes **GitHub repository settings**, not
+repository content.
+
+> ### ⚠ ProposedAction — approval required before execution
+>
+> | Field | Value |
+> |---|---|
+> | `action_class` | `ProposedAction` |
+> | `ActionRisk` | **high** |
+> | `approval_required` | **true** |
+> | `approver` | repository **operator or admin** — never an agent, never dark-mode (P-017) |
+> | `surface` | external GitHub repository settings (a repository ruleset) |
+> | `applied_by_this_PR` | **NO.** This planning PR specifies the change and applies nothing. |
+> | `reversibility` | the ruleset is re-configurable, but the unprotected window before it exists cannot be closed retro-actively — hence `high` |
+>
+> **The implementing agent MUST obtain explicit operator/admin approval
+> immediately before applying this change, and MUST halt if approval is absent,
+> ambiguous, or supplied by dark-factory mode.** An approval recorded for any
+> other unit does not carry to U0.
+
+**Why this unit exists.** It implements the operator's RR-3 decision. The
+obligation record's durability against *history rewriting* is a property of forge
+branch protection, not of Git. Measured today, Ship source branches have none:
+`GET /rules/branches/main` returns
+`["deletion","non_fast_forward","pull_request","copilot_code_review"]`, while the
+same endpoint for a live Ship branch returns `[]`. Without U0, S3.5 would halt
+every checkpoint-owning unit, so U0 is a genuine prerequisite rather than a
+hardening.
+
+**Branch patterns are derived from the installed Ship agent, not guessed.**
+`_ship.agent.md` creates `feat/{feature-slug}` for features and the `chore/`
+variant for chores as the shipment branch, and `post-merge/{feature_slug}` for
+all Step 6 closure work. Those three patterns are exactly the resolution-bearing
+set: the first two carry the `OPEN` record, the third carries the `CLOSED`
+transition.
+
+**Acceptance criteria**
+
+1. A repository ruleset exists whose `conditions.ref_name.include` covers
+   **exactly** `refs/heads/feat/**`, `refs/heads/chore/**` and
+   `refs/heads/post-merge/**`, derived from the installed `_ship.agent.md`
+   branch-creation steps and **recorded in the task card with the line
+   references** they were derived from. It does **not** cover `~DEFAULT_BRANCH`;
+   the existing `PR-Required` ruleset (id `12812291`) already does, and U0 must
+   not modify, replace, or weaken it.
+2. The ruleset declares both a `deletion` rule and a `non_fast_forward` rule.
+3. The ruleset declares **no bypass actors** (`bypass_actors` is empty), and
+   `current_user_can_bypass` resolves to `never` for the acting identity.
+4. `enforcement` is `active`.
+5. The ruleset adds **no** `pull_request` rule and **no** required-status-check
+   rule to these patterns. Requiring review on every Ship working branch would
+   break Ship's own push loop; the obligation record needs immutability, not
+   review. *(This is stated as an explicit non-goal so a later editor does not
+   "helpfully" add one.)*
+6. Verification is by the **effective-rules API**, not by reading back the
+   configuration: `GET /repos/{owner}/{repo}/rules/branches/{branch}` for a
+   representative branch of **each** of the three patterns returns entries of
+   type `deletion` **and** `non_fast_forward`.
+7. The task card records the **approval evidence** — who approved, when, and the
+   resulting ruleset id — and records that no other repository setting was
+   changed.
+8. `markdownlint` is **not applicable** (no file changes). This exemption is
+   stated explicitly rather than silently omitted.
+
+**Posture**: ops prerequisite, approval-gated. **Size**: XS. **Complexity**: low.
+*(Low complexity, high risk: the action is small and well specified; the risk is
+that it mutates a shared external surface.)*
+
+### U1 — State the resolution-durability policy
+
+**Depends on**: U2 (U1 installs a by-name reference to `RESOLUTION_PREFIX`, whose
+definition only U2 creates; running U1 first would leave a dangling reference).
+*(Revision 10 removes the stale `*(root)*` label this heading still carried,
+which contradicted the dependency section's `U2→U1` edge — round-9 finding
+F-22.)*
 **File**: `.github/policies/workflow-policies.md` — one new policy section,
 `P-022: Checkpoint Resolution Durability`, placed after P-021.
 
@@ -903,6 +1555,7 @@ orders.
 
 ### U2 — Record the HEAD-evidence rule, the resolution order, and the closure locator *(root)*
 
+**Depends on**: nothing. U2 is a **root** alongside U0.
 **File**: `.github/instructions/github-pr-automation.instructions.md` — one new
 subsection at **heading level 3**, inserted **after the end of `### 1.9`** (that
 is, after its last `####` child) and before the next `###` section. It is a
@@ -910,10 +1563,11 @@ sibling of `### 1.9`, never spliced inside it — a level-3 heading placed among
 1.9's children would silently terminate the readiness-gate section and orphan
 1.9.3 onward. No existing section is renumbered.
 
-This file is the **canonical home** for `HEAD_EVIDENCE_RULE`, `RESOLUTION_PREFIX` / `RESOLUTION_POSTCONDITION`
-and `CLOSURE_LOCATOR`. It is the correct home because the locator is PR-body
-metadata — the surface this file already governs — and because siting the text
-here keeps it out of any commit, the property that makes it non-self-referential.
+This file is the **canonical home** for `HEAD_EVIDENCE_RULE`, `RESOLUTION_PREFIX` / `RESOLUTION_POSTCONDITION`,
+`BRANCH_PROTECTION_PREREQUISITE` and `CLOSURE_LOCATOR`. It is the correct home
+because the locator is PR-body metadata — the surface this file already governs —
+and because siting the text here keeps it out of any commit, the property that
+makes it non-self-referential.
 
 **Acceptance criteria**
 
@@ -921,34 +1575,68 @@ here keeps it out of any commit, the property that makes it non-self-referential
    point-in-time wording as the alternative for committed documents.
 2. Cites the observed instances: PR #395 threads `PRRT_kwDORJEduc6h2uOQ` and
    `PRRT_kwDORJEduc6h2viu`.
-3. **`RESOLUTION_PREFIX` and `RESOLUTION_POSTCONDITION` appear here verbatim**, exactly as given in this plan's
-   canonical definition, including its four ordering invariants, the
-   gate-failure remediation loop, and the residual-window checkpoint
-   prohibition. This is the single canonical copy.
-4. The `CLOSURE_LOCATOR` block is given verbatim with every field named.
-5. The publication protocol is described as **three-phase** and its three phases
+3. **`RESOLUTION_PREFIX` and `RESOLUTION_POSTCONDITION` appear here verbatim**,
+   exactly as given in this plan's canonical definition, including **all nine**
+   of its ordering invariants, the gate-failure remediation loop, and the
+   residual-window checkpoint prohibition. This is the single canonical copy.
+   *(Revision 10 corrects "four" to **nine**: the canonical definition declares
+   nine, U2 installs the block verbatim and V6 checks exactness, so the previous
+   wording had no satisfiable reading and invited an implementer to drop
+   invariants 5–9 — round-9 finding F-20.)*
+4. **The installed text contains no `_ship.agent.md` item numbers.** Segments
+   S1…S8 are stated by **role** only. *(Round-9 finding F-08: hard-coding live
+   item numbers — including the live file's duplicated `7` — into a second file
+   is the coupling that caused revisions 6–8 to describe a Step 5 that did not
+   exist.)*
+5. The `CLOSURE_LOCATOR` block is given verbatim with every field named.
+6. The publication protocol is described as **three-phase** and its three phases
    are `RESOLUTION_PENDING`, `RESOLUTION_PUBLISHED`, `RECONCILED`. No other
    phase count appears anywhere in the file.
-6. Phase 1 is stated to be published **before the first resolution commit** and
+7. Phase 1 is stated to be published **before the first resolution commit** and
    to require no SHA.
-7. Phase 2 is stated to follow the **push** of the resolution commits, and to
+8. Phase 2 is stated to follow the **push** of the resolution commits, and to
    carry the SHAs and `final_head`.
-8. Phase 3 is stated to require merge **plus the full P-001 post-merge closure
+9. Phase 3 is stated to require merge **plus the full P-001 post-merge closure
    set, including the P-020 compaction record** — not merge alone, and not
    partial closure.
-9. States explicitly that no commit is ever required to record its own SHA, and
-   that a branch-only artifact is not fresh-checkout discoverable.
-10. markdownlint passes.
+10. States explicitly that no commit is ever required to record its own SHA, and
+    that a branch-only artifact is not fresh-checkout discoverable.
+11. **`BRANCH_PROTECTION_PREREQUISITE` appears verbatim**, including segment
+    **S3.5**, the effective-rules query against the **live `headRefName`** read
+    from the PR API, the four requirements (`deletion` present,
+    `non_fast_forward` present, `enforcement: active`, no usable bypass and
+    `current_user_can_bypass: never`), the repository-supported equivalent, and
+    the rule that API unavailability, ambiguity, an uncovered branch, or any
+    bypass capability **halts before obligation publication**.
+12. **`RESOLUTION_POSTCONDITION` is installed as two explicitly named
+    mutations** — **POST-A**, a PR-body `RECONCILED` write that creates no commit,
+    and **POST-B**, an `OPEN` → `CLOSED` **commit** on the named
+    `post-merge/{feature_slug}` closure branch which must itself be merged. The
+    withdrawn sentence "the postcondition is a PR-body metadata write only and
+    commits nothing" **does not appear**, and neither does any equivalent
+    restatement. *(Round-9 finding F-01.)*
+13. Both POST-A and POST-B are stated to be **conditional**: POST-A is a no-op
+    when no locator was published, and POST-B is a no-op when
+    `resolution_obligation` is `none`, which is **left intact**. `none` →
+    `CLOSED` is stated to be a forbidden transition. *(Round-9 finding F-05.)*
+14. markdownlint passes.
 
 **Posture**: documentation-first. **Size**: S. **Complexity**: medium.
 
-### U3 — Record exhaustive discovery and last-mile recovery
+### U3 — Record exhaustive discovery and provenance validation
 
 **Depends on**: U2 (extends the subsection U2 creates).
 **File**: `.github/instructions/github-pr-automation.instructions.md`.
 
-Add the locator read protocol and `LAST_MILE_RECOVERY` immediately after U2's
-subsection.
+*Split in revision 10 (round-9 finding F-09). U3 previously combined exhaustive
+API discovery, seven provenance rules, duplicate handling, locator-status
+classification, a four-state checkpoint classifier, seven live-PR outcomes, a
+merge-authority bar and WP-1…WP-7 — at least seven behavioural scenarios against
+a fewer-than-four limit. U3 now owns **discovery and provenance only**; **U11**
+owns recovery, classification and working-tree placement.*
+
+Add the locator read protocol and its provenance validation immediately after
+U2's subsection.
 
 **Acceptance criteria**
 
@@ -962,74 +1650,149 @@ subsection.
    explicitly records **why `gh pr list` is forbidden**: it returns no body
    without `--json ...,body` and has no `--paginate` flag, only a bounded
    `--limit` defaulting to 30, so the naive form silently reports a clean
-   startup. It further requires that **`PV-1`…`PV-7` provenance validation runs
-   on every marker-bearing candidate before that candidate participates in
-   recovery**, evaluated on API response fields rather than body text, and
-   reproduces the **discard-versus-halt split without collapsing it**: `PV-1`
-   (same-repository), `PV-2` (base is the default branch) and `PV-3` (author
-   `OWNER`/`MEMBER`/`COLLABORATOR`) are authenticity filters whose failures are
-   **discarded silently and MUST NOT halt**, or an outsider could permanently
-   deny startup with a fork PR carrying the marker; `PV-4`…`PV-7` (locator `pr`
-   matches, `branch` matches head ref, shipment/feature resolve, checkpoint
-   filenames are ownable) run only on candidates that already passed
-   `PV-1`…`PV-3` and **halt to the operator**, because a trusted-but-inconsistent
-   locator is corruption. Discarded candidates MUST NOT be counted toward the
+   startup.
+2. **`PV-1`…`PV-8` provenance validation runs on every candidate before that
+   candidate participates in recovery**, evaluated on API response fields rather
+   than body text, and the **discard-versus-halt split is reproduced without
+   being collapsed**: `PV-1` (same-repository), `PV-2` (base is the default
+   branch), `PV-3` (author `OWNER`/`MEMBER`/`COLLABORATOR`) and **`PV-8`** (the
+   PR is the named shipment's backlog-recorded implementation or closure PR) are
+   authenticity/binding filters whose failures are **discarded silently and MUST
+   NOT halt**; `PV-4`…`PV-7` run only on candidates that already passed those and
+   **halt to the operator**. Discarded candidates MUST NOT be counted toward the
    P-001 multiplicity check, acted on, or treated as evidence of an outstanding
    obligation, and every downstream rule operates over the **TRUSTED set only**.
-2. A non-zero exit, a truncated or rate-limited page, or an unparseable response
+3. **PV-8's rationale and its hold-for-review case are stated**: without the
+   implementation-PR binding, any trusted collaborator can open a decoy PR
+   naming a real in-flight shipment and halt that shipment's every future
+   startup, with no fork and no admin access. A candidate that cannot be bound
+   because the backlog records no implementation PR is **held for operator
+   review**, neither trusted nor silently dropped. *(Round-9 finding F-17.)*
+4. **The two candidate sets are stated to be derived independently from the one
+   paginated enumeration**: Channel A may inspect only trusted bodies carrying
+   the marker, while Channel B takes **every** trusted open or closed-unmerged
+   PR **regardless of body contents**. It is stated explicitly that Channel B's
+   candidate set is **never** filtered by marker presence, because that
+   dependency is what made the previous design fail in the exact residual window
+   it existed to cover. *(Round-9 finding F-13.)*
+5. A non-zero exit, a truncated or rate-limited page, or an unparseable response
    is stated to be an **error that halts**, never evidence that nothing is
    outstanding.
-3. Filtering discovery by shipment status is **explicitly prohibited**, with the
+6. Filtering discovery by shipment status is **explicitly prohibited**, with the
    139-S archived-shipment case given as the reason.
-4. It is stated that only the implementation PR publishes a locator, and why: the
+7. It is stated that only the implementation PR publishes a locator, and why: the
    PR body survives merge and branch deletion, so no closure-PR locator is needed.
-5. Non-`RECONCILED` locators for **more than one distinct shipment** are stated
+8. Non-`RECONCILED` locators for **more than one distinct shipment** are stated
    to be a P-001 violation that halts immediately.
-6. An incomplete or unparseable locator is stated to be a halt-to-operator
-   signal.
-7. The **Step 1a locator-status gate** appears with all five rows, and states
+9. An incomplete or unparseable locator is stated to be a halt-to-operator
+   signal, and the same-shipment duplicate rule is given in full: byte-identical
+   duplicates collapse and are logged; **any** field difference halts;
+   `updated_at` is barred as a tie-breaker because it is body text.
+10. markdownlint passes.
+
+**Posture**: documentation-first. **Size**: S. **Complexity**: medium.
+
+### U11 — Record last-mile recovery and working-tree placement
+
+**Depends on**: U3 (extends the same subsection; same file, strictly sequential).
+**File**: `.github/instructions/github-pr-automation.instructions.md`.
+
+*Added in revision 10 as the recovery half of the U3 split (round-9 finding
+F-09).* Add `LAST_MILE_RECOVERY` immediately after U3's material.
+
+**Acceptance criteria**
+
+1. The **Step 1a locator-status gate** appears with all five rows, and states
    that a `RESOLUTION_PENDING` locator is evaluated **before** any live-PR
    classification — including that a merged PR with a `RESOLUTION_PENDING`
    locator is an unrecoverable orphan that halts, and must never reach an
    ancestry assertion that an empty commit list would vacuously pass.
-8. The **Step 1b live-PR classification** table appears with all seven rows and
+2. The **resolution-state classification** appears with its four reduced states
+   (`NONE`, `PARTIAL`, `ALL`, `INDETERMINATE`), its strict precedence
+   (`INDETERMINATE` first), and the rule that only `NONE` resumes.
+3. It is stated explicitly that the resolution-state classification returns
+   per-file states and **does not** derive commit SHAs, and that the
+   *Recovering resolution commits without a SHA field* procedure is the executable
+   source of `resolution_commits` whenever the locator is unavailable.
+   *(PR #396 Copilot thread `PRRT_kwDORJEduc6h79dC`.)*
+4. The **Step 1b live-PR classification** table appears with all seven rows and
    their stated ancestry targets and actions.
-9. The `Open, HEAD ≠ final_head` row requires the ancestry assertion against the
+5. The `Open, HEAD ≠ final_head` row requires the ancestry assertion against the
    fetched PR head **before** re-establishing readiness, and states that a
    force-push or rebase that dropped the resolution commits halts.
-10. It is stated that an open PR whose resolution commits are absent from
-    `origin/main` is **not** an error **for this recovery protocol**, and that
-    this does **not** relax Ship's Merge Confirmation Gate.
-11. The four-part merge-authority bar appears in full, with halt as the default
-    for any doubt, and it is stated that this path confers **no** merge authority
-    and cannot supply the approval signal P-014 requires.
-12. A procedure titled **exactly** `Working-tree placement — committing re-entry
-    only` appears, and is required **before any committing re-entry** and
-    explicitly **not** required for read-only ancestry assertions (fetch, no
-    switch). It carries all seven steps with their halt actions: **WP-1** clean
-    working tree; **WP-2** branch/PR read only from a provenance-validated
-    locator or obligation record; **WP-3** `git fetch origin
-    refs/pull/<pr>/head`; **WP-4** safe create-and-switch for a new local branch
-    and **fast-forward-only** switch for an existing one; **WP-5** current branch
-    name equals the recorded `branch`; **WP-6** `HEAD == FETCH_HEAD`; **WP-7**
-    HEAD is neither the default branch nor detached. It states that a dirty tree,
-    a failed fetch, a failed switch, a divergence, or any assertion mismatch
-    **fails closed**, and that after any failure the session performs **no**
-    `git reset`, **no** force checkout, **no** resolution and **no** commit.
-13. markdownlint passes.
+6. It is stated that an open PR whose resolution commits are absent from
+   `origin/main` is **not** an error **for this recovery protocol**, and that
+   this does **not** relax Ship's Merge Confirmation Gate.
+7. The four-part merge-authority bar appears in full, with halt as the default
+   for any doubt, and it is stated that this path confers **no** merge authority
+   and cannot supply the approval signal P-014 requires.
+8. The entry rule requires **both** discovery channels before concluding "clean
+   startup", names **Channel B** and the `RESOLUTION_OBLIGATION_RECORD`
+   explicitly, and states that a Channel-A/Channel-B disagreement halts (OB-6)
+   and that a missing locator never discharges an `OPEN` record. *(Round-9
+   finding F-26: the entry rule previously required both channels while the unit
+   owning it carried no criterion mentioning Channel B at all, so it could pass
+   with a single mutable channel installed.)*
+9. A procedure titled **exactly** `Working-tree placement — committing re-entry
+   only` appears, required **before any committing re-entry** and explicitly
+   **not** required for read-only ancestry assertions (fetch, no switch). It
+   carries all eight steps with their halt actions: **WP-0** the P-011/P-016
+   worktree-topology gate; **WP-1** clean working tree; **WP-2** branch/PR read
+   only from a provenance-validated locator or obligation record; **WP-3**
+   `git fetch origin refs/pull/<pr>/head`; **WP-4** safe create-and-switch for a
+   new local branch and **fast-forward-only** switch for an existing one;
+   **WP-5** current branch name equals the recorded `branch`; **WP-6** `HEAD`
+   equals the fetched tip; **WP-7** HEAD is neither the default branch nor
+   detached. It states that a dirty tree, a failed gate, a failed fetch, a failed
+   switch, a divergence, or any assertion mismatch **fails closed**, and that
+   after any failure the session performs **no** `git reset`, **no** force
+   checkout, **no** resolution and **no** commit.
+10. The **worktree-topology reconciliation** is stated: the S4 resolution commit
+    is made in the **implementation** worktree on the PR head, the POST-B
+    `CLOSED` transition is made on the `post-merge/{feature_slug}` branch Ship
+    already creates, and no additional parallel implementation branch or worktree
+    is created (P-016). The recorded prior art
+    (`docs/compound/workflow-issues/post-merge-worktree-regenerate-ignored-task-gate-evidence-2026-08-02.md`)
+    is cited as the source of the pattern. *(Round-9 finding F-21.)*
+11. **Argument safety** is stated: locator/record-sourced `branch` and `pr`
+    values are passed to Git via **argv-array execution** with a `--` separator,
+    never by shell string interpolation. *(Round-9 finding F-35.)*
+12. **Side effects and cleanup** are stated: `.backlogit/stash.jsonl` and
+    `docs/memory/**` side effects are committed or explicitly carried forward so
+    the next session does not fail WP-1, and no fetched ref or worktree state is
+    left on disk. *(Round-9 finding F-37.)*
+13. A **P-012 availability contract** is stated covering every operation this
+    plan places on the critical path — `backlogit_list_checkpoints`,
+    `backlogit_get_checkpoint`, `backlogit_resolve_checkpoint`,
+    `backlogit_create_checkpoint`, `gh api` including the effective-rules
+    endpoint, review-thread enumeration, and Git history access. Each is probed
+    **before** the path that needs it (pre-S3, pre-S3.5, pre-discovery,
+    pre-recovery, pre-merge); only **declared official CLI fallbacks** may be
+    used; anything else **halts**. A registry exposing **no checkpoint
+    operations** is defined as a **halt**, explicitly **never** as an implicit
+    zero enumeration. *(Round-9 finding F-16.)*
+14. markdownlint passes.
 
 **Posture**: documentation-first. **Size**: S. **Complexity**: medium.
 
 ### U4 — Re-order Ship Step 5 into the `RESOLUTION_PREFIX` finalization tail
 
-**Depends on**: U1, U2, U9.
-**File**: `.github/agents/_ship.agent.md` — **Step 5 (PR Lifecycle)** and
-**Session end item 2**.
+**Depends on**: U0, U1, U2, U9, U10.
+**File**: `.github/agents/_ship.agent.md` — **Step 5 (PR Lifecycle)** only.
+
+*Split in revision 10 (round-9 finding F-09). U4 previously declared its locus as
+Step 5 and session end while AC7–AC8 also modified Step 6, carried 13 acceptance
+criteria, moved two gates, amended one item, added a merge bar and refresh rules,
+and was exercised by V4, V9 and V13–V16. Raising it to M/high was honest but did
+not make it compliant. U4 now owns **Step 5 only**; **U12** owns Step 6 and
+session end.*
 
 **The real Step 5 item list, extracted verbatim rather than described.** The
 escalation's assessment was that every prior round mismatched what this plan
 *asserted* Step 5 contains against what it *actually* contains. The extraction
 below is the authority for this unit; the task card carries it verbatim.
+**Two independent round-9 personas re-derived this table from the live file and
+confirmed it accurate; it is preserved unchanged in revision 10.**
 
 | Real item | Content | Mutates branch? |
 |---|---|---|
@@ -1058,13 +1821,12 @@ and 7c currently run before items 7(second)/8/9/10**, so readiness is gated
 Step 5 changes the common path for **every** unit, not only checkpoint-owning
 ones. Second, **item 15 re-fetches only the P-018 verdict and `headRefOid`** — it
 never evaluates required checks and never re-paginates review threads — so RQ-6
-has no executable enforcement path in the live file. Revision 8's assertion that
-the approval/re-fetch/merge items "run unchanged" was false; it is withdrawn.
+has no executable enforcement path in the live file.
 
-Wire `RESOLUTION_PREFIX` in as the **finalization tail** of Step 5 by name, and
-amend items 7b, 7c and 15 to their new positions and strengthened content. Then
-amend Session end item 2 so it no longer resolves after merge and no longer
-creates a residual-window checkpoint.
+**This extract lives HERE, in the agent file's own unit — not in the
+instructions file.** Per round-9 finding F-08, the canonical `RESOLUTION_PREFIX`
+text U2 installs names segments by **role** and carries no item numbers; the
+item-to-segment binding belongs only where the items are.
 
 **Acceptance criteria**
 
@@ -1077,82 +1839,152 @@ creates a residual-window checkpoint.
    above so the reorder is auditable rather than implicit:
    **S1** = items 7 (first) and 7a, run to completion first, permitted to commit
    and push; **S2** = item 7 (second), item 8, item 9, item 10 (the ordinary
-   push); **S3** = the checkpoint-enumeration proof; **S4** = the conditional
+   push); **S3** = the checkpoint-enumeration proof; **S3.5** = the conditional
+   branch-protection proof; **S4** = the conditional
    locator/resolution/push segment; **S5** = the re-run local review, the final
    locator resolution state, the PR-body `Reviewed HEAD` write, then item **7b
    (MOVED here)**, the explicit required-check evaluation, and item **7c (MOVED
    here)**; **S6** = item 14 with a recorded `approved_head`; **S7** = item 15,
-   **amended**; **S8** = the six-part merge bar, after which items 16 and 17
-   apply unchanged.
-3. **The checkpoint count selects segment S4 only.** The criterion states that a
-   unit whose enumeration proves **zero** checkpoints omits **exactly four
-   things** — locator publication, checkpoint resolution, the resolution
-   commit/push, and the phase-2 locator publication — and **runs every other
-   segment identically**, including the whole reordered common finalization tail.
-   The criterion MUST NOT claim that any unit runs "the pre-existing path
-   unchanged"; that claim is false and is expressly prohibited here. It further
-   states that a failed, malformed, quarantined, or ambiguous enumeration is
-   **not zero** and **halts**, that a checkpoint appearing after S3 forces
-   re-evaluation from S3 before merge, that **no empty locator is ever
-   published**, and that Stage's crash-resumption startup recovery is a separate
-   protocol this does not alter. The circular "PR merge-ready" wording is **not**
-   used.
-4. **No branch-mutating step remains after S4.** Every mutating item in the
+   **amended**; **S8** = the seven-part merge bar, after which items 16 and 17
+   apply.
+3. **The checkpoint count selects segments S3.5 and S4 only.** The criterion
+   states that a unit whose enumeration proves **zero** checkpoints omits
+   **exactly five things** — the branch-protection proof, locator publication,
+   checkpoint resolution, the resolution commit/push, and the phase-2 locator
+   publication — and **runs every other segment identically**, including the
+   whole reordered common finalization tail. The criterion MUST NOT claim that
+   any unit runs "the pre-existing path unchanged"; that claim is false and is
+   expressly prohibited here. It further states that a failed, malformed,
+   quarantined, or ambiguous enumeration is **not zero** and **halts**, that a
+   registry with no checkpoint operations is **not zero** and **halts**, that a
+   checkpoint appearing after S3 forces re-evaluation from S3 before merge, that
+   **no empty locator is ever published**, and that Stage's crash-resumption
+   startup recovery is a separate protocol this does not alter. The circular
+   "PR merge-ready" wording is **not** used.
+4. **The `S3_ENUMERATION_ALGORITHM` is installed as an executable contract**, not
+   a prose instruction: the exact `backlogit_list_checkpoints` invocation with
+   `consumer_id` **only**; the **no `status`/`agent` API-filter** rule with its
+   quarantine rationale; **anomaly inspection before partition**; the
+   current-unit identity predicate (validated `CheckpointV1` **and**
+   `agent == "ship"` **and** `status == "active"` **and**
+   `context.shipment_id == current shipment_id`); and a **per-record
+   successful-handling proof** before each `backlogit_resolve_checkpoint`. Bulk
+   resolution and cross-unit resolution are **explicitly prohibited**. *(Round-9
+   finding F-10.)*
+5. **Segment S3.5 is invoked by name before S4**, and it is stated that the
+   effective-rules probe runs against the **live `headRefName` read from the PR
+   API** — never the ambient checked-out branch — and that API unavailability, an
+   uncovered branch, ambiguous rules, or any bypass capability **halts before
+   obligation publication**. *(RQ-13.)*
+6. **No branch-mutating step remains after S4.** Every mutating item in the
    verbatim extract — item 2, item 7 (first), 7a, item 7 (second), 8, 9, 10 —
    sits in S1 or S2, before the enumeration proof. Nothing between S5 and merge
    mutates the branch.
-5. Session end item 2 no longer resolves checkpoints after merge. No
+7. Item **15 is amended**, not retained unmodified. The amended item re-fetches
+   and re-evaluates, unconditionally and fail-closed, **all** of: `headRefOid`;
+   the PR body; `reviewDecision`; review requests and reviews; **every
+   review-thread page to exhaustion**; required checks; the **ancestry of every
+   recorded resolution commit**; and a **re-enumeration of active checkpoints
+   owned by this unit**. A nonzero or incomplete re-enumeration **returns the
+   unit to S3**, voids the S6 approval, and requires a fresh `approved_head`;
+   re-entry is bounded at two attempts, after which the session halts. If the
+   unit published under S3.5, item 15 also **re-proves the ruleset still
+   applies**, and ruleset drift halts (OB-8). *(Round-9 findings F-06 and F-08.)*
+8. The merge step permits merge **only** when all seven merge-bar conditions
+   hold, with the locator terms **explicitly conditional**: the four
+   always-present values (live `headRefOid`, local HEAD, PR-body `Reviewed HEAD`,
+   `approved_head`) must agree, and `locator final_head` joins them **only when a
+   locator was published**; every recorded resolution commit **if any were
+   recorded** is an ancestor of that HEAD, vacuously satisfied when the set is
+   empty; review-thread pagination completed to exhaustion; no blocking thread or
+   review; required checks pass or are **proven** non-applicable; P-018 passes;
+   and the S7 re-enumeration returned a complete zero. It is stated that a
+   zero-checkpoint unit has **no** locator term rather than an empty one, so the
+   bar is satisfiable for it. *(Round-9 findings F-04 and F-05.)*
+9. **The merge call pins the observed HEAD.** The S8-observed `headRefOid` is
+   passed to the merge API as the expected head SHA so GitHub refuses
+   server-side if the branch advanced between the S8 read and the call.
+   *(Round-9 finding F-18.)*
+10. **P-009 is verified by API, not only by the rendered UI.** Merge-commit
+    capability and mergeability are checked through the API, the merge is invoked
+    explicitly in merge-commit mode, and the resulting commit is asserted to have
+    **two parents** afterwards. The existing rendered-UI confirmation is retained
+    beside this, not replaced. *(Round-9 finding F-30.)*
+11. The refresh rules are stated: any HEAD change voids the approval and requires
+    a fresh push/review/metadata/gates/approval cycle, and a thread or check
+    change without a HEAD change requires the affected gates plus a refreshed
+    approval. **No stale approval may be reused.**
+12. S4's resolution commit also writes the `RESOLUTION_OBLIGATION_RECORD` at
+    `OPEN` **in the same commit**, in the **implementation worktree** on the PR
+    head, and that commit is pushed before the S5 review re-run.
+13. The section cites P-022.
+14. markdownlint passes.
+
+**Posture**: documentation-first. **Size**: M. **Complexity**: high.
+*(Still M/high after the split, and honestly so: this unit carries the verbatim
+extract, the segment mapping, two moved items, one amended item and the merge
+bar. It is a single-file, single-section documentation change and stays inside
+two hours because the extract removes the re-derivation work every prior round
+repeated, and because Step 6 and session end have moved out to U12.)*
+
+### U12 — Rewire Ship Step 6 closure and Session end
+
+**Depends on**: U4 (same file, strictly sequential), U9, U10.
+**File**: `.github/agents/_ship.agent.md` — **Step 6** and **Session end item 2**.
+
+*Added in revision 10 as the post-merge half of the U4 split (round-9 finding
+F-09).*
+
+**Acceptance criteria**
+
+1. Session end item 2 no longer resolves checkpoints after merge. No
    checkpoint-resolution step remains anywhere after merge in this file.
-6. Session end item 2's directive to *"leave at most one final best-effort
+2. Session end item 2's directive to *"leave at most one final best-effort
    checkpoint"* is **retired for units inside `RESOLUTION_PREFIX`**, with the
    recursion reason stated: such a checkpoint could only be resolved by a further
    commit needing a further PR. The window is covered by `CLOSURE_LOCATOR`, the
    `RESOLUTION_OBLIGATION_RECORD` and `LAST_MILE_RECOVERY` instead.
-7. Step 6 gains **`RESOLUTION_POSTCONDITION`** by name — set the locator to
-   `RECONCILED` **and** transition the `RESOLUTION_OBLIGATION_RECORD` from
-   `OPEN` to `CLOSED` in the same post-merge closure commit, after the full
-   required closure set is verified.
-8. Step 6.0's post-merge branch rule is unchanged for every other closure
+3. Step 6 gains **`RESOLUTION_POSTCONDITION`** by name, installed as **two
+   explicitly named mutations**: **POST-A**, the PR-body `RECONCILED` write,
+   which is metadata and **creates no commit**; and **POST-B**, the
+   `OPEN` → `CLOSED` transition, which **is a commit**, is made on the
+   `post-merge/{feature_slug}` closure branch Step 6.0 already creates, and whose
+   PR must itself be **merged** before the obligation is discharged. The
+   withdrawn "commits nothing" characterization of the postcondition as a whole
+   **does not appear**. *(Round-9 finding F-01.)*
+4. **Both mutations are conditional.** POST-A is a no-op when no locator was
+   published; POST-B is a no-op when `resolution_obligation` is `none`, which is
+   **left intact** in the closure commit. `none` → `CLOSED` is stated to be
+   forbidden. *(Round-9 finding F-05.)*
+5. Both are stated to run **only after the full P-001 post-merge closure set is
+   complete and verified, including the P-020 compaction record**, and it is
+   stated that setting either at merge or after partial closure would lose the
+   obligation, and that deleting the record is never a discharge.
+6. **P-020 ordering is explicit**: POST-B's `CLOSED` write completes **before**
+   any compaction or archival that can move the closure artifact, and the
+   path-stability invariant is stated — an artifact that has ever carried
+   `resolution_obligation` must not be renamed, compacted, or archived while its
+   status is `none` or `OPEN`. *(Round-9 finding F-07.)*
+7. Step 6.0's post-merge branch rule is unchanged for every other closure
    artifact, and **Step 6's P-020 `compact-context` invocation is present and
    unmodified**.
-9. Item **15 is amended**, not retained unmodified. *(Revision 8's "item 15
-   retained unmodified" criterion is withdrawn: it forbade the unit from
-   implementing the very requirement it was credited with.)* The amended item
-   re-fetches and re-evaluates, unconditionally and fail-closed, **all** of:
-   `headRefOid`; the PR body; `reviewDecision`; review requests and reviews;
-   **every review-thread page to exhaustion**; required checks; and the
-   **ancestry of every recorded resolution commit**. Item **16 (P-009) is
-   retained unmodified**.
-10. The merge step permits merge **only** when all six merge-bar conditions hold:
-    live `headRefOid` == local HEAD == locator `final_head` == PR-body
-    `Reviewed HEAD` == `approved_head`; every recorded resolution commit is an
-    ancestor of that HEAD; review-thread pagination completed to exhaustion; no
-    blocking thread or review exists; required checks pass or are explicitly
-    **proven** non-applicable; and P-018 passes. It further states the refresh
-    rules: any HEAD change voids the approval and requires a fresh
-    push/review/metadata/gates/approval cycle, and a thread or check change
-    without a HEAD change requires the affected gates plus a refreshed approval.
-    **No stale approval may be reused.**
-11. S4's resolution commit also writes the `RESOLUTION_OBLIGATION_RECORD` at
-    `OPEN` **in the same commit**, and that commit is pushed before the S5 review
-    re-run.
-12. The section cites P-022.
-13. markdownlint passes.
+8. It is stated that Ship MUST NOT commit POST-B to the default branch (P-010),
+   and that the closure branch is the one Step 6.0 already creates rather than a
+   new parallel branch (P-016).
+9. markdownlint passes.
 
-**Posture**: documentation-first. **Size**: M. **Complexity**: high.
-*(Revision 9 raises this from S/medium honestly: the unit now carries a verbatim
-item extract, a segment mapping, two moved items and one amended item. It remains
-a single-file documentation change and stays inside two hours because the
-extract removes the re-derivation work every prior round repeated.)*
+**Posture**: documentation-first. **Size**: S. **Complexity**: medium.
 
 ### U5 — Ship orphan detection, startup discovery, and locator reconciliation
 
-**Depends on**: U3, U4, U9.
+**Depends on**: U11, U12, U13.
 **File**: `.github/agents/_ship.agent.md` — Merge Confirmation Gate and the
 `ZERO-CANDIDATE NORMAL STARTUP` block.
 
-Two assertions plus a startup entry point. The durable input is the
-`CLOSURE_LOCATOR` in the PR body — not a commit, not a branch-only artifact.
+Two assertions plus a startup entry point. The durable inputs are the
+`CLOSURE_LOCATOR` in the PR body **and** the Git-tracked
+`RESOLUTION_OBLIGATION_RECORD` — the second of which is reachable without the
+body.
 
 **Acceptance criteria**
 
@@ -1160,9 +1992,10 @@ Two assertions plus a startup entry point. The durable input is the
    the live PR state is classified **before** any ancestry assertion, per
    Step 1b.
 2. The exact commands are given:
-   `gh pr view <n> --json state,mergedAt,headRefOid`,
-   `git fetch origin refs/pull/<n>/head`, and
-   `git merge-base --is-ancestor <sha> <target>`.
+   `gh pr view <n> --json state,mergedAt,headRefOid,headRefName`,
+   `git fetch origin refs/pull/<n>/head:refs/autoharness/scan/pr-<n>`, and
+   `git merge-base --is-ancestor <sha> <target>` with an explicit commit-ish
+   target — never a bare reused `FETCH_HEAD`.
 3. An open PR whose resolution commits are not on `origin/main` is stated **not**
    to be an error **for the recovery path**, together with an explicit statement
    that this does **not** relax the Merge Confirmation Gate: post-merge closure
@@ -1179,35 +2012,34 @@ Two assertions plus a startup entry point. The durable input is the
    normal shipment validation, with the same halt-on-incomplete-enumeration rule
    for each, and halts on a Channel-A/Channel-B disagreement (OB-6). Ship is
    directly invokable, so relying on the Orchestrator's route alone would leave
-   direct-Ship startup uncovered.
-7. The locator is set to `RECONCILED` **and** the `RESOLUTION_OBLIGATION_RECORD`
-   is transitioned `OPEN` → `CLOSED` in the same post-merge closure commit,
-   **only after the full P-001 post-merge closure set is complete and verified,
-   including the P-020 compaction record**, and it is stated that setting either
-   at merge or after partial closure would lose the obligation, and that deleting
-   the record is never a discharge.
+   direct-Ship startup uncovered. It is stated that **Channel B runs even when
+   Channel A returns nothing**, because a deleted PR body is the case Channel B
+   exists to cover.
+7. `RESOLUTION_POSTCONDITION` is invoked **by name** for the discharge, with its
+   POST-A / POST-B split owned by U12 and **not restated here**. It is stated
+   that discharge requires the full P-001 post-merge closure set including the
+   P-020 compaction record, that deleting the record is never a discharge, and
+   that POST-B is a **no-op** when the record is `none`.
 8. No-op when no locator was published **and** no obligation record is `OPEN`;
    every recorded resolution commit is asserted when several were recorded.
 9. **Before any committing re-entry**, the `Working-tree placement — committing
-   re-entry only` procedure is executed **by that exact name**, and all seven of
-   its steps are named with their halt actions: **WP-1** clean working tree;
-   **WP-2** branch/PR read only from a provenance-validated locator or obligation
-   record; **WP-3** `git fetch origin refs/pull/<pr>/head`; **WP-4** safe
-   create-and-switch for a new local branch, **fast-forward-only** for an
-   existing one; **WP-5** current branch name equals the recorded `branch`;
-   **WP-6** `HEAD == FETCH_HEAD`; **WP-7** HEAD is neither the default branch nor
-   detached. A dirty tree, failed fetch, failed switch, divergence, or any
-   assertion mismatch **fails closed**, and after any failure the session
-   performs **no** `git reset`, **no** force checkout, **no** resolution and
-   **no** commit. It is stated that read-only ancestry assertions fetch but do
-   **not** switch, and therefore do not run this procedure.
+   re-entry only` procedure is executed **by that exact name**, referencing
+   `github-pr-automation.instructions.md` as its canonical definition. Its steps
+   are **not restated here** — the canonical eight-step text (WP-0…WP-7) is
+   installed once by U11, and duplicating it across files is the drift vector
+   round-9 finding F-08 identifies. This criterion requires only that the
+   invocation is by exact name, that the procedure is stated to be required
+   before any committing re-entry and **not** required for read-only ancestry
+   assertions that fetch without switching, and that any failure inside it
+   **fails closed** with no `git reset`, no force checkout, no resolution and no
+   commit. *(Round-9 finding F-23.)*
 10. markdownlint passes.
 
 **Posture**: documentation-first. **Size**: S. **Complexity**: medium.
 
 ### U6 — Orchestrator locator reconciliation route
 
-**Depends on**: U3, U5, U9.
+**Depends on**: U11, U5, U13.
 **File**: `.github/agents/_orchestrator.agent.md` — Step 0.0b, applied to the
 whole step rather than only its zero-candidate arm.
 
@@ -1284,41 +2116,86 @@ Stage cannot open, approve, or merge pull requests (P-010), so Stage does **not*
 execute `RESOLUTION_PREFIX` and is given no locator obligation. The qualifier is
 only: do not resolve into an already-merged staging PR.
 
+**Why the predicate must not read the ambient branch (revision 10, round-9
+finding F-11).** Revision 9's predicate began *"determine the current branch"* and
+then queried `gh pr list --head <that branch>`. That is wrong at both of Stage's
+resolve sites and produced a false "not merged" in the common case. At Session
+end, Stage may legitimately be on the default branch or on an admin branch while
+the checkpoint it is resolving was carried by a different, already-merged staging
+PR — the query returns nothing, the guard passes, and Stage resolves into a
+merged branch, which is precisely the P-022 violation this unit exists to
+prevent. At the `OWNER-SCOPED RESOLUTION` site the ambient branch is even less
+related: crash resumption routinely runs from a fresh checkout whose branch has
+no connection to the checkpoint being restored. Worse, the ambient branch is
+**attacker- and accident-controllable** — any checkout of an unmerged branch name
+silently re-enables resolution. The predicate must therefore key off the
+**checkpoint's own recorded carrying PR**, which is immutable state bound to the
+checkpoint, not off working-tree position.
+
 **Acceptance criteria**
 
 1. **Both** resolve sites — Session end item 2 and `OWNER-SCOPED RESOLUTION` —
    state that a checkpoint MUST NOT be resolved once the staging PR carrying its
    resolution has merged, citing P-022.
-2. An **executable predicate** is given for that test, not a prose condition:
-   determine the current branch, then
-   `gh pr list --state merged --head <branch> --json number,mergedAt`; a non-empty
-   result means the carrying PR has merged. A lookup failure **halts** rather than
-   assuming "not merged".
+2. **The merged-carrier predicate is keyed from the checkpoint, never from the
+   ambient working tree.** The installed text states, in this order:
+   **(a)** The carrying PR is read from the **selected checkpoint's own validated
+   `CheckpointV1` context** — `context.pr` for the PR number and `context.branch`
+   for its head ref. These two fields are declared **mandatory** for any
+   Stage-created Git-tracked checkpoint, and Stage's checkpoint-creation step is
+   amended to populate them.
+   **(b)** The state query is `gh pr view <context.pr> --json
+   number,state,mergedAt,headRefName,baseRefName`. `gh pr list --head <branch>`
+   is **explicitly prohibited** at both sites, and reading the current branch —
+   `git branch --show-current`, `git rev-parse --abbrev-ref HEAD`, or any
+   equivalent — is **explicitly prohibited as an input to this predicate**.
+   **(c)** Resolution proceeds **only** when the returned `state` is exactly
+   `OPEN`. `MERGED` is the P-022 prohibition. `CLOSED` (unmerged) **also halts**,
+   because a closed-unmerged carrier can never carry the resolution to `main`.
+   **(d)** Every other outcome **halts to the operator**: the checkpoint carries
+   no `context.pr` or no `context.branch`; the fields are present but the PR does
+   not exist or is not in this repository; `headRefName` does not equal the
+   recorded `context.branch` (the carrier was retargeted or the record is stale);
+   a non-zero exit; or an unparseable response. It is stated explicitly that a
+   lookup failure is **never** read as "not merged".
+   It is stated that the ambient branch may be used for **logging context only**
+   and never as a predicate input.
 3. The correct action in the merged case is stated: leave the checkpoint active,
-   surface it, and hand off to the operator — never resolve into a merged branch.
+   surface it with its recorded `context.pr`, and hand off to the operator —
+   never resolve into a merged branch.
 4. The *"leave at most one final best-effort checkpoint"* directive is qualified:
    a Git-tracked checkpoint MUST NOT be created when no open staging PR can carry
    its eventual resolution, because Stage cannot open a PR (P-010) and so could
-   never discharge it. Hand off to the operator instead.
+   never discharge it. The check for "an open staging PR exists to carry it" uses
+   the **same** `gh pr view <pr> --json state` form against the PR Stage intends
+   to record in `context.pr`, not a head-ref search. Hand off to the operator
+   instead when none exists.
 5. It is stated that Stage does **not** execute `RESOLUTION_PREFIX` and publishes
    no locator, because Stage holds no merge authority (P-010); the reference is to
    P-022's prohibition only.
 6. No other Stage behaviour is modified; the existing checkpoint payload contract
-   and normal (unmerged-PR) resolution semantics are unchanged.
+   is extended **only** by the two mandatory `context` fields in AC2(a), and
+   normal (open-carrier) resolution semantics are unchanged.
 7. markdownlint passes.
 
 **Posture**: documentation-first. **Size**: S. **Complexity**: medium.
 
-### U9 — Record the durable resolution-obligation record *(closes RR-3)*
+### U9 — Record the durable resolution-obligation record schema and lifecycle
 
 **Depends on**: U3 (extends the same subsection; same file, strictly sequential).
 **File**: `.github/instructions/github-pr-automation.instructions.md`.
 
-This unit is revision 9's answer to **RR-3**, the blocking design gap the round-8
-review left open. It installs the canonical `RESOLUTION_OBLIGATION_RECORD`
-definition — the Git-tracked, history-immutable second channel that makes RQ-7
-true when the mutable PR body is deleted. It does **not** weaken RQ-7, and it
-does **not** touch RQ-8: the record carries no SHA.
+This unit is the first half of revision 9's answer to **RR-3**, re-scoped in
+revision 10. It installs the canonical `RESOLUTION_OBLIGATION_RECORD`
+**schema, siting rationale and lifecycle** — the Git-tracked,
+history-immutable second channel that makes RQ-7 true when the mutable PR body is
+deleted. It does **not** weaken RQ-7, and it does **not** touch RQ-8: the record
+carries no SHA. **U13** owns the Channel-B discovery protocol.
+
+*Split in revision 10 (round-9 finding F-09): U9 previously carried the schema,
+the siting argument, a lifecycle table, a two-channel discovery protocol, five
+exact command forms, a six-rule provenance variant and seven fail-closed rules
+across eleven criteria.*
 
 **Acceptance criteria**
 
@@ -1326,58 +2203,167 @@ does **not** touch RQ-8: the record carries no SHA.
    this plan's canonical definition, with its canonical **path** (the unit's
    pre-merge operational-closure artifact under `docs/closure/`) and canonical
    **identity** (`shipment_id`, `pr`; exactly one `OPEN` record per shipment).
+   The identity field is named **`shipment_id`** — matching the closure
+   artifact's own field name and the S3 enumeration predicate — and the bare
+   `shipment` spelling does not appear. *(PR #396 Copilot thread
+   `PRRT_kwDORJEduc6h79cv`.)*
 2. It is stated that the record **carries no SHA** and why: it is written inside
    the resolution commit, so any SHA field would be self-referential — RQ-8 is
-   preserved, not traded. Recovery re-derives SHAs from the existing
-   *resolution-state classification* at the fetched PR head.
-3. The three-transition lifecycle table appears: absent → `none` (S2, the
+   preserved, not traded.
+3. The **four-transition** lifecycle table appears: absent → `none` (S2, the
    `operational-closure` artifact write); `none` → `OPEN` (S4, **in the same
    commit as the checkpoint resolutions**, pushed before the S5 review re-run);
-   `OPEN` → `CLOSED` (`RESOLUTION_POSTCONDITION`, in the post-merge closure
-   commit, after the full verified P-001 closure set). It is stated that
-   `OPEN` → `CLOSED` is the **only** discharge, that it happens in a **later**
-   commit whose ancestry stays auditable, that the closure commit must itself be
-   **merged**, and that **deletion is never a discharge**.
-4. It is stated that `docs/closure/` is chosen because it is an **existing owned
+   `OPEN` → `CLOSED` (**POST-B**, a commit on the `post-merge/{feature_slug}`
+   branch, after the full verified P-001 closure set, and that closure PR must
+   itself be merged); and `none` → `none` (**POST-B is a no-op** for a
+   zero-checkpoint unit; the record is left intact at `none`). It is stated that
+   `OPEN` → `CLOSED` is the **only** discharge, that `none` → `CLOSED` is
+   **forbidden**, and that **deletion is never a discharge**. *(Round-9 findings
+   F-01, F-05, F-34.)*
+4. The **status value set is exactly `none | OPEN | CLOSED`**, and no fourth
+   value, no boolean form, and no absent-means-`none` shorthand appears anywhere
+   in the installed text.
+5. It is stated that `docs/closure/` is chosen because it is an **existing owned
    repo-local state surface** — created by the `operational-closure` skill,
    already written at real Step 5 item 8, and already carrying the same
    placeholder→finalize field convention as `compaction_status` — and that a
    new standalone tracker file, a checkpoint-store record, and a commit-message
    record were each rejected, with the stated reason for each.
-5. **Two-channel discovery** is specified: Channel A (the PR-body
+6. The **path-stability invariant** is installed with all three of its rules: an
+   artifact that has ever carried `resolution_obligation` MUST NOT be renamed,
+   moved, compacted or archived while its status is `none` or `OPEN`; P-020
+   compaction MUST exclude such artifacts and MUST run only after POST-B has
+   written `CLOSED`; and any tooling that relocates a closure artifact MUST
+   record the move so `--follow` can reconstruct the chain. *(Round-9 finding
+   F-07.)*
+7. The **`Recovering resolution commits without a SHA field`** procedure appears
+   as an executable named procedure, and is stated to be the source of
+   `resolution_commits` whenever the locator is unavailable: fetch the PR head to
+   a unique retained ref; run the resolution-state classification at that head;
+   then bound the search with
+   `git log --format=%H -S'"resolution_obligation": "OPEN"' <base>..<head> --
+   <artifact path>` and take the introducing commit. It is stated that the
+   classification returns per-file states and does **not** itself yield SHAs.
+   *(PR #396 Copilot thread `PRRT_kwDORJEduc6h79dC`.)*
+8. It is stated explicitly that this mechanism introduces **no** executable
+   persistence substrate, **no** lock or compare-and-swap, **no** cross-run
+   cursor persistence, and **no** part of Defect 1, and that it confers **no**
+   merge authority — its only authority is to halt (RQ-10 untouched).
+9. markdownlint passes.
+
+**Posture**: documentation-first. **Size**: S. **Complexity**: medium.
+
+### U13 — Record the Channel-B history scan and reconciliation
+
+**Depends on**: U0, U9 (extends the same subsection; same file, strictly
+sequential).
+**File**: `.github/instructions/github-pr-automation.instructions.md`.
+
+*Added in revision 10 as the discovery half of the U9 split (round-9 finding
+F-09), and rewritten to be independent of the PR body per the RR-3 decision.*
+
+Install the Channel-B protocol: the body-independent, history-immutable discovery
+path that finds an `OPEN` obligation record even when the PR body carrying the
+locator has been emptied.
+
+**Acceptance criteria**
+
+1. **Two-channel discovery** is specified: Channel A (the PR-body
    `CLOSURE_LOCATOR`) and Channel B (the Git-history scan). Both run, the union
    is taken, and **neither may be skipped because the other returned nothing**.
-6. Channel B's commands are given exactly — `git ls-tree -r --name-only
-   origin/main -- docs/closure/`; `git fetch origin refs/pull/<pr>/head` plus
-   `git ls-tree -r --name-only FETCH_HEAD -- docs/closure/` for every
-   PV-1…PV-3-admitted PR; and the deletion probes `git log --follow
-   --diff-filter=D --format=%H -- <artifact path>` and `git log --format=%H
-   -S'resolution_obligation' -- docs/closure/`.
-7. It is stated that Channel B's provenance is established **only** from API
-   response fields and Git ancestry — PV-1, PV-2, PV-3, plus **PV-B4** (record
-   `pr` equals the PR read from) and **PV-B5** (record `branch` equals that PR's
-   head ref), with PV-6 and PV-7 unchanged — and **never** from PR-body text,
-   because the body is the surface under suspicion. PV-4 and PV-5 are stated to
-   be inapplicable to Channel B.
-8. **Deletion is detected via commit history, never inferred from absence.** The
-   criterion states that a record which ever appeared in history and is now
-   absent from the tree **without** a recorded `OPEN` → `CLOSED` transition is a
-   deletion that **halts**, and that absence from the current tree is never
-   evidence that no obligation exists.
-9. All seven fail-closed rules appear with their halt actions: **OB-1** deletion;
-   **OB-2** force-push/rebase/shallow history making ancestry unverifiable;
-   **OB-3** conflicting `OPEN` records for one shipment (byte-identical
-   duplicates collapse and are logged; **any** field difference halts;
-   `opened_at` is barred as a tie-breaker); **OB-4** `OPEN` records for more than
-   one shipment (P-001); **OB-5** unparseable or field-incomplete record;
-   **OB-6** Channel A/Channel B disagreement, with the explicit rule that the
-   mutable channel is **never** preferred and a missing locator **never**
-   discharges an `OPEN` record; **OB-7** incomplete Channel-B enumeration.
-10. It is stated explicitly that this mechanism introduces **no** executable
-    persistence substrate, **no** lock or compare-and-swap, **no** cross-run
-    cursor persistence, and **no** part of Defect 1, and that it confers **no**
-    merge authority — its only authority is to halt (RQ-10 untouched).
-11. markdownlint passes.
+2. **Channel B's candidate derivation is stated to be independent of PR-body
+   content.** Its candidate set is every **trusted open or closed-unmerged** PR
+   from the single exhaustive paginated enumeration, admitted by PV-1, PV-2,
+   PV-3 and PV-8 — **never** filtered by marker presence, locator presence, or
+   any body text. The installed text states the reason in one sentence: the body
+   is the surface under suspicion, so a body-derived candidate list cannot detect
+   a deleted body. *(Round-9 finding F-13; RR-3 decision part 3.)*
+3. The **B0…B7 steps** appear in order with their exact commands:
+   **B0** — a **shallow/partial-clone guard**: `git rev-parse
+   --is-shallow-repository` must be `false` and the repository must not be a
+   blobless/treeless partial clone; otherwise **halt (OB-2)**, because a shallow
+   history cannot distinguish "never introduced" from "truncated away".
+   *(Round-9 finding F-29.)*
+   **B1** — scan merged history: `git ls-tree -r --name-only origin/main --
+   docs/closure/`, then `git show origin/main:<path>` for each hit to read the
+   status field. It is stated that `ls-tree` lists names and **cannot** yield
+   file content, so the read step is mandatory and not optional. *(PR #396
+   Copilot thread `PRRT_kwDORJEduc6h79dm`.)*
+   **B2** — for each trusted candidate PR, prove its live head is protected via
+   the `BRANCH_PROTECTION_PREREQUISITE` effective-rules probe against that PR's
+   **live `headRefName`**; an uncovered branch, ambiguous rules, or any bypass
+   capability **halts (OB-8)**.
+   **B3** — fetch that head to a **unique retained ref**:
+   `git fetch origin refs/pull/<n>/head:refs/autoharness/scan/pr-<n>`. It is
+   stated that a bare `git fetch origin refs/pull/<n>/head` followed by
+   `FETCH_HEAD` is **prohibited**, because `FETCH_HEAD` is global and is
+   overwritten by the next candidate's fetch, silently rebinding every subsequent
+   assertion to the wrong PR. *(Round-9 finding F-14; RR-3 decision part 3.)*
+   **B4** — enumerate closure artifacts at that retained ref
+   (`git ls-tree -r --name-only refs/autoharness/scan/pr-<n> -- docs/closure/`)
+   and read each with `git show refs/autoharness/scan/pr-<n>:<path>`.
+   **B5** — scan the **full reachable history** from that retained ref for
+   introduction, transition and deletion of the record by canonical path and
+   record identity, with **explicit revision roots on every command**:
+   `git log --follow --diff-filter=D --format=%H refs/autoharness/scan/pr-<n> --
+   <artifact path>` and
+   `git log --format=%H -S'resolution_obligation' refs/autoharness/scan/pr-<n>
+   -- docs/closure/`. It is stated that omitting the revision argument makes
+   `git log` default to `HEAD`, scanning the ambient working branch instead of
+   the candidate — the same ambient-state defect as F-11. *(PR #396 Copilot
+   thread `PRRT_kwDORJEduc6h79d5`.)*
+   **B6** — **bind each observed transition to record identity and commit
+   ancestry**: the record's `shipment_id` and `pr` must match the candidate, and
+   the introducing commit must be an ancestor of the retained ref
+   (`git merge-base --is-ancestor <sha> refs/autoharness/scan/pr-<n>`).
+   Unverifiable ancestry **halts (OB-2)**.
+   **B7** — **clean up** every `refs/autoharness/scan/*` ref created by the scan,
+   including on the halt paths, so no scan state is left on disk.
+4. It is stated that **ordinary later commits that delete the record remain
+   detectable**, and why: the `deletion` and `non_fast_forward` rules proven at
+   B2 keep the branch present and the introducing commit reachable, so B5's
+   deletion probe sees the removal instead of an indistinguishable absence. It is
+   stated that this guarantee holds **only** for branches B2 proved protected,
+   and that an unprotected branch halts rather than being scanned optimistically.
+5. Channel B's provenance is established **only** from API response fields and
+   Git ancestry — PV-1, PV-2, PV-3 and PV-8, plus **PV-B4** (the record's `pr`
+   field equals the PR number the record was read from) and **PV-B6** (the
+   record's `branch` field equals that PR's **live `headRefName`** read from the
+   API) — and **never** from PR-body text. **PV-B4 and PV-B6 are distinct checks
+   and are listed separately**: PV-B4 binds the record to the PR, PV-B6 binds the
+   PR to its live branch, and collapsing them into one rule loses the retarget
+   case where the record's `pr` is correct but its `branch` is stale. PV-6 and
+   PV-7 are unchanged. PV-4 and PV-5 are stated to be **inapplicable** to
+   Channel B, with the reason given: both read locator fields, and Channel B has
+   no locator. *(Round-9 finding F-15.)*
+6. **State-aware routing** is specified for what Channel B finds: an `OPEN`
+   record on an **open** PR routes to `LAST_MILE_RECOVERY`; an `OPEN` record on a
+   **closed-unmerged** PR **halts** as an unrecoverable orphan; an `OPEN` record
+   whose PR has since **merged** is the 139-S shape and **halts**; a `CLOSED`
+   record is discharged and is **not** re-routed; a `none` record on an open PR
+   is a zero-checkpoint unit and is **not** an obligation. *(Round-9 finding
+   F-15; PR #396 Copilot thread `PRRT_kwDORJEduc6h79dW`.)*
+7. **Deletion is detected via commit history, never inferred from absence.** A
+   record which ever appeared in history and is now absent from the tree
+   **without** a recorded `OPEN` → `CLOSED` transition is a deletion that
+   **halts (OB-1)**, and absence from the current tree is never evidence that no
+   obligation exists.
+8. All **eight** fail-closed rules appear with their halt actions: **OB-1**
+   deletion; **OB-2** force-push, rebase, shallow/partial history, or otherwise
+   unverifiable ancestry; **OB-3** conflicting `OPEN` records for one shipment
+   (byte-identical duplicates collapse and are logged; **any** field difference
+   halts; `opened_at` is barred as a tie-breaker); **OB-4** `OPEN` records for
+   more than one shipment (P-001); **OB-5** unparseable or field-incomplete
+   record; **OB-6** Channel A/Channel B disagreement, with the explicit rule that
+   the mutable channel is **never** preferred and a missing locator **never**
+   discharges an `OPEN` record; **OB-7** incomplete Channel-B enumeration,
+   including any pagination gap, fetch failure, or branch that has disappeared;
+   **OB-8** ruleset drift — a candidate head that was protected at B2 and is not
+   at re-check, or any bypass capability appearing.
+9. It is stated that Channel B confers **no** merge authority and introduces no
+   lock, no CAS, and no cross-run continuation state; its only authority is to
+   halt or to route.
+10. markdownlint passes.
 
 **Posture**: documentation-first. **Size**: S. **Complexity**: medium.
 
@@ -1404,18 +2390,29 @@ made silently.
    source-artifact-cleanup fields.
 2. The skill is stated to **initialize** the field to `none` when it creates the
    pre-merge artifact, exactly as it initializes `compaction_status` to
-   `pending`.
+   `pending`. **Initialization is create-only**: the criterion states that the
+   skill MUST NOT write `none` over an existing `OPEN` or `CLOSED` value on a
+   re-run or regeneration, and that doing so would silently discharge an
+   outstanding obligation. A regeneration encountering an existing
+   `resolution_obligation` **preserves it verbatim**. *(Round-9 finding F-25.)*
 3. The allowed transitions are stated as `none` → `OPEN` (written by Ship in the
-   resolution commit) and `OPEN` → `CLOSED` (written by Ship's post-merge
-   closure). No other transition is permitted, and the skill does **not** itself
-   write `OPEN` or `CLOSED`.
-4. The field's canonical definition is **referenced by name** in
+   S4 resolution commit) and `OPEN` → `CLOSED` (written by Ship's POST-B
+   post-merge closure commit). `none` → `CLOSED` is **forbidden**, `none` →
+   `none` is the legitimate zero-checkpoint terminal state, and no other
+   transition is permitted. The skill does **not** itself write `OPEN` or
+   `CLOSED`.
+4. **The P-020 compaction exclusion is declared here as well as in the record's
+   canonical definition**, because this skill owns the artifact: a closure
+   artifact whose `resolution_obligation` is `none` or `OPEN` MUST NOT be
+   compacted, renamed, moved, or archived, and any relocation must be recorded so
+   `git log --follow` can reconstruct the chain. *(Round-9 findings F-07, F-25.)*
+5. The field's canonical definition is **referenced by name** in
    `github-pr-automation.instructions.md`; the skill does **not** restate the
    schema, the discovery protocol, or the fail-closed rules.
-5. No other skill behaviour is modified — `compaction_status` handling, the
+6. No other skill behaviour is modified — `compaction_status` handling, the
    source-artifact-cleanup placeholder, and the releasability verdict set are
    untouched.
-6. markdownlint passes.
+7. markdownlint passes.
 
 **Posture**: documentation-first. **Size**: XS. **Complexity**: low.
 
@@ -1425,7 +2422,7 @@ made silently.
 **File**: `docs/compound/workflow-issues/` — one new learning.
 
 U7 is a **closure deliverable**, not a requirement-realizing unit. It implements
-none of RQ-1 … RQ-11 and is deliberately absent from the requirement trace table
+none of RQ-1 … RQ-13 and is deliberately absent from the requirement trace table
 below. It is retained because capturing hard-won solutions is standing workspace
 practice, and this defect class cost two extra pull requests to discover.
 
@@ -1459,48 +2456,72 @@ therefore absent by design.
 
 | Requirement | Owning unit | Enforcing units |
 |---|---|---|
-| RQ-1 no post-merge resolution | U1 (policy) | U4 (Ship), U8 (Stage) |
+| RQ-1 no post-merge resolution | U1 (policy) | U4 (Ship), U12 (Ship session end), U8 (Stage) |
 | RQ-2 resolution rides the same merge | U2 (`RESOLUTION_PREFIX`) | U4 (Ship). **Not U8** — U8 enforces the RQ-1 prohibition on the Stage path; Stage's resolution reaches `main` through the ordinary staging-PR merge, which Stage does not control, so U8 cannot *guarantee* RQ-2 and is no longer credited with it. |
 | RQ-3 push before evidence | U2 | U4 |
 | RQ-4 re-run the actual review | U2 | U4 |
 | RQ-5 PR-body record precedes §1.9 | U2 | U4 |
-| RQ-6 approval after gate, live re-fetch before merge | U2 (`RESOLUTION_PREFIX` S5–S8) | U4 (Ship — moves items 7b/7c, **amends item 15**, installs the six-part merge bar and the refresh rules) |
-| RQ-7 locator discoverable through closure | U2 (`CLOSURE_LOCATOR`) | U5, **U9** (the durable Git channel that makes RQ-7 hold when the PR body is deleted) |
-| RQ-8 non-self-referential locator | U2 | U9 (the obligation record carries no SHA, by construction) |
-| RQ-9 exhaustive, trusted, status-independent discovery | U3 (read protocol) | U5, U6, U9 (Channel B) |
-| RQ-10 no merge authority conferred | U3 (`LAST_MILE_RECOVERY` Step 2) | U5, U6, U9 |
-| RQ-11 every failure halts | U3 | U5, U6, U9 (OB-1 … OB-7) |
-| RQ-12 durable Git-tracked obligation record | **U9** (`RESOLUTION_OBLIGATION_RECORD`) | U4 (writes it in the resolution commit), U5 (discovers and closes it), U6 (routes on it), U10 (schema ownership) |
+| RQ-6 approval after gate, live re-fetch before merge | U2 (`RESOLUTION_PREFIX` S5–S8) | U4 (Ship — moves items 7b/7c, **amends item 15** to re-enumerate and re-prove, installs the **seven-part** merge bar, the expected-head pin and the refresh rules) |
+| RQ-7 locator discoverable through closure | U2 (`CLOSURE_LOCATOR`) | U5, **U9** (the durable Git channel's schema), **U13** (the body-independent discovery that makes RQ-7 hold when the PR body is deleted) |
+| RQ-8 non-self-referential locator | U2 | U9 (the obligation record carries no SHA, by construction; the *Recovering resolution commits without a SHA field* procedure re-derives them) |
+| RQ-9 exhaustive, trusted, status-independent discovery | U3 (read protocol) | U5, U6, U13 (Channel B) |
+| RQ-10 no merge authority conferred | U11 (`LAST_MILE_RECOVERY` Step 2) | U5, U6, U13 |
+| RQ-11 every failure halts | U3 | U5, U6, U11 (P-012 availability contract), U13 (OB-1 … OB-8) |
+| RQ-12 durable Git-tracked obligation record | **U9** (`RESOLUTION_OBLIGATION_RECORD` schema and lifecycle) | U4 (writes it `OPEN` in the S4 resolution commit), U12 (POST-B closes it), U5 (discovers it), U6 (routes on it), U10 (schema ownership and create-only initialization), U13 (finds it without the PR body) |
+| RQ-13 protected resolution-bearing branches | **U0** (the approval-gated ruleset itself) + U2 (`BRANCH_PROTECTION_PREREQUISITE` S3.5 text) | U4 (invokes S3.5 before S4 and re-proves at amended item 15), U13 (B2 per-candidate proof; OB-8 drift halt) |
 
 ## Dependencies
 
 ```text
-U2 ──→ U1 ──┬──→ U4 ──→ U5 ──→ U6 ──→ U7
-  │         └──→ U8            ↑
-  └──→ U3 ──→ U9 ──┬──→ U4     │
-                   ├──→ U5 ────┤
-                   ├──→ U6 ────┘
-                   └──→ U10
+U0 ──┬────────────────────────────────→ U4 ──→ U12 ──┐
+     └──────────────────────→ U13 ──┐               │
+                                    │               │
+U2 ──┬──→ U1 ──┬──→ U4              ├──→ U5 ──→ U6 ──┴──→ U7
+     │         └──→ U8              │    ↑         ↑
+     ├──→ U3 ──┬──→ U11 ────────────┴────┘         │
+     │         │      └───────────────────────────→┘
+     │         └──→ U9 ──┬──→ U13
+     │                   ├──→ U4
+     │                   └──→ U10 ──→ U4
+     └──→ U4
 ```
 
-Sixteen edges: **U2→U1**, U1→U4, U1→U8, U2→U4, U2→U3, U3→U5, U3→U6, U4→U5,
-U5→U6, U5→U7, U6→U7, **U3→U9**, **U9→U4**, **U9→U5**, **U9→U6**, **U9→U10**.
-The graph is acyclic.
+**Twenty-two edges**, listed explicitly because the diagram is a reading aid and
+the list is the contract:
 
-The single **root is U2**. Revision 7 listed U1 and U2 as co-roots, but U1
-installs a by-name reference to `RESOLUTION_PREFIX` whose definition only U2
-creates; running U1 first would leave a dangling reference that cannot be
-verified. **U2→U1** is therefore a real edge, and it transitively orders U8 after
-the canonical definition too. **U9→U4** is the same kind of edge: U4's AC11
-requires the resolution commit to write a record whose definition only U9
-creates.
+`U2→U1`, `U2→U3`, `U2→U4`, `U1→U4`, `U1→U8`, `U3→U11`, `U3→U9`, `U9→U13`,
+`U9→U4`, `U9→U10`, `U10→U4`, `U0→U4`, `U0→U13`, `U4→U12`, `U11→U5`, `U12→U5`,
+`U13→U5`, `U5→U6`, `U11→U6`, `U13→U6`, `U5→U7`, `U6→U7`.
 
-The three units that share `github-pr-automation.instructions.md` (U2, U3, U9)
-are strictly sequential, as are the two that share `_ship.agent.md` (U4, U5). U8
-is the only unit touching `_stage.agent.md`, U6 the only unit touching
-`_orchestrator.agent.md`, U1 the only unit touching `workflow-policies.md`, and
-U10 the only unit touching `operational-closure/SKILL.md`. No two
-concurrently-eligible units edit the same file.
+The graph is **acyclic** and has **two roots**: **U0** and **U2**.
+
+* **U0 is a root** because the ruleset is an external GitHub settings change with
+  no repository-file prerequisite. It is an **ops prerequisite**: U4's S3.5
+  invocation and U13's B2 per-candidate proof both describe a protection that
+  must actually exist, so `U0→U4` and `U0→U13` are real edges rather than
+  bookkeeping.
+* **U2 is the other root.** Revision 7 listed U1 and U2 as co-roots, but U1
+  installs a by-name reference to `RESOLUTION_PREFIX` whose definition only U2
+  creates; running U1 first would leave a dangling reference that cannot be
+  verified. **U2→U1** is therefore a real edge, and it transitively orders U8
+  after the canonical definition too.
+* **`U9→U4`** exists because U4's AC12 requires the S4 commit to write a record
+  whose schema only U9 defines. **`U10→U4`** is new in revision 10: U4's S4
+  transitions the field `none` → `OPEN`, and that transition is only well-defined
+  once U10 has declared the field and its create-only initialization in the
+  owning skill — writing `OPEN` into a field the skill does not know about is the
+  unowned-squatter failure U10 exists to prevent. *(Round-9 finding F-25.)*
+
+**File-serialization check.** Four units share
+`github-pr-automation.instructions.md` (U2, U3, U11, U9, U13 — five) and are
+strictly sequential by the chain `U2→U3→{U11, U9→U13}`; U11 and U13 are the only
+pair in that file with no direct edge between them, so the harvest note records
+that they must be sequenced in that order at execution time. Three units share
+`_ship.agent.md` (U4, U12, U5) and are strictly sequential by `U4→U12→U5`. U8 is
+the only unit touching `_stage.agent.md`, U6 the only unit touching
+`_orchestrator.agent.md`, U1 the only unit touching `workflow-policies.md`, U10
+the only unit touching `operational-closure/SKILL.md`, U7 the only unit touching
+`docs/compound/`, and U0 touches **no repository file at all**.
 
 ## Verification
 
@@ -1509,28 +2530,35 @@ concurrently-eligible units edit the same file.
 | V1 | `markdownlint` over every changed file | passes |
 | V2 | **Canonical-copy check**, in two parts. **(a)** The `RESOLUTION_PREFIX` code block appears verbatim exactly once, in `github-pr-automation.instructions.md`. **(b)** *Sequence-restatement check (rewritten in revision 9; the revision-8 form was unsatisfiable — it banned the ordinary verbs `resolve`, `record` and `push`, which U1's policy Statement and U8's Stage prohibition are **required** to use).* In each referencing file's changed region — `workflow-policies.md`, `_ship.agent.md`, `_stage.agent.md`, `_orchestrator.agent.md`, `operational-closure/SKILL.md` — assert that **no ordered enumeration of three or more canonical segment steps appears**: that is, no list or arrow-chain reproducing three or more of the S1…S8 segment contents in their canonical order. Ordinary prose use of any individual verb is **permitted and expected**. | (a) exactly one verbatim copy; (b) no referencing file contains a three-or-more-step ordered restatement; each contains the bare name `RESOLUTION_PREFIX` / `RESOLUTION_POSTCONDITION` / `RESOLUTION_OBLIGATION_RECORD` plus a file reference |
 | V3 | Grep every changed file for `two-phase` and for `pr_role` | zero occurrences of each; only "three-phase" appears |
-| V4 | **Ordered-step inspection** of `_ship.agent.md` (not a grep), recording the item numbers against U4's verbatim extract: read Step 5 top-to-bottom and confirm (a) items 7 (first) and 7a complete first; (b) item 7 (second), 8, 9 and 10 (the push) all precede the checkpoint-enumeration proof; (c) items **7b and 7c now appear after that push**, together with the re-run review, the PR-body `Reviewed HEAD` write and an explicit required-check evaluation; (d) item 14 records `approved_head`; (e) item 15 is **amended** to re-fetch headRefOid, PR body, reviewDecision, review requests/reviews, every review-thread page, required checks and resolution-commit ancestry; (f) item 16 (P-009) is byte-identical to its pre-change text; (g) **no branch-mutating item appears after the enumeration proof**; then read Step 6 and Session end and confirm neither contains a resolution or checkpoint-creation step for the merged unit | (a)–(f) each hold as stated; (g) the set is empty of mutations; no post-merge resolution or creation |
-| V5 | Backlog structure equals **one top-level release unit → 2 sub-epics → 10 tasks**, and the shipment manifest membership equals those **13** IDs. *(IDs are allocated at harvest; the abandoned `143.*` IDs must not be reused.)* | exact **membership** match; order is not asserted, because Ship treats manifest order as non-executable and sorts by unfinished dependencies |
+| V4 | **Ordered-step inspection** of `_ship.agent.md` (not a grep), recording the item numbers against U4's verbatim extract: read Step 5 top-to-bottom and confirm (a) items 7 (first) and 7a complete first; (b) item 7 (second), 8, 9 and 10 (the push) all precede the checkpoint-enumeration proof; (c) items **7b and 7c now appear after that push**, together with the re-run review, the PR-body `Reviewed HEAD` write and an explicit required-check evaluation; (d) item 14 records `approved_head`; (e) item 15 is **amended** to re-fetch headRefOid, PR body, reviewDecision, review requests/reviews, every review-thread page, required checks, resolution-commit ancestry **and a re-enumeration of active checkpoints**; (f) item 16 (P-009) retains its rendered-UI confirmation and **gains** the API-side merge-commit mode check and the two-parent assertion; (g) **the only branch-mutating step after the enumeration proof is S4's own conditional resolution commit, and no branch-mutating item appears after S4**; then read Step 6 and Session end and confirm neither contains a resolution or checkpoint-creation step for the merged unit, and that Step 6 carries POST-A and POST-B | (a)–(f) each hold as stated; (g) the post-S4 mutation set is empty and the only post-proof mutation is S4's own commit; no post-merge resolution or creation; POST-A and POST-B both present |
+| V5 | Backlog structure equals **one top-level release unit → 3 sub-epics → 14 tasks**, and the shipment manifest membership equals those **18** IDs. *(IDs are allocated at harvest; the abandoned `143.*` IDs must not be reused.)* | exact **membership** match; order is not asserted, because Ship treats manifest order as non-executable and sorts by unfinished dependencies |
 | V6 | Every task card's acceptance criteria are textually identical to its unit's criteria in this plan | identical |
 | V7 | Grep the **changed files** (not this plan) for this closed list of Defect-1 construct names: `DARK_CONTINUATION_PREDICATE`, `ACTIVATION_RECORD_STORE`, `CURSOR_TYPING_RULES`, `CONTINUATION_HANDOFF_EVIDENCE`, `OWNER_SIDE_REVALIDATION`, `PREDICATE_PRECEDENCE`, `MIS_EVALUATION_DIRECTIONALITY`, `SCOPE_MATCH_RULES`, `check-continuation-predicate-drift`, `canonical-phrases.json`, `parity-gate` | zero occurrences of all eleven |
 | V8 | Execute the U3 discovery command against this repository with `per_page=2`, count returned records; compare against the **paginated** reference `gh api --paginate -H "Accept: application/vnd.github+json" "repos/{owner}/{repo}/pulls?state=all&per_page=100" --jq '.[].number' \| Measure-Object -Line`. *(Revision 9 fix: the revision-8 reference command omitted `--paginate`, so it was itself capped at one page and the comparison was invalid — it could only ever prove the two commands disagreed.)* | both counts are equal **and** exceed 2, proving `Link`-header pagination actually followed; every record carries a non-empty `body` field; exit code 0 on both |
 | V9 | Confirm Step 6's P-020 `compact-context` invocation in `_ship.agent.md` is byte-identical to its pre-change text | identical |
-| V10 | Read `_stage.agent.md` Session end item 2 **and** the `OWNER-SCOPED RESOLUTION` block; confirm both carry the P-022 merged-PR prohibition and the executable `gh pr list --state merged --head <branch>` predicate, and that the best-effort-checkpoint directive is qualified | both sites carry both; directive qualified |
+| V10 | Read `_stage.agent.md` Session end item 2 **and** the `OWNER-SCOPED RESOLUTION` block; confirm both carry the P-022 merged-PR prohibition and the **checkpoint-keyed** predicate `gh pr view <context.pr> --json number,state,mergedAt,headRefName,baseRefName`; confirm the best-effort-checkpoint directive is qualified; and confirm the **negative** cases: grep both changed regions for `gh pr list --head`, `git branch --show-current` and `rev-parse --abbrev-ref` | both sites carry the prohibition and the checkpoint-keyed predicate; directive qualified; **zero occurrences** of all three prohibited ambient-branch forms in the changed regions |
 | V11 | Read `_orchestrator.agent.md` Step 0.0b; confirm discovery is keyed on the absence of a **ship-owned** active checkpoint, not on global zero-candidate, and that it runs **both** channels | keyed on ship-owned absence; both channels present |
-| V12 | **Working-tree placement coverage** *(the verification half of D14)*. Read U3's criteria and confirm the procedure named **exactly** `Working-tree placement — committing re-entry only` is defined with WP-1…WP-7 and their halt actions; read U5's criteria and confirm it is **executed by that exact name before the only committing recovery branch**. Then run the positive and fail-closed cases below. | the name matches exactly in both units; every case below behaves as stated |
-| V12a | *Positive*: clean tree on `main`, valid locator, PR head fetchable. Run the placement | WP-1…WP-7 all pass; HEAD == FETCH_HEAD; current branch == locator `branch`; not `main`, not detached |
+| V12 | **Working-tree placement coverage** *(the verification half of D14)*. Read **U11's** criteria and confirm the procedure named **exactly** `Working-tree placement — committing re-entry only` is defined with WP-0…WP-7 and their halt actions; read **U5's** criteria and confirm it is **invoked by that exact name** before the only committing recovery branch **and does not restate the steps**. Then run the positive and fail-closed cases below. | the name matches exactly in both units; U5 restates no step; every case below behaves as stated |
+| V12a | *Positive*: clean tree on `main`, valid locator, PR head fetchable. Run the placement | WP-0…WP-7 all pass; HEAD equals the fetched tip; current branch == locator `branch`; not `main`, not detached; no extra worktree created |
 | V12b | *Fail-closed, dirty tree*: uncommitted change present | halts at WP-1; **no** stash, **no** discard, **no** switch, **no** commit |
 | V12c | *Fail-closed, fetch failure*: unreachable `refs/pull/<pr>/head` | halts at WP-3; no switch, no resolution, no commit |
-| V12d | *Fail-closed, divergence*: local branch of that name exists and is not a fast-forward of `FETCH_HEAD` | halts at WP-4; **no** `git reset --hard`, **no** force checkout, **no** rebase |
-| V12e | *Fail-closed, mismatch*: switch succeeds but `HEAD != FETCH_HEAD`, or branch name differs, or HEAD is detached | halts at WP-5/WP-6/WP-7 respectively; no resolution, no commit |
+| V12d | *Fail-closed, divergence*: local branch of that name exists and is not a fast-forward of the fetched tip | halts at WP-4; **no** `git reset --hard`, **no** force checkout, **no** rebase |
+| V12e | *Fail-closed, mismatch*: switch succeeds but HEAD differs from the fetched tip, or branch name differs, or HEAD is detached | halts at WP-5/WP-6/WP-7 respectively; no resolution, no commit |
 | V12f | *Read-only path*: a Step 1b ancestry assertion | fetch performed; **no** switch performed; the placement procedure is **not** run |
-| V13 | **Zero-checkpoint case**: a unit whose enumeration proves zero. Trace Step 5 | S4 omitted in full — no locator published, no resolution commit, no phase-2 update, **no empty locator**; S1, S2, S3, S5, S6, S7, S8 all execute; item 7b/7c run **after** the push |
-| V14 | **Nonzero-checkpoint case**: a unit owning ≥1 checkpoint. Trace Step 5 | S4 executes; the locator, the resolutions and the `OPEN` obligation record ride **one** commit that is pushed before the S5 review re-run; remote head proven equal to local head |
-| V15 | **Enumeration-failure case**: enumeration errors, or returns a malformed or quarantined record, or is ambiguous | **halts**; it is **not** classified as zero; no locator, no resolution, no merge |
-| V16 | **Race case**: a checkpoint appears after S3 completed but before merge | re-evaluation from S3 is forced before merge; the prior approval is void and a fresh S6 approval with a new `approved_head` is required |
-| V17 | **Obligation-record durability**: publish a record, then delete the PR body. Run both discovery channels | Channel A finds nothing; **Channel B still finds the `OPEN` record**; OB-6 (A/B disagreement) halts; the missing locator does **not** discharge the record |
-| V18 | **Obligation-record deletion**: delete the closure artifact from the tree with no `OPEN` → `CLOSED` transition | `git log --diff-filter=D` detects it; **OB-1 halts**; absence is **not** read as "no obligation" |
-| V19 | Grep the changed files for `resolution_commits` and `final_head` within the `RESOLUTION_OBLIGATION_RECORD` schema and its lifecycle text | zero occurrences — the record carries no SHA, so RQ-8 is preserved |
+| V12g | *Fail-closed, topology*: a second implementation worktree is already present | halts at WP-0 (P-011/P-016); no switch, no commit |
+| V13 | **Zero-checkpoint case**: a unit whose enumeration proves zero. Trace Step 5 | **S3.5 and S4 both omitted in full** — no protection probe, no locator published, no resolution commit, no phase-2 update, **no empty locator**; S1, S2, S3, S5, S6, S7, S8 all execute; item 7b/7c run **after** the push; the S8 merge bar is **satisfiable** with its locator term absent rather than empty and its ancestry term vacuously true; POST-A and POST-B are both no-ops and the record is left at `none` |
+| V14 | **Nonzero-checkpoint case**: a unit owning ≥1 checkpoint. Trace Step 5 | S3.5 proves protection **before** S4; the locator, the resolutions and the `OPEN` obligation record ride **one** commit that is pushed before the S5 review re-run; remote head proven equal to local head; POST-B later writes `CLOSED` on the closure branch and that closure PR merges |
+| V15 | **Enumeration-failure case**: enumeration errors, or returns a malformed or quarantined record, or is ambiguous, or the registry exposes no checkpoint operations | **halts**; it is **not** classified as zero; no locator, no resolution, no merge |
+| V16 | **Race case**: a checkpoint appears after S3 completed but before merge | the **amended item 15 re-enumeration** detects it; the unit returns to S3; the prior approval is void and a fresh S6 approval with a new `approved_head` is required; re-entry is bounded at two attempts and then halts |
+| V17 | **Obligation-record durability without a PR body**: publish a record, then **empty the PR body entirely** so no locator and no marker remain. Run both discovery channels | Channel A finds nothing **and contributes no candidate**; **Channel B still finds the `OPEN` record**, because its candidate set is derived from the trusted-PR enumeration rather than from body content; OB-6 (A/B disagreement) halts; the missing locator does **not** discharge the record |
+| V18 | **Obligation-record deletion, executed end to end**: on a protected candidate branch, delete the closure artifact from the tree in an ordinary later commit with no `OPEN` → `CLOSED` transition, then **run the full B0…B7 workflow** rather than inspecting the command strings | B0 passes (non-shallow); B2 proves protection; B3 creates `refs/autoharness/scan/pr-<n>`; B5's `git log --diff-filter=D` with an explicit revision root detects the deletion; B6 binds identity and ancestry; **OB-1 halts**; absence is **not** read as "no obligation"; B7 removes every scan ref |
+| V19 | **Parse** the `RESOLUTION_OBLIGATION_RECORD` schema block and its lifecycle text as YAML (not a substring grep) and enumerate its keys | the key set contains no SHA-bearing field — specifically no `resolution_commits`, no `final_head`, and no key whose value is a commit-ish — so RQ-8 is preserved. *(Revision 10: a plain grep matched the surrounding explanatory prose that names these fields in order to forbid them, so it could never fail — round-9 finding F-24.)* |
+| V20 | **Standing role-order drift check** *(the executable half of round-9 finding F-08)*. Extract the ordered S1…S8 **role descriptors** from the canonical `RESOLUTION_PREFIX` block in `github-pr-automation.instructions.md`, and independently extract the ordered segment mapping recorded in `_ship.agent.md`'s Step 5. Compare the two role sequences element-wise. The check reads **roles**, never item numbers, so the live file's duplicated item `7` cannot break it | the two role sequences are identical and identically ordered; any divergence fails the check and is reported as protocol drift. The check is run as part of V1's lint pass over changed files and is re-runnable standalone |
+| V21 | **Ruleset drift and bypass.** With U0 applied, query `GET /repos/{owner}/{repo}/rules/branches/{branch}` for a live Ship head ref and assert `deletion` and `non_fast_forward` are both present, `enforcement` is `active`, and no bypass applies. Then simulate drift by evaluating the same probe against a branch the ruleset does **not** cover | covered branch: all four requirements hold and S4 may proceed. Uncovered branch: the probe returns no matching rules and the protocol **halts before obligation publication**; at re-check it halts as **OB-8**. A response indicating any bypass capability halts in both cases |
+| V22 | **`FETCH_HEAD` reuse.** Grep the changed files for `FETCH_HEAD` and for `git fetch origin refs/pull/` without a destination refspec | zero occurrences of bare `FETCH_HEAD` as an assertion target and zero fetches without a `:refs/autoharness/scan/pr-<n>` destination; every ancestry and `ls-tree`/`show`/`log` command carries an explicit commit-ish |
+| V23 | **P-020 ordering.** Trace a nonzero-checkpoint unit through Step 6 | POST-B writes `CLOSED` **before** the P-020 compaction runs; the compaction excludes any artifact whose `resolution_obligation` is `none` or `OPEN`; no artifact that ever carried the field is renamed or archived while unclosed; no mutation occurs after the S5 review that is not part of POST-A/POST-B; OB-1 is **not** tripped by compaction |
+| V24 | **PV-8 decoy binding.** Open a PR from a trusted collaborator naming a real in-flight shipment but not recorded in the backlog as its implementation or closure PR. Run discovery | the candidate fails PV-8 and is **discarded silently**, not halted on; startup is not denied. A candidate that cannot be bound because the backlog records no implementation PR is **held for operator review** rather than trusted or dropped |
+| V25 | **P-012 availability contract.** For each of `backlogit_list_checkpoints`, `backlogit_get_checkpoint`, `backlogit_resolve_checkpoint`, `backlogit_create_checkpoint`, `gh api` (including the effective-rules endpoint), review-thread enumeration and Git history access, simulate unavailability at its probe point | each probe runs **before** the path that needs it; only declared official CLI fallbacks are used; anything else **halts**; a registry exposing no checkpoint operations **halts** and is never treated as an implicit zero enumeration |
 
 ## Residual risks
 
@@ -1538,9 +2566,10 @@ concurrently-eligible units edit the same file.
 |---|---|---|
 | RR-1 | These are prose protocols executed by an LLM. Correct wording does not prove correct execution. | **Accepted and recorded.** The prior plan's answer — a static wording checker — could only prove the words had not changed, not that the protocol ran. U5's ancestry assertion is the real defence: a concrete command with a pass/fail outcome that makes a miss loud. V8 additionally proves the one discovery command that was silently wrong in revision 6. |
 | RR-2 | *(Closed in revision 7.)* Stage's session-end resolution was previously bound by P-022 with no procedural rewiring. | **Closed by U8.** The independent review held that a universal requirement with a procedural gap in one of its two named agents is not realized. U8 adds the narrow Stage qualifier without granting Stage merge authority. |
-| RR-3 | The locator lives in the PR body, which a human or bot can edit or delete. | **RE-OPENED at revision 9 — still an open, blocking design gap.** Revision 9 *attempted* to close this with `RESOLUTION_OBLIGATION_RECORD` (U9/U10, wired through U4 AC11 / U5 AC6–AC8 / U6 AC1, AC3, AC5): a SHA-free record written into the unit's existing `docs/closure/` pre-merge closure artifact in the same commit as the resolutions, discovered through a second Git-history channel. The round-9 independent review found that attempt **does not actually hold**, on three independent grounds, and the closure claim is therefore withdrawn rather than defended: **(a)** Channel B is *not* independent of the mutable PR body — its candidate set is drawn from PRs whose bodies carry the locator marker, so deleting the body removes the PR from Channel B's candidate set in exactly the residual window Channel B exists to cover (round-9 finding F-13); **(b)** Channel B's discovery commands are not executable as written — `git log --follow --diff-filter=D -- <path>` carries no commit-ish and scans only the current checkout, `FETCH_HEAD` is overwritten on each PR fetch, and a fully deleted artifact has no current-tree path to supply (F-14); **(c)** the accepted-residual sentence claiming the force-push + history-rewrite + body-edit combination is "detectable, halting (OB-2)" is **not substantiated** — because RQ-8 forbids the record from carrying any SHA, no external reference point exists to distinguish "obligation never existed" from "obligation existed and was erased" once the introducing commit is unreachable, and this needs only the PR author's own ordinary push and body-edit rights, not admin access (F-19). The gap restated honestly remains: because `RESOLUTION_PREFIX` resolves *every* checkpoint before merge, the deletable record is still effectively the sole obligation evidence, which contradicts RQ-7. **RQ-7 is not weakened and remains in force.** Closing RR-3 requires either a corroboration signal outside the erasure surface of the branch author (for example a CI-posted check run at S4, or branch protection forbidding force-push once S4 has run) or an operator decision to accept a narrower guarantee. That choice is an operator decision and is recorded in the round-9 review below as the returned blocker. |
-| RR-4 | `gh api --paginate` over all PRs grows with repository history. | **Accepted.** Cost is bounded by PR count and runs once per zero-candidate startup. Correctness was chosen over speed deliberately (RQ-9). |
-| RR-5 | A crash between locator phase 1 and the resolution commits leaves a `RESOLUTION_PENDING` locator with no commits. | **Handled, not merely accepted** — `LAST_MILE_RECOVERY` Step 1a runs the *resolution-state classification* over the locator's checkpoint list at the fetched PR head and re-enters **`RESOLUTION_PREFIX`** (at the resolve step) **only** on a reduced state of `NONE`; `PARTIAL`, `ALL` and `INDETERMINATE` all halt, as does the merged case. `RESOLUTION_POSTCONDITION` is never re-entered here — it is a Step 6 metadata write. Listed here because the handling is a recovery path, not a prevention. |
+| RR-3 | The locator lives in the PR body, which a human or bot can edit or delete. | **Closed at revision 10 by U0 + U13, under an explicit operator decision.** Revision 9's attempt failed on three grounds the round-9 review found and this revision accepts in full: **(a)** Channel B's candidate set was drawn from marker-bearing bodies, so deleting the body removed the PR from the scan (F-13); **(b)** its commands were not executable — no commit-ish, a reused global `FETCH_HEAD`, and no current-tree path for a fully deleted artifact (F-14); **(c)** with no SHA anywhere, an erased introducing commit was indistinguishable from "never existed", needing only the author's ordinary push rights (F-19). Revision 10 closes each: **(a)** U13 AC2 derives Channel B's candidates from the exhaustive **trusted-PR enumeration**, explicitly never filtered by body content, and V17 tests discovery against a **fully emptied** body; **(b)** U13 AC3 replaces every command with an explicit-revision-root form fetched to a **unique retained ref** `refs/autoharness/scan/pr-<n>`, adds a shallow/partial-clone guard at B0, and V18 **executes** the workflow rather than inspecting strings; **(c)** U0 installs an **approval-gated repository ruleset** carrying `deletion` and `non_fast_forward` with no bypass actors over the resolution-bearing Ship branch patterns, and S3.5 **proves** those rules apply to the live `headRefName` before any obligation is published. With force-push and branch deletion both barred, the introducing commit stays reachable, so an ordinary later deletion commit is **detectable** (OB-1) rather than indistinguishable from absence, and the F-19 gap is structurally removed rather than asserted away. **RQ-7 is not weakened.** **Honest residual**: the guarantee is exactly as strong as the ruleset. A repository **admin** can disable or edit the ruleset, and an admin who does so between S3.5 and a later erasure defeats the mechanism. That residual is (i) **bounded to admin privilege** rather than any collaborator's ordinary push rights, which is the material change; (ii) **detected on re-check** — amended item 15 re-proves the ruleset and U13's B2 re-proves per candidate, so drift halts as **OB-8**; and (iii) **not silently absorbed** — an uncovered branch, an ambiguous response, or an unavailable API halts before publication rather than proceeding optimistically. It is accepted at that scope. **Measured precondition**: as of this revision the repository ruleset `PR-Required` (id `12812291`) covers `~DEFAULT_BRANCH` only, and the current Ship source branch returns an **empty** effective-rules set, so the protection U0 must create **does not exist yet**. The plan therefore does **not** assume source-branch immutability today; S3.5 exists precisely because it must be proven per run. |
+| RR-4 | `gh api --paginate` over all PRs grows with repository history. | **Accepted.** Cost is bounded by PR count and runs once per zero-candidate startup. Correctness was chosen over speed deliberately (RQ-9). Channel B adds one fetch and one history scan per **trusted** candidate, which is a small subset of that enumeration; B7's ref cleanup keeps the cost transient. |
+| RR-5 | A crash between locator phase 1 and the resolution commits leaves a `RESOLUTION_PENDING` locator with no commits. | **Handled, not merely accepted** — `LAST_MILE_RECOVERY` Step 1a runs the *resolution-state classification* over the locator's checkpoint list at the fetched PR head and re-enters **`RESOLUTION_PREFIX`** (at the resolve step) **only** on a reduced state of `NONE`; `PARTIAL`, `ALL` and `INDETERMINATE` all halt, as does the merged case. `RESOLUTION_POSTCONDITION` is never re-entered here — POST-A is a metadata write and POST-B is a post-merge closure commit. Listed here because the handling is a recovery path, not a prevention. |
+| RR-6 | **The protocol couples to three Ship-side behaviours it does not own**, and a change to any of them silently breaks it. *(Round-9 finding F-31, recorded rather than hidden.)* First, **Step 5 ↔ Step 6 backlogit state**: S4 writes `OPEN` into an artifact Step 5 item 8 created, and POST-B closes it in Step 6 — if `operational-closure` stops emitting a pre-merge artifact, or emits it at a different path, the record has no host. Second, the **post-merge worktree pattern**: POST-B commits on the `post-merge/{feature_slug}` branch Step 6.0 creates, so a change to that branch convention relocates the closure commit. Third, **`backlogit shipment ship` non-termination and the P-015 safe-close path**: a unit that cannot reach normal termination cannot run POST-B, leaving the record `OPEN` — which is the *correct* fail-closed outcome but will surface as a halt on the next startup rather than as a clean close. | **Accepted and recorded, with two mitigations rather than a claim of independence.** U10 makes the first coupling **owned** — the field is declared in the `operational-closure` skill that owns the artifact, so a schema change is a visible edit to a declared field rather than a silent orphaning — and adds the path-stability invariant so the artifact cannot be relocated while unclosed. U11's worktree-topology reconciliation names the Step 6.0 branch explicitly and cites the recorded prior art, so the second coupling is documented at the point of use. The third is **deliberately left fail-closed**: an `OPEN` record surviving a non-terminating run is the designed behaviour, and the resulting startup halt is the intended signal, not a defect. No attempt is made to auto-recover it, because that would require the cross-run continuation semantics this plan is expressly forbidden to add. |
 
 ## Out of scope
 
@@ -1559,11 +2588,12 @@ concurrently-eligible units edit the same file.
 This section is **evidence, not authority**. It records what previous revisions
 were reviewed against, and it is **appended to, never rewritten**. Revision 8's
 own Round 8 review genuinely returned **FAIL** with three open P1s and left the
-circuit **OPEN** at attempt counter 3; that record stands unaltered below.
-Revision 9 remediates those findings under explicit operator authorization, but
-**no row below, and no earlier revision's verdict, may be cited as a harvest
-gate for revision 9**. Revision 9's own gate is a fresh independent full-plan
-review that has not yet returned.
+circuit **OPEN** at attempt counter 3; that record stands unaltered below. The
+round-9 review returned **FAIL** with one P0 and fifteen P1s and is appended
+verbatim at the end of this document. Revision 10 remediates those findings under
+explicit operator authorization, but **no row below, and no earlier revision's
+verdict, may be cited as a harvest gate for revision 10**. Revision 10's own gate
+is a fresh independent full-plan review that has not yet returned.
 
 | Round | Reviewers | Verdict | Scope reviewed |
 |---|---|---|---|
@@ -1577,7 +2607,8 @@ review that has not yet returned.
 | 7 | Independent four-persona panel, same personas and models as round 6 | **FAIL** (Scope, Correctness, Parity FAIL; Constitution ADVISORY) | revision 7. Panel confirmed **every** revision-6 finding genuinely closed and the design still sound; new findings were deeper specification defects exposed by the earlier fixes. Remediated into revision 8 — see below. |
 | 8 | Independent Scope Boundary Auditor (`gpt-5.6-sol`, xhigh) | **FAIL** (3 P1, 5 P2) | revision 8. **Third consecutive FAIL. Review circuit OPEN — attempt counter 3.** P-013.6 escalation fired; Stage halted without harvesting. |
 | 8-escalation | P-013.6 escalation reviewer, route `gpt-5.6-sol` / `openai` / `xhigh`, against HEAD `bbb52b65` | **ESCALATION_BLOCKS** | revision 8. Reasoning-only. Produced findings A–E, remediated into revision 9 under explicit operator authorization for ONE bounded revision plus ONE fresh full review. |
-| 9 | *(pending)* | *(not yet returned)* | revision 9. The **only** review that can gate revision 9's harvest. |
+| 9 | Independent five-persona panel, cross-model | **FAIL** (1 P0, 15 P1, 11 P2, 6 P3) | revision 9. Returned **RR-3** as the blocking design question for an operator decision. Findings appended verbatim below and remediated into revision 10; the operator's RR-3 decision — an approval-gated GitHub branch-ruleset prerequisite — is implemented as **U0** + the rebuilt Channel B in **U13**. |
+| 10 | *(pending)* | *(not yet returned)* | revision 10. The **only** review that can gate revision 10's harvest. |
 
 ### Round 8 — outstanding findings (SUPERSEDED by revision 9; recorded as they stood)
 

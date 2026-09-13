@@ -31,10 +31,15 @@ autonomous execution (P-017) and merge-adjacent ordering (P-014/P-018).
 be resumed, reviewed, or harvested.** The operator approved a scope split on
 2026-09-13 and this document was replaced by **two** artifacts:
 
-* **Defect 2** → `docs/exec-plans/2026-09-13-checkpoint-resolution-durability-plan.md`
-  (revision 8, Defect 2 only). That plan's own round-8 independent review
-  returned **FAIL**; the review circuit is **OPEN** at attempt counter 3 and
-  `harvest_authorized: false`.
+* **Defect 2** → `docs/exec-plans/2026-09-13-checkpoint-resolution-durability-plan.md`.
+  **Do not read a revision number from this bullet.** That plan has been revised
+  repeatedly since this notice was first written, and pinning a number here made
+  it stale on every revision (PR #396 thread `PRRT_kwDORJEduc6h79ed`). The
+  governing revision, verdict and harvest authorization are whatever that plan's
+  own frontmatter (`revision`, `review_verdict`, `review_verdict_revision`,
+  `harvest_authorized`) records at the time of reading. As of the last edit to
+  this notice, `harvest_authorized` was **false** and no review had authorized a
+  harvest; consult the frontmatter rather than this sentence.
 * **Defect 1** → `docs/decisions/2026-09-13-dark-mode-continuation-auto-routing-deliberation.md`
   (`status: open`). Defect 1 was **removed from implementation scope** and
   returned to a fresh deliberation. It must not be implemented until that

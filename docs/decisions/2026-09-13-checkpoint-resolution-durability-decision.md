@@ -1,7 +1,7 @@
 ---
 doc_type: decision
 date: 2026-09-13
-revision: 3
+revision: 4
 status: accepted
 supersedes_scope_of: docs/decisions/2026-09-13-checkpoint-lifecycle-continuity-deliberation.md
 scope: defect-2-only
@@ -10,7 +10,8 @@ related_open_deliberation: docs/decisions/2026-09-13-dark-mode-continuation-auto
 historical_feature: 143-F
 historical_shipment: 143-S
 abandoned_ids_historical_only: [143-F, 143-S, "143.001-T … 143.014-T"]
-policies: [P-003, P-005, P-009, P-010, P-014, P-016, P-018, P-022]
+policies: [P-003, P-005, P-009, P-010, P-011, P-014, P-016, P-018, P-020, P-022]
+contains_proposed_action: true
 ---
 
 # Checkpoint Resolution Durability — Requirements and Decision (Defect 2)
@@ -111,35 +112,59 @@ executable persistence substrate (Defect-1 scope, explicitly forbidden here).
 | RQ-3 | The resolution commits must be **pushed** before any evidence is derived from them or the resolution is treated as durable. | Operator: *"push before resolving where remote durability matters."* An unpushed resolution is local-only; a crash before push loses it and the locator would point at SHAs no remote has. |
 | RQ-4 | After the final resolution commit, the **actual local review must be re-run** at that HEAD. Re-pointing an earlier verdict at a new HEAD is a false attestation. | The final HEAD contains, by construction, commits no earlier review examined. |
 | RQ-5 | The reviewed-HEAD record lives in **PR-body metadata**, written **before** the P-014 §1.9 gate runs, because a PR-body edit does not advance `headRefOid`. | §1.9 reads the body and requires `Reviewed HEAD == headRefOid`; running the gate first is unsatisfiable once resolutions advanced HEAD. |
-| RQ-6 | Merge approval is obtained **after** the §1.9 gate passes, is **pinned to that HEAD** via a recorded `approved_head`, and is followed by a **strengthened live re-fetch** immediately before merge. Merge proceeds only when the six-part merge bar holds. **No stale approval is ever reused.** | P-014 ordering; TOCTOU between approval and merge. **Corrected in revision 9** after the P-013.6 escalation established that the real `_ship.agent.md` Step 5 does **not** already satisfy this: its item 15 re-runs the P-018 gate and re-queries `headRefOid` only — it never evaluates required checks and never re-paginates review threads. RQ-6 therefore had no executable enforcement path, and the plan's claim that the approval/re-fetch/merge items "run unchanged" was false. The plan's `RESOLUTION_PREFIX` now defines the order as segments S1…S8 against a **verbatim extract** of the live item list, item 15 is **amended** rather than preserved, and item 16 (P-009) stays unmodified. |
-| RQ-12 | A **durable, Git-tracked, history-immutable** resolution-obligation record must be introduced by the resolution commit on the PR branch and remain independently discoverable from exhaustive trusted PR/commit/tree history **even if the PR-body metadata is deleted**. Its absence from the current tree must be distinguished from its deletion, via commit history. | **Added in revision 9** to close RR-3 rather than weaken RQ-7. Because `RESOLUTION_PREFIX` resolves *every* checkpoint before merge, the mutable PR body was the **sole** obligation record: deleting it left startup with zero checkpoints and zero locators, concluding "clean" — strictly worse than the pre-change still-active checkpoint, and a direct contradiction of RQ-7. The record is persisted as a field on the **existing owned** `docs/closure/` pre-merge closure artifact, carries **no SHA** (so RQ-8 is preserved intact), is provenance-checked from API fields and Git ancestry only, fails closed on deletion, force-push/history gaps, conflicting records and channel disagreement, and is discharged only by an `OPEN` → `CLOSED` transition in a later, merged, ancestry-auditable commit. It introduces **no** executable persistence substrate, **no** locking/CAS, **no** cross-run cursor, and **no** Defect-1 construct. |
+| RQ-6 | Merge approval is obtained **after** the §1.9 gate passes, is **pinned to that HEAD** via a recorded `approved_head`, and is followed by a **strengthened live re-fetch** immediately before merge. Merge proceeds only when the **seven**-part merge bar holds, whose locator and ancestry terms are **conditional** so a zero-checkpoint unit can satisfy it, and whose merge call **pins the observed head SHA**. **No stale approval is ever reused.** | P-014 ordering; TOCTOU between approval and merge. **Corrected in revision 9** after the P-013.6 escalation established that the real `_ship.agent.md` Step 5 does **not** already satisfy this: its item 15 re-runs the P-018 gate and re-queries `headRefOid` only — it never evaluates required checks and never re-paginates review threads. RQ-6 therefore had no executable enforcement path, and the plan's claim that the approval/re-fetch/merge items "run unchanged" was false. The plan's `RESOLUTION_PREFIX` now defines the order as segments S1…S8 against a **verbatim extract** of the live item list, item 15 is **amended** rather than preserved — and revision 4 further requires it to **re-enumerate active checkpoints** and **re-prove the ruleset** — and item 16 (P-009) retains its rendered-UI confirmation while **gaining** an API-side merge-commit-mode check and a two-parent assertion. |
+| RQ-12 | A **durable, Git-tracked, history-immutable** resolution-obligation record must be introduced by the resolution commit on the PR branch and remain independently discoverable from exhaustive trusted PR/commit/tree history **even if the PR-body metadata is deleted**. Its absence from the current tree must be distinguished from its deletion, via commit history. | **Added in revision 9** to close RR-3 rather than weaken RQ-7. Because `RESOLUTION_PREFIX` resolves *every* checkpoint before merge, the mutable PR body was the **sole** obligation record: deleting it left startup with zero checkpoints and zero locators, concluding "clean" — strictly worse than the pre-change still-active checkpoint, and a direct contradiction of RQ-7. The record is persisted as a field on the **existing owned** `docs/closure/` pre-merge closure artifact, carries **no SHA** (so RQ-8 is preserved intact), is discovered from a candidate set derived **independently of PR-body content** and provenance-checked from API fields and Git ancestry only, fails closed on deletion, force-push/history gaps, conflicting records and channel disagreement, and is discharged only by an `OPEN` → `CLOSED` transition in a later, merged, ancestry-auditable commit. It introduces **no** executable persistence substrate, **no** locking/CAS, **no** cross-run cursor, and **no** Defect-1 construct. |
 | RQ-7 | A durable locator must make the outstanding closure obligation discoverable from a **fresh checkout of the default branch with zero active checkpoints**, and must remain discoverable **through** required post-merge closure until closure is verified. | The residual window between the last resolution and verified closure is deliberately checkpoint-free; something must cover it. |
 | RQ-8 | The locator must be **non-self-referential**: no commit is ever required to record its own SHA. | Revision 4's locator was unimplementable for exactly this reason. |
 | RQ-9 | Locator discovery must be **exhaustive and trusted**: fully paginated, not filtered by shipment status, and **fail-closed on incomplete enumeration**. | 139-S's shipment was *archived* while its obligation was outstanding; a bounded or status-filtered scan misses the motivating case. |
 | RQ-10 | Reaching the recovery path confers **no merge authority**. It restores readiness *evidence* only. | Without this the recovery path becomes an unsupervised auto-merge route. |
 | RQ-11 | Every failure mode — closed-unmerged PR, missing PR, failed lookup, incomplete or unparseable locator — **halts to the operator**. Merge status is never inferred; no blind second merge. | Missing evidence is never "nothing to do". |
+| RQ-13 | Before any resolution obligation is published, the **live head branch of the carrying PR must be proven** to be covered by an active repository ruleset carrying both the `deletion` and `non_fast_forward` rules, with no bypass actors and no current-user bypass. The proof reads the **actual `headRefName` from the PR API**, never the ambient checked-out branch. An unavailable API, an uncovered branch, ambiguous rules, or any bypass capability **halts before publication**, and drift detected at re-check halts before merge. | **Added in revision 4**, implementing the operator's RR-3 decision. RQ-12's record is only more durable than the PR body if its introducing commit stays **reachable** and its branch stays **present** — and neither holds by default. Measured read-only at revision 4: the repository's single ruleset `PR-Required` (id `12812291`) is `active` but targets `~DEFAULT_BRANCH` only, and the effective-rules endpoint returns `[]` for the current Ship source branch. Without RQ-13, a force-push or branch deletion erases the record's introducing commit, and because RQ-8 forbids any SHA there is no external reference point distinguishing "erased" from "never existed" — an erasure needing only the branch author's ordinary push rights. RQ-13 removes that gap structurally. It does **not** claim admin-proof durability; a repository admin can edit the ruleset, and that narrowed residual is recorded honestly rather than claimed away. Configuring the ruleset is an **external GitHub settings change**, carried by a distinct `ProposedAction` unit requiring explicit operator/admin approval at implementation time; **no planning pull request applies it**. |
 
 ## 5. Scope boundary
 
 **In scope** — installed harness documents only:
 
 * `.github/policies/workflow-policies.md` (one new policy section)
-* `.github/instructions/github-pr-automation.instructions.md` (two new subsections)
+* `.github/instructions/github-pr-automation.instructions.md` (one new subsection, extended by five units: the HEAD-evidence rule, the canonical ordering and locator blocks, the branch-protection prerequisite, the discovery/provenance protocol, last-mile recovery, and the obligation record with its body-independent discovery channel)
 * `.github/agents/_ship.agent.md` (two existing sections rewired)
 * `.github/agents/_stage.agent.md` (U8 — both Stage resolve sites: *Session end*
   item 2 and the `OWNER-SCOPED RESOLUTION` block, which receive the narrow P-022
-  merged-PR prohibition and the executable merged-PR predicate). Stage gains
-  **no** merge authority from this; see the out-of-scope note below.
+  merged-PR prohibition and a **checkpoint-keyed** merged-carrier predicate.
+  **Revision 4 correction**: revision 3 specified that predicate as a lookup on
+  the *ambient working-tree branch*, which is wrong at both sites — Stage may
+  legitimately sit on the default or an admin branch while resolving a
+  checkpoint carried by a different, already-merged PR, and crash resumption
+  routinely runs from an unrelated checkout. The predicate now reads the
+  carrying PR from the **selected checkpoint's own validated context**, and
+  `context.pr` / `context.branch` become mandatory fields on any Stage-created
+  Git-tracked checkpoint. Stage gains **no** merge authority from this; see the
+  out-of-scope note below.)
 * `.github/agents/_orchestrator.agent.md` (zero-candidate startup branch)
-* `.github/skills/operational-closure/SKILL.md` — **added in revision 9** by
+* `.github/skills/operational-closure/SKILL.md` — **added in revision 3** by
   unit U10: one field declaration (`resolution_obligation`) in the pre-merge
-  closure artifact's schema. This is an **openly recorded scope addition of one
+  closure artifact's schema, plus — new in revision 4 — its **create-only
+  initialization rule** and the **P-020 compaction exclusion** for records that
+  are `none` or `OPEN`. This is an **openly recorded scope addition of one
   file**, made because the `operational-closure` skill owns the `docs/closure/`
   artifact schema; adding the RQ-12 record without declaring it there would
   leave it an unowned squatter on another component's artifact — exactly the
   ad-hoc tracker the RR-3 correction must avoid — and would drift the moment the
   skill's field list changed.
 * `docs/compound/workflow-issues/` (one new learning)
+
+**In scope, non-file — added in revision 4.** One **GitHub repository settings
+change**: a repository ruleset covering every permitted resolution-bearing Ship
+branch pattern (`feat/**`, `chore/**`, `post-merge/**`, derived from the
+installed Ship agent's own naming rather than guessed) with the `deletion` and
+`non_fast_forward` rules, `enforcement: active`, no bypass actors, and
+`current_user_can_bypass: never`. This is carried by a distinct unit classified
+`ProposedAction` / `ActionRisk: high` / `approval_required: true`. It touches
+**no repository file**, and it is **not applied by any planning pull request** —
+it requires explicit operator or admin approval at implementation time. It is
+recorded here rather than left implicit precisely because a settings mutation
+sits outside the ordinary documentation-only scope this decision otherwise
+declares.
 
 **Out of scope**, explicitly:
 
@@ -154,22 +179,28 @@ executable persistence substrate (Defect-1 scope, explicitly forbidden here).
   police, and a permanent checker plus hooks for four prose paragraphs is
   scope the Scope Boundary Auditor already flagged (R-P2c′).
 * The task↔plan acceptance parity gate (former T14). It was introduced because a
-  14-task plan had drifted from its cards. The reduced plan's **ten units
-  (U1–U10)**, whose cards are mechanically derived from the plan sections, do not
+  14-task plan had drifted from its cards. The reduced plan's **fourteen units
+  (U0–U13)**, whose cards are mechanically derived from the plan sections, do not
   need a runtime gate, and the former gate could not in fact enforce first-task
   ordering (PR #396 thread `PRRT_kwDORJEduc6h3sTk`).
 * backlogit tool changes; `src/`; `crates/`; shipments 140-S / 141-S / 142-S;
   feature 142-F; upstream autoharness template propagation.
-* Upstream autoharness template propagation.
+* **Any CI-check persistence substrate.** The operator's RR-3 decision explicitly
+  rejected a CI-posted corroboration signal in favour of the branch-ruleset
+  prerequisite, so no check-run, workflow, or external store is introduced.
+* **Any Defect-1 lineage or cursor auto-routing, locking or compare-and-swap, and
+  any cross-run continuation semantics.** RQ-13 and the rebuilt discovery channel
+  add none of these; their only authority is to halt or to route.
 * Stage does **not** execute `RESOLUTION_PREFIX` — it holds no merge authority
-  (P-010) — and does not perform `RESOLUTION_POSTCONDITION`, which is a Ship
-  Step 6 closure metadata write. (Revision 8 retired the single
-  `RESOLUTION_ORDER` construct and split it into these two; the retired name has
-  no definition in the canonical plan and must not be cited.) Stage receives only
-  the narrow P-022 prohibition (never resolve into an already-merged carrying
-  PR), which unit U8 installs. This closes the procedural gap that would
-  otherwise leave an agent-agnostic policy contradicted by one of its two named
-  agents' own procedure.
+  (P-010) — and does not perform `RESOLUTION_POSTCONDITION`, which is Ship's
+  Step 6 discharge (a PR-body metadata write plus a commit on the post-merge
+  closure branch). (Revision 8 of the plan retired the single `RESOLUTION_ORDER`
+  construct and split it into these two; the retired name has no definition in
+  the canonical plan and must not be cited.) Stage receives only the narrow P-022
+  prohibition (never resolve into an already-merged carrying PR), which unit U8
+  installs. This closes the procedural gap that would otherwise leave an
+  agent-agnostic policy contradicted by one of its two named agents' own
+  procedure.
 
 ## 6. Disposition of the PR #396 review findings
 
@@ -189,20 +220,30 @@ executable persistence substrate (Defect-1 scope, explicitly forbidden here).
 | `PRRT_kwDORJEduc6h3sTs` | **Fixed** — same as `3aDl`. |
 | `PRRT_kwDORJEduc6h3sTz` | **Fixed** — manifest validation asserts exact membership, never order. |
 | `PRRT_kwDORJEduc6h3sT4` | **Fixed** — the locator protocol is called **three-phase** consistently. |
-| `PRRT_kwDORJEduc6h6juv` *(carried forward — STILL OPEN)* | **Attempted in revision 3 of this decision** — RQ-12 plus plan units U9/U10 were intended to close RR-3 with a durable Git-tracked obligation record. **The round-9 independent review found the mechanism does not hold** (findings F-13, F-14, F-19: Channel B is not independent of the mutable PR body, its commands are not executable as written, and the accepted-residual claim is unsubstantiated), so **RR-3 is re-opened**. RQ-7 remains in force and is **not** weakened, and RQ-8 is still preserved (the record carries no SHA) — but RQ-12 is **not yet satisfied by any specified mechanism**. Closure requires an operator decision between a branch-protection remedy and an out-of-band corroboration signal outside the branch author's erasure surface; both reach past the reduced Defect-2 boundary. |
+| `PRRT_kwDORJEduc6h6juv` *(carried forward — ADDRESSED IN REVISION 4, review pending)* | **Revision 3 attempted** to close RR-3 with RQ-12 plus plan units U9/U10. **The round-9 independent review found that mechanism did not hold** (F-13: Channel B was not independent of the mutable PR body; F-14: its commands were not executable as written; F-19: the accepted-residual claim was unsubstantiated). Revision 4 addresses all three under the operator's RR-3 decision: **new RQ-13** requires a proven, active branch ruleset carrying `deletion` and `non_fast_forward` with no bypass over every resolution-bearing Ship branch pattern, proven at run time against the **live `headRefName`** before any obligation is published; and the discovery channel is rebuilt to derive its candidates from the exhaustive **trusted-PR enumeration** rather than from body content, to fetch each candidate to a **unique retained ref** with explicit revision roots on every command, and to bind each transition to record identity and commit ancestry. RQ-7 remains in force and is **not** weakened; RQ-8 is still preserved (the record carries no SHA). **Residual, stated honestly**: the guarantee is exactly as strong as the ruleset, and a repository **admin** can edit or disable it — a narrower exposure than the previous *any-collaborator* one, detected on re-check rather than silently absorbed. **This disposition is not a verdict**: revision 4's own independent review has not yet returned, so the thread is not claimed closed here. |
 
 ## 7. Definition of done
 
 The reduced unit is done when: the backlog carries the P-003 chain in full
-(source document → plan → one top-level release unit → two sub-epics → **ten
-tasks**, every task referencing its parent sub-epic per P-003 item 4);
-RQ-1 … **RQ-12** are each realized
-by exactly one **owning** implementation unit — the unit that installs the normative text —
-with zero or more **enforcing** units that wire that text into an execution
-path; every unit is a single-domain documentation change achievable in under two
-hours; the reduced plan passes a **fresh independent** full-plan review of
-**revision 9**; and the
-backlog carries a non-mixed shipment containing only Defect-2 work.
+(source document → plan → one top-level release unit → **three** sub-epics →
+**fourteen tasks**, every task referencing its parent sub-epic per P-003 item 4);
+RQ-1 … **RQ-13** are each realized by exactly one **owning** implementation unit
+— the unit that installs the normative text — with zero or more **enforcing**
+units that wire that text into an execution path; every unit is a single-domain
+change achievable in under two hours; the plan passes a **fresh independent**
+full-plan review of **its then-current revision** — this criterion deliberately
+names no fixed revision number, because pinning it to one revision is what made
+it stale the moment a remediation landed (PR #396 thread
+`PRRT_kwDORJEduc6h79fF`), and the governing revision is whatever the plan's own
+`review_verdict_revision` frontmatter field records; the ruleset prerequisite has
+received explicit operator or admin approval **and** been applied, or has been
+explicitly deferred with the consequence recorded; and the backlog carries a
+non-mixed shipment containing only Defect-2 work.
+
+**The `ProposedAction` unit is exempt from the "documentation change" clause and
+from the single-file rule**, because it changes GitHub repository settings and
+touches no file. It is not exempt from the two-hour rule, the approval
+requirement, or the trace.
 
 A unit that is a pure **closure deliverable** (for example, capturing a compound
 learning) realizes no requirement and is exempt from the trace, provided it is
