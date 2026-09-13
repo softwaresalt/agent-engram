@@ -389,5 +389,9 @@ counted as folded, applied, or discharged.
 | D13 | Unit U6 scoping; P-001 row | U6 |
 | D14 | `LAST_MILE_RECOVERY` working-tree placement | **none — OPEN P1, not folded into any task criterion** |
 
-Every blocking hardening folds into at least one task acceptance criterion. No
-hardening is left as narrative-only.
+**Coverage is incomplete — one documented exception.** Every blocking hardening
+in the table above folds into at least one task acceptance criterion **except
+D14**, which folds into **none** and remains an **OPEN P1** (Round 8, finding
+3). D14 is therefore still narrative-only. The three fixes listed under the D14
+status block above must all land before this coverage table may be read as
+complete. No hardening other than D14 is left as narrative-only.

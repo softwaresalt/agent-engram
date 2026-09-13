@@ -20,18 +20,29 @@ Executed the operator-approved split of the 143 release unit.
   with a pointer to the new deliberation.
 - `143-F` and `143-S` annotated truthfully; shipment marked DO NOT CLAIM.
 - PR #396 body updated (metadata only): outcome stays `BLOCKED`, Reviewed HEAD
-  refreshed to the pushed SHA.
+  refreshed to the pushed SHA. This refresh is **per-push**, not one-time — the
+  body's `Reviewed HEAD` must be re-pointed via PR metadata after every
+  subsequent push, or the current-HEAD evidence contract is violated.
 
 ## Why it halted
 
-Independent four-persona panels (Scope `gpt-5.6-sol`, Constitution
-`claude-opus-4.8`, Correctness `gemini-3.8-flash`, Parity `grok-4.6`) reviewed
-revisions 6, 7 and 8. All three returned FAIL. Attempt counter reached 3 →
-P-013.6 escalation fired, route `gpt-5.6-sol`/`openai`/`xhigh`, same-route guard
-not triggered. Per the protocol the failing operation was **not** re-executed.
+Review coverage was **not** uniform across the three rounds, and the record
+below matches the plan's retained review history
+(`docs/exec-plans/2026-09-13-checkpoint-resolution-durability-plan.md`, rounds
+6–8):
+
+- **Revisions 6 and 7** — independent **four-persona panel**: Scope Boundary
+  Auditor (`gpt-5.6-sol`), Constitution (`claude-opus-4.8`), Correctness
+  (`gemini-3.8-flash`), Agent-Native Parity (`grok-4.6`).
+- **Revision 8** — independent **Scope Boundary Auditor only**
+  (`gpt-5.6-sol`, xhigh). **No four-persona panel reviewed revision 8.**
+
+All three rounds returned FAIL. Attempt counter reached 3 → P-013.6 escalation
+fired, route `gpt-5.6-sol`/`openai`/`xhigh`, same-route guard not triggered. Per
+the protocol the failing operation was **not** re-executed.
 
 Each round genuinely closed the prior round's findings — nothing regressed, and
-no panel falsified the design. The recurring failure mode is that the plan
+no reviewer falsified the design. The recurring failure mode is that the plan
 specifies edits to `_ship.agent.md` **Step 5** against a *prose description* of
 that step, while the real item ordering (readiness items 7b/7c sitting before
 runtime verification, closure-artifact generation, follow-up writes and the push
@@ -48,6 +59,28 @@ in items 7–10) is more entangled than the description admits.
 3. **D14 not folded into a task criterion.** Working-tree placement (checkout +
    verification) is absent from U5's ACs and from V1–V11, so U5 could pass while
    recovery is still on `main`.
+
+## Bounded Copilot remediation passes (no harvest, no claim)
+
+Three operator-authorized bounded passes addressed published-PR review findings
+only. None closed any of the three open P1s above; none changed the circuit
+state; none harvested, claimed, activated, merged, or created a replacement
+shipment.
+
+| Pass | Findings addressed | Nature |
+|---|---|---|
+| 1 | 14 threads at `8a8fda8e` | Honesty corrections, supersession links |
+| 2 | 15 threads at `f5215703` | Specification hardening, D14 un-claimed |
+| 3 | 3 threads (this pass) | Review-attribution accuracy, hardening-coverage exception, per-push PR-body evidence rule |
+
+Pass 3 specifics:
+
+- Corrected the review-coverage record above: revision 8 was reviewed by the
+  **Scope Boundary Auditor alone**, not by the four-persona panel.
+- Stated the **D14 exception** explicitly in the hardening coverage table, which
+  previously asserted blanket completeness while its own D14 row said `none`.
+- Recorded that the PR body's `Reviewed HEAD` refresh is a **per-push**
+  obligation.
 
 ## Recommended next step
 
