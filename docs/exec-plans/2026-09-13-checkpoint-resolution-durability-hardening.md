@@ -1,67 +1,495 @@
 ---
 doc_type: exec-plan-hardening
 date: 2026-09-13
-revision: 10
+revision: 11
 scope: defect-2-only
-status: blocked
-review_verdict: FAIL
-review_verdict_revision: 10
+status: under-review
+review_verdict: pending
+review_verdict_revision: 11
 review_attempts: 5
 harvest_authorized: false
 plan_document: docs/exec-plans/2026-09-13-checkpoint-resolution-durability-plan.md
 supersedes: docs/exec-plans/2026-09-13-checkpoint-lifecycle-continuity-hardening.md
-policies: [P-005, P-006, P-009, P-010, P-011, P-014, P-016, P-018, P-020, P-022]
+supersedes_normative_content_of: revision 10 of this document
+policies: [P-001, P-005, P-006, P-009, P-010, P-011, P-012, P-014, P-016, P-018, P-019, P-020, P-022]
 contains_proposed_action: true
 ---
 
-# Checkpoint Resolution Durability — Plan Hardening (revision 10, Defect 2 only)
+# Checkpoint Resolution Durability — Plan Hardening (revision 11, Defect 2 only)
 
 Hardening applied under P-006 to
 `docs/exec-plans/2026-09-13-checkpoint-resolution-durability-plan.md`. The plan
 declares `requires_plan_hardening: yes` because it changes merge-adjacent
 ordering governed by P-014/P-018, introduces a startup route that could, if
-mis-specified, become an unsupervised merge path, and — new in revision 10 —
-carries a `ProposedAction` unit that mutates repository settings.
+mis-specified, become an unsupervised merge path, and carries a `ProposedAction`
+unit that mutates repository settings.
 
-**Review status (frontmatter is authoritative).** Revision 8 of this document
-underwent the revision-8 independent review, which returned **FAIL** — three P1
-findings, one of which (`D14`) was a defect **in this document**. That was the
-**third consecutive FAIL** (revisions 6, 7, 8); the plan-review circuit opened at
-attempt counter 3 and the P-013.6 escalation fired. Revision 9 was one bounded
-remediation revision, and its round-9 review returned **FAIL** with 1 P0 and 15
-P1 findings at HEAD `9b15fd43`; that complete finding set is recorded verbatim in
-the plan's `## Plan Review — round 9` section.
+**Review status (frontmatter is authoritative).** `revision: 11`,
+`review_verdict: pending`, `review_verdict_revision: 11`, `review_attempts: 5`,
+`status: under-review`, `harvest_authorized: false`. **This document authorizes
+no harvest.** Revisions 6, 7, 8, 9 and 10 all returned **FAIL** from independent
+review; the round-10 panel was unanimous across four cross-model reviewers with
+4 P0 and 17 P1 findings, and recommended replacing the durability mechanism
+rather than repairing it a third time.
 
-**Revision 10 is a second bounded remediation revision explicitly authorized by
-the operator**, carrying the operator's **RR-3 decision** plus remediation of
-every round-9 P0/P1. Its own review has **not yet returned**: `review_verdict` is
-`pending`, `review_verdict_revision` reads `10`, `review_attempts` reads `5`, and
-`harvest_authorized` stays **false**. This document authorizes no harvest.
+**Revision 11 is the third and final bounded remediation revision in the
+operator-authorized outcome cycle.** It carries the architecture-validated
+**protected immutable annotated-tag** design. Its own review has **not yet
+returned**.
 
-**What revision 10 changes in this document.**
+## What revision 11 changes in this document
 
-1. **D15 is re-pointed and its status corrected.** Revision 9 marked D15
-   *applied* while the round-9 review found its mechanism did not hold. D15 is
-   now stated as **NOT discharged by revision 9** and **discharged by revision 10
-   through D16 plus the rebuilt Channel B**, with the three failure grounds named.
-2. **D16 is added** — the approval-gated branch-ruleset prerequisite, its
-   `ProposedAction` classification, and the proof obligation that makes the
-   durable record's detectability real rather than asserted.
-3. **D5's fold is corrected** to cite **U2 AC3** (the criterion that installs the
-   canonical block verbatim) rather than U2 AC6, and its segment list is updated
-   for **S3.5** and the **seven**-part merge bar. *(Round-9 finding F-32.)*
-4. **The coverage table is refreshed for the fourteen-unit structure** produced
-   by the mandated U3/U4/U9 splits, so every fold points at a unit that exists.
+Revision 11 **retires** the hardenings that existed only to keep the deleted
+machinery coherent, and **replaces** them with hardenings against the new
+design's actual failure modes. Retiring a hardening is recorded, never silent.
 
-**Relationship to the prior hardening document.** The combined hardening document
-(`2026-09-13-checkpoint-lifecycle-continuity-hardening.md`, H1–H41) covered both
-defects. It is retained unchanged as evidence. Its Defect-1 hardenings are
-**withdrawn from implementation** along with Defect 1 itself. Its Defect-2
-hardenings are carried forward here, renumbered `D1`–`D9`, with the corrections
-that later revisions superseded marked explicitly so no implementer can revive
-them.
+| Prior | Disposition at revision 11 |
+|---|---|
+| **D9** — the obligation must survive a failed closure | **Retired by deletion.** There is no obligation *record* with a lifecycle to survive; there is a tag whose status is derived. A failed closure leaves the marker `PENDING`, which is the fail-closed signal by construction (new **D9′**). |
+| **D10** — a pending locator must never be mistaken for a published one | **Retired by deletion.** The PR-body locator state machine is deleted. There are no locator phases to confuse. A marker either exists on the remote or does not. |
+| **D11** — a rewritten branch must not silently drop the resolution commits | **Superseded by D11′.** The marker is a protected tag, unreachable by any branch operation, so a rewrite cannot drop it; the rewrite is *detected* instead by the `C`-ancestor-of-`H` re-check. |
+| **D13** — a masked obligation is an undischarged obligation | **Retired by deletion.** Masking was a property of the two-channel record. Ancestry cannot be masked. |
+| **D14** — a recovery step an agent cannot perform is not a recovery | **Superseded by D14′.** The working-tree placement procedure (`WP-0`…`WP-7`) is deleted along with the committing recovery branch it served; discovery is now entirely read-only and creates no worktree. The *principle* is preserved and re-aimed at the new protocol. |
+| **D15** — the record must survive deletion of the PR body | **Superseded by D15′.** Preserved as a requirement, satisfied structurally rather than by machinery: discovery reads tags and never reads a PR body. |
+| **D16** — detectability must rest on a proven protection | **Superseded by D16′.** Preserved as a requirement, re-aimed from the **branch** ruleset (which round 10 found breaks workflows repository-wide) to the **tag** ruleset, with two corrections of substance: the load-bearing rule and the non-restriction of creation. |
 
-## Superseded prior corrections — do not reimplement
+`D1`–`D8` and `D12` carry forward with their substance intact; their folds are
+re-pointed to the revision-11 units. The full revision-10 text of every hardening
+is retained below the line as immutable historical evidence.
+
+## D1 (BLOCKING) — Resolution must not be recursive
+
+**Risk.** Any mitigation that creates a further Git-tracked checkpoint to cover
+the residual window must itself be resolved by a further commit, which needs a
+further PR once the current one merges. The remedy never terminates.
+
+**Fold.** Plan `RESOLUTION_MARKER` — every checkpoint owned by the unit is
+resolved **before** the final gates, in **one** commit, and **no** new
+Git-tracked checkpoint is created to cover the residual window. U5 removes
+generic, session-end and post-merge resolution outright, so there is no site at
+which a recursive checkpoint could be created.
+
+**Verified by** V5, V22.
+
+## D2 (BLOCKING) — The residual window must be covered by something
+
+**Risk.** Because every checkpoint is resolved before merge, the interval between
+the last resolution and verified delivery is deliberately checkpoint-free. If
+nothing covers it, a crash in that window is indistinguishable from a clean
+state — and is strictly worse than the pre-change still-active checkpoint.
+
+**Fold.** Plan `RESOLUTION_MARKER` (the marker is published **in the same atomic
+push** as the resolution commit, so the window has an object covering it from
+the first instant it exists) and `RESOLUTION_MARKER_DISCOVERY` (a fresh checkout
+with zero active checkpoints still finds the marker by scanning tags).
+
+**Verified by** V9, V13.
+
+## D3 (BLOCKING) — The obligation object must not be self-referential
+
+**Risk.** A record that must contain its own commit's SHA is unimplementable: the
+SHA is not known until the commit exists, and writing it changes the commit.
+Revision 4's locator failed for exactly this reason.
+
+**Fold.** Plan `RESOLUTION_MARKER` payload — the target commit `C` is
+**deliberately excluded** from the payload. The annotated tag **object header**
+supplies the binding, written by Git at tag-creation time. The object that names
+`C` is not the commit, so nothing is self-referential.
+
+**Verified by** V7 (the peel assertion proves the binding exists without the
+payload carrying it).
+
+## D4 (BLOCKING) — Evidence must be produced at the final HEAD, not relabelled
+
+**Risk.** Moving a reviewed-HEAD SHA without re-running the review re-points a
+stale verdict at a HEAD that, by construction, contains commits the earlier
+review never examined. That is a false attestation.
+
+**Fold.** Plan U4 AC2 — the **actual local review** re-runs at the current head
+after publication, for **every** unit. U4 AC7 — a HEAD change **voids** the
+approval and requires a fresh review and a fresh HEAD-bound approval.
+
+**Verified by** V16, V24.
+
+## D5 (BLOCKING) — The readiness sequence must be satisfiable
+
+**Risk.** §1.9 reads the PR body and requires `Reviewed HEAD == headRefOid`.
+Running the gate **before** the resolution commit is unsatisfiable, because the
+commit advances HEAD past whatever the body recorded. The live Ship file gates
+readiness (items 7b/7c) **before** four mutating items and the push.
+
+**Fold.** Plan U4 AC2 installs the total order: ordinary mutations → freeze →
+publish → **actual review at the current head** → **advisory PR-body
+`Reviewed HEAD`** → §1.9 → explicit required-check evaluation → P-018 → HEAD-bound
+approval → amended last-mile → expected-head merge. Items **7b and 7c MOVE**
+after the push. The PR-body write is metadata and does not advance `headRefOid`
+(plan `HEAD_EVIDENCE_RULE`), which is what makes the ordering terminate.
+
+**Verified by** V24, and V5 for the zero-checkpoint path.
+
+## D6 (BLOCKING) — Recovery must not trust stored state
+
+**Risk.** A resumed session that trusts a stored SHA, a stored status, or a
+stored branch name acts on a world that may have changed.
+
+**Fold.** Plan `RESOLUTION_MARKER_DISCOVERY` — there **is** no stored status.
+Status is computed live from `git merge-base --is-ancestor <C> origin/main`
+against a freshly refreshed default branch. Provenance is re-derived live from
+the commit→pulls API and re-proved by ancestry against a freshly fetched live
+head. U4 AC6's amended last-mile re-fetches every input unconditionally.
+
+**Verified by** V14, V21, V24.
+
+## D7 (BLOCKING) — Discovery must be exhaustive or fail closed
+
+**Risk.** 139-S's shipment was *archived* while its obligation was outstanding. A
+status-filtered, truncated, or racy scan misses the motivating case and reports
+"clean".
+
+**Fold.** Plan `RESOLUTION_MARKER_DISCOVERY` fixed-point scan — list, **client-side**
+exact-prefix filter (so a server-side glob quirk cannot truncate), fetch each
+candidate to a **unique** ref, verify listed OID equals fetched OID, then
+**re-scan and require a stable `(name, OID)` set** within a bounded retry count
+or **halt**. Every validation failure halts; none is skipped.
+
+**Verified by** V11, V12, V15, V26.
+
+## D8 (BLOCKING) — Recovery must not become an auto-merge path
+
+**Risk.** A startup route that can reach a merge is an unsupervised merge path,
+whatever it is called.
+
+**Fold.** Plan `RESOLUTION_MARKER_DISCOVERY` — "reaching the recovery path
+confers **no merge authority**". U5 AC1 blocks and routes; U7 AC2 routes
+exclusively to Ship recovery and does nothing itself; U6 AC6 states Stage gains
+no merge authority (P-010).
+
+**Verified by** V14, V23.
+
+## D9′ (BLOCKING) — A failed closure must leave a loud, fail-closed signal
+
+**Risk.** A shipment that cannot reach normal termination must not silently
+disappear from the record.
+
+**Fold.** Plan `RESOLUTION_MARKER_DISCOVERY` ancestry rule — if `C` never becomes
+an ancestor of `origin/main`, the marker reads **`PENDING`**, permanently, and
+`PENDING` **blocks new shipment work** (U5 AC1, U7 AC2). This is the designed
+outcome, not a defect (plan RR-7). **No auto-recovery is attempted**, because
+auto-recovery would require the cross-run continuation semantics this plan is
+forbidden to add.
+
+**Verified by** V15, V17, V20.
+
+## D11′ (BLOCKING) — A rewritten or deleted branch must not silently drop the evidence
+
+**Risk.** A force-push or branch deletion can erase a commit-borne record using
+only the author's ordinary push rights. Revision 3's record failed on exactly
+this; revision 4's fix (protecting branches) broke every contributor's workflow.
+
+**Fold, in two parts.** **(a) Survival** — the marker is a **tag** in a namespace
+protected against update and deletion with no bypass (U0). No branch operation
+reaches it: a force-push, a branch deletion, and a PR-body edit all leave it
+intact, still peeling to `C`. **(b) Detection** — U4 AC6's amended last-mile
+requires **`C` to be an ancestor of `H`**; a rewrite that drops `C` **halts**
+before merge.
+
+**Deliberate correction of scope.** Protection covers **tags only**, at
+`refs/tags/resolution-obligation/**`. No working branch is covered, so rebase,
+`--amend`, `--force-with-lease` and merged-branch cleanup remain fully permitted.
+
+**Verified by** V17, V13.
+
+## D12 (BLOCKING) — A universal policy must not have a procedural hole
+
+**Risk.** A policy binding "no resolution into an already-merged carrier" is not
+realized if one of its two named agents' own procedure still permits it.
+
+**Fold.** Plan U6 — Stage's Session-end site and `OWNER-SCOPED RESOLUTION` block
+both receive the pre-merge staging-finalization carrier guard, and U5 removes
+Ship's generic/session-end/post-merge resolution. Both named agents are covered.
+
+**Correction carried from round 10 (F-15).** Revision 4 realized this by making
+`context.pr` / `context.branch` **mandatory at checkpoint creation**, which is
+unsatisfiable — a Stage checkpoint legitimately predates the PR that will carry
+it. Revision 11 requires **no** future PR identity at creation; the carrier is
+**supplied by the caller** at an explicit pre-merge finalization, queried
+exactly, and required to be repo-bound, head-bound and **OPEN**. Ambient
+derivation is prohibited outright.
+
+**Verified by** V23.
+
+## D14′ (BLOCKING) — A recovery step an agent cannot perform is not a recovery
+
+**Risk.** A recovery procedure that assumes a working-tree state the agent cannot
+safely reach is not a recovery; it is a halt with extra words. Round 8 found this
+as a defect in this very document, and round 10 found the replacement's fetch
+contract unsatisfiable across four surfaces.
+
+**Fold, by removing the need rather than specifying the procedure.** Revision
+11's discovery is **entirely read-only**: it creates local refs under
+`refs/autoharness/marker-scan/` and **never** switches branches, never commits,
+never creates a worktree, and never requires a clean tree. There is **no**
+committing recovery branch, so `WP-0`…`WP-7` are deleted rather than repaired.
+Every ancestry, `cat-file`, `show` and `log` command names an **explicit
+commit-ish**, and `FETCH_HEAD` is **prohibited** as a fetch destination or
+assertion target (U2 AC3) — one fetch form, one ancestry target, one surface.
+
+**Verified by** V25 (the `FETCH_HEAD` and `WP-` deletion classification), V26.
+
+## D15′ (BLOCKING) — The evidence must survive deletion of the PR body
+
+**Risk.** If the PR body is the only obligation record, emptying it leaves
+startup with zero checkpoints and zero locators, concluding "clean" — strictly
+worse than the pre-change still-active checkpoint.
+
+**Fold, structural rather than mechanical.** Plan `RESOLUTION_MARKER_DISCOVERY`
+reads **tags**. It never reads a PR body to find a marker, and the PR body is
+explicitly demoted: `HEAD_EVIDENCE_RULE` states the `Reviewed HEAD` record is
+**advisory metadata for the §1.9 gate**, is **not** a durability mechanism, and
+is read by **no** recovery path (U1 AC1). The PR body is consulted only *after*
+a `PENDING` marker has already been found, and then only to validate provenance
+against payload fields — never to establish that an obligation exists.
+
+**Verified by** V13.
+
+## D16′ (BLOCKING) — Detectability must rest on a proven protection, not an assumption
+
+**Risk.** An immutable marker is only immutable if something enforces it. An
+unprotected tag can be moved or deleted by anyone with push access.
+
+**Fold.** Plan U0 (the ruleset) plus `RESOLUTION_MARKER` precondition 4 (the
+proof) plus U4 AC6 (the last-mile re-proof). The proof reads the ruleset **by
+recorded ID** and asserts `enforcement: active`, `target: tag`, the exact
+include, empty exclusions, the update- and deletion-prohibiting rule types,
+`bypass_actors: []`, and `current_user_can_bypass: "never"`. Failure, ambiguity
+or API unavailability **halts before publication**; drift at the last mile
+**halts before merge**.
+
+**Two corrections of substance from round 10.**
+
+1. **The load-bearing rule is *restrict updates*, not `non_fast_forward`.**
+   `non_fast_forward` is a branch force-push rule; applied to a tag it would
+   reject only *non-fast-forward* movement, so a tag retarget that happens to be
+   a fast-forward along the same lineage would still be permitted — precisely
+   the mutation immutability must forbid. Reusing the branch rule here would be
+   a **silent under-protection**, which is worse than no protection because it
+   would pass the proof.
+2. **Creation is deliberately NOT restricted.** Ship must publish new markers
+   through the ordinary push path **with no bypass**. Restricting creation would
+   force Ship to hold bypass rights, contradicting the empty-bypass requirement
+   the whole hardening depends on.
+
+**Two residuals, stated rather than claimed away.**
+
+* A repository **administrator** can edit or delete the ruleset. The guarantee is
+  exactly as strong as the ruleset. This is narrower than the any-collaborator
+  exposure it replaces and is **detected** at the next proof rather than silently
+  absorbed (plan RR-3a).
+* GitHub exposes an effective-rules endpoint for **branches** but **no per-tag
+  equivalent**. The proof is therefore a **configuration read by recorded ruleset
+  ID**, asserted field by field — not an effective-rules evaluation. The plan
+  makes no stronger claim, and the operator verifies the applied ruleset in the
+  UI at apply time as a second witness (plan RR-3b).
+
+**Approval boundary.** U0 is **`ProposedAction`** / **`ActionRisk: high`** /
+**`approval_required: true`**, a **manual operator/admin step under P-019**,
+**never agent-executed**, **never** satisfied by a dark-mode approval record, and
+**not applied by any planning pull request**. Ship is **never** granted
+ruleset-write credentials.
+
+**Verified by** V10, V7.
+
+## D17 (BLOCKING) — Publication must be atomic, or it must not happen
+
+**Risk.** Publishing the resolution commit and the marker as two sequential
+pushes admits a torn state: a commit with no marker (the obligation is invisible)
+or a marker with no commit (the marker attests a commit the remote does not
+have). Either is worse than not publishing.
+
+**Fold.** Plan `RESOLUTION_MARKER` publication — **one** `git push --atomic` with
+fully-qualified refspecs and **two explicit leases**: the branch lease pinned to
+the captured remote OID `R`, and the tag lease with an **empty expected value**
+asserting the tag does not exist. **Unsupported `--atomic`, a failed lease, a
+rejection, or any ambiguity leaves both refs unchanged and halts** — no partial
+retry, no per-ref fallback, no single-ref re-push.
+
+**Empirically validated before this revision was written**, in both rejection
+directions, against a real remote: a stale branch lease produced
+`HEAD -> main (stale info)` **and** `<tag> (atomic push failed)` with the tag not
+created; a competing tag produced `<tag> (stale info)` **and**
+`HEAD -> main (atomic push failed)` with the branch not advanced. The plan
+records these as validated semantics rather than as assumptions.
+
+**Verified by** V7, V8.
+
+## D18 (BLOCKING) — The tag ref's OID is not the commit
+
+**Risk.** An annotated tag ref resolves to the **tag object** `T`, not to the
+commit `C` it targets. A protocol step that treats the tag ref's OID as a commit
+will compare the wrong object, and an ancestry test against `T` will be
+meaningless. A **lightweight** tag resolves directly to a commit, carries no
+message, and therefore carries **no payload at all**.
+
+**Fold.** Plan `RESOLUTION_MARKER` tag-object identity rule and post-publication
+verifications 2–4: the remote tag ref must equal **`T`**; the peeled
+`refs/tags/<tag>^{}` must equal **`C`**; the object type at `T` must be **`tag`**.
+`RESOLUTION_MARKER_DISCOVERY` validation rules 1–2 require the object type `tag`
+and **exactly one** level of peeling. A lightweight tag **halts**.
+
+**Empirically confirmed**: after a real atomic publication, `git ls-remote`
+reported `<T> refs/tags/<tag>` and `<C> refs/tags/<tag>^{}` as two distinct
+lines carrying two distinct OIDs.
+
+**Verified by** V7, V11.
+
+## D19 (BLOCKING) — Idempotent recovery must be proven, never inferred
+
+**Risk.** A lost push response is indistinguishable from a failed push at the
+client. If the retry treats an existing tag as "already done" without proving it
+is the *same* marker, a competing marker is silently accepted as one's own.
+
+**Fold.** Plan `RESOLUTION_MARKER` idempotence-and-conflict rules — an existing
+marker is idempotent recovery **only** when it peels to the same `C` **and** its
+payload is byte-identical canonical JSON with a valid digest. Anything else is a
+**conflict** that **halts**; it is never deleted, updated, or re-pointed.
+
+**The specific trap, recorded rather than left implicit.** When the remote tag
+OID already equals the local `T`, Git classifies the tag refspec as up to date
+and does **not** evaluate its lease, so the atomic push proceeds for the branch
+alone and reports success. **This must not be read as proof of identity.** The
+plan requires the byte-identical canonical proof to be performed in the
+preconditions, *before* publication, and explicitly forbids inferring identity
+from the push's silence (U1 AC11). This was observed directly during validation.
+
+**Verified by** V9, V12.
+
+## D20 (BLOCKING) — The resolved set must be frozen at publication
+
+**Risk.** A checkpoint appearing after the marker is published makes the marker's
+payload incomplete. Amending the marker would violate immutability; publishing a
+second marker would break the one-per-primary-key invariant and create two
+competing sources of truth.
+
+**Fold.** Plan `RESOLUTION_MARKER` — the finalization freeze, the
+**re-enumeration immediately before the commit** (a changed set **restarts
+preparation**, so a late checkpoint before publication is absorbed cleanly), and
+the after-publication rule that a late or ambiguous checkpoint **halts** without
+producing a second tag and without amending the first. U4 AC6's amended
+last-mile re-checks the current checkpoint count specifically to detect it.
+
+**Verified by** V18, V6.
+
+## D21 (BLOCKING) — Post-publication remediation must remain possible
+
+**Risk.** Requiring `C == H` at the last mile would make **any** post-publication
+review remediation unmergeable, forcing either an abandoned marker or a refusal
+to fix a genuine reviewer finding. Revision 4's equality form had exactly this
+defect.
+
+**Fold.** Plan `RESOLUTION_MARKER` after-publication rule — review-remediation
+commits **may append above `C`**, provided they do **not** alter the resolved
+set, and the last-mile requirement is **`C` is an ancestor of `H`**, not `C == H`.
+U4 AC7's refresh rules then govern the consequence: a HEAD change **voids** the
+approval and requires a fresh review and a fresh HEAD-bound approval.
+
+**Verified by** V16.
+
+## D22 (BLOCKING) — Marker discharge is not release closure
+
+**Risk.** A single "closed" signal that conflates "the resolution landed" with
+"the release is closed" will, sooner or later, be read as authority to start the
+next shipment. That is a P-001 bypass wearing a different name.
+
+**Fold.** The plan's authorized RQ-7 clarification, stated at three points of
+use: `RESOLUTION_MARKER_DISCOVERY`'s status rule (U2 AC6), P-022 (U3 AC4), and
+Ship's Merge Confirmation Gate (U5 AC3). All three state that `DISCHARGED` means
+**checkpoint-resolution delivery to the protected default branch only**, that it
+**does not prove P-001 closure**, and that it **does not authorize the next
+shipment**. U3 AC5 names P-001, P-009, P-014, P-018 and P-020 and states that
+**none** is weakened, satisfied, or bypassed by any marker state. U7 AC3 states
+the same for the Orchestrator's pre-queue route.
+
+**This separation is why revision 11 is smaller without being weaker**, and it is
+the one clarification the operator authorized — explicitly **not** permission to
+weaken any of the named policies.
+
+**Verified by** V21, V22.
+
+## D23 (BLOCKING) — Zero must be proven, and the zero path must not be a bypass
+
+**Risk.** Two distinct failures. A failed, quarantined or ambiguous enumeration
+read as "zero checkpoints" publishes nothing and merges — the silent-loss case. A
+zero-checkpoint unit routed down a "pre-existing path unchanged" bypass escapes
+the reordered gates entirely.
+
+**Fold.** Plan `RESOLUTION_MARKER` enumeration rules — enumerate with
+`consumer_id` **only**, with **no `status`/`agent` API prefilter** (such a filter
+silently excludes quarantined records, which are exactly the ones that must be
+seen), **inspect malformed and quarantined records first over the full
+enumeration**, and treat any failure, malformation, quarantine, ambiguity or
+absent tooling as **not zero** — it **halts** (P-012). U4 AC3 then states that a
+proven zero omits **exactly three** things — `C`/`T` creation, the atomic
+publication, and the post-publication verification — and **executes the identical
+review, gate, approval and last-mile tail**. AC3 expressly **prohibits** claiming
+any unit runs "the pre-existing path unchanged".
+
+**Verified by** V5, V6, V26.
+
+## D24 (BLOCKING) — Do not claim guarantees the server does not provide
+
+**Risk.** Overstating a guarantee is a correctness defect, not a wording defect:
+downstream reasoning built on a false guarantee is unsound.
+
+**Fold.** Three claims are bounded explicitly in the plan. **(a)** Expected-head
+merge pinning protects **only the HEAD race**; U4 AC8 forbids claiming
+transactional stability for thread, review or check state unless server-enforced.
+**(b)** The tag-ruleset proof is a **configuration read**, not an effective-rules
+evaluation, because GitHub provides no per-tag effective-rules endpoint (U0 AC7,
+RR-3b). **(c)** The protection is **not** admin-proof (U0 AC9, RR-3a).
+
+**Verified by** V10, V19, V24.
+
+## Hardening coverage
+
+| Hardening | Plan fold | Units | Verifications |
+|---|---|---|---|
+| D1 | `RESOLUTION_MARKER`; removal of generic/session-end/post-merge resolution | U1, U5 | V5, V22 |
+| D2 | `RESOLUTION_MARKER` atomic publication; `RESOLUTION_MARKER_DISCOVERY` | U1, U2 | V9, V13 |
+| D3 | `RESOLUTION_MARKER` payload (`C` excluded; tag header binds) | U1 | V7 |
+| D4 | U4 review re-run and refresh rules | U4 | V16, V24 |
+| D5 | U4 total order; `HEAD_EVIDENCE_RULE` | U1, U4 | V24, V5 |
+| D6 | `RESOLUTION_MARKER_DISCOVERY` live status and provenance; amended last mile | U2, U4 | V14, V21, V24 |
+| D7 | Fixed-point scan; per-marker validation | U2 | V11, V12, V15, V26 |
+| D8 | "No merge authority" rule | U2, U5, U6, U7 | V14, V23 |
+| D9′ | Ancestry rule; `PENDING` blocks | U2, U5, U7 | V15, V17, V20 |
+| D11′ | Tag protection (survival) + `C`-ancestor-of-`H` (detection) | U0, U4 | V17, V13 |
+| D12 | Stage carrier guard; Ship removal | U5, U6 | V23 |
+| D14′ | Read-only discovery; `FETCH_HEAD` prohibition; explicit commit-ish | U2 | V25, V26 |
+| D15′ | Tag-based discovery; PR body demoted to advisory | U1, U2 | V13 |
+| D16′ | U0 ruleset; precondition proof; last-mile re-proof | U0, U1, U4 | V10, V7 |
+| D17 | Atomic publication with two explicit leases | U1, U4 | V7, V8 |
+| D18 | Tag-object identity; peel and type assertions | U1, U2 | V7, V11 |
+| D19 | Idempotence-and-conflict proof; no inference from push silence | U1 | V9, V12 |
+| D20 | Freeze; re-enumeration before commit; late-checkpoint halt | U1, U4 | V18, V6 |
+| D21 | `C` ancestor of `H`, not `C == H`; refresh rules | U1, U4 | V16 |
+| D22 | RQ-7 clarification at three points of use | U2, U3, U5, U7 | V21, V22 |
+| D23 | Enumeration rules; zero omits exactly three things | U1, U4 | V5, V6, V26 |
+| D24 | Bounded claims for expected-head, ruleset proof, admin residual | U0, U4 | V10, V19, V24 |
+
+Every hardening folds into at least one unit **and** at least one verification.
+No hardening is satisfied by wording alone.
+
+---
+
+**Everything below this line is immutable historical evidence.** It records the
+revision-10 hardening set and the corrections that preceded it. **That normative
+content is SUPERSEDED by revision 11** per the disposition table above, and no
+fold, unit reference, or coverage row below may be cited as normative for
+revision 11.
+
+## Retained hardening history (revision 10 and earlier — SUPERSEDED)
+
+### Superseded prior corrections — do not reimplement
 
 | Prior ref | Superseded content | Why it must not be reimplemented | Replaced by |
 |---|---|---|---|
@@ -70,7 +498,7 @@ them.
 | **H5** | Predicate drift control across *"five documents"*, mitigated by the T9 drift checker. | **SUPERSEDED AND WITHDRAWN ENTIRELY.** The count was also wrong — the section named four files, not five (PR #396 thread `PRRT_kwDORJEduc6h3aDx`). Both the predicate and its checker belong to Defect 1 and are out of scope. Nothing in revision 6 requires a drift checker, a fixture corpus, a parity runner, or a hook shim. | Not replaced. Out of scope per plan `## Out of scope`. |
 | **H4** | Auto-routed resume must re-fetch live state before trusting stored SHAs. | Withdrawn **as a Defect-1 hardening** — there is no auto-routed resume in revision 6. Its *substance* is nonetheless correct and is preserved for the recovery path, where a resumed session likewise must not trust stored SHAs. | Hardening D6 below. |
 
-## D1 (BLOCKING) — Resolution must not be recursive
+### D1 (BLOCKING) — Resolution must not be recursive
 
 **Risk.** Any mitigation that creates a further Git-tracked checkpoint to cover
 the window after the last resolution reproduces the original defect one level
@@ -86,7 +514,7 @@ cannot be reintroduced by a well-meaning implementer.
 
 **Status**: applied.
 
-## D2 (BLOCKING) — The residual window must be covered by something
+### D2 (BLOCKING) — The residual window must be covered by something
 
 **Risk.** Resolving all checkpoints before merge necessarily leaves a
 checkpoint-free interval between the last resolution and verified closure. If
@@ -103,7 +531,7 @@ rule; U2 acceptance criterion 5; U6 acceptance criterion 1.
 
 **Status**: applied.
 
-## D3 (BLOCKING) — The locator must not be self-referential
+### D3 (BLOCKING) — The locator must not be self-referential
 
 **Risk.** A locator that records the resolution commit SHAs *inside a commit*
 cannot be written: the final commit's SHA does not exist until that commit is
@@ -121,7 +549,7 @@ required to record its own SHA.
 
 **Status**: applied.
 
-## D4 (BLOCKING) — Evidence must be produced at the final HEAD, not relabelled
+### D4 (BLOCKING) — Evidence must be produced at the final HEAD, not relabelled
 
 **Risk.** The resolution commits advance HEAD past whatever the earlier review
 examined. Moving only the recorded SHA forward re-points a verdict at a HEAD it
@@ -138,7 +566,7 @@ criteria 4 and 5.
 
 **Status**: applied.
 
-## D5 (BLOCKING) — The readiness sequence must be satisfiable
+### D5 (BLOCKING) — The readiness sequence must be satisfiable
 
 **Risk.** P-014 §1.9 reads the PR body and requires `Reviewed HEAD ==
 headRefOid`. If the gate runs before the body is updated, it is unsatisfiable by
@@ -212,7 +640,7 @@ criteria 2, 5, 7, 8, 9, 10; verification V4 and V20.
 **Status**: applied in revision 9; fold references and segment list corrected in
 revision 10.
 
-## D6 (BLOCKING) — Recovery must not trust stored state
+### D6 (BLOCKING) — Recovery must not trust stored state
 
 **Risk.** A session entering recovery reads a locator written by an earlier
 session. Acting on its `final_head` without re-checking live state repeats the
@@ -238,7 +666,7 @@ criteria 4–5; U5 acceptance criterion 1.
 
 **Status**: applied. Carries forward the substance of prior H4.
 
-## D7 (BLOCKING) — Discovery must be exhaustive or fail closed
+### D7 (BLOCKING) — Discovery must be exhaustive or fail closed
 
 **Risk.** A bounded `gh pr list --limit N` silently omits older PRs. An omitted
 non-`RECONCILED` locator means startup concludes "clean" and selects new work
@@ -255,7 +683,7 @@ explicitly prohibited with the 139-S case as the stated reason.
 
 **Status**: applied. Raised by PR #396 thread `PRRT_kwDORJEduc6h3sTT`.
 
-## D8 (BLOCKING) — Recovery must not become an auto-merge path
+### D8 (BLOCKING) — Recovery must not become an auto-merge path
 
 **Risk.** `LAST_MILE_RECOVERY` reconstructs readiness evidence and is entered
 automatically at startup. Without an explicit bar, a session could reconstruct
@@ -276,7 +704,7 @@ U6 acceptance criterion 7.
 
 **Status**: applied.
 
-## D9 (BLOCKING) — The obligation must survive a failed closure
+### D9 (BLOCKING) — The obligation must survive a failed closure
 
 **Risk.** Marking the locator `RECONCILED` at merge discharges the obligation
 before post-merge closure has actually succeeded. If closure then fails, or the
@@ -292,7 +720,7 @@ to merge-time.
 
 **Status**: applied. Raised by PR #396 thread `PRRT_kwDORJEduc6h3sTe`.
 
-## D10 (BLOCKING) — A pending locator must never be mistaken for a published one
+### D10 (BLOCKING) — A pending locator must never be mistaken for a published one
 
 *Added in revision 7, from the independent revision-6 review (Correctness P1).*
 
@@ -328,7 +756,7 @@ unrecoverable orphan, halt immediately, never assert ancestry, never mark
 
 **Status**: applied.
 
-## D11 (BLOCKING) — A rewritten branch must not silently drop the resolution commits
+### D11 (BLOCKING) — A rewritten branch must not silently drop the resolution commits
 
 *Added in revision 7, from the independent revision-6 review (Correctness P1).*
 
@@ -353,7 +781,7 @@ acceptance criterion 5; verification V22.
 
 **Status**: applied.
 
-## D12 (BLOCKING) — A universal policy must not have a procedural hole
+### D12 (BLOCKING) — A universal policy must not have a procedural hole
 
 *Added in revision 7, from the independent revision-6 review (Scope P1, Parity
 P3).*
@@ -380,7 +808,7 @@ risk RR-2 closed.
 
 **Status**: applied.
 
-## D13 (BLOCKING) — A masked obligation is an undischarged obligation
+### D13 (BLOCKING) — A masked obligation is an undischarged obligation
 
 *Added in revision 8, from the independent revision-7 review (Parity P1).*
 
@@ -408,7 +836,7 @@ Check` P-001 row; V11.
 
 **Status**: applied.
 
-## D14 (BLOCKING) — A recovery step an agent cannot perform is not a recovery
+### D14 (BLOCKING) — A recovery step an agent cannot perform is not a recovery
 
 *Added in revision 8, from the independent revision-7 review (Parity P2).*
 
@@ -478,7 +906,7 @@ read-only ancestry assertions are not burdened with a switch.
 > acceptance criteria are declared exact, U5 could pass in full while recovery is
 > still sitting on `main` — re-opening precisely the hazard D14 exists to close.
 
-## D15 (BLOCKING) — The obligation record must survive deletion of the PR body
+### D15 (BLOCKING) — The obligation record must survive deletion of the PR body
 
 *Added in revision 9, from the P-013.6 escalation (finding D, RR-3 / RQ-7).*
 
@@ -567,7 +995,7 @@ D16**.
 **Status**: **NOT discharged by revision 9** (see the status note above);
 **discharged in revision 10** by the rebuilt Channel B (U13) together with D16.
 
-## D16 (BLOCKING) — The durable record's detectability must rest on a proven protection, not an assumption
+### D16 (BLOCKING) — The durable record's detectability must rest on a proven protection, not an assumption
 
 *Added in revision 10, implementing the operator's RR-3 decision.*
 
@@ -650,7 +1078,7 @@ jointly with D15.
 
 **Status**: applied in revision 10. **Not yet independently reviewed.**
 
-## Hardening coverage
+### Hardening coverage
 
 | Hardening | Plan section | Task |
 |---|---|---|
