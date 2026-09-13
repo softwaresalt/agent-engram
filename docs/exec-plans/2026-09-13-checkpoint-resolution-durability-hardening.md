@@ -1,19 +1,19 @@
 ---
 doc_type: exec-plan-hardening
 date: 2026-09-13
-revision: 8
+revision: 9
 scope: defect-2-only
-status: reviewed-fail-circuit-open
-review_verdict: FAIL
+status: awaiting-independent-review
+review_verdict: pending
 review_verdict_revision: 8
 review_attempts: 3
 harvest_authorized: false
 plan_document: docs/exec-plans/2026-09-13-checkpoint-resolution-durability-plan.md
 supersedes: docs/exec-plans/2026-09-13-checkpoint-lifecycle-continuity-hardening.md
-policies: [P-005, P-006, P-009, P-014, P-016, P-018]
+policies: [P-005, P-006, P-009, P-014, P-016, P-018, P-022]
 ---
 
-# Checkpoint Resolution Durability — Plan Hardening (revision 8, Defect 2 only)
+# Checkpoint Resolution Durability — Plan Hardening (revision 9, Defect 2 only)
 
 Hardening applied under P-006 to
 `docs/exec-plans/2026-09-13-checkpoint-resolution-durability-plan.md`. The plan
@@ -21,13 +21,20 @@ declares `requires_plan_hardening: yes` because it changes merge-adjacent
 ordering governed by P-014/P-018 and introduces a startup route that could, if
 mis-specified, become an unsupervised merge path.
 
-**Review status (frontmatter is authoritative).** This hardening has **already
-undergone** the revision-8 independent review. That review returned **FAIL** —
-three P1 findings, one of which (`D14`) is a defect **in this document**. It was
-the **third consecutive FAIL** (revisions 6, 7, 8); the plan-review circuit is
-**OPEN** at attempt counter 3 and the P-013.6 escalation has fired. This document
-is therefore **reviewed-and-failed**, not awaiting a first review, and it
-authorizes no harvest.
+**Review status (frontmatter is authoritative).** Revision 8 of this document
+underwent the revision-8 independent review, which returned **FAIL** — three P1
+findings, one of which (`D14`) was a defect **in this document**. That was the
+**third consecutive FAIL** (revisions 6, 7, 8); the plan-review circuit opened at
+attempt counter 3 and the P-013.6 escalation fired.
+
+**Revision 9 is one bounded remediation revision explicitly authorized by the
+operator** after that circuit opened. It rewrites **D5** against a verbatim
+extract of the real Ship Step 5, discharges **D14** through existing units U3/U5
+plus verification V12, and adds **D15** closing the RR-3 durable-publication
+blocker. It has **not** been reviewed: `review_verdict` is `pending`,
+`review_verdict_revision` still reads `8` because that is the last *completed*
+verdict, and `harvest_authorized` stays **false** pending a fresh independent
+full-plan review of revision 9. This document authorizes no harvest.
 
 **Relationship to the prior hardening document.** The combined hardening document
 (`2026-09-13-checkpoint-lifecycle-continuity-hardening.md`, H1–H41) covered both
@@ -122,15 +129,54 @@ construction once resolution commits have advanced HEAD — so the gate would
 either be failed forever or quietly skipped. A quietly skipped merge gate is the
 worse outcome.
 
-**Required correction.** The order must be: re-run review → update locator phase
-2 → write PR-body `Reviewed HEAD` → run §1.9 → obtain approval → live re-fetch →
-merge. The plan must state *why* a PR-body write is safe here: it is metadata and
-does not advance `headRefOid`.
+**Required correction** *(rewritten in revision 9 against a verbatim extract of
+the real `_ship.agent.md` Step 5, because every prior round specified this
+against a prose description of Step 5 and mismatched it).* The order must be the
+eight named segments of `RESOLUTION_PREFIX`:
 
-**Folds into**: plan `RESOLUTION_PREFIX` invariant 3; `HEAD_EVIDENCE_RULE`; U2
-acceptance criterion 6.
+1. **S1** — complete the existing CI/review fix loop (real items 7 *first* and
+   7a). These may commit and push, and they run first.
+2. **S2** — complete every remaining branch-mutating item: runtime verification
+   (real item 7 *second* — the item number is duplicated in the live file),
+   operational closure (item 8), follow-up stash writes (item 9), and the
+   ordinary push (item 10).
+3. **S3** — **prove** current-unit checkpoint enumeration complete.
+4. **S4** *(conditional, nonzero only)* — publish the phase-1 locator; resolve
+   every checkpoint **and** write the `RESOLUTION_OBLIGATION_RECORD` in one
+   commit; push it; **prove remote head == local head**; publish the phase-2
+   locator.
+5. **S5** *(every unit)* — at the resulting pushed HEAD: re-run the **actual**
+   local review; publish the final locator resolution state if one exists;
+   update the PR-body `Reviewed HEAD`; then run §1.9 (real item **7b**, **moved
+   here**), an **explicit required-check evaluation**, and P-018 (real item
+   **7c**, **moved here**).
+6. **S6** — record approval with a pinned `approved_head` (real item 14).
+7. **S7** — the **amended** last-mile re-check (real item 15) re-fetching
+   `headRefOid`, the PR body, `reviewDecision`, review requests and reviews,
+   **every review-thread page**, required checks, and resolution-commit
+   ancestry.
+8. **S8** — merge only when all six merge-bar conditions hold; then items 16
+   (P-009) and 17 (P-017) apply unchanged.
 
-**Status**: applied.
+The plan must state *why* a PR-body write is safe inside this order: it is
+metadata and does not advance `headRefOid`. It must additionally state the
+refresh rules — **any** HEAD change voids the approval and forces a fresh
+push/review/metadata/gates/approval cycle; a thread or check change without a
+HEAD change forces the affected gates plus a refreshed approval; **no stale
+approval is ever reused**.
+
+**Withdrawn with this rewrite.** The revision-8 claim that the approval,
+re-fetch and merge items "already exist in Ship Step 5 and are unchanged" was
+**false** — real item 15 re-runs only the P-018 gate and re-queries
+`headRefOid`, never evaluating required checks and never re-paginating review
+threads. Any criterion requiring item 15 to remain unmodified is withdrawn with
+it.
+
+**Folds into**: plan `RESOLUTION_PREFIX` segments S1–S8 and invariants 3, 5, 6,
+7; `HEAD_EVIDENCE_RULE`; U2 acceptance criterion 6; U4 acceptance criteria 2, 9,
+10; verification V4.
+
+**Status**: applied in revision 9.
 
 ## D6 (BLOCKING) — Recovery must not trust stored state
 
@@ -345,30 +391,98 @@ the operator if any step fails, rather than proceeding on the wrong branch.
 Read-only ancestry assertions require the fetch but not the checkout, and must
 not be burdened with one.
 
-**Folds into**: plan `LAST_MILE_RECOVERY` *Working-tree placement*. **No task
-acceptance criterion yet carries it.**
+**Folds into**: plan `LAST_MILE_RECOVERY` → **`Working-tree placement —
+committing re-entry only`** (WP-1 … WP-7); **U3 acceptance criterion 12**
+(defines the named procedure); **U5 acceptance criterion 9** (executes it by that
+exact name before the only committing recovery branch); **verification V12** with
+cases **V12a** (positive), **V12b** (dirty tree), **V12c** (fetch failure),
+**V12d** (divergence / non-fast-forward), **V12e** (branch, HEAD or detached-HEAD
+mismatch) and **V12f** (read-only path performs fetch but no switch).
 
-**Status**: **NOT applied — OPEN P1 (Round 8, finding 3).** The previous
-"applied" claim, and its `U3 AC7 / U5 AC2` fold reference, were **incorrect** and
-are withdrawn. U5 AC2 names only `gh pr view`, `git fetch` and `git merge-base`:
-it requires **no** checkout of the PR branch and **no** verification that the
-checkout succeeded, and **no** V-check covers the placement. Because task-card
-acceptance criteria are declared exact, U5 could pass in full while recovery is
-still sitting on `main` — re-opening precisely the hazard D14 exists to close.
+**Status**: **applied in revision 9.** The revision-8 status block below is
+retained verbatim as the record of why it was previously **not** applied.
 
-**Required before this may be marked applied** (all three, none yet done):
+**Revision-9 discharge — all three prerequisites met.** Revision 8 required
+three things before this could be marked applied; each is now done, **using the
+existing units, with no new unit created**:
 
-1. Add a **U5 acceptance criterion** requiring, by name, the working-tree
-   placement sequence — read `branch`/`pr` from the locator, `git fetch origin
-   refs/pull/<pr>/head`, check out a local branch at that tip, **confirm the
-   checkout succeeded**, and **halt to the operator** if any step fails — as a
-   precondition of any committing re-entry.
-2. Add a matching **verification check** that inspects U5's criteria for that
-   sequence and its halt clause.
-3. **Repoint this fold reference** at the new criterion and the new V-check.
+1. **U5 acceptance criterion 9** requires the working-tree placement sequence by
+   name — including the clean-tree precondition, the trusted-source read, the
+   fetch, the safe create/fast-forward-only switch, the current-branch,
+   `HEAD == FETCH_HEAD`, not-main and not-detached assertions, the fail-closed
+   halt, and the prohibition on `git reset`, force checkout, resolution or commit
+   after any failure — as a precondition of any committing re-entry.
+2. **V12** and its six cases inspect for that sequence and its halt clause, and
+   exercise the positive and fail-closed paths.
+3. This fold reference is repointed at U3 AC12, U5 AC9 and V12.
 
-Until all three land, D14 is an outstanding blocking finding and MUST NOT be
-counted as folded, applied, or discharged.
+Two defects revision 8 did not name are also closed: the placement paragraph had
+**lost its heading**, so it was an unnamed fragment no acceptance criterion could
+cite — it now carries the exact canonical name — and the read-only/committing
+distinction is now an explicit criterion (V12f) rather than an aside, so
+read-only ancestry assertions are not burdened with a switch.
+
+**Retained revision-8 status (historical, not rewritten):**
+
+> **NOT applied — OPEN P1 (Round 8, finding 3).** The previous "applied" claim,
+> and its `U3 AC7 / U5 AC2` fold reference, were **incorrect** and are withdrawn.
+> U5 AC2 names only `gh pr view`, `git fetch` and `git merge-base`: it requires
+> **no** checkout of the PR branch and **no** verification that the checkout
+> succeeded, and **no** V-check covers the placement. Because task-card
+> acceptance criteria are declared exact, U5 could pass in full while recovery is
+> still sitting on `main` — re-opening precisely the hazard D14 exists to close.
+
+## D15 (BLOCKING) — The obligation record must survive deletion of the PR body
+
+*Added in revision 9, from the P-013.6 escalation (finding D, RR-3 / RQ-7).*
+
+**Risk.** `RESOLUTION_PREFIX` resolves **every** checkpoint before merge. That is
+the fix — and it is also what makes the PR-body `CLOSURE_LOCATOR` the **sole**
+record of an outstanding closure obligation. A PR body is mutable: a human or bot
+can delete it, and nothing in revisions 6–8 would notice. Startup would then find
+zero active checkpoints **and** zero locators, conclude "clean", and select new
+queue work. This is **strictly worse than the defect being fixed** — the
+pre-change behaviour left a still-active checkpoint behind, which remained
+discoverable — and it directly contradicts RQ-7. The halt-on-incomplete rule does
+not mitigate it: a *damaged* locator halts, but a *deleted* one is
+indistinguishable from one that never existed.
+
+**Required correction.** A second, **Git-tracked, history-immutable** obligation
+record, introduced by the **resolution commit itself** and discoverable without
+reading the PR body. It must:
+
+* live on an **existing owned** repo-local state surface — the
+  `operational-closure` pre-merge artifact under `docs/closure/` — never a new
+  unowned tracker;
+* carry a canonical schema, path and identity, and a three-transition lifecycle
+  (`none` → `OPEN` → `CLOSED`);
+* ride the **same commit** as the checkpoint resolutions and be pushed before the
+  S5 review re-run;
+* carry **no SHA**, so RQ-8 is preserved rather than traded — it is written
+  inside the commit it would otherwise have to name;
+* be discovered exhaustively over trusted PR/commit/tree history, with provenance
+  taken **only** from API response fields and Git ancestry (PV-1…PV-3, PV-B4,
+  PV-B5, PV-6, PV-7) and **never** from PR-body text;
+* detect **deletion via commit history** (`git log --diff-filter=D`, `git log
+  -S'resolution_obligation'`) rather than treating absence from the tree as
+  absence of obligation;
+* **fail closed** on deletion (OB-1), force-push/rebase/shallow-history gaps
+  (OB-2), conflicting records (OB-3), multi-shipment records (OB-4), unparseable
+  records (OB-5), Channel A/Channel B disagreement (OB-6, with the mutable
+  channel never preferred), and incomplete enumeration (OB-7);
+* be discharged **only** by an `OPEN` → `CLOSED` transition in a **later** commit
+  whose ancestry stays auditable and which is itself **merged** — deletion is
+  never a discharge;
+* introduce **no** executable persistence substrate, **no** locking or
+  compare-and-swap, **no** cross-run cursor persistence, and **no** Defect-1
+  construct, and confer **no** merge authority.
+
+**Folds into**: plan `RESOLUTION_OBLIGATION_RECORD`; decision RQ-12; plan units
+**U9** (all eleven criteria) and **U10** (schema ownership); U4 AC7 and AC11; U5
+AC6, AC7, AC8; U6 AC1, AC3, AC5; verification **V17**, **V18**, **V19**; residual
+risk RR-3 closed.
+
+**Status**: applied in revision 9.
 
 ## Hardening coverage
 
@@ -378,7 +492,7 @@ counted as folded, applied, or discharged.
 | D2 | `CLOSURE_LOCATOR` ph. 1; `LAST_MILE_RECOVERY` entry | U2, U5, U6 |
 | D3 | `CLOSURE_LOCATOR` surface | U2 |
 | D4 | `RESOLUTION_PREFIX` inv. 2, 4 | U2, U4 |
-| D5 | `RESOLUTION_PREFIX` inv. 3; `HEAD_EVIDENCE_RULE` | U2, U4 |
+| D5 | `RESOLUTION_PREFIX` segments S1–S8; inv. 3, 5, 6, 7; `HEAD_EVIDENCE_RULE` | U2, U4 (AC2, AC9, AC10) |
 | D6 | `LAST_MILE_RECOVERY` Step 1b (after Step 1a) | U3, U5 |
 | D7 | `CLOSURE_LOCATOR` read protocol | U3, U6 |
 | D8 | `LAST_MILE_RECOVERY` Step 2 | U3, U6 |
@@ -387,11 +501,21 @@ counted as folded, applied, or discharged.
 | D11 | `LAST_MILE_RECOVERY` Step 1b advanced-HEAD row | U3 |
 | D12 | Unit U8 | U8 |
 | D13 | Unit U6 scoping; P-001 row | U6 |
-| D14 | `LAST_MILE_RECOVERY` working-tree placement | **none — OPEN P1, not folded into any task criterion** |
+| D14 | `LAST_MILE_RECOVERY` → `Working-tree placement — committing re-entry only` (WP-1…WP-7) | **U3 (AC12), U5 (AC9)** — verified by V12/V12a–V12f |
+| D15 | `RESOLUTION_OBLIGATION_RECORD`; decision RQ-12 | **U9 (all criteria), U10**; U4 (AC7, AC11), U5 (AC6–AC8), U6 (AC1, AC3, AC5) — verified by V17–V19 |
 
-**Coverage is incomplete — one documented exception.** Every blocking hardening
-in the table above folds into at least one task acceptance criterion **except
-D14**, which folds into **none** and remains an **OPEN P1** (Round 8, finding
-3). D14 is therefore still narrative-only. The three fixes listed under the D14
-status block above must all land before this coverage table may be read as
-complete. No hardening other than D14 is left as narrative-only.
+**Coverage is complete as of revision 9.** Every blocking hardening above folds
+into at least one task acceptance criterion **and** at least one verification
+check. No hardening remains narrative-only.
+
+D14 was the single documented exception at revision 8 and is now discharged
+through **existing** units — U3 defines the named procedure, U5 executes it, V12
+verifies it — with **no new unit created** for it. The two units revision 9 does
+add, **U9** and **U10**, exist solely to discharge **D15**, which revision 8 did
+not have at all because RR-3 was then an undesigned open blocker.
+
+**This coverage claim is a statement about fold completeness, not a verdict.**
+It asserts that each hardening now has a named home in a task criterion and a
+verification check. Whether those criteria are *adequate* is precisely what the
+pending fresh independent review of revision 9 decides. `harvest_authorized`
+remains **false** until it returns PASS.

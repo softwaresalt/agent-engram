@@ -1,13 +1,13 @@
 ---
 doc_type: exec-plan
 date: 2026-09-13
-revision: 8
+revision: 9
 scope: defect-2-only
-status: halted-review-circuit-open
-review_verdict: FAIL
+status: awaiting-independent-review
+review_verdict: pending
 review_verdict_revision: 8
 review_attempts: 3
-escalation: P-013.6 fired; route gpt-5.6-sol/openai/xhigh
+escalation: P-013.6 fired at revision 8; route gpt-5.6-sol/openai/xhigh; operator authorized ONE bounded remediation revision and ONE fresh full independent review
 harvest_authorized: false
 source_document: docs/decisions/2026-09-13-checkpoint-resolution-durability-decision.md
 supersedes: docs/exec-plans/2026-09-13-checkpoint-lifecycle-continuity-plan.md
@@ -15,31 +15,90 @@ stash_ids: [4EF24729]
 policies: [P-001, P-003, P-005, P-006, P-008, P-009, P-010, P-012, P-014, P-015, P-016, P-017, P-018, P-020, P-022]
 requires_plan_hardening: yes
 hardening_document: docs/exec-plans/2026-09-13-checkpoint-resolution-durability-hardening.md
-task_count: 8
-dependency_edge_count: 11
+task_count: 10
+dependency_edge_count: 16
 sub_epic_count: 2
 ---
 
-# Checkpoint Resolution Durability — Implementation Plan (revision 8, Defect 2 only)
+# Checkpoint Resolution Durability — Implementation Plan (revision 9, Defect 2 only)
 
 **Source document**: `docs/decisions/2026-09-13-checkpoint-resolution-durability-decision.md`
 **Requires plan hardening**: **yes** — this plan changes merge-adjacent ordering
 governed by P-014/P-018 and adds a startup route that could, if mis-specified,
 become an unsupervised merge path.
 
-**Machine-readable status.** The frontmatter is authoritative. `revision: 8`,
+**Machine-readable status.** The frontmatter is authoritative. `revision: 9`,
 `scope: defect-2-only`, `harvest_authorized: false`,
-`review_verdict: FAIL`, `review_verdict_revision: 8`, `review_attempts: 3`,
-`status: halted-review-circuit-open`.
+`review_verdict: pending`, `review_verdict_revision: 8`, `review_attempts: 3`,
+`status: awaiting-independent-review`.
 
-Revision 8 has **already been independently reviewed and that review returned
-FAIL** — three P1 findings remain open and are recorded under *Round 8 —
-outstanding findings* below. This is the **third consecutive FAIL** (revisions 6,
-7, 8), the plan-review circuit is **OPEN** at attempt counter 3, and the P-013.6
-escalation has fired. Do **not** read this revision as merely unreviewed: it is a
-**failed** revision. Harvest is gated on remediating the three open P1s and then
-obtaining a fresh independent full-plan review that returns PASS; neither has
-happened.
+**What this revision is, and what it is not.** Revision 8 was independently
+reviewed and returned **FAIL** — the third consecutive FAIL (revisions 6, 7, 8) —
+the plan-review circuit opened at attempt counter 3, and the P-013.6 escalation
+fired and ran against HEAD `bbb52b65`. Revision 9 is **one bounded remediation
+revision explicitly authorized by the operator** after that circuit opened. It
+remediates the escalation's findings. It is **not** a clean bill of health:
+`review_verdict` is `pending` because revision 9 has **not** been reviewed, and
+`review_verdict_revision` still reads `8` because the last *completed* verdict
+belongs to revision 8. `harvest_authorized` stays **false** and moves only on a
+fresh independent full-plan review of **revision 9** returning PASS. No earlier
+verdict, and no part of the retained history, may be cited as a harvest gate.
+
+**What changed in revision 9.** Five corrections, all from the P-013.6
+escalation:
+
+1. **RQ-6 gained an executable enforcement path against the *real* Step 5.**
+   Every prior round described Step 5 in prose and mismatched it. U4 now carries
+   a **verbatim extract of the live item list** — including the fact that the
+   item number `7` is **duplicated** in the file, that readiness items 7b/7c
+   currently precede the mutating items 7(second)/8/9/10 and the push, and that
+   item 15 re-fetches only the P-018 verdict and `headRefOid`. The canonical
+   `RESOLUTION_PREFIX` is restructured into eight named segments S1…S8 that
+   define the exact safe order; items 7b/7c **move** after the push, item 14
+   records an `approved_head`, item 15 is **amended** (revision 8's "item 15
+   unmodified" criterion forbade the unit from implementing the requirement it
+   was credited with, and is withdrawn), and a **six-part merge bar** plus
+   explicit no-stale-approval refresh rules are stated.
+2. **The zero-checkpoint bypass claim is removed as false.** The checkpoint count
+   now selects **only** segment S4. Every unit runs the reordered common
+   finalization tail; a complete zero enumeration omits exactly four things
+   (locator publication, resolution, resolution commit/push, phase-2 locator) and
+   nothing else. Enumeration failure, malformed or quarantined records, and
+   ambiguity are **not zero** and halt; a checkpoint appearing after enumeration
+   forces re-evaluation before merge; no empty locator is ever published; Stage's
+   startup recovery stays a separate protocol.
+3. **D14 is given real executable coverage.** The working-tree placement
+   paragraph — which revision 8 left as an **unnamed fragment with its heading
+   lost**, so no criterion could cite it — is now the named procedure
+   `Working-tree placement — committing re-entry only` with steps WP-1…WP-7,
+   defined in **U3** (AC12), executed by name in **U5** (AC9) before the only
+   committing recovery branch, and verified by **V12/V12a–V12f**. The existing
+   U3→U5 dependency is unchanged and **no new unit was needed** for it.
+4. **RR-3 is closed rather than weakened or silently deferred.** New unit **U9**
+   installs `RESOLUTION_OBLIGATION_RECORD`: a SHA-free, Git-tracked record
+   written into the unit's existing `docs/closure/` pre-merge closure artifact,
+   in the **same commit** as the resolutions, discovered from exhaustive trusted
+   PR/commit/tree history independently of the mutable PR body, with deletion
+   detected from commit history. New unit **U10** declares the field in the
+   owning `operational-closure` skill so the record is not an unowned squatter —
+   an openly recorded scope addition of one file. RQ-7 is made true; **RQ-8 is
+   not traded**, because the record carries no SHA.
+5. **Consistency cleanup.** V2's unsatisfiable verb prohibition is replaced with
+   a sequence-restatement check that permits ordinary prose verbs; V8's reference
+   command gains the `--paginate` it was missing (without it the comparison could
+   only ever prove the two commands disagreed); the abandoned `143.*` IDs are
+   retained as historical evidence only and no longer appear as implementation
+   targets; and the revision counter is incremented with
+   `harvest_authorized: false` held.
+
+**Abandoned-ID notice.** `143-F`, `143-S` and `143.001-T` … `143.014-T` are
+machine-state **abandoned**. They appear in this document **only** as historical
+evidence of what was previously attempted. They are **never** to be revived,
+re-parented, or reused, and no future-tense statement in this plan depends on
+them. Replacement IDs stay **unassigned** until a later authorized harvest.
+Where a section below still needs to name the release-unit shape, it does so
+structurally (top-level release unit → two sub-epics → ten tasks) rather than by
+citing an abandoned ID as a live target.
 
 **What changed in revision 8.** Revision 7 was reviewed by the same independent
 four-persona panel and returned **FAIL** again — Scope, Correctness and Parity
@@ -125,7 +184,10 @@ discoverable and safely recoverable without conferring merge authority.
 
 * Documentation-only. No `src/`, no `crates/`, no scripts, no build system.
 * Installed harness surfaces only: `.github/policies/`, `.github/instructions/`,
-  `.github/agents/`, plus one `docs/compound/` learning.
+  `.github/agents/`, **one field declaration in
+  `.github/skills/operational-closure/SKILL.md`** (added in revision 9 by U10, so
+  the RR-3 obligation record lives on an *owned* schema rather than squatting on
+  someone else's artifact), plus one `docs/compound/` learning.
 * No backlogit tool change. No shipment status outside `queued`/`active`.
 * Every unit is single-domain and under two hours of human-equivalent effort.
 * **No implementation unit introduces or depends on a Defect-1 construct.**
@@ -139,7 +201,7 @@ discoverable and safely recoverable without conferring merge authority.
 | Principle | Check |
 |---|---|
 | P-001 Single-release-unit completion | P-001 requires that no previously merged release unit is still awaiting required post-merge closure. `CLOSURE_LOCATOR` discovery at zero-candidate startup (U6, U5) is the mechanism that makes that precondition *checkable* rather than assumed. `RECONCILED` is defined to require the full P-001 closure set. Composed with, not weakened. |
-| P-003 Decomposition chain | P-003 precondition item 4 requires that **every task references its parent sub-epic**. Revision 7 asserted a flat feature-direct decomposition on the strength of workspace precedent; precedent is not policy text, and the Violation Action is Halt at pre-harvest. Revision 8 therefore restores the tier: source document → this plan → `143-F` → **two sub-epics** → 8 tasks. `143-E1 Ordering contract` covers the prevention half (U1, U2, U4, U8); `143-E2 Discovery and recovery` covers the recovery half (U3, U5, U6, U7). The split is the plan's own prevention/recovery structure, not an artificial tier. Each sub-epic references this plan and `143-F`; each task references its sub-epic and carries acceptance criteria. |
+| P-003 Decomposition chain | P-003 precondition item 4 requires that **every task references its parent sub-epic**. Revision 7 asserted a flat feature-direct decomposition on the strength of workspace precedent; precedent is not policy text, and the Violation Action is Halt at pre-harvest. Revision 8 restored the tier and revision 9 keeps it, stated **structurally** because the former IDs are abandoned: source document → this plan → **one top-level release unit** → **two sub-epics** → **ten tasks**. Sub-epic **E1 — Ordering contract** covers the prevention half (U1, U2, U4, U8); sub-epic **E2 — Discovery and recovery** covers the recovery half (U3, U5, U6, U9, U10, U7). The split is the plan's own prevention/recovery structure, not an artificial tier. Each sub-epic references this plan and the top-level release unit; each task references its sub-epic and carries acceptance criteria. **No ID is assigned here** — `143-F`, `143-S` and `143.001-T` … `143.014-T` are abandoned and must not be revived or reused; replacement IDs are allocated only at a later authorized harvest. |
 | P-005 Policy telemetry | No gate is bypassed; the review gate is explicitly open. U1 requires P-022's Violation Action to record P-005 telemetry, matching neighbouring policies. |
 | P-006 Plan hardening | `requires_plan_hardening: yes`; hardening document exists and is reduced in lockstep. |
 | P-008 Markdown conformance | Engaged by every unit: each carries a `markdownlint passes` acceptance criterion and V1 runs it across all changed files. Satisfied by construction. |
@@ -155,7 +217,7 @@ discoverable and safely recoverable without conferring merge authority.
 
 ## Canonical definitions
 
-These four definitions are the single source of truth. Task cards quote them;
+These five definitions are the single source of truth. Task cards quote them;
 they are not restated differently anywhere.
 
 **Canonical ownership — one installed surface per definition.** Each definition
@@ -168,6 +230,7 @@ cannot drift into two different orders.
 | `HEAD_EVIDENCE_RULE` | `github-pr-automation.instructions.md` (U2) | — |
 | `RESOLUTION_PREFIX` / `RESOLUTION_POSTCONDITION` | `github-pr-automation.instructions.md` (U2) | `workflow-policies.md` P-022 (U1); `_ship.agent.md` Step 5 and Step 6 (U4); `_stage.agent.md` (U8) |
 | `CLOSURE_LOCATOR` | `github-pr-automation.instructions.md` (U2, U3) | `_ship.agent.md` (U4, U5); `_orchestrator.agent.md` (U6) |
+| `RESOLUTION_OBLIGATION_RECORD` | `github-pr-automation.instructions.md` (U9) | `_ship.agent.md` (U4, U5); `_orchestrator.agent.md` (U6); `operational-closure/SKILL.md` (U10, schema field only) |
 | `LAST_MILE_RECOVERY` | `github-pr-automation.instructions.md` (U3) | `_ship.agent.md` (U5); `_orchestrator.agent.md` (U6) |
 
 ### `HEAD_EVIDENCE_RULE`
@@ -185,61 +248,125 @@ between them. This split is deliberate: a single blob spanning both sides of the
 merge cannot be invoked from one step without either re-merging or stopping
 mid-sequence with no defined boundary.
 
-**Entry condition.** `RESOLUTION_PREFIX` runs when the unit owns **one or more
-active checkpoints** and all branch-mutating work is complete except the
-resolution-dependent final gates. It is explicitly **not** gated on "PR
+**Entry condition.** `RESOLUTION_PREFIX` is the **whole finalization tail** of
+Ship Step 5 and it runs for **every** unit. It is explicitly **not** gated on "PR
 merge-ready" — readiness is established *by* this sequence, so gating entry on it
-would be circular. When the unit owns **zero** active checkpoints, no locator is
-published and the sequence is skipped entirely; the pre-existing readiness path
-runs unchanged.
+would be circular.
+
+**The checkpoint count selects one conditional segment, not the whole
+sequence** *(corrected in revision 9; see B below)*. The unit's active-checkpoint
+count selects **only** segment **S4** — locator publication, checkpoint
+resolution, the resolution commit, its push, and the phase-2 locator
+publication. **Every other segment — S1, S2, S3, S5, S6, S7, S8 — runs
+identically for every unit, zero-checkpoint units included.** A unit with a
+**complete** zero enumeration omits S4 and nothing else. There is no
+"pre-existing path unchanged" bypass and no unit escapes the reordered common
+finalization tail; the revision-8 claim to the contrary was false and is
+withdrawn.
+
+**Zero is a proven result, never a default.** S3 must *prove* the enumeration
+complete. An enumeration that fails, returns a malformed or quarantined record,
+or is ambiguous in any way is **not zero** — it **halts**. A checkpoint that
+appears after S3 completed forces re-evaluation from S3 before merge. No empty
+locator is ever published: when S4 is omitted there is no locator, not a locator
+with an empty checkpoint list.
+
+This is scoped to the **Ship unit's own** pre-merge obligation. Stage's
+crash-resumption startup recovery is a **separate** protocol and is not altered,
+subsumed, or gated by anything in this definition.
 
 ```text
-RESOLUTION_PREFIX  (invoked by Ship Step 5, BEFORE the readiness gates)
-  entry: unit owns >=1 active checkpoint
-         AND all branch-mutating work complete
-         EXCEPT the resolution-dependent final gates below
-  → publish CLOSURE_LOCATOR to the PR body, status RESOLUTION_PENDING
-        (metadata write; MUST precede the first resolution commit, so the
-         checkpoint-free window is never uncovered)
-  → resolve every checkpoint owned by this unit (commits; advance HEAD;
-        these are the LAST commits on the branch)
-  → PUSH, so the resolution commits exist on the remote PR head
-        (nothing downstream may derive evidence from an unpushed commit)
-  → RE-RUN THE ACTUAL LOCAL REVIEW at that final pushed HEAD
-        (a real review pass over the final diff — never a restatement
-         of an earlier verdict)
-  → update CLOSURE_LOCATOR in the PR body: status RESOLUTION_PUBLISHED,
-        resolution commit SHAs, final_head
-  → record Reviewed HEAD in the PR BODY at that final HEAD
-        (metadata write; does NOT advance headRefOid)
-  → re-run ALL current-HEAD gates:
-        P-014 §1.9 local readiness (reads the PR body recorded above);
-        required CI green-or-non-applicable;
-        P-018 copilot-review PASS when engaged
-  exit: readiness established at final_head; NO further branch mutation
-        is permitted from here until merge
+RESOLUTION_PREFIX  (the finalization tail of Ship Step 5)
+  entry: all in-scope task work complete
+         (NOT gated on "PR merge-ready" — readiness is produced here)
 
-        ── existing approval / re-fetch / merge steps run UNCHANGED ──
-        (obtain approval at final_head; re-fetch live HEAD/threads/CI;
-         merge only if unchanged.)
-        !! OPEN P1 (Round 8, finding 1): this "already exist in Ship
-           Step 5 and are unchanged" assertion is NOT TRUE of the real
-           Step 5. Item 15 re-runs the P-018 gate and re-queries
-           headRefOid only -- it never re-fetches required CI, and it
-           does not refresh all review threads when P-018 is disabled.
-           RQ-6 therefore has no executable enforcement path today.
-           Do not implement this block as written; see Round 8 below.
+  S1  complete the existing CI / review fix loop
+        real Step 5 items 7 (fix-ci) and 7a (shadow review).
+        These MAY commit and push. They run to completion FIRST.
+
+  S2  complete every remaining branch-mutating item
+        real Step 5 second item 7 (runtime verification),
+        item 8 (operational closure), item 9 (follow-up stash writes),
+        item 10 (the ordinary push).
+        After S2 no ordinary work remains that can mutate the branch.
+
+  S3  prove current-unit checkpoint enumeration COMPLETE
+        enumerate every checkpoint owned by THIS unit.
+        complete + count == 0        → skip S4 only; continue at S5
+        complete + count >= 1        → run S4
+        failed / malformed / quarantined / ambiguous
+                                     → HALT (this is NOT zero)
+
+  S4  CONDITIONAL — runs only on a complete NONZERO enumeration
+      → publish CLOSURE_LOCATOR to the PR body, status RESOLUTION_PENDING
+            (metadata write; MUST precede the first resolution commit, so
+             the checkpoint-free window is never uncovered)
+      → resolve every checkpoint owned by this unit, and write the
+            RESOLUTION_OBLIGATION_RECORD, in ONE commit
+            (the Git-tracked durable obligation record; see its canonical
+             definition below — it rides the SAME commit, carries NO SHA,
+             and is what survives deletion of the PR body)
+      → PUSH that commit
+      → prove the remote PR head now equals the local HEAD
+            (nothing downstream may derive evidence from an unpushed commit)
+      → update CLOSURE_LOCATOR in the PR body: status RESOLUTION_PUBLISHED,
+            resolution commit SHAs, final_head
+
+  S5  at the resulting pushed HEAD — RUNS FOR EVERY UNIT
+      → RE-RUN THE ACTUAL LOCAL REVIEW at that pushed HEAD
+            (a real review pass over the final diff — never a restatement
+             of an earlier verdict)
+      → publish the final locator resolution state, if a locator exists
+      → record Reviewed HEAD in the PR BODY at that HEAD
+            (metadata write; does NOT advance headRefOid)
+      → run, in this order:
+            P-014 §1.9 local readiness   (real Step 5 item 7b, MOVED here)
+            EXPLICIT required-check evaluation — each required check
+              enumerated and evaluated green, or explicitly PROVEN
+              non-applicable; "no red" is not an evaluation
+            P-018 copilot-review gate    (real Step 5 item 7c, MOVED here)
+
+  S6  record approval, pinned  (real Step 5 item 14)
+      → obtain explicit operator approval and record `approved_head`
+            equal to the S5 HEAD. An approval without a recorded
+            approved_head is not an approval.
+
+  S7  strengthened last-mile re-check  (real Step 5 item 15, AMENDED)
+      → re-fetch and re-evaluate, all of them, unconditionally:
+            headRefOid; the PR body; reviewDecision;
+            review requests and reviews; EVERY review-thread page to
+            exhaustion; required checks; and the ancestry of every
+            recorded resolution commit.
+
+  S8  merge bar — merge ONLY when ALL hold
+      1. live headRefOid == local HEAD == locator final_head
+             == PR-body Reviewed HEAD == approved_head  (all five agree)
+      2. every recorded resolution commit is an ancestor of that HEAD
+      3. review-thread pagination COMPLETED to exhaustion
+      4. no blocking review thread and no blocking review exists
+      5. required checks pass, or are explicitly PROVEN non-applicable
+      6. P-018 passes
+      Any doubt at any of the six — HALT. Then real Step 5 item 16 (P-009)
+      and item 17 (P-017) apply unchanged.
+
+  REFRESH RULES (no stale approval may ever be reused)
+    * Any HEAD change at any point requires a FRESH cycle:
+      push → re-run the actual review → PR-body metadata → S5 gates →
+      S6 approval. The prior approval is void.
+    * A thread or check change WITHOUT a HEAD change requires the
+      affected gates to be re-run and the S6 approval to be refreshed.
 
 RESOLUTION_POSTCONDITION  (a Step 6 closure postcondition)
   → after the FULL required post-merge closure set is complete AND verified
-  → set CLOSURE_LOCATOR to RECONCILED
+  → set CLOSURE_LOCATOR to RECONCILED and close the
+    RESOLUTION_OBLIGATION_RECORD in the same closure commit
 ```
 
 **No step of either part may be performed on a merged branch.** The prefix ends
 before merge; the postcondition is a PR-body metadata write only and commits
 nothing.
 
-Four ordering invariants are load-bearing:
+Eight ordering invariants are load-bearing:
 
 1. **No checkpoint resolution may occur after merge** *(RQ-1)*. Checkpoint JSONs
    are Git-tracked, so a post-merge resolution commit sits on an already-merged
@@ -260,6 +387,28 @@ Four ordering invariants are load-bearing:
    the SHA without re-running the review lets a stale verdict be re-pointed at a
    HEAD it never examined — a HEAD that by construction contains commits the
    earlier review never saw. Updating only the SHA is explicitly insufficient.
+5. **Every mutating step precedes S3** *(RQ-6)*. S1 and S2 exhaust the branch's
+   ordinary mutation — CI/review fixes, runtime verification, closure-artifact
+   generation, follow-up stash writes, and the ordinary push. The readiness
+   gates (§1.9, required-check evaluation, P-018) **move** from their current
+   real-Step-5 position at items 7b/7c to **after** that push, in S5. This is
+   the reorder, and it applies to **every** unit, not only checkpoint-owning
+   ones.
+6. **Approval is pinned to a HEAD** *(RQ-6)*. S6 records `approved_head`. An
+   approval with no recorded `approved_head` cannot be checked against anything
+   at S8 and is therefore not an approval. **No stale approval is ever reused**:
+   any HEAD change voids it, and a thread or check change without a HEAD change
+   requires the affected gates plus a refreshed approval.
+7. **Required checks are evaluated, never assumed** *(RQ-6)*. S5 and S8 require
+   each required check to be enumerated and evaluated green or **proven**
+   non-applicable. The real Step 5 item 15 re-runs P-018 and re-queries
+   `headRefOid` only; "no red observed" is not an evaluation, and S7 is the
+   amendment that closes that gap.
+8. **The durable obligation record rides the resolution commit** *(RQ-12)*. The
+   SHA-free `RESOLUTION_OBLIGATION_RECORD` is written in the **same** commit as
+   the checkpoint resolutions and pushed with them, so the obligation is
+   recorded in Git history — not only in mutable PR-body metadata. See its
+   canonical definition below.
 
 **Gate-failure remediation loop.** "These are the LAST commits on the branch"
 describes the *intended* terminal state, not a prohibition on remediation. If a
@@ -272,7 +421,11 @@ Copilot thread, a §1.9 finding — the correct response is:
   resolved and their resolution already rides this branch;
 * re-run the actual local review at the new HEAD, then update the locator
   `final_head` and the PR-body `Reviewed HEAD` to that new HEAD;
-* re-enter the gate set from the top.
+* do **not** re-write, duplicate, or re-open the `RESOLUTION_OBLIGATION_RECORD`
+  — it is already in history on this branch and a remediation commit does not
+  create a second obligation;
+* re-enter the gate set from the top **at S5**, and obtain a **fresh** S6
+  approval with the new `approved_head`. The prior approval is void.
 
 The loop terminates because each iteration ends in either a merge or a halt, and
 because remediation never creates new checkpoint state to resolve.
@@ -282,7 +435,129 @@ because remediation never creates new checkpoint state to resolve.
 not on yield, not for merge approval, not for closure work. Such a checkpoint
 could only be resolved by a further commit, which needs a further PR once this
 one merges: the original defect, one level down, recursively. The window is
-covered by `CLOSURE_LOCATOR` and `LAST_MILE_RECOVERY` instead.
+covered by `CLOSURE_LOCATOR`, the `RESOLUTION_OBLIGATION_RECORD`, and
+`LAST_MILE_RECOVERY` instead.
+
+### `RESOLUTION_OBLIGATION_RECORD` *(RQ-12)*
+
+**This definition is revision 9's answer to RR-3.** It is the narrowest
+correction that makes RQ-7 true rather than weakening it. The problem it solves
+is stated exactly: because `RESOLUTION_PREFIX` resolves **every** checkpoint
+before merge, the PR body becomes the **sole** record of an outstanding closure
+obligation, and a PR body is mutable — a human or bot can delete it and no
+mechanism in revisions 6–8 would notice. Startup would then see zero
+checkpoints **and** zero locators and conclude "clean".
+
+**Surface: the unit's existing pre-merge operational-closure artifact in
+`docs/closure/`.** This is an **existing owned repo-local state surface**, not a
+new ad-hoc tracker. `docs/closure/` is created and owned by the
+`operational-closure` skill, which Ship already invokes at real Step 5 item 8 —
+inside **S2**, therefore already committed on the PR branch before S4 runs. The
+surface already carries exactly this placeholder→finalize lifecycle shape for
+two other fields (`compaction_status`, initialized `pending` by the skill and
+finalized by Ship's post-merge closure; and the source-artifact cleanup
+placeholder). The obligation record is a third field of the same shape, so it
+inherits an owner, a schema, a path convention and a lifecycle rather than
+inventing any of them.
+
+**Why this and not the alternatives.** A record in its own new file under
+`docs/closure/` would be an unowned ad-hoc tracker. A record in the checkpoint
+store is self-defeating: resolving the checkpoints is precisely what removes the
+signal. A record in a commit **message** is not addressable by path and is lost
+to any history rewrite that preserves trees. A new executable persistence
+substrate is Defect-1 scope and is forbidden here.
+
+```text
+# canonical schema — a frontmatter field of the pre-merge closure artifact
+# canonical path     docs/closure/{pre-merge closure artifact for this shipment}
+# canonical identity (shipment_id, pr) — exactly one OPEN record per shipment
+
+resolution_obligation:
+  status: OPEN | CLOSED      # 'none' when the unit had zero checkpoints
+  shipment: <id>
+  feature: <id>
+  pr: <number>
+  branch: <branch>
+  checkpoints: [<filename>, ...]
+  opened_at: <RFC3339 UTC>
+  closed_at: <RFC3339 UTC>   # present only when status is CLOSED
+```
+
+**It carries NO SHA.** `resolution_commits` and `final_head` stay in the
+`CLOSURE_LOCATOR` and appear nowhere in this record. The record is written
+*inside* the resolution commit, so a SHA field would be self-referential — RQ-8
+is preserved intact, not traded away. Recovery re-derives the SHAs from
+checkpoint state at the fetched PR head using the existing *resolution-state
+classification*, which is exactly the enumeration that already exists for the
+`RESOLUTION_PENDING` path.
+
+**Lifecycle.**
+
+| Transition | When | Commit that carries it |
+|---|---|---|
+| absent → `none` | S2, when `operational-closure` creates the artifact | the ordinary S2 closure commit |
+| `none` → `OPEN` | S4, in the **same commit** as the checkpoint resolutions | the resolution commit, pushed in S4 |
+| `OPEN` → `CLOSED` | `RESOLUTION_POSTCONDITION`, after the full verified P-001 closure set | the post-merge closure commit, merged by the closure PR |
+
+`OPEN` → `CLOSED` is the **only** permitted way to discharge the record, it
+happens in a **later** commit whose ancestry stays auditable, and that commit
+must itself be **merged**. Deleting the record is never a discharge.
+
+**Two-channel discovery — the Git channel does not read the PR body.**
+Discovery runs **both** channels and takes the union; neither may be skipped
+because the other returned nothing:
+
+* **Channel A (mutable, fast)** — the `CLOSURE_LOCATOR` in the PR body, per the
+  read protocol below.
+* **Channel B (durable, history-backed)** — for every PR admitted by
+  **PV-1…PV-3** of the same exhaustive paginated enumeration, plus the default
+  branch, fetch the head and read `docs/closure/` from the **tree**:
+
+```text
+# post-merge / default-branch tree
+git ls-tree -r --name-only origin/main -- docs/closure/
+  → read resolution_obligation from each artifact; keep status OPEN
+
+# still-open PRs (the pre-merge window, where the record is not yet on main)
+git fetch origin refs/pull/<pr>/head        # for each PV-1..PV-3-admitted PR
+git ls-tree -r --name-only FETCH_HEAD -- docs/closure/
+  → read resolution_obligation from each artifact; keep status OPEN
+
+# deletion detection — absence from the tree is NEVER "no obligation"
+git log --follow --diff-filter=D --format=%H -- <artifact path>
+git log --format=%H -S'resolution_obligation' -- docs/closure/
+  → any record that ever appeared in history and is now absent from the
+    tree WITHOUT a recorded OPEN → CLOSED transition is a DELETION → HALT
+```
+
+Channel B's provenance is established **entirely** from API response fields and
+Git ancestry — **PV-1** (same repository), **PV-2** (base is the default
+branch), **PV-3** (trusted `author_association`) — and **never** from PR-body
+text. That is what makes it independent of the surface under suspicion. PV-4 and
+PV-5 (which compare against locator body fields) are **not** applicable to
+Channel B; the Channel-B analogues are **PV-B4** (the record's embedded `pr`
+equals the PR it was read from) and **PV-B5** (the record's `branch` equals that
+PR's head ref), both evaluated against API fields. PV-6 and PV-7 apply
+unchanged.
+
+**Fail-closed rules.** Each of these **halts to the operator**:
+
+| # | Condition | Why it cannot be tolerated |
+|---|---|---|
+| OB-1 | An artifact that carried a record in history is absent from the tree with no `OPEN` → `CLOSED` transition | This is the deletion attack. Absence is never evidence of discharge. |
+| OB-2 | Force-push, rebase, or shallow/grafted history makes the record's introducing commit unreachable or its ancestry unverifiable | An unverifiable record cannot be trusted either way; guessing re-opens the orphan. |
+| OB-3 | Two or more **conflicting** `OPEN` records for the same shipment | No field can rank them. Identical duplicates collapse to one and are logged; **any** field difference halts. `opened_at` MUST NOT be a tie-breaker. |
+| OB-4 | `OPEN` records for more than one distinct shipment | A P-001 violation, exactly as for the locator. |
+| OB-5 | A record is unparseable, or is missing a field its declared status requires | Partial evidence is not evidence. |
+| OB-6 | Channel A and Channel B **disagree** — a locator says `RECONCILED` while an `OPEN` record exists, or a locator is absent while an `OPEN` record exists | The disagreement is the signal. Never prefer the mutable channel, and never let a missing locator discharge a live record. |
+| OB-7 | Channel B enumeration is incomplete — a fetch, `ls-tree`, or `log` exits non-zero, or PR pagination is truncated | Identical to RQ-9's rule for Channel A. |
+
+**What this deliberately does not do.** It adds **no** executable persistence
+substrate, **no** lock or compare-and-swap, and **no** cross-run cursor. It is a
+frontmatter field on a file the workspace already writes, read with `git
+ls-tree` and `git log`. It implements **no** part of Defect 1 — no continuation
+predicate, no activation record store, no auto-routing. Its only authority is to
+**halt**; it confers no merge authority (RQ-10 is untouched).
 
 ### `CLOSURE_LOCATOR` *(RQ-7 … RQ-9)*
 
@@ -436,10 +711,14 @@ reconstruction anchored on the `CLOSURE_LOCATOR`**, not by a checkpoint.
 
 Recovery in this window MUST NOT rely on checkpoint enumeration, which will
 correctly report zero active candidates. **Entry is wired into the zero-candidate
-branch itself**: a session finding zero active checkpoints MUST run locator
-discovery **before** concluding "clean startup" and before selecting new queue
-work. When no non-`RECONCILED` locator exists, normal startup continues
-unchanged, byte for byte.
+branch itself**: a session finding zero active checkpoints MUST run
+**both discovery channels** — the `CLOSURE_LOCATOR` read protocol (Channel A)
+**and** the `RESOLUTION_OBLIGATION_RECORD` Git-history scan (Channel B) —
+**before** concluding "clean startup" and before selecting new queue work.
+Neither channel may be skipped because the other returned nothing, and a
+Channel-A/Channel-B disagreement halts (OB-6). When **both** channels complete
+and neither yields a non-`RECONCILED` locator nor an `OPEN` obligation record,
+normal startup continues unchanged, byte for byte.
 
 **Step 1 — classify the locator status, then the live PR state; the ancestry
 target follows from both.** Asserting `origin/main` ancestry unconditionally is
@@ -501,15 +780,34 @@ being silently skipped into a `NONE` verdict — the failure mode this
 classification exists to close, in which a partially-resolved branch is
 re-classified as untouched and resolved a second time.
 
+**Working-tree placement — committing re-entry only.** *(The canonical name;
+referenced by that exact phrase from U5 and V12. Revision 8 left this paragraph
+with its heading lost, so it was an unnamed fragment that no acceptance
+criterion could cite — the mechanical half of open finding 3.)*
 
-is entered at session start, when the working tree is normally on `main` and may
-be a fresh checkout. Committing a resolution on `main` is forbidden (P-010), and
-staying on `main` makes the re-entry undischargeable. Before re-entering
-`RESOLUTION_PREFIX` at the resolve step, the agent MUST: read `branch` and `pr`
-from the locator; `git fetch origin refs/pull/<pr>/head`; check out a local branch
-at that tip; and confirm the checkout succeeded. If any step fails, **halt to the
-operator** rather than proceeding on the wrong branch. Steps that only *read*
-state (every ancestry assertion in Step 1b) need a fetch but no checkout.
+`LAST_MILE_RECOVERY` is entered at session start, when the working tree is
+normally on `main` and may be a fresh checkout. Committing a resolution on
+`main` is forbidden (P-010), and staying on `main` makes the re-entry
+undischargeable. This procedure is **required before any committing re-entry**
+and is **not** required — and must not be performed — for read-only steps: every
+ancestry assertion in Step 1b needs the fetch but **no** switch.
+
+| # | Step | Fail action |
+|---|---|---|
+| WP-1 | Assert the working tree is **clean** (no staged, unstaged, or untracked changes that a switch would carry or clobber) | **Halt.** Never stash, never discard. |
+| WP-2 | Read `branch` and `pr` from a locator that already passed PV-1…PV-7, or from an obligation record that already passed PV-1…PV-3 + PV-B4/PV-B5. An untrusted or unvalidated source is never used | **Halt.** |
+| WP-3 | `git fetch origin refs/pull/<pr>/head` | **Halt** on non-zero exit. |
+| WP-4 | Place the tree on that tip: if no local branch of that name exists, create it at `FETCH_HEAD` and switch; if one exists, switch and **fast-forward only** to `FETCH_HEAD` | **Halt** on switch failure, and **halt** on any non-fast-forward/divergence. Never `git reset --hard`, never force checkout, never rebase. |
+| WP-5 | Assert the **current branch name** equals the locator/record `branch` | **Halt** on mismatch. |
+| WP-6 | Assert `HEAD == FETCH_HEAD` | **Halt** on mismatch. |
+| WP-7 | Assert HEAD is **not** the default branch and **not** detached | **Halt.** |
+
+**After any WP failure the session performs no resolution and no commit.** It
+does not retry with a reset, a force checkout, or a discard; it halts to the
+operator with the failing step named. Proceeding on the wrong branch, on a
+diverged branch, or on `main` is precisely the hazard this procedure exists to
+close, and a "best effort" placement is worse than none because the subsequent
+commit would look legitimate.
 
 **Step 1b — live PR state classification** (reached only for a complete
 `RESOLUTION_PUBLISHED` locator):
@@ -551,7 +849,7 @@ is an unmerged PR awaiting an operator, never an unsupervised merge.
 
 ## Implementation units
 
-Eight units. Each edits **one file**, is **documentation-domain only**, and is
+Ten units. Each edits **one file**, is **documentation-domain only**, and is
 sized for well under two hours. Acceptance criteria below are the *exact* text
 carried into the task cards.
 
@@ -697,31 +995,67 @@ subsection.
 11. The four-part merge-authority bar appears in full, with halt as the default
     for any doubt, and it is stated that this path confers **no** merge authority
     and cannot supply the approval signal P-014 requires.
-12. markdownlint passes.
+12. A procedure titled **exactly** `Working-tree placement — committing re-entry
+    only` appears, and is required **before any committing re-entry** and
+    explicitly **not** required for read-only ancestry assertions (fetch, no
+    switch). It carries all seven steps with their halt actions: **WP-1** clean
+    working tree; **WP-2** branch/PR read only from a provenance-validated
+    locator or obligation record; **WP-3** `git fetch origin
+    refs/pull/<pr>/head`; **WP-4** safe create-and-switch for a new local branch
+    and **fast-forward-only** switch for an existing one; **WP-5** current branch
+    name equals the recorded `branch`; **WP-6** `HEAD == FETCH_HEAD`; **WP-7**
+    HEAD is neither the default branch nor detached. It states that a dirty tree,
+    a failed fetch, a failed switch, a divergence, or any assertion mismatch
+    **fails closed**, and that after any failure the session performs **no**
+    `git reset`, **no** force checkout, **no** resolution and **no** commit.
+13. markdownlint passes.
 
 **Posture**: documentation-first. **Size**: S. **Complexity**: medium.
 
-### U4 — Move Ship's checkpoint resolution into the pre-merge path
+### U4 — Re-order Ship Step 5 into the `RESOLUTION_PREFIX` finalization tail
 
-**Depends on**: U1, U2.
+**Depends on**: U1, U2, U9.
 **File**: `.github/agents/_ship.agent.md` — **Step 5 (PR Lifecycle)** and
 **Session end item 2**.
 
-The current state, verified against the file: the **only** happy-path resolution
-is Session end item 2 (`resolve any still-active checkpoints from the current
-session`), which runs after all Required Steps and therefore after Step 6
-post-merge closure. Step 6.0 contains **no** resolution step — it only creates
-the `post-merge/{feature_slug}` branch. The executable merge path is **Step 5**.
-Placing `RESOLUTION_PREFIX` anywhere other than Step 5 would leave Step 5 merging
-exactly as it does today.
+**The real Step 5 item list, extracted verbatim rather than described.** The
+escalation's assessment was that every prior round mismatched what this plan
+*asserted* Step 5 contains against what it *actually* contains. The extraction
+below is the authority for this unit; the task card carries it verbatim.
 
-Wire **`RESOLUTION_PREFIX`** — the pre-merge part only — into Step 5, positioned
-**before** the existing readiness/approval/merge items so that the existing
-last-mile re-check (item 15), P-009 guardrail (item 16) and merge execution all
-operate on the final post-resolution HEAD. The existing approval, re-fetch and
-merge items are **not moved, restated or duplicated**. Reference the canonical
-text in `github-pr-automation.instructions.md`; do not restate the sequence.
-Then amend Session end item 2 so it no longer resolves after merge and no longer
+| Real item | Content | Mutates branch? |
+|---|---|---|
+| 1, 1a | full quality gates; `pipeline-topology` lifecycle gate | no |
+| 2 | session memory summary to `docs/memory/` | yes (commit) |
+| 3 | full local build | no |
+| 4, 5, 5a | confirm readiness covers HEAD; prepare §1.9 body block; topology gate | no |
+| 6 | `pr-lifecycle` — create/update the PR | no |
+| **7** *(first)* | `fix-ci` loop | **yes — may commit and push** |
+| 7a | optional shadow-review loop | **yes — may commit and push** |
+| 7b | **P-014 §1.9 readiness gate** | no |
+| 7c | **P-018 copilot-review gate** | no |
+| **7** *(second — the item number is duplicated in the live file)* | `runtime-verification` | yes |
+| 8 | `operational-closure` (writes `docs/closure/`) | yes |
+| 9 | follow-up stash writes | yes |
+| 10 | push the branch | yes |
+| 11, 12, 13 | broadcast; present PR; branch retention | no |
+| 14 | P-014 operator approval gate | no |
+| 15 | last-mile re-check — **P-018 re-run + `headRefOid` re-query only** | no |
+| 16 | P-009 merge-commit guardrail | no |
+| 17 | P-017 dark-mode fallback state machine | no |
+
+Two facts follow directly and are the substance of this unit. First, **items 7b
+and 7c currently run before items 7(second)/8/9/10**, so readiness is gated
+*before* four mutating items and the push — which is why moving resolution into
+Step 5 changes the common path for **every** unit, not only checkpoint-owning
+ones. Second, **item 15 re-fetches only the P-018 verdict and `headRefOid`** — it
+never evaluates required checks and never re-paginates review threads — so RQ-6
+has no executable enforcement path in the live file. Revision 8's assertion that
+the approval/re-fetch/merge items "run unchanged" was false; it is withdrawn.
+
+Wire `RESOLUTION_PREFIX` in as the **finalization tail** of Step 5 by name, and
+amend items 7b, 7c and 15 to their new positions and strengthened content. Then
+amend Session end item 2 so it no longer resolves after merge and no longer
 creates a residual-window checkpoint.
 
 **Acceptance criteria**
@@ -730,50 +1064,82 @@ creates a residual-window checkpoint.
    `github-pr-automation.instructions.md` as its canonical definition, and does
    **not** restate any of its steps, orderings or rationale. A reader must follow
    the reference to learn the sequence.
-2. The invocation is positioned in Step 5 **before** the readiness gate, the
-   approval item, the last-mile re-check (item 15), and merge execution — so
-   every one of those operates on the final post-resolution HEAD.
-3. The entry condition is stated as *the unit owns at least one active checkpoint
-   and all branch-mutating work is complete except the resolution-dependent final
-   gates*. The circular "PR merge-ready" wording is **not** used. When the unit
-   owns zero active checkpoints, **locator publication and checkpoint resolution
-   are skipped** — but the unit still runs the **newly ordered** common readiness
-   path established by AC2/AC4. **OPEN P1 (Round 8, finding 2):** this criterion
-   previously claimed such units run "the pre-existing path unchanged", which is
-   false — real Step 5 places readiness items 7b/7c *before* runtime
-   verification, closure-artifact generation, follow-up writes and the push
-   (items 7–10), so moving every mutating item ahead of the readiness gate
-   changes the common path for **every** unit, zero-checkpoint units included.
-   The honest statement is recorded here; the corresponding re-specification of
-   AC2/AC4 is **not** yet done.
-4. **No branch-mutating step remains between the prefix's exit and merge.** Any
-   existing Step 5 item that mutates the branch (runtime verification,
-   operational-closure artifact generation, follow-up stash writes, the push)
-   sits **before** the invocation. The old-to-new item order is recorded in the
-   task card so the reordering is auditable rather than implicit.
+2. The resulting Step 5 order matches the canonical segments exactly, and the
+   task card records the **old-to-new item mapping** using the verbatim extract
+   above so the reorder is auditable rather than implicit:
+   **S1** = items 7 (first) and 7a, run to completion first, permitted to commit
+   and push; **S2** = item 7 (second), item 8, item 9, item 10 (the ordinary
+   push); **S3** = the checkpoint-enumeration proof; **S4** = the conditional
+   locator/resolution/push segment; **S5** = the re-run local review, the final
+   locator resolution state, the PR-body `Reviewed HEAD` write, then item **7b
+   (MOVED here)**, the explicit required-check evaluation, and item **7c (MOVED
+   here)**; **S6** = item 14 with a recorded `approved_head`; **S7** = item 15,
+   **amended**; **S8** = the six-part merge bar, after which items 16 and 17
+   apply unchanged.
+3. **The checkpoint count selects segment S4 only.** The criterion states that a
+   unit whose enumeration proves **zero** checkpoints omits **exactly four
+   things** — locator publication, checkpoint resolution, the resolution
+   commit/push, and the phase-2 locator publication — and **runs every other
+   segment identically**, including the whole reordered common finalization tail.
+   The criterion MUST NOT claim that any unit runs "the pre-existing path
+   unchanged"; that claim is false and is expressly prohibited here. It further
+   states that a failed, malformed, quarantined, or ambiguous enumeration is
+   **not zero** and **halts**, that a checkpoint appearing after S3 forces
+   re-evaluation from S3 before merge, that **no empty locator is ever
+   published**, and that Stage's crash-resumption startup recovery is a separate
+   protocol this does not alter. The circular "PR merge-ready" wording is **not**
+   used.
+4. **No branch-mutating step remains after S4.** Every mutating item in the
+   verbatim extract — item 2, item 7 (first), 7a, item 7 (second), 8, 9, 10 —
+   sits in S1 or S2, before the enumeration proof. Nothing between S5 and merge
+   mutates the branch.
 5. Session end item 2 no longer resolves checkpoints after merge. No
    checkpoint-resolution step remains anywhere after merge in this file.
 6. Session end item 2's directive to *"leave at most one final best-effort
-   checkpoint"* for merge approval or closure work is **retired for units inside
-   `RESOLUTION_PREFIX`**, with the recursion reason stated: such a checkpoint
-   could only be resolved by a further commit needing a further PR. The window is
-   covered by `CLOSURE_LOCATOR` / `LAST_MILE_RECOVERY` instead.
+   checkpoint"* is **retired for units inside `RESOLUTION_PREFIX`**, with the
+   recursion reason stated: such a checkpoint could only be resolved by a further
+   commit needing a further PR. The window is covered by `CLOSURE_LOCATOR`, the
+   `RESOLUTION_OBLIGATION_RECORD` and `LAST_MILE_RECOVERY` instead.
 7. Step 6 gains **`RESOLUTION_POSTCONDITION`** by name — set the locator to
-   `RECONCILED` after the full required closure set is verified. It commits
-   nothing, so Step 6.0's post-merge branch rule is untouched.
+   `RECONCILED` **and** transition the `RESOLUTION_OBLIGATION_RECORD` from
+   `OPEN` to `CLOSED` in the same post-merge closure commit, after the full
+   required closure set is verified.
 8. Step 6.0's post-merge branch rule is unchanged for every other closure
    artifact, and **Step 6's P-020 `compact-context` invocation is present and
    unmodified**.
-9. Step 5's existing P-018 last-mile re-check (item 15) and P-009 guardrail
-   (item 16) are retained unmodified.
-10. The section cites P-022.
-11. markdownlint passes.
+9. Item **15 is amended**, not retained unmodified. *(Revision 8's "item 15
+   retained unmodified" criterion is withdrawn: it forbade the unit from
+   implementing the very requirement it was credited with.)* The amended item
+   re-fetches and re-evaluates, unconditionally and fail-closed, **all** of:
+   `headRefOid`; the PR body; `reviewDecision`; review requests and reviews;
+   **every review-thread page to exhaustion**; required checks; and the
+   **ancestry of every recorded resolution commit**. Item **16 (P-009) is
+   retained unmodified**.
+10. The merge step permits merge **only** when all six merge-bar conditions hold:
+    live `headRefOid` == local HEAD == locator `final_head` == PR-body
+    `Reviewed HEAD` == `approved_head`; every recorded resolution commit is an
+    ancestor of that HEAD; review-thread pagination completed to exhaustion; no
+    blocking thread or review exists; required checks pass or are explicitly
+    **proven** non-applicable; and P-018 passes. It further states the refresh
+    rules: any HEAD change voids the approval and requires a fresh
+    push/review/metadata/gates/approval cycle, and a thread or check change
+    without a HEAD change requires the affected gates plus a refreshed approval.
+    **No stale approval may be reused.**
+11. S4's resolution commit also writes the `RESOLUTION_OBLIGATION_RECORD` at
+    `OPEN` **in the same commit**, and that commit is pushed before the S5 review
+    re-run.
+12. The section cites P-022.
+13. markdownlint passes.
 
-**Posture**: documentation-first. **Size**: S. **Complexity**: medium.
+**Posture**: documentation-first. **Size**: M. **Complexity**: high.
+*(Revision 9 raises this from S/medium honestly: the unit now carries a verbatim
+item extract, a segment mapping, two moved items and one amended item. It remains
+a single-file documentation change and stays inside two hours because the
+extract removes the re-derivation work every prior round repeated.)*
 
 ### U5 — Ship orphan detection, startup discovery, and locator reconciliation
 
-**Depends on**: U3, U4.
+**Depends on**: U3, U4, U9.
 **File**: `.github/agents/_ship.agent.md` — Merge Confirmation Gate and the
 `ZERO-CANDIDATE NORMAL STARTUP` block.
 
@@ -799,23 +1165,41 @@ Two assertions plus a startup entry point. The durable input is the
    assertion.
 5. Closed-unmerged, missing PR, failed lookup, and incomplete locator all halt to
    the operator; failure is surfaced, never logged silently.
-6. Ship's `ZERO-CANDIDATE NORMAL STARTUP` item 4 runs `CLOSURE_LOCATOR`
-   discovery **before** continuing to normal shipment validation, with the same
-   halt-on-incomplete-enumeration rule. Ship is directly invokable, so relying on
-   the Orchestrator's route alone would leave direct-Ship startup uncovered.
-7. The locator is set to `RECONCILED` **only after the full P-001 post-merge
-   closure set is complete and verified, including the P-020 compaction record**,
-   and it is stated that setting it at merge or after partial closure would lose
-   the obligation.
-8. No-op when no locator was published; every recorded resolution commit is
-   asserted when several were recorded.
-9. markdownlint passes.
+6. Ship's `ZERO-CANDIDATE NORMAL STARTUP` item 4 runs **both** discovery
+   channels — the `CLOSURE_LOCATOR` read protocol and the
+   `RESOLUTION_OBLIGATION_RECORD` Git-history scan — **before** continuing to
+   normal shipment validation, with the same halt-on-incomplete-enumeration rule
+   for each, and halts on a Channel-A/Channel-B disagreement (OB-6). Ship is
+   directly invokable, so relying on the Orchestrator's route alone would leave
+   direct-Ship startup uncovered.
+7. The locator is set to `RECONCILED` **and** the `RESOLUTION_OBLIGATION_RECORD`
+   is transitioned `OPEN` → `CLOSED` in the same post-merge closure commit,
+   **only after the full P-001 post-merge closure set is complete and verified,
+   including the P-020 compaction record**, and it is stated that setting either
+   at merge or after partial closure would lose the obligation, and that deleting
+   the record is never a discharge.
+8. No-op when no locator was published **and** no obligation record is `OPEN`;
+   every recorded resolution commit is asserted when several were recorded.
+9. **Before any committing re-entry**, the `Working-tree placement — committing
+   re-entry only` procedure is executed **by that exact name**, and all seven of
+   its steps are named with their halt actions: **WP-1** clean working tree;
+   **WP-2** branch/PR read only from a provenance-validated locator or obligation
+   record; **WP-3** `git fetch origin refs/pull/<pr>/head`; **WP-4** safe
+   create-and-switch for a new local branch, **fast-forward-only** for an
+   existing one; **WP-5** current branch name equals the recorded `branch`;
+   **WP-6** `HEAD == FETCH_HEAD`; **WP-7** HEAD is neither the default branch nor
+   detached. A dirty tree, failed fetch, failed switch, divergence, or any
+   assertion mismatch **fails closed**, and after any failure the session
+   performs **no** `git reset`, **no** force checkout, **no** resolution and
+   **no** commit. It is stated that read-only ancestry assertions fetch but do
+   **not** switch, and therefore do not run this procedure.
+10. markdownlint passes.
 
 **Posture**: documentation-first. **Size**: S. **Complexity**: medium.
 
 ### U6 — Orchestrator locator reconciliation route
 
-**Depends on**: U3, U5.
+**Depends on**: U3, U5, U9.
 **File**: `.github/agents/_orchestrator.agent.md` — Step 0.0b, applied to the
 whole step rather than only its zero-candidate arm.
 
@@ -837,20 +1221,24 @@ global emptiness.
 
 **Acceptance criteria**
 
-1. Step 0.0b runs locator discovery whenever there is **no `ship`-owned active
-   checkpoint**, regardless of whether `stage`-owned checkpoints exist, and always
-   **before** `Continue directly to Step 0 State Assessment` — therefore before
-   any queue selection.
+1. Step 0.0b runs **both** discovery channels — the `CLOSURE_LOCATOR` read
+   protocol and the `RESOLUTION_OBLIGATION_RECORD` Git-history scan — whenever
+   there is **no `ship`-owned active checkpoint**, regardless of whether
+   `stage`-owned checkpoints exist, and always **before** `Continue directly to
+   Step 0 State Assessment` — therefore before any queue selection.
 2. When a `ship`-owned active checkpoint **does** exist, the pre-existing
    owner-routing path is unchanged and discovery is skipped, because that
    checkpoint already carries the obligation.
-3. A discovered non-`RECONCILED` locator is routed to **Ship** for
-   `LAST_MILE_RECOVERY` **before** any Stage routing and before queue selection.
-   If a `stage`-owned checkpoint is also present, both are presented to the
-   operator and no new queue work is auto-selected.
+3. A discovered non-`RECONCILED` locator **or** an `OPEN` obligation record is
+   routed to **Ship** for `LAST_MILE_RECOVERY` **before** any Stage routing and
+   before queue selection. If a `stage`-owned checkpoint is also present, both
+   are presented to the operator and no new queue work is auto-selected.
 4. Discovery is not filtered by shipment status, so an archived shipment with an
-   outstanding non-`RECONCILED` locator is found (the 139-S shape).
-5. Incomplete enumeration halts rather than falling through to state assessment.
+   outstanding non-`RECONCILED` locator or `OPEN` record is found (the 139-S
+   shape).
+5. Incomplete enumeration in **either** channel halts rather than falling
+   through to state assessment, and a Channel-A/Channel-B disagreement halts
+   (OB-6). A missing locator never discharges an `OPEN` record.
 6. Non-`RECONCILED` locators for more than one distinct shipment halt as a P-001
    violation.
 7. Routing into `LAST_MILE_RECOVERY` conveys **no merge authority** and no
@@ -860,9 +1248,10 @@ global emptiness.
    obligation.
 8. Owner exclusivity is preserved: the Orchestrator **routes**; Ship **performs**
    the reconciliation. The Orchestrator never performs recovery itself.
-9. When no locator is found, the pre-existing fall-through is unchanged: the same
-   `Continue directly to Step 0 State Assessment` instruction, the same
-   non-failure classification, and no new operator interaction.
+9. When **neither** channel finds anything, the pre-existing fall-through is
+   unchanged: the same `Continue directly to Step 0 State Assessment`
+   instruction, the same non-failure classification, and no new operator
+   interaction.
 10. markdownlint passes.
 
 **Posture**: documentation-first. **Size**: S. **Complexity**: medium.
@@ -912,6 +1301,116 @@ only: do not resolve into an already-merged staging PR.
 
 **Posture**: documentation-first. **Size**: S. **Complexity**: medium.
 
+### U9 — Record the durable resolution-obligation record *(closes RR-3)*
+
+**Depends on**: U3 (extends the same subsection; same file, strictly sequential).
+**File**: `.github/instructions/github-pr-automation.instructions.md`.
+
+This unit is revision 9's answer to **RR-3**, the blocking design gap the round-8
+review left open. It installs the canonical `RESOLUTION_OBLIGATION_RECORD`
+definition — the Git-tracked, history-immutable second channel that makes RQ-7
+true when the mutable PR body is deleted. It does **not** weaken RQ-7, and it
+does **not** touch RQ-8: the record carries no SHA.
+
+**Acceptance criteria**
+
+1. The `RESOLUTION_OBLIGATION_RECORD` schema block appears verbatim as given in
+   this plan's canonical definition, with its canonical **path** (the unit's
+   pre-merge operational-closure artifact under `docs/closure/`) and canonical
+   **identity** (`shipment_id`, `pr`; exactly one `OPEN` record per shipment).
+2. It is stated that the record **carries no SHA** and why: it is written inside
+   the resolution commit, so any SHA field would be self-referential — RQ-8 is
+   preserved, not traded. Recovery re-derives SHAs from the existing
+   *resolution-state classification* at the fetched PR head.
+3. The three-transition lifecycle table appears: absent → `none` (S2, the
+   `operational-closure` artifact write); `none` → `OPEN` (S4, **in the same
+   commit as the checkpoint resolutions**, pushed before the S5 review re-run);
+   `OPEN` → `CLOSED` (`RESOLUTION_POSTCONDITION`, in the post-merge closure
+   commit, after the full verified P-001 closure set). It is stated that
+   `OPEN` → `CLOSED` is the **only** discharge, that it happens in a **later**
+   commit whose ancestry stays auditable, that the closure commit must itself be
+   **merged**, and that **deletion is never a discharge**.
+4. It is stated that `docs/closure/` is chosen because it is an **existing owned
+   repo-local state surface** — created by the `operational-closure` skill,
+   already written at real Step 5 item 8, and already carrying the same
+   placeholder→finalize field convention as `compaction_status` — and that a
+   new standalone tracker file, a checkpoint-store record, and a commit-message
+   record were each rejected, with the stated reason for each.
+5. **Two-channel discovery** is specified: Channel A (the PR-body
+   `CLOSURE_LOCATOR`) and Channel B (the Git-history scan). Both run, the union
+   is taken, and **neither may be skipped because the other returned nothing**.
+6. Channel B's commands are given exactly — `git ls-tree -r --name-only
+   origin/main -- docs/closure/`; `git fetch origin refs/pull/<pr>/head` plus
+   `git ls-tree -r --name-only FETCH_HEAD -- docs/closure/` for every
+   PV-1…PV-3-admitted PR; and the deletion probes `git log --follow
+   --diff-filter=D --format=%H -- <artifact path>` and `git log --format=%H
+   -S'resolution_obligation' -- docs/closure/`.
+7. It is stated that Channel B's provenance is established **only** from API
+   response fields and Git ancestry — PV-1, PV-2, PV-3, plus **PV-B4** (record
+   `pr` equals the PR read from) and **PV-B5** (record `branch` equals that PR's
+   head ref), with PV-6 and PV-7 unchanged — and **never** from PR-body text,
+   because the body is the surface under suspicion. PV-4 and PV-5 are stated to
+   be inapplicable to Channel B.
+8. **Deletion is detected via commit history, never inferred from absence.** The
+   criterion states that a record which ever appeared in history and is now
+   absent from the tree **without** a recorded `OPEN` → `CLOSED` transition is a
+   deletion that **halts**, and that absence from the current tree is never
+   evidence that no obligation exists.
+9. All seven fail-closed rules appear with their halt actions: **OB-1** deletion;
+   **OB-2** force-push/rebase/shallow history making ancestry unverifiable;
+   **OB-3** conflicting `OPEN` records for one shipment (byte-identical
+   duplicates collapse and are logged; **any** field difference halts;
+   `opened_at` is barred as a tie-breaker); **OB-4** `OPEN` records for more than
+   one shipment (P-001); **OB-5** unparseable or field-incomplete record;
+   **OB-6** Channel A/Channel B disagreement, with the explicit rule that the
+   mutable channel is **never** preferred and a missing locator **never**
+   discharges an `OPEN` record; **OB-7** incomplete Channel-B enumeration.
+10. It is stated explicitly that this mechanism introduces **no** executable
+    persistence substrate, **no** lock or compare-and-swap, **no** cross-run
+    cursor persistence, and **no** part of Defect 1, and that it confers **no**
+    merge authority — its only authority is to halt (RQ-10 untouched).
+11. markdownlint passes.
+
+**Posture**: documentation-first. **Size**: S. **Complexity**: medium.
+
+### U10 — Declare the obligation field in the closure-artifact schema
+
+**Depends on**: U9.
+**File**: `.github/skills/operational-closure/SKILL.md` — the pre-merge closure
+artifact's field list only.
+
+**Why this unit exists, and why it is a scope addition made openly.** The
+`operational-closure` skill **owns** the `docs/closure/` artifact schema. Adding
+a field that the skill does not declare would leave the record an unowned
+squatter on someone else's artifact — precisely the "ad-hoc tracker" the RR-3
+correction is required to avoid — and would drift the moment the skill's field
+list changed. One field declaration keeps the surface owned. This adds
+`.github/skills/operational-closure/SKILL.md` to the plan's in-scope file set;
+the decision's scope boundary is updated to match rather than the addition being
+made silently.
+
+**Acceptance criteria**
+
+1. The pre-merge closure artifact's field list gains `resolution_obligation`,
+   documented in the same style as the existing `compaction_status` and
+   source-artifact-cleanup fields.
+2. The skill is stated to **initialize** the field to `none` when it creates the
+   pre-merge artifact, exactly as it initializes `compaction_status` to
+   `pending`.
+3. The allowed transitions are stated as `none` → `OPEN` (written by Ship in the
+   resolution commit) and `OPEN` → `CLOSED` (written by Ship's post-merge
+   closure). No other transition is permitted, and the skill does **not** itself
+   write `OPEN` or `CLOSED`.
+4. The field's canonical definition is **referenced by name** in
+   `github-pr-automation.instructions.md`; the skill does **not** restate the
+   schema, the discovery protocol, or the fail-closed rules.
+5. No other skill behaviour is modified — `compaction_status` handling, the
+   source-artifact-cleanup placeholder, and the releasability verdict set are
+   untouched.
+6. markdownlint passes.
+
+**Posture**: documentation-first. **Size**: XS. **Complexity**: low.
+
 ### U7 — Capture the compound learning *(closure deliverable)*
 
 **Depends on**: U5, U6.
@@ -933,9 +1432,13 @@ practice, and this defect class cost two extra pull requests to discover.
    perform the recovery.
 4. The **status-filtered discovery trap** is recorded: 139-S's shipment was
    archived while its obligation was outstanding.
-5. Frontmatter matches the prevailing convention of
+5. The **sole-mutable-record trap** is recorded: resolving every checkpoint
+   pre-merge makes the PR body the only obligation record unless a Git-tracked
+   record rides the resolution commit, and absence of a record must be
+   distinguished from deletion of one via commit history.
+6. Frontmatter matches the prevailing convention of
    `docs/compound/workflow-issues/` and is internally consistent.
-6. markdownlint passes.
+7. markdownlint passes.
 
 **Posture**: documentation-first. **Size**: XS. **Complexity**: low.
 
@@ -953,52 +1456,73 @@ therefore absent by design.
 | RQ-3 push before evidence | U2 | U4 |
 | RQ-4 re-run the actual review | U2 | U4 |
 | RQ-5 PR-body record precedes §1.9 | U2 | U4 |
-| RQ-6 approval after gate, live re-fetch before merge | U2 | U4 |
-| RQ-7 locator discoverable through closure | U2 (`CLOSURE_LOCATOR`) | U5 |
-| RQ-8 non-self-referential locator | U2 | — |
-| RQ-9 exhaustive, trusted, status-independent discovery | U3 (read protocol) | U5, U6 |
-| RQ-10 no merge authority conferred | U3 (`LAST_MILE_RECOVERY` Step 2) | U5, U6 |
-| RQ-11 every failure halts | U3 | U5, U6 |
+| RQ-6 approval after gate, live re-fetch before merge | U2 (`RESOLUTION_PREFIX` S5–S8) | U4 (Ship — moves items 7b/7c, **amends item 15**, installs the six-part merge bar and the refresh rules) |
+| RQ-7 locator discoverable through closure | U2 (`CLOSURE_LOCATOR`) | U5, **U9** (the durable Git channel that makes RQ-7 hold when the PR body is deleted) |
+| RQ-8 non-self-referential locator | U2 | U9 (the obligation record carries no SHA, by construction) |
+| RQ-9 exhaustive, trusted, status-independent discovery | U3 (read protocol) | U5, U6, U9 (Channel B) |
+| RQ-10 no merge authority conferred | U3 (`LAST_MILE_RECOVERY` Step 2) | U5, U6, U9 |
+| RQ-11 every failure halts | U3 | U5, U6, U9 (OB-1 … OB-7) |
+| RQ-12 durable Git-tracked obligation record | **U9** (`RESOLUTION_OBLIGATION_RECORD`) | U4 (writes it in the resolution commit), U5 (discovers and closes it), U6 (routes on it), U10 (schema ownership) |
 
 ## Dependencies
 
 ```text
 U2 ──→ U1 ──┬──→ U4 ──→ U5 ──→ U6 ──→ U7
   │         └──→ U8            ↑
-  └──→ U3 ──────────────────┬──┘
-                            └──→ U5
+  └──→ U3 ──→ U9 ──┬──→ U4     │
+                   ├──→ U5 ────┤
+                   ├──→ U6 ────┘
+                   └──→ U10
 ```
 
-Eleven edges: **U2→U1**, U1→U4, U1→U8, U2→U4, U2→U3, U3→U5, U3→U6, U4→U5,
-U5→U6, U5→U7, U6→U7. The graph is acyclic.
+Sixteen edges: **U2→U1**, U1→U4, U1→U8, U2→U4, U2→U3, U3→U5, U3→U6, U4→U5,
+U5→U6, U5→U7, U6→U7, **U3→U9**, **U9→U4**, **U9→U5**, **U9→U6**, **U9→U10**.
+The graph is acyclic.
 
 The single **root is U2**. Revision 7 listed U1 and U2 as co-roots, but U1
 installs a by-name reference to `RESOLUTION_PREFIX` whose definition only U2
 creates; running U1 first would leave a dangling reference that cannot be
 verified. **U2→U1** is therefore a real edge, and it transitively orders U8 after
-the canonical definition too.
+the canonical definition too. **U9→U4** is the same kind of edge: U4's AC11
+requires the resolution commit to write a record whose definition only U9
+creates.
 
-The two units that share `github-pr-automation.instructions.md` (U2, U3) are
-strictly sequential, as are the two that share `_ship.agent.md` (U4, U5). U8 is
-the only unit touching `_stage.agent.md`, U6 the only unit touching
-`_orchestrator.agent.md`, and U1 the only unit touching `workflow-policies.md`.
-No two concurrently-eligible units edit the same file.
+The three units that share `github-pr-automation.instructions.md` (U2, U3, U9)
+are strictly sequential, as are the two that share `_ship.agent.md` (U4, U5). U8
+is the only unit touching `_stage.agent.md`, U6 the only unit touching
+`_orchestrator.agent.md`, U1 the only unit touching `workflow-policies.md`, and
+U10 the only unit touching `operational-closure/SKILL.md`. No two
+concurrently-eligible units edit the same file.
 
 ## Verification
 
 | # | Check | Expected result |
 |---|---|---|
 | V1 | `markdownlint` over every changed file | passes |
-| V2 | Canonical-copy check, in two parts. **(a)** The `RESOLUTION_PREFIX` code block appears verbatim exactly once, in `github-pr-automation.instructions.md`. **(b)** In `workflow-policies.md`, `_ship.agent.md` and `_stage.agent.md`, grep for each of the eight step verbs of the sequence (`publish`, `resolve`, `push`, `re-run`, `update`, `record`, `re-run ALL`, `obtain`) within the changed regions. | (a) exactly one verbatim copy; (b) **zero** step-verb restatements — only the bare names `RESOLUTION_PREFIX` / `RESOLUTION_POSTCONDITION` and a file reference |
+| V2 | **Canonical-copy check**, in two parts. **(a)** The `RESOLUTION_PREFIX` code block appears verbatim exactly once, in `github-pr-automation.instructions.md`. **(b)** *Sequence-restatement check (rewritten in revision 9; the revision-8 form was unsatisfiable — it banned the ordinary verbs `resolve`, `record` and `push`, which U1's policy Statement and U8's Stage prohibition are **required** to use).* In each referencing file's changed region — `workflow-policies.md`, `_ship.agent.md`, `_stage.agent.md`, `_orchestrator.agent.md`, `operational-closure/SKILL.md` — assert that **no ordered enumeration of three or more canonical segment steps appears**: that is, no list or arrow-chain reproducing three or more of the S1…S8 segment contents in their canonical order. Ordinary prose use of any individual verb is **permitted and expected**. | (a) exactly one verbatim copy; (b) no referencing file contains a three-or-more-step ordered restatement; each contains the bare name `RESOLUTION_PREFIX` / `RESOLUTION_POSTCONDITION` / `RESOLUTION_OBLIGATION_RECORD` plus a file reference |
 | V3 | Grep every changed file for `two-phase` and for `pr_role` | zero occurrences of each; only "three-phase" appears |
-| V4 | **Ordered-step inspection** of `_ship.agent.md` (not a grep), recording the item numbers: read Step 5 top-to-bottom and confirm (a) the `RESOLUTION_PREFIX` invocation precedes the readiness gate, approval, last-mile re-check and merge execution, and (b) **no branch-mutating item appears between the invocation and merge**; then read Step 6 and Session end and confirm neither contains a resolution or checkpoint-creation step for the merged unit | (a) ordering holds; (b) the set of items between invocation and merge is empty of mutations; (c) no post-merge resolution or creation |
-| V5 | Backlog structure equals `143-F` → 2 sub-epics → 8 tasks, and the shipment manifest membership equals those 11 IDs | exact **membership** match; order is not asserted, because Ship treats manifest order as non-executable and sorts by unfinished dependencies |
+| V4 | **Ordered-step inspection** of `_ship.agent.md` (not a grep), recording the item numbers against U4's verbatim extract: read Step 5 top-to-bottom and confirm (a) items 7 (first) and 7a complete first; (b) item 7 (second), 8, 9 and 10 (the push) all precede the checkpoint-enumeration proof; (c) items **7b and 7c now appear after that push**, together with the re-run review, the PR-body `Reviewed HEAD` write and an explicit required-check evaluation; (d) item 14 records `approved_head`; (e) item 15 is **amended** to re-fetch headRefOid, PR body, reviewDecision, review requests/reviews, every review-thread page, required checks and resolution-commit ancestry; (f) item 16 (P-009) is byte-identical to its pre-change text; (g) **no branch-mutating item appears after the enumeration proof**; then read Step 6 and Session end and confirm neither contains a resolution or checkpoint-creation step for the merged unit | (a)–(f) each hold as stated; (g) the set is empty of mutations; no post-merge resolution or creation |
+| V5 | Backlog structure equals **one top-level release unit → 2 sub-epics → 10 tasks**, and the shipment manifest membership equals those **13** IDs. *(IDs are allocated at harvest; the abandoned `143.*` IDs must not be reused.)* | exact **membership** match; order is not asserted, because Ship treats manifest order as non-executable and sorts by unfinished dependencies |
 | V6 | Every task card's acceptance criteria are textually identical to its unit's criteria in this plan | identical |
 | V7 | Grep the **changed files** (not this plan) for this closed list of Defect-1 construct names: `DARK_CONTINUATION_PREDICATE`, `ACTIVATION_RECORD_STORE`, `CURSOR_TYPING_RULES`, `CONTINUATION_HANDOFF_EVIDENCE`, `OWNER_SIDE_REVALIDATION`, `PREDICATE_PRECEDENCE`, `MIS_EVALUATION_DIRECTIONALITY`, `SCOPE_MATCH_RULES`, `check-continuation-predicate-drift`, `canonical-phrases.json`, `parity-gate` | zero occurrences of all eleven |
-| V8 | Execute the U3 discovery command against this repository with `per_page=2`, count returned records, and compare against `gh api repos/{owner}/{repo}/pulls?state=all --jq 'length'` run per-page | record count exceeds 2, proving `Link`-header pagination actually followed; every record carries a non-empty `body` field; exit code 0 |
+| V8 | Execute the U3 discovery command against this repository with `per_page=2`, count returned records; compare against the **paginated** reference `gh api --paginate -H "Accept: application/vnd.github+json" "repos/{owner}/{repo}/pulls?state=all&per_page=100" --jq '.[].number' \| Measure-Object -Line`. *(Revision 9 fix: the revision-8 reference command omitted `--paginate`, so it was itself capped at one page and the comparison was invalid — it could only ever prove the two commands disagreed.)* | both counts are equal **and** exceed 2, proving `Link`-header pagination actually followed; every record carries a non-empty `body` field; exit code 0 on both |
 | V9 | Confirm Step 6's P-020 `compact-context` invocation in `_ship.agent.md` is byte-identical to its pre-change text | identical |
 | V10 | Read `_stage.agent.md` Session end item 2 **and** the `OWNER-SCOPED RESOLUTION` block; confirm both carry the P-022 merged-PR prohibition and the executable `gh pr list --state merged --head <branch>` predicate, and that the best-effort-checkpoint directive is qualified | both sites carry both; directive qualified |
-| V11 | Read `_orchestrator.agent.md` Step 0.0b; confirm discovery is keyed on the absence of a **ship-owned** active checkpoint, not on global zero-candidate | keyed on ship-owned absence |
+| V11 | Read `_orchestrator.agent.md` Step 0.0b; confirm discovery is keyed on the absence of a **ship-owned** active checkpoint, not on global zero-candidate, and that it runs **both** channels | keyed on ship-owned absence; both channels present |
+| V12 | **Working-tree placement coverage** *(the verification half of D14)*. Read U3's criteria and confirm the procedure named **exactly** `Working-tree placement — committing re-entry only` is defined with WP-1…WP-7 and their halt actions; read U5's criteria and confirm it is **executed by that exact name before the only committing recovery branch**. Then run the positive and fail-closed cases below. | the name matches exactly in both units; every case below behaves as stated |
+| V12a | *Positive*: clean tree on `main`, valid locator, PR head fetchable. Run the placement | WP-1…WP-7 all pass; HEAD == FETCH_HEAD; current branch == locator `branch`; not `main`, not detached |
+| V12b | *Fail-closed, dirty tree*: uncommitted change present | halts at WP-1; **no** stash, **no** discard, **no** switch, **no** commit |
+| V12c | *Fail-closed, fetch failure*: unreachable `refs/pull/<pr>/head` | halts at WP-3; no switch, no resolution, no commit |
+| V12d | *Fail-closed, divergence*: local branch of that name exists and is not a fast-forward of `FETCH_HEAD` | halts at WP-4; **no** `git reset --hard`, **no** force checkout, **no** rebase |
+| V12e | *Fail-closed, mismatch*: switch succeeds but `HEAD != FETCH_HEAD`, or branch name differs, or HEAD is detached | halts at WP-5/WP-6/WP-7 respectively; no resolution, no commit |
+| V12f | *Read-only path*: a Step 1b ancestry assertion | fetch performed; **no** switch performed; the placement procedure is **not** run |
+| V13 | **Zero-checkpoint case**: a unit whose enumeration proves zero. Trace Step 5 | S4 omitted in full — no locator published, no resolution commit, no phase-2 update, **no empty locator**; S1, S2, S3, S5, S6, S7, S8 all execute; item 7b/7c run **after** the push |
+| V14 | **Nonzero-checkpoint case**: a unit owning ≥1 checkpoint. Trace Step 5 | S4 executes; the locator, the resolutions and the `OPEN` obligation record ride **one** commit that is pushed before the S5 review re-run; remote head proven equal to local head |
+| V15 | **Enumeration-failure case**: enumeration errors, or returns a malformed or quarantined record, or is ambiguous | **halts**; it is **not** classified as zero; no locator, no resolution, no merge |
+| V16 | **Race case**: a checkpoint appears after S3 completed but before merge | re-evaluation from S3 is forced before merge; the prior approval is void and a fresh S6 approval with a new `approved_head` is required |
+| V17 | **Obligation-record durability**: publish a record, then delete the PR body. Run both discovery channels | Channel A finds nothing; **Channel B still finds the `OPEN` record**; OB-6 (A/B disagreement) halts; the missing locator does **not** discharge the record |
+| V18 | **Obligation-record deletion**: delete the closure artifact from the tree with no `OPEN` → `CLOSED` transition | `git log --diff-filter=D` detects it; **OB-1 halts**; absence is **not** read as "no obligation" |
+| V19 | Grep the changed files for `resolution_commits` and `final_head` within the `RESOLUTION_OBLIGATION_RECORD` schema and its lifecycle text | zero occurrences — the record carries no SHA, so RQ-8 is preserved |
 
 ## Residual risks
 
@@ -1006,7 +1530,7 @@ No two concurrently-eligible units edit the same file.
 |---|---|---|
 | RR-1 | These are prose protocols executed by an LLM. Correct wording does not prove correct execution. | **Accepted and recorded.** The prior plan's answer — a static wording checker — could only prove the words had not changed, not that the protocol ran. U5's ancestry assertion is the real defence: a concrete command with a pass/fail outcome that makes a miss loud. V8 additionally proves the one discovery command that was silently wrong in revision 6. |
 | RR-2 | *(Closed in revision 7.)* Stage's session-end resolution was previously bound by P-022 with no procedural rewiring. | **Closed by U8.** The independent review held that a universal requirement with a procedural gap in one of its two named agents is not realized. U8 adds the narrow Stage qualifier without granting Stage merge authority. |
-| RR-3 | The locator lives in the PR body, which a human or bot can edit or delete. | **OPEN — not accepted; carried as a blocking design gap (PR #396 thread `PRRT_kwDORJEduc6h6juv`).** The previous disposition claimed a deleted locator "would fall back to pre-change behaviour — no worse than today". That is **false and contradicts RQ-7**. Under this design `RESOLUTION_PREFIX` resolves *every* checkpoint **before** merge, so the PR body marker becomes the **sole** record of an outstanding closure obligation. Deleting it leaves startup with zero active checkpoints **and** zero discoverable locators, and `LAST_MILE_RECOVERY` — whose entry is wired into the zero-candidate branch — concludes "clean startup" and selects new queue work. Pre-change behaviour left a still-active checkpoint behind, which is strictly *safer*: the obligation remained discoverable. The design therefore **removes** the pre-change safety net and replaces it with a deletable one, which RQ-7 forbids ("discoverable through closure"). The halt-on-incomplete rule does not mitigate this: a *damaged* locator halts, but a *deleted* one is indistinguishable from one that never existed. **Required fix (not yet designed):** a durable publication record whose prior existence — and therefore its deletion — is detectable through verified closure, independent of mutable PR-body text. Until that exists, this risk is **not** dispositioned and must not be counted as accepted. |
+| RR-3 | The locator lives in the PR body, which a human or bot can edit or delete. | **CLOSED in revision 9 by unit U9** (`RESOLUTION_OBLIGATION_RECORD`) **plus U10** (schema ownership), and by U4 AC11 / U5 AC6, AC7, AC8 / U6 AC1, AC3, AC5 wiring it into every discovery and discharge path. The gap was real and is restated honestly: because `RESOLUTION_PREFIX` resolves *every* checkpoint before merge, the PR body was the **sole** obligation record, deletion was undetectable, and startup would conclude "clean" — strictly worse than the pre-change still-active checkpoint, and a direct contradiction of RQ-7. The fix adds a **second, Git-tracked, history-immutable channel**: a SHA-free record written into the unit's existing `docs/closure/` pre-merge closure artifact **in the same commit as the resolutions**, pushed before the final review. It is discovered from exhaustive trusted PR/commit/tree history with provenance taken only from API fields and Git ancestry, never from the body; deletion is detected from commit history (OB-1) rather than inferred from absence; force-push/history gaps (OB-2), conflicting records (OB-3, OB-4), unparseable records (OB-5), channel disagreement (OB-6) and incomplete enumeration (OB-7) all fail closed; and discharge is only an `OPEN` → `CLOSED` transition in a later, merged, ancestry-auditable commit. **RQ-7 is not weakened, and RQ-8 is not traded** — the record carries no SHA (V19). Verified by V17, V18, V19. **No** executable persistence substrate, lock/CAS, or cross-run cursor is introduced, and no Defect-1 construct is touched. *Residual after the fix (accepted):* an actor able to force-push the branch **and** rewrite history **and** edit the PR body can still destroy both channels — but that is now a detectable, halting condition (OB-2) rather than a silent one. |
 | RR-4 | `gh api --paginate` over all PRs grows with repository history. | **Accepted.** Cost is bounded by PR count and runs once per zero-candidate startup. Correctness was chosen over speed deliberately (RQ-9). |
 | RR-5 | A crash between locator phase 1 and the resolution commits leaves a `RESOLUTION_PENDING` locator with no commits. | **Handled, not merely accepted** — `LAST_MILE_RECOVERY` Step 1a runs the *resolution-state classification* over the locator's checkpoint list at the fetched PR head and re-enters **`RESOLUTION_PREFIX`** (at the resolve step) **only** on a reduced state of `NONE`; `PARTIAL`, `ALL` and `INDETERMINATE` all halt, as does the merged case. `RESOLUTION_POSTCONDITION` is never re-entered here — it is a Step 6 metadata write. Listed here because the handling is a recovery path, not a prevention. |
 
@@ -1025,10 +1549,13 @@ No two concurrently-eligible units edit the same file.
 ## Retained review history
 
 This section is **evidence, not authority**. It records what previous revisions
-were reviewed against. None of it authorizes harvest of **revision 8** — the
-current document — whose own Round 8 review returned **FAIL** with three open
-P1s and left the review circuit **OPEN** at attempt counter 3. No row below, and
-no earlier revision's verdict, may be cited as a harvest gate.
+were reviewed against, and it is **appended to, never rewritten**. Revision 8's
+own Round 8 review genuinely returned **FAIL** with three open P1s and left the
+circuit **OPEN** at attempt counter 3; that record stands unaltered below.
+Revision 9 remediates those findings under explicit operator authorization, but
+**no row below, and no earlier revision's verdict, may be cited as a harvest
+gate for revision 9**. Revision 9's own gate is a fresh independent full-plan
+review that has not yet returned.
 
 | Round | Reviewers | Verdict | Scope reviewed |
 |---|---|---|---|
@@ -1040,43 +1567,61 @@ no earlier revision's verdict, may be cited as a harvest gate.
 | 5 | Independent seven-persona panel: Constitution, Rust/feasibility, Scope Boundary Auditor, Learnings, Architecture, Agent-Native Parity, Security | **FAIL** (13 blocking P1 plus P2/advisory) | revision 4 (both defects). Blocker 8 discharged **as process** — the review was performed — but its verdict was FAIL, so the gate it guarded stayed closed. |
 | 6 | Independent four-persona panel: Scope Boundary Auditor (`gpt-5.6-sol`), Constitution (`claude-opus-4.8`), Correctness (`gemini-3.8-flash`), Agent-Native Parity (`grok-4.6`) | **FAIL** (3 FAIL, 1 ADVISORY) | revision 6 (Defect 2 only). All findings were specification defects; none falsified the design. Remediated into revision 7 — see the disposition table below. |
 | 7 | Independent four-persona panel, same personas and models as round 6 | **FAIL** (Scope, Correctness, Parity FAIL; Constitution ADVISORY) | revision 7. Panel confirmed **every** revision-6 finding genuinely closed and the design still sound; new findings were deeper specification defects exposed by the earlier fixes. Remediated into revision 8 — see below. |
-| 8 | Independent Scope Boundary Auditor (`gpt-5.6-sol`, xhigh) | **FAIL** (3 P1, 5 P2) | revision 8 (this document). **Third consecutive FAIL. Review circuit OPEN — attempt counter 3.** P-013.6 escalation fired; Stage halted without harvesting. |
+| 8 | Independent Scope Boundary Auditor (`gpt-5.6-sol`, xhigh) | **FAIL** (3 P1, 5 P2) | revision 8. **Third consecutive FAIL. Review circuit OPEN — attempt counter 3.** P-013.6 escalation fired; Stage halted without harvesting. |
+| 8-escalation | P-013.6 escalation reviewer, route `gpt-5.6-sol` / `openai` / `xhigh`, against HEAD `bbb52b65` | **ESCALATION_BLOCKS** | revision 8. Reasoning-only. Produced findings A–E, remediated into revision 9 under explicit operator authorization for ONE bounded revision plus ONE fresh full review. |
+| 9 | *(pending)* | *(not yet returned)* | revision 9. The **only** review that can gate revision 9's harvest. |
 
-### Round 8 — outstanding findings (NOT remediated; circuit open)
+### Round 8 — outstanding findings (SUPERSEDED by revision 9; recorded as they stood)
+
+**Status of this subsection.** The three P1s below were genuinely open when
+revision 8 was reviewed, and the text is preserved as it stood rather than
+rewritten. Revision 9 remediates each; the remediation column names where.
+Marking them remediated here is **not** a verdict — only the pending revision-9
+review can confirm the remediations are adequate.
 
 Revision 8 closed every round-7 P1 the auditor could verify: the P-003 sub-epic
 tier is restored, U4 AC1 references without restating, the RQ-2 trace explicitly
 excludes U8, U4 AC4 exposes the Step-5 reorder, hardening D6 defers to D10, U2's
 locus is fixed, `pr_role` is gone, and U6 is owner-scoped. No Defect-1 construct
 is reintroduced. All eight units remain single-file documentation units.
+*(Historical: revision 9 raised the count to ten; every unit is still a
+single-file documentation unit.)*
 
-These three P1s remain open and are carried to escalation:
+These three P1s were open at revision 8 and were carried to escalation. The
+revision-9 remediation for each is recorded in the fourth column:
 
-| # | Finding | Required fix |
-|---|---|---|
-| 1 | **RQ-6 has no executable enforcement path.** The canonical prefix asserts that a live re-fetch of HEAD, threads and CI already exists in Ship Step 5 and is unchanged. It does not: real item 15 re-runs the P-018 gate and re-queries `headRefOid` only — it never re-fetches required CI, and it does not refresh all review threads when P-018 is disabled. U4 AC9 then *requires* item 15 to stay unmodified, so RQ-6 is credited to a unit that is forbidden from implementing it. | Expand U4 to amend the last-mile item with an explicit fail-closed post-approval query of live HEAD, full thread state and required checks; drop the "item 15 unmodified" criterion. |
-| 2 | **The zero-checkpoint bypass claim is false.** U4 AC3 promises a zero-checkpoint unit runs "the pre-existing path unchanged", while AC2/AC4 require all mutating items to move before the prefix and the readiness gate to move after it. Real Ship Step 5 has readiness items 7b/7c *before* runtime verification, closure-artifact generation, follow-up writes and the push (items 7–10), so the reorder changes the common path for every unit, including zero-checkpoint ones. | State that zero-checkpoint units skip locator publication and resolution but use the newly ordered common readiness path. Do not claim their step order is unchanged. |
-| 3 | **D14 is not actually folded into a task criterion.** D14 requires reading `branch`/`pr`, fetching the PR head, checking out a local branch, confirming the checkout and halting on failure. Its cited U5 AC2 lists only `gh pr view`, `git fetch` and `git merge-base` — no checkout, no verification — and no V-check covers it. Because task-card criteria are declared exact, U5 could pass while recovery is still sitting on `main`. This re-opens the very hazard D14 was written to close. | Add a U5 acceptance criterion requiring the by-name working-tree placement, checkout and verification before any committing re-entry, plus a matching verification check; then repoint D14's fold reference. |
+| # | Finding | Required fix | Revision-9 remediation |
+|---|---|---|---|
+| 1 | **RQ-6 has no executable enforcement path.** The canonical prefix asserts that a live re-fetch of HEAD, threads and CI already exists in Ship Step 5 and is unchanged. It does not: real item 15 re-runs the P-018 gate and re-queries `headRefOid` only — it never re-fetches required CI, and it does not refresh all review threads when P-018 is disabled. U4 AC9 then *requires* item 15 to stay unmodified, so RQ-6 is credited to a unit that is forbidden from implementing it. | Expand U4 to amend the last-mile item with an explicit fail-closed post-approval query of live HEAD, full thread state and required checks; drop the "item 15 unmodified" criterion. | **Applied.** `RESOLUTION_PREFIX` restructured into S1…S8 with the exact safe order; U4 carries a verbatim Step-5 extract; the "item 15 unmodified" criterion is **withdrawn** and U4 AC9 now **amends** item 15 to re-fetch headRefOid, PR body, reviewDecision, review requests/reviews, every review-thread page, required checks and resolution-commit ancestry; U4 AC10 adds the six-part merge bar and the no-stale-approval refresh rules; item 16 (P-009) stays unmodified. Verified by V4. |
+| 2 | **The zero-checkpoint bypass claim is false.** U4 AC3 promises a zero-checkpoint unit runs "the pre-existing path unchanged", while AC2/AC4 require all mutating items to move before the prefix and the readiness gate to move after it. Real Ship Step 5 has readiness items 7b/7c *before* runtime verification, closure-artifact generation, follow-up writes and the push (items 7–10), so the reorder changes the common path for every unit, including zero-checkpoint ones. | State that zero-checkpoint units skip locator publication and resolution but use the newly ordered common readiness path. Do not claim their step order is unchanged. | **Applied.** The checkpoint count now selects segment **S4 only**; the "pre-existing path unchanged" claim is removed everywhere and expressly prohibited by U4 AC3. Enumeration failure/malformed/quarantine/ambiguity is **not zero** and halts; a late-appearing checkpoint forces re-evaluation; no empty locator; Stage startup recovery preserved as separate. Verified by V13–V16. |
+| 3 | **D14 is not actually folded into a task criterion.** D14 requires reading `branch`/`pr`, fetching the PR head, checking out a local branch, confirming the checkout and halting on failure. Its cited U5 AC2 lists only `gh pr view`, `git fetch` and `git merge-base` — no checkout, no verification — and no V-check covers it. Because task-card criteria are declared exact, U5 could pass while recovery is still sitting on `main`. This re-opens the very hazard D14 was written to close. | Add a U5 acceptance criterion requiring the by-name working-tree placement, checkout and verification before any committing re-entry, plus a matching verification check; then repoint D14's fold reference. | **Applied using existing units — no new unit.** The placement paragraph (whose heading revision 8 had lost, leaving it uncitable) is named `Working-tree placement — committing re-entry only` and defined in **U3 AC12** (WP-1…WP-7); **U5 AC9** executes it by that exact name before the only committing recovery branch; the U3→U5 dependency is unchanged. Verified by **V12** and cases **V12a–V12f**. D14's fold reference is repointed. |
 
-Open P2s: V2 is unsatisfiable as written (it forbids verbs U1/U8 are required to
-use); and V8's reference command lacks `--paginate` so its comparison is invalid.
+Open P2s at revision 8, both now closed: V2 was unsatisfiable as written (it
+forbade verbs U1/U8 are required to use) — **replaced in revision 9** by a
+sequence-restatement check that permits ordinary prose verbs; and V8's reference
+command lacked `--paginate` so its comparison was invalid — **fixed in revision
+9** by paginating the reference command.
 
 **Closed on 2026-09-13** (PR #396 Copilot review remediation pass, commit
 recorded in the PR): the decision document's in-scope list now carries
-`_stage.agent.md`, says **eight units (U1–U8)** instead of "7-task plan", and no
-longer names the retired `RESOLUTION_ORDER`; hardening D14's stale `Folds into`
-reference is withdrawn along with its incorrect "applied" status.
+`_stage.agent.md`, states the unit count explicitly instead of "7-task plan", and
+no longer names the retired `RESOLUTION_ORDER`; hardening D14's stale
+`Folds into` reference is withdrawn along with its incorrect "applied" status.
+*(The unit count that sentence recorded was **eight (U1–U8)** at revision 8; it
+is **ten (U1–U10)** at revision 9 following the RR-3 closure.)*
 
-### Additional findings from the PR #396 Copilot review (remediated in this pass)
+### Additional findings from the PR #396 Copilot review (remediated in the revision-8 pass)
 
 These were raised on the published PR rather than by the four-persona panel.
-They are **specification hardenings and honesty corrections**; none of them
-closes any of the three open P1s above, and none changes the circuit state.
+They are **specification hardenings and honesty corrections**. The dispositions
+below are recorded **as they stood at revision 8** and are not rewritten; at that
+point none of them closed any of the three P1s and none changed the circuit
+state. Where revision 9 has since advanced a disposition, that is noted inline.
 
 | Thread | Finding | Disposition |
 |---|---|---|
 | `PRRT_kwDORJEduc6h6juE` | The "exhaustive and trusted" read protocol validated no provenance, so a fork PR could forge a locator and halt startup or steer recovery. | **Fixed.** New *Provenance validation* block: PV-1…PV-7, with untrusted candidates **discarded silently** (so an outsider cannot deny startup) and trusted-but-inconsistent ones **halting**. All downstream rules operate over the TRUSTED set only. |
-| `PRRT_kwDORJEduc6h6juv` | RR-3's "no worse than today" disposition contradicts RQ-7. | **Fixed by honest reclassification.** RR-3 is now **OPEN**, not accepted: resolving every checkpoint pre-merge makes the deletable PR-body marker the *sole* obligation record, which is strictly worse than the pre-change still-active checkpoint. The required durable publication record is **not yet designed**. |
+| `PRRT_kwDORJEduc6h6juv` | RR-3's "no worse than today" disposition contradicts RQ-7. | **Fixed by honest reclassification** *(at revision 8)*. RR-3 was reclassified **OPEN**, not accepted: resolving every checkpoint pre-merge makes the deletable PR-body marker the *sole* obligation record, which is strictly worse than the pre-change still-active checkpoint. The durable publication record was **not yet designed** at that point. **Superseded at revision 9:** RQ-12, units U9/U10 and hardening D15 design and install it; RR-3 is now **CLOSED**, subject to the pending revision-9 review. |
 | `PRRT_kwDORJEduc6h6jv7` | Body status said `review_verdict: none` while frontmatter said FAIL. | **Fixed.** The status paragraph now states the round-8 FAIL, the three open P1s, attempt counter 3 and the open circuit. |
 | `PRRT_kwDORJEduc6h6jv-` | Retained-history note still said "revision 7". | **Fixed.** Now names revision 8 and its FAIL verdict. |
 | `PRRT_kwDORJEduc6h6ldd` | "Handled normally" undefined for two locators naming the same shipment. | **Fixed.** Byte-identical duplicates collapse to one record; **any** field difference halts. `updated_at` explicitly barred as a tie-breaker (it is body text). |
@@ -1097,9 +1642,31 @@ ambiguity.
 all three fields. `ESCALATION_DEGRADED` therefore does **not** apply and the
 escalation is live rather than a no-op.
 
-**Disposition**: the failing operation is **not** re-executed. Stage has halted.
-No harvest, no shipment assembly, no successor ID allocation. The escalation is a
-reasoning escalation only and confers no authority to promote this plan.
+**Disposition**: the failing operation was **not** re-executed at revision 8.
+Stage halted: no harvest, no shipment assembly, no successor ID allocation. The
+escalation is a reasoning escalation only and confers no authority to promote
+this plan.
+
+**Escalation execution and operator re-authorization (revision 9).** The
+escalation ran under route `gpt-5.6-sol` / `openai` / `xhigh` against HEAD
+`bbb52b65df1e63f9e8ebbd28b4ccd0fc61718cdd` and returned `ESCALATION_BLOCKS` with
+findings A–E. The operator then explicitly authorized **one bounded planning
+revision plus one fresh full independent plan-review gate** — and nothing
+further. Revision 9 is that revision. It remains within the reasoning-escalation
+boundary: **no** harvest, **no** shipment claim or assembly, **no** activation,
+**no** implementation, **no** merge, and **no** revival of the abandoned `143.*`
+artifacts. `harvest_authorized` stays `false` and moves only if the fresh review
+of revision 9 returns PASS **and** the Orchestrator separately routes the next
+step.
+
+**Answer to the escalation question.** The escalation asked whether U4 should be
+decomposed against a **verbatim extract of the real Step 5 item list** rather
+than against a prose description of it. **Yes — and revision 9 does exactly
+that.** U4 now carries the extract inline, including the two facts every prior
+prose round missed: the item number `7` is **duplicated** in the live file, and
+readiness items 7b/7c sit **before** the mutating items 7(second)/8/9/10 and the
+push. Those two facts are the direct cause of open findings 1 and 2, which is
+strong evidence the escalation's diagnosis was correct.
 
 **Assessment carried to escalation**: the architecture has not been falsified.
 Three independent panels have each confirmed the design sound and each closed

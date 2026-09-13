@@ -1,14 +1,16 @@
 ---
 doc_type: decision
 date: 2026-09-13
+revision: 3
 status: accepted
 supersedes_scope_of: docs/decisions/2026-09-13-checkpoint-lifecycle-continuity-deliberation.md
 scope: defect-2-only
 stash_ids: [4EF24729]
 related_open_deliberation: docs/decisions/2026-09-13-dark-mode-continuation-auto-routing-deliberation.md
-feature: 143-F
-shipment: 143-S
-policies: [P-003, P-005, P-009, P-010, P-014, P-016, P-018]
+historical_feature: 143-F
+historical_shipment: 143-S
+abandoned_ids_historical_only: [143-F, 143-S, "143.001-T … 143.014-T"]
+policies: [P-003, P-005, P-009, P-010, P-014, P-016, P-018, P-022]
 ---
 
 # Checkpoint Resolution Durability — Requirements and Decision (Defect 2)
@@ -86,6 +88,20 @@ missed; B3 makes a miss loud.
 **Decision: B2 + B3**, plus the minimum machinery B2 provably requires — a
 durable, non-self-referential locator and a bounded last-mile recovery rule.
 
+**B4 — Durable Git-tracked obligation record** *(added in revision 3 of this
+decision, closing RR-3).* B2 resolves every checkpoint before merge, which makes
+the PR-body locator the **sole** record of an outstanding obligation — and a PR
+body is mutable and deletable without trace. *Accepted as a required companion,
+not an optional hardening.* A SHA-free obligation record rides the resolution
+commit into Git history on an **existing owned** state surface (the
+`operational-closure` pre-merge artifact under `docs/closure/`), giving a second
+discovery channel that does not read the PR body at all. Rejected alternatives,
+each for a stated reason: a new standalone tracker file (an unowned ad-hoc
+tracker); a record in the checkpoint store (self-defeating — resolving the
+checkpoints is what removes the signal); a record in the commit message (not
+addressable by path, lost to tree-preserving history rewrites); and any new
+executable persistence substrate (Defect-1 scope, explicitly forbidden here).
+
 ## 4. Requirements (numbered; each is traced by exactly one plan section)
 
 | # | Requirement | Rationale |
@@ -95,7 +111,8 @@ durable, non-self-referential locator and a bounded last-mile recovery rule.
 | RQ-3 | The resolution commits must be **pushed** before any evidence is derived from them or the resolution is treated as durable. | Operator: *"push before resolving where remote durability matters."* An unpushed resolution is local-only; a crash before push loses it and the locator would point at SHAs no remote has. |
 | RQ-4 | After the final resolution commit, the **actual local review must be re-run** at that HEAD. Re-pointing an earlier verdict at a new HEAD is a false attestation. | The final HEAD contains, by construction, commits no earlier review examined. |
 | RQ-5 | The reviewed-HEAD record lives in **PR-body metadata**, written **before** the P-014 §1.9 gate runs, because a PR-body edit does not advance `headRefOid`. | §1.9 reads the body and requires `Reviewed HEAD == headRefOid`; running the gate first is unsatisfiable once resolutions advanced HEAD. |
-| RQ-6 | Merge approval is obtained **after** the §1.9 gate passes and is anchored to that same final HEAD; a **live re-fetch** of PR HEAD/threads/CI immediately precedes the merge. | P-014 ordering; TOCTOU between approval and merge. |
+| RQ-6 | Merge approval is obtained **after** the §1.9 gate passes, is **pinned to that HEAD** via a recorded `approved_head`, and is followed by a **strengthened live re-fetch** immediately before merge. Merge proceeds only when the six-part merge bar holds. **No stale approval is ever reused.** | P-014 ordering; TOCTOU between approval and merge. **Corrected in revision 9** after the P-013.6 escalation established that the real `_ship.agent.md` Step 5 does **not** already satisfy this: its item 15 re-runs the P-018 gate and re-queries `headRefOid` only — it never evaluates required checks and never re-paginates review threads. RQ-6 therefore had no executable enforcement path, and the plan's claim that the approval/re-fetch/merge items "run unchanged" was false. The plan's `RESOLUTION_PREFIX` now defines the order as segments S1…S8 against a **verbatim extract** of the live item list, item 15 is **amended** rather than preserved, and item 16 (P-009) stays unmodified. |
+| RQ-12 | A **durable, Git-tracked, history-immutable** resolution-obligation record must be introduced by the resolution commit on the PR branch and remain independently discoverable from exhaustive trusted PR/commit/tree history **even if the PR-body metadata is deleted**. Its absence from the current tree must be distinguished from its deletion, via commit history. | **Added in revision 9** to close RR-3 rather than weaken RQ-7. Because `RESOLUTION_PREFIX` resolves *every* checkpoint before merge, the mutable PR body was the **sole** obligation record: deleting it left startup with zero checkpoints and zero locators, concluding "clean" — strictly worse than the pre-change still-active checkpoint, and a direct contradiction of RQ-7. The record is persisted as a field on the **existing owned** `docs/closure/` pre-merge closure artifact, carries **no SHA** (so RQ-8 is preserved intact), is provenance-checked from API fields and Git ancestry only, fails closed on deletion, force-push/history gaps, conflicting records and channel disagreement, and is discharged only by an `OPEN` → `CLOSED` transition in a later, merged, ancestry-auditable commit. It introduces **no** executable persistence substrate, **no** locking/CAS, **no** cross-run cursor, and **no** Defect-1 construct. |
 | RQ-7 | A durable locator must make the outstanding closure obligation discoverable from a **fresh checkout of the default branch with zero active checkpoints**, and must remain discoverable **through** required post-merge closure until closure is verified. | The residual window between the last resolution and verified closure is deliberately checkpoint-free; something must cover it. |
 | RQ-8 | The locator must be **non-self-referential**: no commit is ever required to record its own SHA. | Revision 4's locator was unimplementable for exactly this reason. |
 | RQ-9 | Locator discovery must be **exhaustive and trusted**: fully paginated, not filtered by shipment status, and **fail-closed on incomplete enumeration**. | 139-S's shipment was *archived* while its obligation was outstanding; a bounded or status-filtered scan misses the motivating case. |
@@ -114,6 +131,14 @@ durable, non-self-referential locator and a bounded last-mile recovery rule.
   merged-PR prohibition and the executable merged-PR predicate). Stage gains
   **no** merge authority from this; see the out-of-scope note below.
 * `.github/agents/_orchestrator.agent.md` (zero-candidate startup branch)
+* `.github/skills/operational-closure/SKILL.md` — **added in revision 9** by
+  unit U10: one field declaration (`resolution_obligation`) in the pre-merge
+  closure artifact's schema. This is an **openly recorded scope addition of one
+  file**, made because the `operational-closure` skill owns the `docs/closure/`
+  artifact schema; adding the RQ-12 record without declaring it there would
+  leave it an unowned squatter on another component's artifact — exactly the
+  ad-hoc tracker the RR-3 correction must avoid — and would drift the moment the
+  skill's field list changed.
 * `docs/compound/workflow-issues/` (one new learning)
 
 **Out of scope**, explicitly:
@@ -129,8 +154,8 @@ durable, non-self-referential locator and a bounded last-mile recovery rule.
   police, and a permanent checker plus hooks for four prose paragraphs is
   scope the Scope Boundary Auditor already flagged (R-P2c′).
 * The task↔plan acceptance parity gate (former T14). It was introduced because a
-  14-task plan had drifted from its cards. The reduced plan's **eight units
-  (U1–U8)**, whose cards are mechanically derived from the plan sections, do not
+  14-task plan had drifted from its cards. The reduced plan's **ten units
+  (U1–U10)**, whose cards are mechanically derived from the plan sections, do not
   need a runtime gate, and the former gate could not in fact enforce first-task
   ordering (PR #396 thread `PRRT_kwDORJEduc6h3sTk`).
 * backlogit tool changes; `src/`; `crates/`; shipments 140-S / 141-S / 142-S;
@@ -164,18 +189,27 @@ durable, non-self-referential locator and a bounded last-mile recovery rule.
 | `PRRT_kwDORJEduc6h3sTs` | **Fixed** — same as `3aDl`. |
 | `PRRT_kwDORJEduc6h3sTz` | **Fixed** — manifest validation asserts exact membership, never order. |
 | `PRRT_kwDORJEduc6h3sT4` | **Fixed** — the locator protocol is called **three-phase** consistently. |
+| `PRRT_kwDORJEduc6h6juv` *(carried forward)* | **Fixed in revision 3 of this decision** — RQ-12 plus plan units U9/U10 close RR-3 with a durable Git-tracked obligation record. The gap is not silently weakened: RQ-7 is made true and RQ-8 is preserved (the record carries no SHA). |
 
 ## 7. Definition of done
 
 The reduced unit is done when: the backlog carries the P-003 chain in full
-(source document → plan → `143-F` → two sub-epics → 8 tasks, every task
-referencing its parent sub-epic per P-003 item 4); RQ-1 … RQ-11 are each realized
+(source document → plan → one top-level release unit → two sub-epics → **ten
+tasks**, every task referencing its parent sub-epic per P-003 item 4);
+RQ-1 … **RQ-12** are each realized
 by exactly one **owning** implementation unit — the unit that installs the normative text —
 with zero or more **enforcing** units that wire that text into an execution
 path; every unit is a single-domain documentation change achievable in under two
-hours; the reduced plan passes a **fresh independent** full-plan review; and the
+hours; the reduced plan passes a **fresh independent** full-plan review of
+**revision 9**; and the
 backlog carries a non-mixed shipment containing only Defect-2 work.
 
 A unit that is a pure **closure deliverable** (for example, capturing a compound
 learning) realizes no requirement and is exempt from the trace, provided it is
 labelled as such rather than justified by inventing a requirement for it.
+
+**Abandoned identifiers.** `143-F`, `143-S` and `143.001-T` … `143.014-T` are
+machine-state **abandoned**. They are retained in this document and in the plan
+**only as historical evidence** and must never be revived, re-parented, or
+reused. Replacement IDs stay **unassigned** until a later authorized harvest,
+which is why the chain above is stated structurally rather than by ID.
