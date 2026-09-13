@@ -77,10 +77,13 @@ releasability from `READY WITH CONDITIONS` to an unconditional `READY`.
   --all-targets -- -D warnings -D clippy::pedantic` (which denies
   `unwrap_used`/`expect_used` workspace-wide) remains clean.
 - `cargo dev-test` (default features) remains the canonical local merge
-  gate and must stay GREEN modulo the pre-existing documented
-  `archive_verifier_runs_the_unpacked_native_binary` and
-  `t046_s050_daemon_exits_after_idle_timeout_and_restarts` flakes (both
-  full-suite-contention-only, both already stashed).
+  gate and must stay GREEN modulo the two pre-existing documented
+  failures: `t046_s050_daemon_exits_after_idle_timeout_and_restarts`
+  (full-suite-contention-only — passes cleanly in isolation) and
+  `archive_verifier_runs_the_unpacked_native_binary` (reproduces even in
+  isolation and on the clean `origin/main` baseline — not
+  contention-only; see `docs/closure/2026-09-13-139-s-runtime-verification.md`
+  for the isolation repro evidence). Both are already stashed.
 
 ## Pre-deploy audits
 
@@ -120,6 +123,11 @@ service). The daemon's existing structured JSON logs, `get_health_report`,
 and `get_daemon_status` remain the monitoring surface for handler
 dispatch/param-validation/storage-open ordering outcomes.
 
+| SLI | Baseline | Alert / rollback threshold | Owner | Validation window |
+|---|---|---|---|---|
+| Rate of `InvalidParams` vs. storage/lock errors on malformed requests to a migrated handler (`map_code`, `impact_analysis`, `query_graph`, `query_changes`, report/lifecycle/eval/lint/doctor handlers), observed via structured JSON logs | 0 storage/lock errors for malformed requests (pre-migration and post-migration baseline are identical: `InvalidParams` only) | Any single observed storage/lock error (instead of `InvalidParams`) for a malformed request to a migrated handler triggers the rollback trigger below | Ship agent (this session) for the duration below; thereafter the operator monitoring `get_health_report`/`get_daemon_status` output during normal use | 7 days of normal developer usage following merge to `main` (matches the "Standard PR review + CI window" cited under Validation window below; this table makes that window's duration and owner explicit) |
+| `unified_search` observing a database generation newer than the one current at handler entry (dispatch-context pin violation), observed via structured JSON logs / `get_health_report` | 0 occurrences (pinning is intended to make this structurally impossible) | Any single observed occurrence triggers the rollback trigger below | Ship agent (this session) for the duration below; thereafter the operator | 7 days of normal developer usage following merge to `main` |
+
 ## Failure signals
 
 - `cargo dev-test` or `cargo ci` turning newly red on `main` after merge,
@@ -141,13 +149,21 @@ follow-up conditions above, both of which pre-date this shipment).
 
 ## Rollback procedure
 
-`git revert` of this shipment's commit range on `main` (the 6 manifest
-tasks' implementation and fix commits across `679500ce` through `c3424766`,
-plus the review-fix and docs/bookkeeping commits in between). Reverting
-restores the pre-shipment handler behavior (each handler resolving storage
-independently rather than through the pinned context). No production or
-runtime data is touched by this change (source-only additions plus backlog-
-state bookkeeping) — rollback carries no data-migration risk.
+Revert the merge commit `08e816394cfa1945fdf234bd77048ac867a7ea1f` as a
+single unit on `main` (`git revert -m 1 08e816394cfa1945fdf234bd77048ac867a7ea1f`),
+not a sub-range. The merge commit encompasses the entire PR #393 commit
+chain in one operation — all six manifest tasks' implementation commits
+(`4a3cade0`, `7604b56f`, `aa777c9a`, `a578baa7`, `b674ce15`, `10c39b8a`)
+through the final review-fix and docs/bookkeeping commits (`f843b4d5`,
+`c3424766`). An earlier draft of this procedure cited a sub-range starting
+at `679500ce` (an intermediate review-fix commit that lands *after* the six
+implementation commits, not before them); reverting only that sub-range
+would leave the core migration applied. Reverting the merge commit as a
+unit restores the pre-shipment handler behavior (each handler resolving
+storage independently rather than through the pinned context). No
+production or runtime data is touched by this change (source-only
+additions plus backlog-state bookkeeping) — rollback carries no
+data-migration risk.
 
 ## Risky action record
 
@@ -159,9 +175,20 @@ state bookkeeping) — rollback carries no data-migration risk.
 
 ## Owner
 
-Ship agent (this session), on behalf of the operator who explicitly
-approved PR #393 for merge ("PR 393: Merge approved", PR-scoped only) for
-the exact reviewed HEAD.
+Ship agent (this session). Action (1) — merging PR #393 — was performed on
+behalf of the operator's explicit, PR-scoped approval ("PR 393: Merge
+approved") for the exact reviewed HEAD; that approval does not extend to
+any other action. Action (2) — shipment safe-close bookkeeping — was
+authored under Ship's own Role-Boundary-permitted, non-discretionary
+backlog mandate ("close shipments, archive completed items"), as already
+grounded in the `ActionRisk` row above — it was not performed "on behalf
+of" the PR #393 approval, and the PR #393 approval is not cited as, nor
+does it constitute, authorization for this separate destructive action.
+Per the `ActionRisk` row, action (2) still requires its own separate
+explicit operator approval before landing on `main` via this closure PR
+(#394); as of this writing that separate approval has not yet been
+obtained — the action is authored and reviewable on this closure branch
+only, pending that approval.
 
 ## Validation window
 
@@ -253,5 +280,5 @@ degradation — this run completed cleanly.
 | Covering feature | `142-F` — verified `active`, byte-for-byte unchanged (SHA-256 `59263E8FFB779485E135A7AA41D9DAAC89B4A996B767D128D76A1AD2E70404C3`, 802 bytes; P-015 protection confirmed) |
 | Reconciliation | `.backlogit/reconcile/139-S-pre-20260913-003937.md` (PROCEED), `.backlogit/reconcile/139-S-post-20260913-004121.md` (PROCEED) |
 | Post-merge closure branch | `post-merge/139-s-migrate-read-and-lifecycle-handlers-to-pinned-generation-context` |
-| Post-merge closure PR | to be created via `pr-lifecycle` skill following this document's commit; title `chore: post-merge closure for 139-S — Migrate read and lifecycle handlers to pinned generation context` |
+| Post-merge closure PR | PR #394 (`chore: post-merge closure for 139-S — Migrate read and lifecycle handlers to pinned generation context`), created from branch `post-merge/139-s-migrate-read-and-lifecycle-handlers-to-pinned-generation-context`; open, undergoing Copilot review-comment remediation as of this writing; merge requires its own separate explicit operator approval (see Owner section above) — not yet obtained |
 | Canonical gate-evidence file | `docs/closure/139-S-2026-09-13-post-merge-closure.md` (machine-discoverable frontmatter for the `pipeline-topology` gate's `shipment_readiness` check on later `142-F`-covering shipments) |
