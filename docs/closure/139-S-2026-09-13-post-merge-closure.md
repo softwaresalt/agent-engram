@@ -131,9 +131,12 @@ dispatch-context-threading gap), neither a regression introduced by
   `main` touching `src/tools/{read,lifecycle,eval,lint,doctor}.rs`, beyond
   the two already-documented pre-existing flakes.
 * **Monitoring plan**: no live dashboards/alerts apply to this
-  locally-run developer tool; the operative monitoring signal is the
-  daemon's existing structured JSON logs, `get_health_report`, and
-  `get_daemon_status`.
+  locally-run developer tool. The daemon's existing structured JSON logs,
+  `get_health_report`, and `get_daemon_status` remain the intended
+  monitoring surface, but neither release SLI is actually queryable
+  through them today — see the detailed operational-closure Monitoring
+  section (stash `3F1AEFE1`, an unresolved releasability condition, not
+  an active monitor).
 * **Rollback trigger**: a reported regression traced to any of the 6
   migrated handler families introduced by this shipment.
 * **Rollback procedure**: fix-forward is preferred; if not viable, revert

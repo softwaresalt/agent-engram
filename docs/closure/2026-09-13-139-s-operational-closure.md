@@ -236,7 +236,7 @@ implementation session, none blocking this closure)
 | `7A596F8C` | low | Pre-existing flaky test (unrelated to 139-S) under full parallel `cargo dev-test`: `contract_shim_stdio_initialize::t3_missing_result_is_terminal`. |
 | `652C3104` | low | Deferred scope expansion: a Copilot round-4 finding on `src/tools/capabilities.rs` (`DOCTOR_SMOK...` truncated), reused/deferred per P-021 C2/C3 — out of scope for this shipment's manifest. |
 | `DA0AF326` | (cited, not re-captured) | `.autoharness/workspace-profile.yaml` runtime-validation probe commands have drifted from the actual CLI/test surface — pre-existing, unrelated to 139-S; re-confirmed again this session (`engram status` still does not exist). |
-| `76153F55` | high | **Deferred scope expansion**: closing 139-S via manual safe-close (`archived_status: done`, never a literal `status: shipped` transition) may leave queued successor shipment 140-S ineligible under the dependency-eligibility rule in `.github/instructions/backlogit.instructions.md:63-65`, which requires a `blocks`-type predecessor to have reached `shipped`. Third occurrence of the same recurring class already captured as `77A4E71C` (135-S/PR #384) and `F35EA0E6` (137-S/PR #389); resolving whether this literally blocks 140-S in practice requires either mutating 140-S or redesigning backlogit's shipment-lifecycle semantics — both out of scope per P-021 C1 for 139-S's own closure. Recommend Stage resolve this recurring class workspace-wide together with the two prior occurrences. |
+| `76153F55` | high | **Deferred scope expansion**: closing 139-S via manual safe-close (`archived_status: done`, never a literal `status: shipped` transition) may leave queued successor shipment 140-S ineligible under the dependency-eligibility rule in `.github/instructions/backlogit.instructions.md:63-65`, which requires a `blocks`-type predecessor to have reached `shipped`. Third occurrence of the same recurring class already captured as `77A4E71C` (135-S/PR #384) and `F35EA0E6` (137-S/PR #389); resolving whether this literally blocks 140-S in practice requires either mutating 140-S or redesigning backlogit's shipment-lifecycle semantics — both out of scope per P-021 C1 for 139-S's own closure. Recommend Stage resolve this recurring class workspace-wide together with the two prior occurrences. **Citation correction (not editable in the stash entry itself — see below)**: `140-S.md` records the dependency on `139-S` in the top-level `dependencies` field, not `custom_fields.dependencies` as the captured stash text states; its materialized `item_deps` edge still needs separate verification. |
 | `3F1AEFE1` | medium | **Deferred scope expansion**: the Monitoring section's two SLIs (`InvalidParams` vs. storage/lock error rate; `unified_search` stale-generation occurrence) are not currently log-queryable — `HealthReport` exposes only 8 fixed checks (`src/models/health.rs:51-62`) and `UsageEvent` records only a generic success/error `outcome`, not error class or entry/read generation IDs. Adding that instrumentation is out of scope per P-021 C1 for this shipment's handler-migration work. Recorded as an unresolved releasability condition in the Monitoring section above pending Stage deliberation. |
 
 All out-of-scope findings above are `requires deliberation` and await Stage
@@ -245,8 +245,11 @@ triage/harvest. None represent a regression introduced by, or a gap in,
 preserves for traceability, per the operator's instruction) that the
 implementation session exceeded the Ship agent's 3-cycle review-fix circuit
 breaker (12 Copilot review rounds) and performed a lossless stash/pop
-affecting `.backlogit/stash.jsonl` during round-9 diagnosis; no stash
-content was discarded, overwritten, or silently absorbed by this closure.
+affecting `.backlogit/stash.jsonl` during round-4 flake reproduction (not
+round-9 as an earlier draft of this section stated — corrected to match
+the source record in `docs/memory/2026-09-13/139-s-ship-post-merge-closure-final.md`'s
+"Disclosed process deviations" section); no stash content was discarded,
+overwritten, or silently absorbed by this closure.
 
 ## Source artifact cleanup
 
