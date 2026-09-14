@@ -11,9 +11,11 @@ prior_review: docs/closure/2026-09-13-package-g0-attempt-1-plan-review-record.md
 branch: chore/checkpoint-resolution-ordering-restage
 head: 0cd3d957
 requires_plan_hardening: yes
-plan_status: draft
-review_verdict: pending
-review_rounds: 0
+plan_status: blocked
+review_verdict: FAIL
+review_rounds: 1
+review_record: docs/closure/2026-09-13-package-g0-attempt-2-plan-review-record.md
+blocked_by: "Four architecture-level P1 clusters, three with multi-model consensus: (A) read_corpus performs no containment check and ResolvedFile's public fields make its input forgeable, so the Constitution IV claim is not delivered by the mechanism - raised independently by Rust, Correctness and Security; (B) the failure channels are not independently injectable because FakeFs::unreadable is pinned to symlink_metadata only, and the ReadToString channel has no proving scenario at all - raised independently by Rust and Maintainability; (C) the entry symlink_metadata channel does not exist during traversal since Phase 4 uses DirEntry.kind, leaving G0.21(c)/G0.22 with no driving operation - raised by Correctness and Rust; (D) red/green staging is broken because -Dwarnings forces a [G] unit introducing a seam call to wire its failure mapping in the same commit, so G0.13(c), G0.21(a) and G0.21(c) pass green before their owning unit ships - raised independently by Maintainability and Correctness. Plus P1 mechanical finding E: the declared FsError is not compilation-complete (missing nested derives and per-variant #[error] attributes). Correction budget was restricted to mechanical findings and did not open."
 harvested: false
 ---
 
