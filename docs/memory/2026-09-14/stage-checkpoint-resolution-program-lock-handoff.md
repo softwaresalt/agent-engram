@@ -5,7 +5,7 @@ doc_type: memory
 date: 2026-09-14
 agent: stage
 session: stage-checkpoint-resolution-program-lock-2026-09-14
-outcome: program lock staged pending operator-owned publication
+outcome: program lock staged pending publication
 branch: chore/checkpoint-resolution-program-lock
 ---
 
@@ -90,9 +90,9 @@ archived, not staged**.
 
 ## Checkpoint decision
 
-No new checkpoint was created. The program is gated on an operator-owned
-publication action, not on interrupted work; the committed program lock plus
-this file provide sufficient durable continuity. Creating an active checkpoint
+No new checkpoint was created. The program is gated on a publication action, not
+on interrupted work; the committed program lock plus this file provide
+sufficient durable continuity. Creating an active checkpoint
 would falsely signal an interrupted session to the recovery protocol.
 
 ## Review outcome
@@ -129,9 +129,11 @@ Start a **fresh** session. Do not resume this one.
 2. The program lock is `staged-pending-publication`. Until its publication PR
    merges to `main`, every package item is `blocked` and no Stage package
    operation is authorized.
-3. Publication of this branch is an **operator-owned manual GitHub action**. No
-   agent role creates that PR. Agents may prepare title/body and verify
-   readiness before creation and the PR after creation.
+3. Publication of this branch is a **bounded, operator-routed Ship action**:
+   Ship creates that PR under explicit operator routing, as a no-shipment
+   publication-only operation, using the PR permission its own P-010 Role
+   Boundary already grants. This is not a general staging-PR ownership
+   precedent, and Package B (`030-D`) still decides the durable contract.
 4. After the publication PR merges, an operator or authorized backlog owner
    **explicitly** transitions only `027-D` to `queued`. Nothing changes status
    automatically on merge.

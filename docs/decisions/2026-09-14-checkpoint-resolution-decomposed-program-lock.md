@@ -17,7 +17,7 @@ supersedes_for_implementation_authority:
   - "chore/checkpoint-resolution-ordering-restage@3b3edf05c4a89f61b20baeae2f2585960f3fcfc9"
 evidence_branch_head: 3b3edf05c4a89f61b20baeae2f2585960f3fcfc9
 excluded_packages: ["F"]
-publication_owner: operator-manual
+publication_owner: ship-bounded-operator-routed
 current_state_authority: "backlog items 027-D..034-D"
 ---
 
@@ -372,8 +372,8 @@ Stage G0 generation 2:
   Package G artifact.
 * Touching PR #396, any `143.*` artifact, or the evidence branch.
 * Consuming, archiving, or otherwise mutating stash `4EF24729`.
-* Creating or merging any pull request outside the operator-owned publication
-  path described below.
+* Creating or merging any pull request outside the bounded publication path
+  described below.
 
 Exactly one package is **worked** at a time. Once G2 reaches `LANDED_COMPLETE`,
 B and C both become eligible simultaneously; the Orchestrator sequences which of
@@ -388,43 +388,70 @@ it does not amend workspace policy.
 |---|---|---|
 | **Stage** | Deliberation, planning, plan hardening, plan-review gating, harvest of `PLAN_REVIEW_PASS` packages, backlog and dependency edges | Create or merge any pull request, including this lock's publication PR; run builds; claim or close shipments on behalf of Ship |
 | **Orchestrator** | Routing each package operation to Stage or Ship; sequencing the B/C frontier | Perform Stage or Ship work directly; create this lock's publication PR |
-| **Ship** | Executing a queued shipment once one exists | Create backlog items; create or modify deliberation artifacts; commit directly to `main`; create this lock's publication PR |
+| **Ship** | Executing a queued shipment once one exists; creating this lock's publication PR when explicitly routed by the operator, as a bounded no-shipment publication-only operation | Create backlog items; create or modify deliberation artifacts; commit directly to `main`; merge this lock's publication PR without explicit operator approval |
 
-No shipment exists for this program. Ship has nothing to claim here, and must
-not be routed to this program until a package reaches `PLAN_REVIEW_PASS` and is
-harvested.
+No shipment exists for this program. Ship has nothing to **claim** here, and
+must not be routed to this program **for shipment execution** until a package
+reaches `PLAN_REVIEW_PASS` and is harvested. The bounded publication operation
+described below is not shipment execution and creates no such claim.
 
-### Publication ownership: operator-owned manual action
+### Publication ownership: bounded operator-routed Ship action
 
 Publishing this document to `main` requires a pull request that carries **no
-shipment**. Which agent role may lawfully create such a PR is precisely the
-unresolved P-010 contradiction that **Package B (`030-D`)** exists to settle, and
-`030-D` is blocked behind G2. This lock does not settle it and does not
-improvise an answer.
+shipment**. Which agent role **durably owns** staging-PR creation, push,
+readiness, and closure is precisely the unresolved P-010 contradiction that
+**Package B (`030-D`)** exists to settle, and `030-D` is blocked behind G2. This
+lock does not settle that contract and does not improvise a general answer.
+
+It does, however, record the **actual lawful route taken** for this one
+publication. An earlier revision of this section asserted that no agent role was
+authorized to create this pull request. **That assertion was false and is
+withdrawn.**
 
 Therefore, for **this one program-lock branch only**:
 
-> **Publication is an explicit operator-owned manual GitHub action.** The
-> operator creates the pull request. **No agent role — not Orchestrator, not
-> Stage, not Ship — is authorized to create it.**
+> **The publication pull request is created by Ship, under explicit operator
+> routing, as a bounded no-shipment publication-only PR operation.**
 
-What agents **may** do:
+Why this route is lawful, and why it is narrow:
 
-* prepare a proposed PR title and body;
-* verify branch readiness, commit contents, and check status **before** creation;
-* verify the PR **after** the operator has created it.
+* **Ship already holds the permission.** Ship's P-010 Role Boundary table in
+  `.github/agents/_ship.agent.md` contains a `PR` row whose *Allowed* column
+  reads "Create, update, and merge pull requests (with operator approval)" and
+  whose *Forbidden* column is empty. Creating this pull request is an ordinary
+  exercise of that standing permission. It is **not** an override of P-010, not
+  a waiver, and not an exception to it.
+* **The operator explicitly routed it.** The operator directed Ship to perform
+  this single bounded publication-only PR operation. Ship did not self-authorize
+  and did not infer authority from any routing step.
+* **Ship stayed inside its boundary.** Ship claimed no shipment and mutated no
+  shipment, no plan, no deliberation artifact, no backlog status, and no
+  implementation, source, test, template, or configuration file. The operation
+  was publication only.
+* **It establishes no ownership precedent.** This records one bounded operation.
+  It does **not** establish that Ship generally owns staging-PR ownership or
+  lifecycle, and it does not resolve the P-010 contradiction.
 
-What agents **must not** do:
+**Package B (`030-D`) still decides the durable contract.** The generalized
+staging-PR ownership and lifecycle contract — the single named lawful owner for
+staging-PR create, push, readiness, and closure — remains undecided and remains
+B's scope. Nothing in this section narrows, pre-empts, or supplies input to that
+decision.
 
-* create, push as a PR, reopen, merge, or close this publication PR;
-* infer authority to create it from any existing routing step. In particular,
-  **Orchestrator Step 1.5 is not cited here as executable authority**; it is part
-  of the contradiction Package B must resolve, not a workaround for it.
+What agents **must not** do on this branch:
 
-**Expiry.** This provisional manual path is **not precedent** and expires
-automatically when **Package B reaches `LANDED_COMPLETE`**. From that point the
-role B names governs all staging publications, and this exception has no further
-effect.
+* merge, reopen, or close this publication pull request without explicit
+  operator approval for that specific action;
+* create any **other** pull request under this program;
+* generalize this one operation into a standing staging-PR authority. In
+  particular, **Orchestrator Step 1.5 is not cited here as executable
+  authority**; it is part of the contradiction Package B must resolve, not a
+  workaround for it.
+
+**Expiry.** This bounded route covers **this publication only**. It expires for
+future publications when this pull request closes or merges, and it is not a
+reusable policy. Until Package B reaches `LANDED_COMPLETE` and names the durable
+owner, any further staging publication requires fresh explicit operator routing.
 
 ## Traceability
 
