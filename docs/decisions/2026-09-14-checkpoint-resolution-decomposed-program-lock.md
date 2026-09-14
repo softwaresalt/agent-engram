@@ -4,6 +4,7 @@ type: decision
 doc_type: decision
 date: 2026-09-14
 agent: stage
+source: "chore/checkpoint-resolution-ordering-restage@3b3edf05:docs/decisions/2026-09-13-finalization-write-boundary-program-deliberation.md"
 decision_status: accepted
 publication_state: staged-pending-publication
 staging_pr_owner_unresolved: true
@@ -15,23 +16,46 @@ supersedes_for_implementation_authority:
   - "PR #396"
   - "chore/checkpoint-resolution-ordering-restage@3b3edf05c4a89f61b20baeae2f2585960f3fcfc9"
 evidence_branch_head: 3b3edf05c4a89f61b20baeae2f2585960f3fcfc9
-next_operation: "G0 generation 2 deliberate"
-next_operation_item: 027-D
 excluded_packages: ["F"]
+publication_owner: operator-manual
+current_state_authority: "backlog items 027-D..034-D"
 ---
 
 ## Authority
 
-This document is the **single canonical authority** for the decomposed
-checkpoint-resolution finalization write-boundary program. It is a program lock,
-not a plan. It defines what the packages are, what order they may be worked in,
+### Authority split
+
+This document is the **canonical authority for program structure, rationale, and
+package boundaries**. It is a program lock, not a plan, and it is **not live
+status, state, or cursor authority**. Once published it is immutable except by a
+recorded amendment.
+
+**The backlog records are the sole authority for current state, status, and
+cursor.** Item status, which package is workable, what is blocked, and what the
+next operation is are read from the backlog, never from this document and never
+from session memory.
+
+| Authority | Owner | Contains |
+|---|---|---|
+| Program structure, package boundaries, rationale, locked DAG, lifecycle terms | **This document** | Immutable program definition |
+| Current state, status, cursor, eligibility | **Backlog items `027-D`..`034-D`** | Live, mutable |
+| Registry discoverability pointer | **`026-D`** | Pointer only; **not** canonical current-state authority |
+| Session-only facts (what one session did) | Session memory | Pointers plus immutable session facts only |
+
+To read current state, query the backlog rather than this table of packages:
+
+```text
+backlogit query "SELECT id, status, title FROM items WHERE id IN
+  ('027-D','028-D','029-D','030-D','031-D','032-D','033-D','034-D') ORDER BY id"
+```
+
+This document defines what the packages are, what order they may be worked in,
 and what gate each must clear.
 
 It authorizes no implementation. It contains no implementation design except
 operator-fixed invariants, which are recorded per package and marked as such.
-Crate and module names appearing in the registry are **indicative labels carried
-from superseded evidence**, not decided structure; each package's own
-deliberation decides its actual structure.
+**No crate or module name is decided by this lock, and none appears in the
+package registry.** Each package's own deliberation chooses its structure.
 
 For **implementation authority**, this document supersedes:
 
@@ -40,7 +64,7 @@ For **implementation authority**, this document supersedes:
 | PR #396 | Superseded and unmerged. Retained as historical evidence. Not to be edited, reopened, or closed by this program. |
 | `chore/checkpoint-resolution-ordering-restage` at `3b3edf05` | Superseded. Retained read-only as the evidence corpus (47 documents). |
 | All combined Package G deliberations and plans (v1, v2, v3) | Superseded by the G0/G1/G2 split. Reopening requires a new program decision. |
-| All Package G0 generation-1 plans and reviews (attempts 1-3) | Superseded. Circuit remains CLOSED historically. |
+| All Package G0 generation-1 plans and reviews (attempts 1-3) | Superseded. The generation-1 circuit remains **OPEN/triggered**. |
 | `143.*` | Abandoned. Not reused, not referenced as authority. |
 
 Supersession is scoped to **implementation authority only**. Every superseded
@@ -68,8 +92,72 @@ one unit failed. This program locks the decomposition instead.
   deliberation reaches continuation routing, F's independence must be
   re-confirmed before D proceeds.**
 * Crash-window hardening stays separate unless a package proves it required.
-* No source, test, template, or configuration file is modified by this document
-  or by any artifact this document governs.
+* **This publication operation modifies no source, test, template, or
+  configuration file.** The prohibition is scoped to the publication of this
+  program lock and to the artifacts committed alongside it. It is **not** a
+  standing program-wide ban: once a package reaches `PLAN_REVIEW_PASS` and is
+  harvested, that package's own implementation artifacts — including source,
+  test, template, and configuration files — are permitted within its own
+  release unit under its own plan.
+
+## Lifecycle terms
+
+Two distinct terms govern this program. They are not interchangeable and neither
+is a synonym for the other: `PLAN_REVIEW_PASS` is a **review verdict**,
+`LANDED_COMPLETE` is a **delivery state**.
+
+The rule is non-circular by construction: `PLAN_REVIEW_PASS` is determined by
+plan-review alone and never depends on harvest or merge, and harvest is
+authorized by `PLAN_REVIEW_PASS` alone.
+
+### `PLAN_REVIEW_PASS`
+
+A package's plan has cleared plan-review with **zero unresolved P0 and zero
+unresolved P1 findings**. A P2-only ADVISORY verdict does not qualify until its
+findings are resolved or explicitly accepted by the operator.
+
+`PLAN_REVIEW_PASS` **authorizes harvest for that package and nothing else.** It
+authorizes no downstream package, and it does not satisfy any other package's
+prerequisite.
+
+### `LANDED_COMPLETE`
+
+A package whose plan reached `PLAN_REVIEW_PASS` was harvested into **its own
+release unit**, that release unit **merged to `main`**, and its **required
+closure is complete**. All three conditions must hold.
+
+**Only `LANDED_COMPLETE` satisfies a downstream package's prerequisite.**
+Neither an accepted deliberation nor `PLAN_REVIEW_PASS` nor a merged-but-unclosed
+release unit is sufficient. This program's own problem statement is that work can
+be certified against a `HEAD` that never reaches `main`; the dependency boundary
+must not reproduce that defect.
+
+### Fail-closed dependency rule
+
+Every `blocks` edge in the backlog is a **sequencing signal**, not a proof of
+completion. A predecessor's accepted deliberation never proves
+`LANDED_COMPLETE`, and neither does its `PLAN_REVIEW_PASS`.
+
+A downstream item therefore **stays `blocked` until Stage or an authorized
+backlog owner verifies the predecessor's merge to `main` and required closure**,
+and rewires or adds the merge-bearing release-unit dependency where the backlog
+tool supports it. Absence of verification means blocked. This rule is recorded in
+each downstream item's own body; it is deliberately not restated as a mutable
+status table anywhere.
+
+## Publication gate
+
+This document is `staged-pending-publication`. It is **not in force on `main`**
+until its publication pull request merges.
+
+| Condition | Consequence |
+|---|---|
+| Publication PR unmerged | **Every** package item, including `027-D` (G0), is `blocked`. No Stage package operation is authorized. |
+| Publication PR merged to `main` | The lock is in force. **No package status changes automatically.** |
+| After merge | An **operator or authorized backlog owner explicitly transitions only `027-D` to `queued`.** No other item changes status, and no agent performs this transition on its own initiative. |
+
+There is no automatic state change on merge, and no agent may infer eligibility
+from the merge alone.
 
 ## Locked dependency graph
 
@@ -95,21 +183,21 @@ edge list is normative**; the diagram above is illustrative only.
 | `B -> A` | A reconciles write destinations that B's ownership decision defines. |
 | `C -> A` | A reconciles write phases against the blocker taxonomy C defines. |
 | `A -> D` | D consumes A's phase taxonomy when modelling checkpoint and memory writes. A owns the classification; D applies it. |
-| `C -> D` | D separates discovery hints from authority using C's PR taxonomy. Semantically retained; topologically redundant given `C -> A -> D`. Removing it is not a graph change. |
+| `C -> D` | D separates discovery hints from authority using C's PR taxonomy. **Normative and directly retained**: D consumes the PR taxonomy itself, not only A's derived phase classification. This edge is part of the locked DAG and is not removable. |
 | `D -> E` | E applies the ordering fix within D's pause-continuity model. |
 
 ### Join semantics
 
 * **G2 enables B and C independently.** Neither waits for the other. Either may
-  be the first Stage operation after G2 passes, and both may proceed in
-  sequence in either order.
+  be the first Stage operation after G2 reaches `LANDED_COMPLETE`, and both may
+  proceed in sequence in either order.
 * **A is a join: it waits for BOTH B and C.** A must not begin while either
-  prerequisite is unresolved. This is the locked rule; a draft package-A plan on
-  the evidence branch records `depends_on: [B]` only, and **that draft is
-  superseded on this point**.
-* **D is a join: it waits for BOTH A and C.** The C edge is retained directly
-  because D consumes the PR taxonomy itself, not only A's derived phase
-  classification.
+  prerequisite is short of `LANDED_COMPLETE`. This is the locked rule; a draft
+  package-A plan on the evidence branch records `depends_on: [B]` only, and
+  **that draft is superseded on this point**.
+* **D is a join: it waits for BOTH A and C.** The C edge is retained directly and
+  normatively because D consumes the PR taxonomy itself, not only A's derived
+  phase classification.
 * **E waits for D alone.**
 * `B -> A` and `C -> A` are conjunctive, not alternative. The same applies to
   `A -> D` and `C -> D`.
@@ -118,37 +206,42 @@ edge list is normative**; the diagram above is illustrative only.
 
 Registration in this table confers **no implementation readiness and no
 shipment readiness**. It records identity, boundary, and the gate each package
-must clear. No package is executable until its own deliberation, plan, and
-plan-review PASS exist.
+must clear. It records **no status**: status is read from the backlog.
 
-**Definition of PASS.** Throughout this document, a prerequisite is satisfied
-when the prerequisite package's plan has reached **plan-review PASS (zero P0,
-zero P1) and its harvested work has merged to `main`**. Plan-review PASS alone
-does not satisfy a dependency. This program's own problem statement is that work
-can be certified against a `HEAD` that never reaches `main`; the dependency
-boundary must not reproduce that defect.
+**Every package is worked by one full Stage package operation**, defined once
+here and not repeated per row:
 
-| Pkg | Item | Purpose | Allowed domain | Prohibited scope | Prerequisites | Stage operation output | Gate before promotion |
-|---|---|---|---|---|---|---|---|
-| G0 | `027-D` | Contained test-filesystem seam | Test-filesystem seam; sole owner of the exerciser and manifest surface | Assertion evaluation; registry; CI wiring | none | Generation-2 deliberation **only** under the current cursor | Accepted deliberation before any G0 plan may be authored |
-| G1 | `028-D` | Typed contract assertion engine | Typed assertion evaluation; consumes the G0 exerciser and manifest surface | Re-implementing G0 discovery; owning the exerciser or manifest surface; CI wiring | G0 | Deliberation, then plan | plan-review PASS, 0 P0/P1 |
-| G2 | `029-D` | Harness registry and CI integration | Seed registry, real-root binding, CI/oracle registration | Re-implementing G0 discovery; re-implementing G1 evaluation | G1 | Deliberation, then plan | plan-review PASS, 0 P0/P1 |
-| B | `030-D` | Staging PR ownership and lifecycle | Orchestrator Step 1.5 P-010 contradiction; single named owner for staging-PR create/push/readiness/closure; non-terminal staging-PR pause and resume mechanics | Ship checkpoint ordering; freeze semantics; open-PR discovery; terminal pause continuity | G2 | Deliberation, then plan | plan-review PASS, 0 P0/P1 |
-| C | `031-D` | Open PR taxonomy as additive P-001 blocker | PR classes, provenance, correlation, pagination, ambiguity, monotonicity rule | Changing staging-PR ownership; write-phase taxonomy | G2 | Deliberation, then plan | plan-review PASS, 0 P0/P1 |
-| A | `032-D` | Freeze exception and tracked-write taxonomy | Sole owner of phase classification and legal destination for every mandatory tracked write, including checkpoint and memory writes | Redefining PR ownership or PR taxonomy | B AND C | Deliberation, then plan | plan-review PASS, 0 P0/P1 |
-| D | `033-D` | Terminal pause continuity model (DEFERRED) | Terminal PR-backed pauses without advancing HEAD; resume revalidation; zero-checkpoint semantics; offline fallback; applies A's phase taxonomy | Applying the ordering fix itself; re-deriving A's write classification; non-terminal staging-PR pause mechanics | A AND C | Deliberation, then plan | plan-review PASS, 0 P0/P1 |
-| E | `034-D` | Core checkpoint-resolution ordering fix (DEFERRED) | Tracked mutations and checkpoint resolutions before the final reviewed HEAD; expected-head merge; applies D's zero-checkpoint path | Crash-window hardening unless proven required; redefining D's continuity model or zero-checkpoint semantics | D | Deliberation, then plan | plan-review PASS, 0 P0/P1 |
+```text
+deliberate -> decision -> impl-plan -> hardening if triggered -> plan-review
+  -> harvest ONLY on PLAN_REVIEW_PASS -> assemble exactly one shipment
+```
+
+| Pkg | Item | Purpose | Allowed domain | Prohibited scope | Prerequisite | Gate authorizing harvest |
+|---|---|---|---|---|---|---|
+| G0 | `027-D` | Contained test-filesystem seam | Test-filesystem seam; sole owner of the exerciser and manifest surface | Assertion evaluation; registry; CI wiring | Publication of this lock to `main`, then explicit operator transition | `PLAN_REVIEW_PASS` |
+| G1 | `028-D` | Typed contract assertion engine | Typed assertion evaluation; consumes the G0 exerciser and manifest surface | Re-implementing G0 discovery; owning the exerciser or manifest surface; CI wiring | G0 `LANDED_COMPLETE` | `PLAN_REVIEW_PASS` |
+| G2 | `029-D` | Harness registry and CI integration | Seed registry, real-root binding, CI/oracle registration | Re-implementing G0 discovery; re-implementing G1 evaluation | G1 `LANDED_COMPLETE` | `PLAN_REVIEW_PASS` |
+| B | `030-D` | Staging PR ownership and lifecycle | The P-010 staging-PR ownership contradiction; single named lawful owner for staging-PR create/push/readiness/closure; non-terminal staging-PR pause and resume mechanics | Ship checkpoint ordering; freeze semantics; open-PR discovery; terminal pause continuity | G2 `LANDED_COMPLETE` | `PLAN_REVIEW_PASS` |
+| C | `031-D` | Open PR taxonomy as additive P-001 blocker | PR classes, provenance, correlation, exhaustive pagination, ambiguity, monotonicity rule | Changing staging-PR ownership; write-phase taxonomy | G2 `LANDED_COMPLETE` | `PLAN_REVIEW_PASS` |
+| A | `032-D` | Freeze exception and tracked-write taxonomy | Sole owner of phase classification and legal destination for every mandatory tracked write, including checkpoint and memory writes | Redefining PR ownership or PR taxonomy | B AND C both `LANDED_COMPLETE` | `PLAN_REVIEW_PASS` |
+| D | `033-D` | Terminal pause continuity model (DEFERRED) | Terminal PR-backed pauses without advancing HEAD; resume revalidation; zero-checkpoint semantics; offline fallback; **consumes and applies** A's phase taxonomy | Applying the ordering fix itself; re-deriving, reclassifying, or extending A's write classification; non-terminal staging-PR pause mechanics | A AND C both `LANDED_COMPLETE` | `PLAN_REVIEW_PASS` |
+| E | `034-D` | Core checkpoint-resolution ordering fix (DEFERRED) | Tracked mutations and checkpoint resolutions before the final reviewed HEAD; expected-head merge; applies D's zero-checkpoint path | Crash-window hardening unless proven required; redefining D's continuity model or zero-checkpoint semantics | D `LANDED_COMPLETE` | `PLAN_REVIEW_PASS` |
+
+Crate and module names do not appear in this registry. No package has a decided
+concrete code location; each package's own deliberation chooses its structure.
 
 D and E are marked DEFERRED: they are registered and ordered, but their
-deliberations are not authorized to begin until their prerequisites pass.
+deliberations are not authorized to begin until their prerequisites reach
+`LANDED_COMPLETE`.
 
-## Circuit reset semantics
+## Circuit semantics
 
-The failed circuits of the combined Package G and of Package G0 generation 1
-**remain closed historically**. This document does not reopen them.
+The failed circuit of the combined Package G, and the failed circuit of Package
+G0 generation 1, **remain OPEN/triggered**. This document does not reset,
+reopen, or clear them. Their artifacts are read-only evidence.
 
-Instead, an explicit operator authorization creates a **new G0 deliberation
-generation**:
+Generation 2 is **not a reset of that circuit**. It is a **separate,
+operator-authorized work unit** created by explicit authorization:
 
 | Authorization field | Value |
 |---|---|
@@ -181,40 +274,58 @@ re-attempt is prohibited.
 
 ## G0 generation-2 fixed input
 
-The operator fixes one invariant as non-negotiable input to the generation-2
-deliberation:
+The operator fixes **one invariant** and **one piece of root-cause evidence** as
+the entire non-negotiable input to the generation-2 deliberation. Nothing else
+about G0 is fixed here.
+
+### Fixed invariant
 
 > **Read-time canonical identity must equal the opaque stored authorized
 > canonical identity.** Remaining inside the workspace is not sufficient.
 
-Consequences that the deliberation must honor:
-
-* The authorized identity is **opaque**. It is compared for equality, not
+* The authorized identity is **opaque**. It is compared for equality, never
   reconstructed, parsed, or re-derived at read time.
+
+### Root-cause evidence
+
 * **Ancestor replacement inside the workspace must fail.** An ancestor directory
   replaced by a symlink that redirects to another location still inside the
   workspace must be rejected, not accepted. This is the exact defect that
   terminated generation 1: containment was re-checked, identity was not.
-* A workspace-containment check is **not a substitute** for the identity
-  equality check. Whether such a check is retained at all is the deliberation's
-  decision, not this lock's.
+* A workspace-containment check is therefore **not a substitute** for the
+  identity equality check.
 
-**The minimal API contract must be decided in the deliberation, before any
-planning begins.** Generation 1 failed three times by settling the contract
-inside plans and hardening sections. Generation 2 decides the contract first.
+### Deliberately undecided
+
+**Storage, type, and API shape are deliberately undecided and must be chosen in
+the G0 deliberation.** This lock fixes no implementation structure:
+
+* how the authorized canonical identity is **stored** is undecided;
+* what **type** represents it is undecided;
+* the **API surface** that produces and compares it is undecided;
+* whether a workspace-containment check is retained at all is undecided.
+
+**The minimal API contract must be settled inside the deliberation, before
+`impl-plan` begins within that same Stage operation.** Generation 1 failed three
+times by settling the contract inside plans and hardening sections.
+
+Generation 2 is a **separate operator-authorized work unit**, not a reset: the
+generation-1 circuit remains OPEN/triggered.
 
 ## Program advancement contract
 
-1. **One Stage operation per package generation.** A Stage session works exactly
-   one package. It does not opportunistically start the next.
-2. **No downstream package is planned before its prerequisites PASS.** A
-   prerequisite that is merely written, or reviewed with findings, is not a
-   PASS.
+1. **One Stage operation per package.** A Stage session works exactly one
+   package. It does not opportunistically start the next.
+2. **No downstream package is planned before its prerequisite is
+   `LANDED_COMPLETE`.** An accepted deliberation is not enough, and neither is
+   `PLAN_REVIEW_PASS`.
 3. **Plan-review is separate per package.** One package's verdict never masks
    another's. A shared review pass across packages is prohibited.
-4. **Only PASS packages harvest.** PASS requires zero P0 and zero P1. A P2-only
-   ADVISORY verdict is not auto-harvested.
-5. **Each PASS package receives its own feature or chore and its own shipment.**
+4. **Only `PLAN_REVIEW_PASS` packages harvest.** `PLAN_REVIEW_PASS` requires zero
+   unresolved P0 and zero unresolved P1. A P2-only ADVISORY verdict is not
+   auto-harvested.
+5. **Each harvested package receives its own feature or chore and its own
+   shipment.**
 6. **No combined shipment.** Packages are never bundled into one shipment, and
    never into one PR.
 7. **Dependency edges are explicit** in the backlog, never implied by prose or
@@ -223,31 +334,48 @@ inside plans and hardening sections. Generation 2 decides the contract first.
    Architecture-level P0/P1 findings block the package immediately; the
    correction budget does not open for them.
 
-## Cursor
+## Next Stage operation
 
-| Field | Value |
-|---|---|
-| `next_operation` | **G0 generation 2 deliberate** (`027-D`) |
-| Completed packages | **none** |
-| Blocked downstream | `028-D` G1, `029-D` G2, `030-D` B, `031-D` C, `032-D` A, `033-D` D, `034-D` E |
-| Authorized scope of next operation | Deliberation only. Decide the minimal API contract against the fixed identity invariant. |
+The **shape** of the next operation is fixed here. **Whether it is authorized
+right now is read from the backlog, not from this document.**
 
-### Explicitly not authorized by this cursor
+### Authorized operation, once `027-D` is `queued`
 
-* **Authoring a G0 plan.** The next operation ends at an accepted deliberation.
-  Planning G0 requires that deliberation to be accepted first, and is a separate
-  operation.
-* Planning G1, G2, B, C, A, D, or E.
+Exactly **one full policy-conformant Stage package operation** on G0
+(`027-D`), start to finish:
+
+```text
+Stage G0 generation 2:
+  deliberate
+    -> decision
+    -> impl-plan
+    -> hardening if triggered
+    -> plan-review
+    -> harvest ONLY on PLAN_REVIEW_PASS
+    -> assemble exactly one G0 shipment
+```
+
+* The **minimal API contract must be settled in the deliberation before
+  `impl-plan` begins**, within that same Stage operation.
+* **On deliberation failure or deferral**, halt G0 and require fresh explicit
+  operator authorization. Do not proceed to `impl-plan`.
+* **On plan-review failure**, apply the normal bounded review and circuit rules
+  for this workspace. Do not improvise a new budget.
+* **Exactly one shipment** is assembled, covering G0 only.
+
+### Explicitly not authorized
+
+* Planning, deliberating, or harvesting G1, G2, B, C, A, D, or E — no downstream
+  package planning of any kind.
+* Combining G0 with any other package in one plan, one shipment, or one PR.
 * Editing, amending, or extending any generation-1 G0 artifact, or any combined
   Package G artifact.
-* Harvesting, creating any feature, chore, task, or shipment.
 * Touching PR #396, any `143.*` artifact, or the evidence branch.
 * Consuming, archiving, or otherwise mutating stash `4EF24729`.
-* Modifying any source, test, template, or configuration file.
-* Creating or merging any pull request.
+* Creating or merging any pull request outside the operator-owned publication
+  path described below.
 
-Exactly one package is **worked** at a time. `027-D` is currently the only item
-with status `queued`; every other package item is `blocked`. Once G2 completes,
+Exactly one package is **worked** at a time. Once G2 reaches `LANDED_COMPLETE`,
 B and C both become eligible simultaneously; the Orchestrator sequences which of
 the two is worked first, and they are still worked one at a time.
 
@@ -258,25 +386,45 @@ it does not amend workspace policy.
 
 | Role | Owns in this program | Must not, in this program |
 |---|---|---|
-| **Stage** | Deliberation, planning, plan hardening, plan-review gating, harvest of PASS packages, backlog and dependency edges | Create or merge PRs; run builds; modify source, test, template, or configuration files; claim or close shipments on behalf of Ship |
-| **Orchestrator** | Routing each package operation to Stage or Ship; sequencing the B/C frontier; driving publication of this lock to `main` | Perform Stage or Ship work directly |
-| **Ship** | Executing a queued shipment once one exists | Create backlog items; create or modify deliberation artifacts; commit directly to `main` |
+| **Stage** | Deliberation, planning, plan hardening, plan-review gating, harvest of `PLAN_REVIEW_PASS` packages, backlog and dependency edges | Create or merge any pull request, including this lock's publication PR; run builds; claim or close shipments on behalf of Ship |
+| **Orchestrator** | Routing each package operation to Stage or Ship; sequencing the B/C frontier | Perform Stage or Ship work directly; create this lock's publication PR |
+| **Ship** | Executing a queued shipment once one exists | Create backlog items; create or modify deliberation artifacts; commit directly to `main`; create this lock's publication PR |
 
 No shipment exists for this program. Ship has nothing to claim here, and must
-not be routed to this program until a package reaches PASS and is harvested.
+not be routed to this program until a package reaches `PLAN_REVIEW_PASS` and is
+harvested.
 
-### Unresolved: who publishes this lock
+### Publication ownership: operator-owned manual action
 
-Publishing this document to `main` requires a staging PR. **Who owns staging-PR
-creation is itself the unresolved P-010 contradiction that Package B (`030-D`)
-exists to settle**, and `030-D` is blocked behind G2. This lock therefore does
-not settle it.
+Publishing this document to `main` requires a pull request that carries **no
+shipment**. Which agent role may lawfully create such a PR is precisely the
+unresolved P-010 contradiction that **Package B (`030-D`)** exists to settle, and
+`030-D` is blocked behind G2. This lock does not settle it and does not
+improvise an answer.
 
-For this publication only, the workspace follows Orchestrator Step 1.5 as
-currently written, on explicit operator instruction, with Stage prohibited from
-creating the PR. That routing is **provisional and is not precedent**. Package B
-supersedes it when it lands, and the outcome of B governs all later staging
-publications.
+Therefore, for **this one program-lock branch only**:
+
+> **Publication is an explicit operator-owned manual GitHub action.** The
+> operator creates the pull request. **No agent role — not Orchestrator, not
+> Stage, not Ship — is authorized to create it.**
+
+What agents **may** do:
+
+* prepare a proposed PR title and body;
+* verify branch readiness, commit contents, and check status **before** creation;
+* verify the PR **after** the operator has created it.
+
+What agents **must not** do:
+
+* create, push as a PR, reopen, merge, or close this publication PR;
+* infer authority to create it from any existing routing step. In particular,
+  **Orchestrator Step 1.5 is not cited here as executable authority**; it is part
+  of the contradiction Package B must resolve, not a workaround for it.
+
+**Expiry.** This provisional manual path is **not precedent** and expires
+automatically when **Package B reaches `LANDED_COMPLETE`**. From that point the
+role B names governs all staging publications, and this exception has no further
+effect.
 
 ## Traceability
 
@@ -295,3 +443,14 @@ on `main` or on this branch, and are cited at that commit deliberately.
 | `chore/checkpoint-resolution-ordering-restage` at `3b3edf05` | remote branch | Full evidence corpus, read-only, 47 documents |
 | PR #396 | GitHub | Superseded historical evidence, untouched |
 | Stash `4EF24729` | `.backlogit/stash.jsonl` | Intake origin, referenced read-only and left `active`; not consumed or archived by this operation |
+
+### Compound learnings carried forward
+
+These are cited as **inputs to later packages only**. None of them changes the
+behaviour of this program lock or of the publication operation.
+
+| Learning | Informs | Carry-forward note |
+|---|---|---|
+| `docs/compound/workflow-issues/carry-forward-pipeline-state-before-next-claim-2026-09-08.md` | Package A (`032-D`) | Legitimate pipeline state — stash updates, session memory, intentional gitignore changes — must be classified by provenance rather than treated as generic dirty-worktree dirt. Directly relevant to A's tracked-write phase/destination taxonomy. |
+| `docs/compound/workflow-issues/backlogit-shipment-ship-non-terminating-large-covering-feature-2026-09-06.md` | Package E (`034-D`) and the one-release-unit-per-package rule | `backlogit shipment ship` did not complete within a bounded observation window against a large covering-feature roster. Supports keeping each package in its own small release unit and informs E's closure-parity design. |
+| `docs/compound/gh-reviews-endpoint-paginate-hides-head-review-2026-07-22.md` | Package C (`031-D`) | Un-paginated `gh` list endpoints truncate the HEAD record and silently falsify a load-bearing gate. Directly supports C's exhaustive-pagination requirement for open-PR discovery. |
