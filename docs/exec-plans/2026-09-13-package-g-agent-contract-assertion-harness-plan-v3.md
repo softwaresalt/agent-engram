@@ -8,6 +8,12 @@ supersedes: docs/exec-plans/2026-09-13-package-g-agent-contract-assertion-harnes
 branch: chore/checkpoint-resolution-ordering-restage
 head: fde75189
 requires_plan_hardening: yes
+plan_status: blocked
+review_verdict: FAIL
+review_rounds: 1
+review_record: docs/closure/2026-09-13-package-g-v3-plan-review-record.md
+blocked_by: "Two architecture-level P1 findings: (A) root-symlink fail-open - canonicalize() follows a symlinked root, so an allow-listed root replaced by a symlink is traversed instead of rejected; (B) canonicalization is not routed through the FileAccess boundary, so the canonical-escape F5 case is not Windows-deterministic. Correction budget was restricted to mechanical findings and did not open."
+harvested: false
 ---
 
 # Package G v3 — agent-contract assertion harness (implementation plan)
