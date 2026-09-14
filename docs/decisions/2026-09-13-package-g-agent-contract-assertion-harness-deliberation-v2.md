@@ -5,8 +5,10 @@ slug: package-g-agent-contract-assertion-harness-v2
 depth: standard
 status: decided
 supersedes: docs/decisions/2026-09-13-package-g-agent-contract-assertion-harness-deliberation.md
-decision_status: "decided-plan-blocked"
+decision_status: "superseded"
 review_record: "docs/closure/2026-09-13-package-g-v2-plan-review-record.md"
+superseded_by: "docs/decisions/2026-09-13-package-g-agent-contract-assertion-harness-deliberation-v3.md"
+superseded_reason: "Superseded by v3. NOTE: this document's R3/R4 claims are factually wrong (it states allow(dead_code) appears exactly once and that there is one #[path] precedent; the true counts are 11 and 46). v3 records the corrected figures. Retained as evidence; do not cite R3/R4 from this file."
 package: G
 program: write-boundary / harness-contract enforcement
 branch: chore/checkpoint-resolution-ordering-restage

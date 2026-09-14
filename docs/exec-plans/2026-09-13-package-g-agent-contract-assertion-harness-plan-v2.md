@@ -2,9 +2,11 @@
 title: "Package G v2 implementation plan — executable agent-contract assertion harness"
 description: "Test-first plan for a repository-owned Rust contract-test harness proving agent, skill, instruction, policy, and prompt contract assertions"
 source_document: "docs/decisions/2026-09-13-package-g-agent-contract-assertion-harness-deliberation-v2.md"
-plan_status: "blocked"
+plan_status: "superseded"
 review_verdict: "FAIL"
 review_record: "docs/closure/2026-09-13-package-g-v2-plan-review-record.md"
+superseded_by: "docs/exec-plans/2026-09-13-package-g-agent-contract-assertion-harness-plan-v3.md"
+superseded_reason: "v2 failed plan-review on B1 (fail-open walker bounds) and B2 (unreachable F5/F6). v3 is the active plan authority. Evidence only."
 supersedes: "docs/exec-plans/2026-09-13-package-g-agent-contract-assertion-harness-plan.md"
 package: G
 review_round: 2
