@@ -2,7 +2,8 @@
 title: "Package G implementation plan — executable agent-contract assertion harness"
 description: "Test-first plan for a repository-owned Rust contract-test harness that proves agent, prompt, instruction, and policy contract assertions"
 source_document: "docs/decisions/2026-09-13-package-g-agent-contract-assertion-harness-deliberation.md"
-plan_status: "blocked"
+plan_status: "superseded"
+superseded_by: "docs/exec-plans/2026-09-13-package-g-agent-contract-assertion-harness-plan-v2.md"
 tags:
   - "verification"
   - "contract-tests"
