@@ -13,8 +13,13 @@ prior_reviews:
 branch: chore/checkpoint-resolution-ordering-restage
 head: e0accf82
 requires_plan_hardening: yes
-plan_status: draft
-gate: "final allowed G0 attempt"
+plan_status: blocked
+review_verdict: FAIL
+review_rounds: 1
+review_record: docs/closure/2026-09-13-package-g0-attempt-3-plan-review-record.md
+circuit: OPEN
+harvested: false
+blocked_by: "One architecture-level P1 with two-model consensus (Rust, Correctness): read_corpus re-canonicalizes and re-checks containment against the workspace but never compares the result against the authorized file identity, so an ancestor directory replaced by a symlink redirecting to a different location INSIDE the workspace passes every check and reads a different file - potentially outside the configured allow-listed roots. Plan H6 claims ancestor-directory substitution is closed; it is closed only for redirects that leave the workspace. This is the fourth consecutive instance of the defect class that terminated package-G v3, G0 attempt 1 and G0 attempt 2: a claimed guarantee the mechanism does not deliver. Plus a four-model-consensus P1 adjudicated MECHANICAL (ResolvedCorpus::workspace is staged at G0.36 but first read at G0.32, so -Dwarnings cannot hold at every commit), and two single-reviewer mechanical P1s (FakeFs has no declared constructor; todo!() staging trips clippy::missing_panics_doc). The correction budget is restricted to mechanical findings and did not open. G0 circuit is OPEN - no fourth plan."
 ---
 
 # Package G0 attempt 3 — contained test-filesystem seam (implementation plan)
