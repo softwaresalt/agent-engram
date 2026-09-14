@@ -2,7 +2,9 @@
 title: "Package G v2 implementation plan — executable agent-contract assertion harness"
 description: "Test-first plan for a repository-owned Rust contract-test harness proving agent, skill, instruction, policy, and prompt contract assertions"
 source_document: "docs/decisions/2026-09-13-package-g-agent-contract-assertion-harness-deliberation-v2.md"
-plan_status: "reviewed"
+plan_status: "blocked"
+review_verdict: "FAIL"
+review_record: "docs/closure/2026-09-13-package-g-v2-plan-review-record.md"
 supersedes: "docs/exec-plans/2026-09-13-package-g-agent-contract-assertion-harness-plan.md"
 package: G
 review_round: 2
@@ -30,6 +32,7 @@ rounds are retained unmodified as evidence.
 |---|---|---|
 | R1 | 7 reviewers: 4 PASS, 3 FAIL. All findings bounded and mechanical; the core architecture (single `[[test]]` target, Option T-A, zero new dependencies, zero `verify_markdown` coupling) was affirmed by all 7. | — |
 | R2 | This revision. | 19 corrections applied — see `## Round-1 Corrections Applied`. |
+| R2 verdict | **FAIL** — 2 PASS (Constitution, Architecture), 2 FAIL (Rust, Correctness). Correction budget exhausted. Package G **BLOCKED**; no harvest, no backlog IDs, no shipment. | All 20 round-1 findings resolved, but the correction introduced two new P1 defects: silent fail-open resource bounds (B1, 3 of 4 reviewers) and unreachable F5/F6 end-to-end coverage (B2). See `docs/closure/2026-09-13-package-g-v2-plan-review-record.md`. |
 
 ## Objective
 

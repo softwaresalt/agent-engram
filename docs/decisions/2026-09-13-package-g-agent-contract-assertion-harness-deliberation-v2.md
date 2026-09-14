@@ -5,6 +5,8 @@ slug: package-g-agent-contract-assertion-harness-v2
 depth: standard
 status: decided
 supersedes: docs/decisions/2026-09-13-package-g-agent-contract-assertion-harness-deliberation.md
+decision_status: "decided-plan-blocked"
+review_record: "docs/closure/2026-09-13-package-g-v2-plan-review-record.md"
 package: G
 program: write-boundary / harness-contract enforcement
 branch: chore/checkpoint-resolution-ordering-restage
@@ -396,6 +398,38 @@ concern "does this target actually get selected for a harness change".
    house style) vs. inline Rust consts. Resolved at plan time; both satisfy C2.
 2. Whether Package B–F rows live in one registry file or per-package files.
    Deferred to those packages; the registry loader must accept either.
+
+## Post-review addendum (2026-09-13, review round 1)
+
+Two Research Findings in this artifact were sharpened during plan review and are
+**superseded by the plan's corrected entries**. This section marks them stale
+rather than rewriting the record.
+
+* **R3 — stale claim**: this artifact states `allow(dead_code)` "appears exactly
+  once, in `tests/helpers/mod.rs:34`". That is true only for the *crate-level*
+  `#![allow(dead_code)]` form. *Item-level* `#[allow(dead_code)]` also appears in
+  at least six test files (`shim_lifecycle_test.rs:26`,
+  `shim_stdio_initialize_test.rs:33`,
+  `get_workspace_status_atomicity_test.rs:44,47,54,81,86`,
+  `hcl_security_test.rs:15`, `hybrid_graph_vector_test.rs:16`). See plan entry
+  R3a. Package G's ban on both forms is a deliberate tightening, not a claim of
+  uniqueness.
+* **R4 — stale claim**: this artifact states the only cross-file idiom is
+  `#[path = "../helpers/mod.rs"] mod helpers;`. The established idiom is
+  `#[path]`-included helper modules across **more than one** helper file
+  (`../helpers/mod.rs`, `../helpers/fake_health_responder.rs`,
+  `../helpers/mcp_catalog_capture.rs`). See plan entry R4. The conclusion —
+  no in-repo precedent for a subdirectory submodule tree — is unaffected.
+
+The Decision (Option T-A), the validator-ownership contract, the failure
+semantics, and the extensibility contract are unaffected by both corrections and
+were affirmed by all seven reviewers across both rounds.
+
+**Plan outcome**: the plan derived from this deliberation reached review round 2
+and **FAILED**. Package G is BLOCKED. The architectural decision recorded here
+stands and must not be re-litigated; see
+`docs/closure/2026-09-13-package-g-v2-plan-review-record.md` for the two issues a
+future attempt must settle first.
 
 ## Outcome
 
