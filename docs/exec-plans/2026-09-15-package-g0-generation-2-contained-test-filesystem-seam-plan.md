@@ -4,7 +4,7 @@ type: exec-plan
 doc_type: exec-plan
 date: 2026-09-15
 agent: stage
-plan_status: hardened
+plan_status: blocked
 program: checkpoint-resolution finalization write-boundary
 program_item: 027-D
 package: G0
@@ -495,3 +495,6 @@ generation 1:
 4. It does **not** claim cross-platform real-symlink coverage. U10 may skip
    without privilege; only the hermetic U9 is unconditional.
 5. It does **not** claim `FakeFs` is a security sandbox. Res-5 stands.
+
+<!-- plan-review-attempt: 1 -->
+<!-- plan-review-verdict: FAIL — 2 P0, 15 P1 (10 architecture-level). Correction budget NOT opened per program lock advancement contract item 8. Program HALTED pending operator authorization. Record: docs/closure/2026-09-15-package-g0-generation-2-plan-review-record.md -->
