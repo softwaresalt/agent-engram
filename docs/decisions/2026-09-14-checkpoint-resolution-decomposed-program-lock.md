@@ -19,6 +19,15 @@ evidence_branch_head: 3b3edf05c4a89f61b20baeae2f2585960f3fcfc9
 excluded_packages: ["F"]
 publication_owner: ship-bounded-operator-routed
 current_state_authority: "backlog items 027-D..034-D"
+amended: true
+amendments:
+  - id: 1
+    date: 2026-09-15
+    title: "Route 2 — retained root anchor plus identity equality as the G0 fixed input"
+    authorized_by: operator
+    amends: "G0 generation-2 fixed input (Fixed invariant; Deliberately undecided)"
+    discharges: "If generation 2 also fails"
+    activation: "requires an explicit transition of 027-D to queued; not performed by the recording session"
 ---
 
 ## Authority
@@ -272,6 +281,13 @@ around G0, without a further explicit operator authorization recorded as an
 amendment to this document. Stage escalates to the operator and stops. Silent
 re-attempt is prohibited.
 
+> [!NOTE]
+> **Discharged by Amendment 1 (2026-09-15).** Generation 2 failed its plan-review
+> gate at attempt 1 and the program halted as this clause requires. The further
+> explicit operator authorization the clause demands was granted and is recorded
+> as *Amendment 1*. The clause itself is **preserved unchanged** and re-applies to
+> generation 3.
+
 ## G0 generation-2 fixed input
 
 The operator fixes **one invariant** and **one piece of root-cause evidence** as
@@ -279,6 +295,12 @@ the entire non-negotiable input to the generation-2 deliberation. Nothing else
 about G0 is fixed here.
 
 ### Fixed invariant
+
+> [!IMPORTANT]
+> **Amended by Amendment 1 (2026-09-15).** This invariant is **retained in full**
+> and is still non-negotiable, but it is **no longer the whole fixed input**: a
+> retained root anchor is now fixed alongside it. Read this section together with
+> *Amendment 1*.
 
 > **Read-time canonical identity must equal the opaque stored authorized
 > canonical identity.** Remaining inside the workspace is not sufficient.
@@ -296,6 +318,11 @@ about G0 is fixed here.
   identity equality check.
 
 ### Deliberately undecided
+
+> [!IMPORTANT]
+> **Amended in part by Amendment 1 (2026-09-15).** The four items below remain
+> undecided. What changed is the **minimal contract**: a retained root anchor is
+> now a fixed input rather than a deferrable option. See *Amendment 1*.
 
 **Storage, type, and API shape are deliberately undecided and must be chosen in
 the G0 deliberation.** This lock fixes no implementation structure:
@@ -481,3 +508,155 @@ behaviour of this program lock or of the publication operation.
 | `docs/compound/workflow-issues/carry-forward-pipeline-state-before-next-claim-2026-09-08.md` | Package A (`032-D`) | Legitimate pipeline state — stash updates, session memory, intentional gitignore changes — must be classified by provenance rather than treated as generic dirty-worktree dirt. Directly relevant to A's tracked-write phase/destination taxonomy. |
 | `docs/compound/workflow-issues/backlogit-shipment-ship-non-terminating-large-covering-feature-2026-09-06.md` | Package E (`034-D`) and the one-release-unit-per-package rule | `backlogit shipment ship` did not complete within a bounded observation window against a large covering-feature roster. Supports keeping each package in its own small release unit and informs E's closure-parity design. |
 | `docs/compound/gh-reviews-endpoint-paginate-hides-head-review-2026-07-22.md` | Package C (`031-D`) | Un-paginated `gh` list endpoints truncate the HEAD record and silently falsify a load-bearing gate. Directly supports C's exhaustive-pagination requirement for open-PR discovery. |
+
+## Amendments
+
+This document is immutable except by a recorded amendment. Each amendment names
+exactly what it supersedes. Every constraint an amendment does not name survives
+unchanged.
+
+### Amendment 1 — retained root anchor plus identity equality
+
+| Field | Value |
+|---|---|
+| Date | 2026-09-15 |
+| Granted by | Operator, routed through Orchestrator |
+| Stage session | `stage-g0-program-lock-amendment-2026-09-15` |
+| Trigger | G0 generation 2 `FAIL` at plan-review attempt 1 |
+| Trigger record | `docs/closure/2026-09-15-package-g0-generation-2-plan-review-record.md` |
+| Route chosen | Route 2 of that record's *Escalation to the operator* table |
+| Amends | `## G0 generation-2 fixed input` — `### Fixed invariant` and `### Deliberately undecided` |
+| Discharges | `### If generation 2 also fails`, for one generation only |
+
+#### Why
+
+The generation-2 adversarial panel established that the fixed input as originally
+written cannot deliver the root-cause evidence it was written to enforce. A
+stored-value-compared-for-equality identity, holding no retained handle or anchor,
+does reject ancestor substitutions completed **before** the read-time comparison.
+It cannot do more than that:
+
+* it cannot reject substitutions performed inside the **compare-to-read window**,
+  because the content read re-traverses the entire resolved path after the
+  comparison returns (finding A1, four-persona consensus);
+* it cannot detect mountpoint substitution at all, because canonical *pathnames*
+  are names, not object identities (finding A2).
+
+The defect is in the fixed input itself, not in the deliberation that honoured it.
+Two generations failed by asserting a guarantee the fixed mechanism does not
+deliver. This amendment changes the mechanism rather than narrowing the claim.
+
+#### The amended G0 fixed input
+
+Both parts are fixed. Neither alone is sufficient.
+
+**Part A — retained root anchor.** The workspace root is resolved and validated
+once, and a handle to that resolved root is **retained**. Every subsequent corpus
+read is performed **through the retained anchor**, so no read re-traverses mutable
+ancestor path components between resolve time and read time.
+
+**Part B — opaque per-file canonical identity equality.** Unchanged from
+`### Fixed invariant`: read-time canonical identity must equal the opaque stored
+authorized canonical identity, compared for equality and never reconstructed,
+parsed, or re-derived. Remaining inside the workspace is not sufficient.
+
+Part A closes the compare-to-read ancestor window. Part B remains the read-time
+authority against per-file substitution and preserves the generation-1 correction
+that containment is not a substitute for identity.
+
+#### What this supersedes, and only this
+
+* The original fixed input's treatment of stored-value equality as the **sole and
+  complete** read-time mechanism. The equality requirement survives in full; its
+  **sufficiency** does not.
+* The `### Deliberately undecided` framing **only** where it left a retained
+  anchor outside the minimal contract. The anchor is now a fixed input.
+* The generation-2 review record's settled item 9 is **narrowed**: a retained
+  handle remains correctly rejected as a *replacement* for identity equality, and
+  is now **required alongside** it.
+
+Nothing else in the fixed input changes. `### Root-cause evidence` is preserved
+verbatim and is strengthened rather than relaxed: an ancestor replaced at any
+point between resolve time and read time must now fail.
+
+#### Still deliberately undecided
+
+This amendment fixes a **property**, not a structure. All four originally
+undecided items stand, and the anchor's own realization joins them:
+
+* how the authorized canonical identity is **stored**;
+* what **type** represents it;
+* the **API surface** that produces and compares it;
+* whether a workspace-containment check is retained at all;
+* which concrete primitive realizes the retained anchor, and its type and API.
+
+No crate or module name is decided here. **The minimal API contract must still be
+settled inside the deliberation, before `impl-plan` begins within that same Stage
+operation.**
+
+#### Constraints preserved unchanged
+
+This amendment reaches the G0 fixed input and nothing else. In particular it
+leaves untouched:
+
+* the **Authority split** — the backlog remains the sole authority for status,
+  state, and cursor, and this document remains non-status authority;
+* the **lifecycle terms** `PLAN_REVIEW_PASS` and `LANDED_COMPLETE`, and the
+  fail-closed dependency rule;
+* the **locked dependency graph** and the **package registry**. G0 remains the
+  single prerequisite for every other package. **No package is re-sequenced**, and
+  no downstream package becomes eligible;
+* the **program advancement contract**, items 1-8 — including item 8: one
+  mechanical correction round per package maximum, with architecture-level P0/P1
+  findings blocking immediately and never opening the correction budget;
+* the **role handoff** table, including Stage's prohibition on creating or merging
+  any pull request;
+* every prohibition under **Explicitly not authorized**. PR #396, `143.*`, the
+  evidence branch, and stash `4EF24729` remain untouchable, and no downstream
+  package may be planned, deliberated, or harvested;
+* **Package F's** exclusion from this program;
+* the **publication route's expiry**. This amendment creates no new publication
+  authority and no new pull-request authority.
+
+#### Circuit and generation terms
+
+The combined Package G circuit and the G0 generation-1 circuit remain
+**OPEN/triggered**. The generation-2 circuit is now **also OPEN/triggered**. This
+amendment resets, reopens, and clears none of them.
+
+A generation 3 authorized under this amendment is a **separate
+operator-authorized work unit**, not a reset:
+
+* it carries a **new artifact name** and a **fresh attempt counter starting at
+  zero**;
+* it **must not** edit, amend, or extend any generation-1 or generation-2
+  deliberation, plan, hardening section, or review record;
+* generation-2 artifacts become **read-only evidence**. The review record's ten
+  **settled items** are inheritable as evidence so a later generation does not
+  re-litigate them, but a plan that inherits them is still a new plan, and
+  inheritance never converts a settled item into an unexamined assumption;
+* its operation shape is **unchanged** — the full Stage package operation defined
+  in `## Package registry` and in `### Authorized operation, once 027-D is
+  queued`.
+
+**The failure bound is renewed, not consumed.** If generation 3 also fails its
+plan-review gate, the program halts again. No generation 4 may be created and no
+downstream package may be re-sequenced around G0 without a further explicit
+operator authorization recorded as a **new** amendment to this document.
+
+#### Activation boundary
+
+> [!IMPORTANT]
+> This amendment authorizes the **mechanism and shape** of a future G0 attempt. It
+> does **not** start one, and the session that recorded it performed none.
+
+Consistent with the Authority split, **whether a G0 operation is authorized right
+now is read from the backlog, not from this document.**
+
+* `027-D` remains **`blocked`**. The recording session did not transition it.
+* Starting generation 3 requires an explicit operator transition of `027-D` to
+  `queued`, exactly as the original publication gate required before generation 2.
+* The recording session performed **no** deliberation, **no** planning, **no** plan
+  hardening, **no** plan-review, **no** harvest, and assembled **no** shipment. It
+  created no branch and no pull request, and modified no source, test, template, or
+  configuration file.

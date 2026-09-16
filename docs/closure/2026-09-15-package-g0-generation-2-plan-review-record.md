@@ -16,6 +16,7 @@ authority: docs/decisions/2026-09-14-checkpoint-resolution-decomposed-program-lo
 branch: chore/stage-g0-generation-2-planning
 harvested: false
 shipment_assembled: false
+operator_resolution: "Route 2 — authorized 2026-09-15; recorded as Amendment 1 of docs/decisions/2026-09-14-checkpoint-resolution-decomposed-program-lock.md"
 ---
 
 ## Verdict
@@ -247,3 +248,25 @@ root-cause evidence, but makes **no** decision and takes **no** further action.
 
 Generation-1 artifacts, PR #396, `143.*`, the evidence branch, and stash
 `4EF24729` were read-only throughout and are unmodified.
+
+## Operator resolution — recorded 2026-09-15
+
+The verdict, findings, and settled items above are **unchanged**. This section
+records only which escalation route the operator chose, so a later reader of the
+*Escalation to the operator* section does not have to infer it.
+
+| Field | Value |
+|---|---|
+| Route chosen | **Route 2 — amend to Option C** (retained root anchor plus identity equality) |
+| Authorized by | Operator, routed through Orchestrator, 2026-09-15 |
+| Recorded as | Amendment 1 of `docs/decisions/2026-09-14-checkpoint-resolution-decomposed-program-lock.md` |
+| Effect on this record | None. This record stays terminal for generation 2 attempt 1 |
+
+The amendment supersedes only the conflicting G0 fixed-input language and renews
+the program's failure bound. It authorizes the **mechanism** of a future G0
+attempt; it does not start one. `027-D` remains `blocked`, and generation 3
+requires an explicit operator transition of that item to `queued`.
+
+Settled item 9 is **narrowed** by the amendment: a retained handle remains
+correctly rejected as a *replacement* for identity equality, and is now required
+**alongside** it. The other nine settled items stand unchanged.
