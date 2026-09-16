@@ -9,9 +9,31 @@ program_item: 027-D
 package: G0
 outcome: CORRECTION 1 RECORDED — Amendment 1 Part A corrected; 027-D still blocked; no G0 attempt
 corrects: docs/memory/2026-09-15-stage-g0-program-lock-amendment-1.md
+corrected_by: docs/memory/2026-09-16-stage-g0-amendment-1-correction-2.md
 ---
 
 # Stage session memory — Correction 1 to program lock Amendment 1
+
+> [!IMPORTANT]
+> **Corrected 2026-09-16 by session
+> `stage-g0-amendment-1-correction-2-2026-09-16` (Correction 2).** Two claims
+> recorded below are withdrawn. (1) This session recorded residual **R1** as
+> "*detected* by Part B". That is an over-claim: where a redirected resolution
+> reaches the **same** authorized object through an **outside-workspace name** —
+> an outside-workspace **hard link** is the canonical instance — Part B's
+> object-derived identity compares **equal by construction**, so Part B is
+> structurally blind and detects nothing. (2) This session left workspace
+> containment as a **separately enforced** resolve-time precondition; a separate
+> check whose result is carried into the resolution episode as a name is raceable
+> by construction. *Correction 2* requires the **same single resolution episode**
+> that produces the bound object to enforce workspace containment as a required
+> property of that episode, and splits R1 into R1a (wrong object — detected by
+> Part B where R4 holds) and R1b (same object via an outside-workspace name —
+> detected by neither part). The concrete primitive remains undecided.
+> *Correction 2* in the program lock is the authority; this memory file is not
+> contract authority. The `## Action contract`, `## Files changed`, and
+> `## Validation` sections below are immutable facts about the 2026-09-16
+> Correction 1 session and are unchanged.
 
 ## Outcome
 
@@ -98,9 +120,18 @@ Consensus P0s that reshaped the correction:
    triggered: identity must denote the **object**.
 3. The **resolve-to-open** window is not closed by Part A — only detected, and
    only by Part B. Leaving it undisclosed would have reproduced the exact defect
-   the correction exists to remove.
+   the correction exists to remove. *(Corrected 2026-09-16 by Correction 2: "only
+   detected, and only by Part B" is itself an over-claim. It holds only for the
+   **wrong-object** subclass, now R1a. The **same-object** subclass, now R1b —
+   a redirect reaching the authorized object through an outside-workspace hard
+   link — is detected by **neither** part, and is prevented only by binding
+   containment to the producing resolution episode.)*
 4. Containment had been silently dropped from Part A, inverting generation 1's
-   correction into "identity is a substitute for containment".
+   correction into "identity is a substitute for containment". *(Corrected
+   2026-09-16 by Correction 2: restoring containment as a **separate** resolve-time
+   precondition was insufficient. A separate check is raceable by construction
+   whenever its result is carried into the episode as a name. Containment is now a
+   required property of the producing episode itself.)*
 5. "No mutable descendant is traversed" was unenforceable and was replaced with a
    countable zero-name-operation predicate.
 
@@ -142,6 +173,12 @@ Stash entries `1674E8DE` and `2A9C802B` remain **active and untouched**. Shipmen
 `140-S`, `141-S`, `142-S` remain queued and untouched.
 
 ## Next steps
+
+> [!NOTE]
+> **Superseded by Correction 2 (2026-09-16).** A fresh Copilot review at PR #400
+> head `2ca552c5` produced three further blocking threads on the containment gap
+> described in the correction notice at the top of this file. See
+> `docs/memory/2026-09-16-stage-g0-amendment-1-correction-2.md`.
 
 Blocked on the operator. Orchestrator owns updating PR #400, replying to the three
 threads, and resolving them. Generation 3 still requires an explicit transition of

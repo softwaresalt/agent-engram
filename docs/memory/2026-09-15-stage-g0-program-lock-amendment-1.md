@@ -8,7 +8,7 @@ program: checkpoint-resolution finalization write-boundary
 program_item: 027-D
 package: G0
 outcome: AMENDMENT RECORDED — Route 2 authorized; no G0 attempt performed
-corrected_by: docs/memory/2026-09-16-stage-g0-amendment-1-correction.md
+corrected_by: docs/memory/2026-09-16-stage-g0-amendment-1-correction.md; docs/memory/2026-09-16-stage-g0-amendment-1-correction-2.md
 ---
 
 # Stage session memory — program lock Amendment 1
@@ -23,6 +23,17 @@ corrected_by: docs/memory/2026-09-16-stage-g0-amendment-1-correction.md
 > this memory file is not contract authority. The `## Action contract`,
 > `## Files changed`, and `## Validation` sections below are immutable facts about
 > the 2026-09-15 session and are unchanged.
+
+> [!IMPORTANT]
+> **Further corrected 2026-09-16 by session
+> `stage-g0-amendment-1-correction-2-2026-09-16`.** *Correction 1* still left
+> workspace containment as a separately enforced resolve-time precondition. A
+> redirect to an **outside-workspace hard link of the authorized object** defeats
+> that: the episode produces the authorized object itself, so the same-object
+> binding is satisfied and object-derived identity compares **equal**, while the
+> resolution has left the workspace. Containment is now a required property of the
+> **same single resolution episode** that produces the bound object. *Correction 2*
+> in the program lock is the authority.
 
 ## Outcome
 
@@ -103,9 +114,13 @@ original root-cause rejection intact.
 * Narrows the review record's **settled item 9**: a retained handle is still
   rejected as a *replacement* for identity equality, and is now required
   *alongside* it. The other nine settled items stand.
-* Preserves storage, type, API surface, containment-check retention, and the
-  binding's concrete primitive as undecided, and keeps the minimal-API-contract-in-
-  deliberation rule.
+* Preserves storage, type, API surface, and the binding's concrete primitive as
+  undecided, and keeps the minimal-API-contract-in-deliberation rule. *(Corrected
+  2026-09-16 by Correction 2: this session also listed **containment-check
+  retention** as preserved-undecided. It is no longer undecided — containment is
+  now **fixed** as a required property of the resolution episode that produces the
+  bound object. Only the containment primitive, and whether an additional separate
+  check is retained alongside it, stay undecided.)*
 * **Renews the failure bound**: if generation 3 also fails, the program halts again
   and requires a new amendment.
 

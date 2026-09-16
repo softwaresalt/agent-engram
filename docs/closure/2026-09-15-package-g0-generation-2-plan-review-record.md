@@ -16,7 +16,7 @@ authority: docs/decisions/2026-09-14-checkpoint-resolution-decomposed-program-lo
 branch: chore/stage-g0-generation-2-planning
 harvested: false
 shipment_assembled: false
-operator_resolution: "Route 2 — authorized 2026-09-15; recorded as Amendment 1 of docs/decisions/2026-09-14-checkpoint-resolution-decomposed-program-lock.md; Part A corrected 2026-09-16 by Correction 1 to same-object binding"
+operator_resolution: "Route 2 — authorized 2026-09-15; recorded as Amendment 1 of docs/decisions/2026-09-14-checkpoint-resolution-decomposed-program-lock.md; Part A corrected 2026-09-16 by Correction 1 to same-object binding, and further corrected 2026-09-16 by Correction 2 to require the producing resolution episode to enforce workspace containment"
 ---
 
 ## Verdict
@@ -260,7 +260,7 @@ records only which escalation route the operator chose, so a later reader of the
 | Route chosen | **Route 2 — amend to Option C** (retained capability binding plus identity equality) |
 | Authorized by | Operator, routed through Orchestrator, 2026-09-15 |
 | Recorded as | Amendment 1 of `docs/decisions/2026-09-14-checkpoint-resolution-decomposed-program-lock.md` |
-| Corrected by | Correction 1 to Amendment 1, 2026-09-16, within the same Route 2 authority |
+| Corrected by | Correction 1 to Amendment 1, 2026-09-16, within the same Route 2 authority; further corrected by Correction 2, 2026-09-16, within the same authority |
 | Effect on this record | None. This record stays terminal for generation 2 attempt 1 |
 
 The amendment supersedes only the conflicting G0 fixed-input language and renews
@@ -285,3 +285,34 @@ other nine settled items stand unchanged.
 > `## Operator resolution` heading is changed** — the verdict, all findings, the
 > ten settled items, and the `## Escalation to the operator` table remain terminal
 > generation-2 evidence.
+
+> [!IMPORTANT]
+> **Second correction recorded 2026-09-16 (Correction 2).** *Correction 1* left
+> workspace containment as a **separately enforced resolve-time precondition** and
+> recorded residual R1 as "*detected* by Part B". A redirect to an
+> **outside-workspace hard link of the authorized object** defeats both: the
+> episode produces the authorized object itself, so Part A's binding is satisfied
+> and Part B's object-derived identity compares **equal**, while the resolution has
+> left the workspace. Containment is therefore corrected to a **required property
+> of the same single resolution episode that produces the bound object**; a
+> separate precheck whose result is carried into the episode as a name is raceable
+> by construction and does not satisfy it. The concrete primitive remains
+> undecided. *Correction 2* in the program lock governs.
+>
+> **Two settled items above are narrowed by *Correction 2*. Neither item's own
+> text is edited, and nothing above the `## Operator resolution` heading is
+> changed.**
+>
+> * **Settled item 6** held that the resolve-time-only containment demotion is
+>   security-sound because read-time identity equality "transitively re-affirms
+>   containment without re-checking it". **That transitive inference does not
+>   hold** — R1b is a counterexample, since identity equality holds while
+>   containment does not. Item 6 is narrowed to the **wrong-object** case (R1a),
+>   and holds there **only where R4's identity-trust precondition holds**. Its
+>   conclusion that "nothing of security value is lost by removing containment from
+>   the read path" is **withdrawn**.
+> * **Settled item 8** remains correct as to the **identity basis** and is not
+>   reopened on that ground. It is narrowed only in that a primitive which silently
+>   follows a link **out of the workspace** is no longer admissible for the
+>   producing episode, which must now fail closed on any traversal leaving the
+>   boundary, including the final component as resolved.
