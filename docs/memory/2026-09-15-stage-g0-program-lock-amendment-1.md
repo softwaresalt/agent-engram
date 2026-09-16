@@ -8,15 +8,29 @@ program: checkpoint-resolution finalization write-boundary
 program_item: 027-D
 package: G0
 outcome: AMENDMENT RECORDED — Route 2 authorized; no G0 attempt performed
+corrected_by: docs/memory/2026-09-16-stage-g0-amendment-1-correction.md
 ---
 
 # Stage session memory — program lock Amendment 1
+
+> [!IMPORTANT]
+> **Corrected 2026-09-16 by session `stage-g0-amendment-1-correction-2026-09-16`.**
+> This file recorded Amendment 1's Part A as a *retained root anchor*. That
+> mechanism does not deliver the guarantee stated below: a root-relative read
+> still resolves mutable path components beneath the root. Part A is corrected to
+> a **same-object binding** — verification and content reading must apply to the
+> same already-opened object. *Correction 1* in the program lock is the authority;
+> this memory file is not contract authority. The `## Action contract`,
+> `## Files changed`, and `## Validation` sections below are immutable facts about
+> the 2026-09-15 session and are unchanged.
 
 ## Outcome
 
 **Amendment 1 recorded.** The operator authorized **Route 2** from the
 generation-2 plan-review record's escalation table: amend the G0 fixed input to
-adopt Option C — a **retained root anchor plus per-file identity equality**.
+adopt Option C — a **retained capability binding plus per-file identity
+equality**. As originally written this session described the binding as a
+*retained root anchor*; see the correction notice above.
 
 No G0 attempt of any kind was performed. No generation 3 was created. `027-D`
 remains `blocked`.
@@ -76,17 +90,21 @@ original root-cause rejection intact.
 
 ## What the amendment does
 
-* Fixes a **two-part** G0 input: Part A retained root anchor, so reads do not
-  re-traverse mutable ancestors; Part B the original opaque identity equality,
-  retained in full. Neither part alone is sufficient.
+* Fixes a **two-part** G0 input: Part A a binding between identity verification
+  and content reading; Part B the original opaque identity equality, retained in
+  full. Neither part alone is sufficient. *(Corrected 2026-09-16: this session
+  wrote Part A as a retained root anchor "so reads do not re-traverse mutable
+  ancestors". A root-only anchor does not deliver that. Part A now requires
+  verification and reading to apply to the same already-opened object, and Part B
+  now requires the identity to denote the object rather than a name for it.)*
 * Supersedes **only** the treatment of stored-value equality as the sole and
   complete read-time mechanism, and the `Deliberately undecided` framing where it
-  left a retained anchor outside the minimal contract.
+  left the binding outside the minimal contract.
 * Narrows the review record's **settled item 9**: a retained handle is still
   rejected as a *replacement* for identity equality, and is now required
   *alongside* it. The other nine settled items stand.
 * Preserves storage, type, API surface, containment-check retention, and the
-  anchor's concrete primitive as undecided, and keeps the minimal-API-contract-in-
+  binding's concrete primitive as undecided, and keeps the minimal-API-contract-in-
   deliberation rule.
 * **Renews the failure bound**: if generation 3 also fails, the program halts again
   and requires a new amendment.

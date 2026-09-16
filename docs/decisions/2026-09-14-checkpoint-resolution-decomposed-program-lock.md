@@ -23,11 +23,22 @@ amended: true
 amendments:
   - id: 1
     date: 2026-09-15
-    title: "Route 2 — retained root anchor plus identity equality as the G0 fixed input"
+    title: "Route 2 — same-object binding plus identity equality as the G0 fixed input"
     authorized_by: operator
     amends: "G0 generation-2 fixed input (Fixed invariant; Deliberately undecided)"
     discharges: "If generation 2 also fails"
     activation: "requires an explicit transition of 027-D to queued; not performed by the recording session"
+    corrected_by: "Correction 1 (2026-09-16)"
+corrections:
+  - id: 1
+    applies_to_amendment: 1
+    date: 2026-09-16
+    title: "Part A corrected from retained root anchor to same-object binding"
+    authorized_by: "operator, within the existing Route 2 authority"
+    corrects: "Amendment 1 — Part A; Amendment 1's narrowing of settled item 9"
+    adds: "one precision requirement to Part B — identity must denote the object, not a name for it"
+    discharges: "nothing"
+    grants: "nothing"
 ---
 
 ## Authority
@@ -297,10 +308,12 @@ about G0 is fixed here.
 ### Fixed invariant
 
 > [!IMPORTANT]
-> **Amended by Amendment 1 (2026-09-15).** This invariant is **retained in full**
-> and is still non-negotiable, but it is **no longer the whole fixed input**: a
-> retained root anchor is now fixed alongside it. Read this section together with
-> *Amendment 1*.
+> **Amended by Amendment 1 (2026-09-15), as corrected by Correction 1
+> (2026-09-16).** This invariant is **retained in full** and is still
+> non-negotiable, but it is **no longer the whole fixed input**: a same-object
+> binding between verification and read is now fixed alongside it, and the
+> identity compared below must denote the **object** rather than a name for it.
+> Read this section together with *Amendment 1* and *Correction 1*.
 
 > **Read-time canonical identity must equal the opaque stored authorized
 > canonical identity.** Remaining inside the workspace is not sufficient.
@@ -320,9 +333,11 @@ about G0 is fixed here.
 ### Deliberately undecided
 
 > [!IMPORTANT]
-> **Amended in part by Amendment 1 (2026-09-15).** The four items below remain
-> undecided. What changed is the **minimal contract**: a retained root anchor is
-> now a fixed input rather than a deferrable option. See *Amendment 1*.
+> **Amended in part by Amendment 1 (2026-09-15), as corrected by Correction 1
+> (2026-09-16).** The four items below remain undecided. What changed is the
+> **minimal contract**: a same-object binding between verification and read is
+> now a fixed input rather than a deferrable option. The concrete primitive that
+> realizes the binding remains undecided. See *Amendment 1* and *Correction 1*.
 
 **Storage, type, and API shape are deliberately undecided and must be chosen in
 the G0 deliberation.** This lock fixes no implementation structure:
@@ -515,7 +530,16 @@ This document is immutable except by a recorded amendment. Each amendment names
 exactly what it supersedes. Every constraint an amendment does not name survives
 unchanged.
 
-### Amendment 1 — retained root anchor plus identity equality
+### Amendment 1 — same-object binding plus identity equality
+
+> [!IMPORTANT]
+> **Part A of this amendment was corrected on 2026-09-16.** As originally
+> published at commit `a0645b33`, Part A required only a *retained root anchor*.
+> Three independent reviews established that a root-only anchor does not deliver
+> the property this amendment was granted to deliver. The original wording is
+> preserved below, struck through, so the review record on PR #400 stays
+> reproducible. **The operative text is *Correction 1*, at the end of this
+> amendment.** Correction 1 grants nothing and discharges nothing.
 
 | Field | Value |
 |---|---|
@@ -550,34 +574,38 @@ deliver. This amendment changes the mechanism rather than narrowing the claim.
 
 Both parts are fixed. Neither alone is sufficient.
 
-**Part A — retained root anchor.** The workspace root is resolved and validated
+> [!WARNING]
+> **Part A as published below is superseded by *Correction 1*.** It is retained
+> verbatim as the text the PR #400 review threads quote. Do not implement it.
+
+~~**Part A — retained root anchor.** The workspace root is resolved and validated
 once, and a handle to that resolved root is **retained**. Every subsequent corpus
 read is performed **through the retained anchor**, so no read re-traverses mutable
-ancestor path components between resolve time and read time.
+ancestor path components between resolve time and read time.~~
 
 **Part B — opaque per-file canonical identity equality.** Unchanged from
 `### Fixed invariant`: read-time canonical identity must equal the opaque stored
 authorized canonical identity, compared for equality and never reconstructed,
 parsed, or re-derived. Remaining inside the workspace is not sufficient.
+*Correction 1* adds a precision requirement to this part without relaxing it.
 
-Part A closes the compare-to-read ancestor window. Part B remains the read-time
-authority against per-file substitution and preserves the generation-1 correction
-that containment is not a substitute for identity.
+~~Part A closes the compare-to-read ancestor window.~~ Part B remains the
+read-time authority against per-file substitution and preserves the generation-1
+correction that containment is not a substitute for identity.
 
 #### What this supersedes, and only this
 
 * The original fixed input's treatment of stored-value equality as the **sole and
   complete** read-time mechanism. The equality requirement survives in full; its
   **sufficiency** does not.
-* The `### Deliberately undecided` framing **only** where it left a retained
-  anchor outside the minimal contract. The anchor is now a fixed input.
-* The generation-2 review record's settled item 9 is **narrowed**: a retained
-  handle remains correctly rejected as a *replacement* for identity equality, and
-  is now **required alongside** it.
+* The `### Deliberately undecided` framing **only** where it left the binding
+  outside the minimal contract. The binding is now a fixed input.
+* The generation-2 review record's settled item 9 is **narrowed**. *Correction 1*
+  restates this narrowing; read that restatement, not this bullet.
 
 Nothing else in the fixed input changes. `### Root-cause evidence` is preserved
-verbatim and is strengthened rather than relaxed: an ancestor replaced at any
-point between resolve time and read time must now fail.
+verbatim and is strengthened rather than relaxed. *Correction 1* states precisely
+which windows the strengthened mechanism closes and which it only detects.
 
 #### Still deliberately undecided
 
@@ -588,7 +616,7 @@ undecided items stand, and the anchor's own realization joins them:
 * what **type** represents it;
 * the **API surface** that produces and compares it;
 * whether a workspace-containment check is retained at all;
-* which concrete primitive realizes the retained anchor, and its type and API.
+* which concrete primitive realizes the same-object binding, and its type and API.
 
 No crate or module name is decided here. **The minimal API contract must still be
 settled inside the deliberation, before `impl-plan` begins within that same Stage
@@ -660,3 +688,161 @@ now is read from the backlog, not from this document.**
   hardening, **no** plan-review, **no** harvest, and assembled **no** shipment. It
   created no branch and no pull request, and modified no source, test, template, or
   configuration file.
+
+#### Correction 1 to Amendment 1 — 2026-09-16
+
+| Field | Value |
+|---|---|
+| Date | 2026-09-16 |
+| Authorized by | Operator, **within the existing Route 2 authority** |
+| Stage session | `stage-g0-amendment-1-correction-2026-09-16` |
+| Trigger | Three blocking review threads on PR #400, all one root issue |
+| Corrects | Amendment 1 — **Part A**; Amendment 1's narrowing of settled item 9 |
+| Adds | One precision requirement to Part B, as an entailment of Part A |
+| Discharges | **Nothing** |
+| Grants | **Nothing.** No generation, no publication authority, no PR authority |
+| In-force basis | Amendment 1 is published on `main` at commit `a0645b33` |
+
+##### Why the correction is necessary
+
+Amendment 1's Part A claimed that retaining a handle to the **workspace root**
+stops reads from re-traversing mutable path components. It does not. Opening
+`a/file` relative to a retained root handle still resolves the mutable `a`
+component at open time, so replacing `a` after the identity comparison and before
+the anchored open redirects the read. The generation-2 finding A1 window therefore
+stayed open, and Amendment 1 asserted a guarantee its own mechanism could not
+deliver — the identical over-claim that terminated generations 1 and 2.
+
+This correction stays inside Route 2. The operator's Route 2 text was *"adopt
+retained anchor plus identity equality **so the read cannot re-traverse mutable
+ancestors**"*. The purpose clause is the authorization; "retained anchor" was the
+description of a means that provably fails that purpose. Correcting the means to
+deliver the already-authorized purpose is repair inside the grant. It selects no
+new property, re-sequences no package, and decides no primitive.
+
+##### Part A — same-object binding between verification and read
+
+Each corpus read resolves its target by name in **exactly one resolution
+episode**, producing one filesystem object. "One episode" counts resolutions, not
+syscalls: a capability traversal that walks each component in sequence to produce
+a single object is one episode. Both the read-time identity verification and
+**every byte** of the content read are performed against **that same already-
+obtained object**.
+
+After the verification point the read performs **zero** name-accepting filesystem
+operations. This is a countable predicate, and plan review verifies it by
+enumerating path-taking call sites across the **transitive** call graph reachable
+after verification; the required count is zero. In particular, after verification
+there is no re-open by pathname, no re-resolution of any path component, and no
+handing of the pathname to a downstream consumer that re-opens it — including
+re-opening through a procfs-style or other synthetic name for the object. Every
+byte any consumer receives must originate from the bound object.
+
+Verification must **succeed before any content is released**. On mismatch the read
+fails closed, returns no content, and takes no pathname-based fallback or retry.
+
+**Neither a root reference nor a parent-directory reference satisfies Part A.**
+Reaching `a/file` through a retained root reference still resolves the mutable `a`
+component; reaching `file` through a retained parent reference still resolves the
+mutable leaf name inside a mutable directory. Both leave finding A1 open, one
+component apart.
+
+A **retained full-path capability** — the resolved traversal from workspace root
+through leaf, held as capabilities — is permitted as a *realization* of Part A and
+as hardening of the open. It is **not** an equivalent substitute for the binding,
+and it satisfies Part A **only if** the single object that traversal produces is
+the same object that is both verified and read. Retaining the directory chain
+while reaching the leaf by name in a second operation does **not** satisfy Part A.
+
+##### Part B — opaque per-file identity equality, with one precision requirement
+
+Part B is **retained in full** and remains an **independently required** check.
+Part A binds *which object is read consistently*; it says nothing about *which
+object is authorized*. An attacker who wins the pre-open race obtains a fully
+Part-A-compliant read of an attacker-chosen object. Part B is the only tie to an
+authorization decision, and neither part can be dropped for the other.
+
+The evidence compels one precision that Amendment 1 left open:
+
+> **The identity must denote the object, not a name for it.** Both the stored
+> authorized identity and the read-time identity must be obtained **from the bound
+> object**, not by resolving a pathname.
+
+A canonicalized path string is a **name**, and names are invariant under
+rename-over, hardlink substitution at the authorized path, and mount overlay. An
+identity that is a name therefore detects none of those, while reading as
+compliant. This precision is an entailment of Part A: if read-time identity may be
+re-derived from a pathname, Part A's binding is vacuous. It does **not** follow
+that an object-denoting identity detects mount overlay in general — see A2 and R4
+below, which govern.
+
+This is a requirement on **provenance**, not on type. A value whose domain is
+pathnames fails Part B regardless of how it was obtained: reading a synthetic name
+back from the bound object and canonicalizing it yields a name, not an object
+identity. Which concrete identity primitive is used, how wide it is, and how it is
+stored **remain undecided** and belong to the deliberation. Deriving the read-time
+value freshly from the bound object on each read is **required, not prohibited**:
+the prohibition on reconstructing, parsing, or re-deriving binds the **stored
+authorized value**, which stays opaque and is only ever compared for equality.
+**Derivation symmetry is required** — the stored value must have been produced by
+the same handle-side procedure at authorization time.
+
+##### Containment
+
+Workspace containment remains a **necessary** resolve-time precondition. It is not
+sufficient, and identity is not a substitute for it either. Generation 1's
+correction was *"containment is not a substitute for identity"*; it must not be
+inverted into *"identity is a substitute for containment"*. Whether a containment
+check is additionally retained on the **read** path stays undecided. That a
+root-anchored capability chain may make such a read-path check redundant is an
+observation for the deliberation, not a decision by this lock.
+
+##### Disclosed residual windows
+
+Part A closes the **verification-to-read** window and nothing wider. An
+undisclosed residual is the exact defect that terminated both prior generations,
+so the residuals are named here and a generation-3 plan must carry them rather
+than rediscover them:
+
+| ID | Residual | Disposition |
+|---|---|---|
+| R1 | **Resolve-to-open.** Substitution completed before the single open | Not *prevented* by Part A. *Detected* by Part B — but only because Part B now denotes the object, and only where R4's identity-trust precondition holds |
+| R2 | **Authorization capture.** Substitution before the authorized identity is captured poisons the stored value | Detected by neither part. Mitigable only by binding capture to the same object lifetime |
+| R3 | **In-place mutation** of the authorized object | Out of scope. Identity equality carries **no** content-integrity claim; a content digest bound to the object would be a separate requirement |
+| R4 | **Identity stability and reuse** — inode reuse after unlink, volume-serial instability, overlay and network filesystems | Undecided. Must fail closed where identity cannot be trusted |
+| R5 | **Corpus membership.** Part A binds each file individually, but membership is still obtained by name-based enumeration, so the set read need not be the set authorized | Detected by neither part. The set-composition analogue of R2 |
+| A2 | **Mountpoint substitution** | Addressed **only to the extent** that identity denotes the object. **Not declared closed** |
+
+Settled item 8 is not reopened, and A2 is not declared resolved.
+
+##### Settled item 9 — restated narrowing
+
+This restatement supersedes Amendment 1's item-9 bullet. **Item 9's own text in
+the review record is terminal and is not edited.**
+
+What item 9 correctly rejected, and what remains rejected, is the retained-
+capability shape **as a replacement for** the stored-compared-by-equality identity
+invariant. No retained handle or capability — root-level, per-file, or full-path —
+may substitute for Part B. What item 9 did **not** decide is whether such a
+retained handle or capability is **required alongside** identity equality. It is.
+Item 9's ground of rejection is preserved unweakened; only its scope as an
+exclusion of that shape *in any role* is narrowed.
+
+##### What this correction does not do
+
+* It **discharges nothing** and **renews nothing**. Amendment 1's discharge of
+  `### If generation 2 also fails` is neither re-consumed nor extended, and the
+  renewed failure bound stands exactly as Amendment 1 left it.
+* It grants **no** generation, **no** publication authority, and **no**
+  pull-request authority.
+* It re-sequences **no** package and makes **no** downstream package eligible. G0
+  remains the sole prerequisite.
+* It leaves untouched every constraint listed under
+  *Constraints preserved unchanged*.
+* It decides **no** API surface beyond the entailment that no pathname-only
+  identity API can satisfy Part A. Trait shape, method count, handle type,
+  ownership and lifetime model, error taxonomy, and naming all remain undecided,
+  and the minimal API contract is still settled inside the deliberation.
+* `027-D` remains **`blocked`**. The correcting session started no generation and
+  performed no deliberation, planning, hardening, plan-review, harvest, or
+  shipment assembly.

@@ -16,7 +16,7 @@ authority: docs/decisions/2026-09-14-checkpoint-resolution-decomposed-program-lo
 branch: chore/stage-g0-generation-2-planning
 harvested: false
 shipment_assembled: false
-operator_resolution: "Route 2 — authorized 2026-09-15; recorded as Amendment 1 of docs/decisions/2026-09-14-checkpoint-resolution-decomposed-program-lock.md"
+operator_resolution: "Route 2 — authorized 2026-09-15; recorded as Amendment 1 of docs/decisions/2026-09-14-checkpoint-resolution-decomposed-program-lock.md; Part A corrected 2026-09-16 by Correction 1 to same-object binding"
 ---
 
 ## Verdict
@@ -257,9 +257,10 @@ records only which escalation route the operator chose, so a later reader of the
 
 | Field | Value |
 |---|---|
-| Route chosen | **Route 2 — amend to Option C** (retained root anchor plus identity equality) |
+| Route chosen | **Route 2 — amend to Option C** (retained capability binding plus identity equality) |
 | Authorized by | Operator, routed through Orchestrator, 2026-09-15 |
 | Recorded as | Amendment 1 of `docs/decisions/2026-09-14-checkpoint-resolution-decomposed-program-lock.md` |
+| Corrected by | Correction 1 to Amendment 1, 2026-09-16, within the same Route 2 authority |
 | Effect on this record | None. This record stays terminal for generation 2 attempt 1 |
 
 The amendment supersedes only the conflicting G0 fixed-input language and renews
@@ -267,6 +268,20 @@ the program's failure bound. It authorizes the **mechanism** of a future G0
 attempt; it does not start one. `027-D` remains `blocked`, and generation 3
 requires an explicit operator transition of that item to `queued`.
 
-Settled item 9 is **narrowed** by the amendment: a retained handle remains
-correctly rejected as a *replacement* for identity equality, and is now required
-**alongside** it. The other nine settled items stand unchanged.
+Settled item 9 is **narrowed** by the amendment as corrected: no retained handle
+or capability — root-level, per-file, or full-path — may **replace** identity
+equality, which is item 9's ground of rejection and is preserved unweakened; but
+such a retained capability is now **required alongside** identity equality, which
+item 9 did not decide. **Item 9's own text above is terminal and unedited.** The
+other nine settled items stand unchanged.
+
+> [!IMPORTANT]
+> **Correction recorded 2026-09-16.** Amendment 1's Part A originally read
+> *"retained root anchor"*. A root-only anchor does not stop a relative open from
+> re-resolving mutable path components, so it did not close the finding-A1 window
+> this record escalated. Part A is corrected to a **same-object binding**:
+> verification and content reading must apply to the same already-opened object.
+> *Correction 1* in the program lock governs. **Nothing above the
+> `## Operator resolution` heading is changed** — the verdict, all findings, the
+> ten settled items, and the `## Escalation to the operator` table remain terminal
+> generation-2 evidence.
