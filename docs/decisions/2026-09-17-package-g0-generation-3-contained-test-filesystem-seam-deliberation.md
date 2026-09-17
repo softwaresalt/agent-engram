@@ -143,12 +143,13 @@ generation-3 fixed input — it seeds the walk from a name-based
 
 ## Per-target feasibility determination
 
-### `x86_64-unknown-linux-gnu` — FEASIBLE, with R9 detected rather than atomic
+### `x86_64-unknown-linux-gnu` — A, B, C, A2 DELIVERED; R9 UNRESOLVED → ESCALATION
 
 `rustix::fs::openat2` is present in the locked `rustix 1.1.3` with
 `ResolveFlags::{BENEATH, IN_ROOT, NO_MAGICLINKS, NO_SYMLINKS, NO_XDEV}`,
-exposed as a **safe** function returning `OwnedFd`. It satisfies all three
-properties in a single in-kernel resolution:
+exposed as a **safe** function returning `OwnedFd`. It satisfies the three
+lettered properties in a single in-kernel resolution — and does **not** satisfy
+the fixed atomicity property **R9**:
 
 * **A** — one syscall, one resolution episode, one `OwnedFd`; identity and every
   content byte are taken from that descriptor.
@@ -158,25 +159,50 @@ properties in a single in-kernel resolution:
   carried in as a name. `RESOLVE_NO_MAGICLINKS` refuses synthetic-name
   redirection and `RESOLVE_NO_XDEV` refuses mountpoint traversal, which is the
   only place in this matrix where **A2** is additionally closed.
-* **R9 — DETECTED AT FINAL STATE, NOT ATOMIC.** This is stated precisely
-  because overstating it is the defect that terminated every prior attempt.
+* **R9 — UNRESOLVED; PARTIAL FINAL-STATE DETECTION ONLY; ESCALATES.** This is
+  stated precisely because overstating it is the defect that terminated every
+  prior attempt.
   There is **no kernel-wide rename-serialisation across a path walk**: `namei`
   takes per-dentry locks component by component (none at all in RCU-walk mode),
   and `rename_lock` is a seqlock consulted *inside* the terminal check, not held
-  across the walk. What `RESOLVE_BENEATH` actually provides is a two-part
-  taxonomy: `..`-escape, absolute jumps, magic links, and mount crossings are
-  **refused during** the walk with `-EXDEV` (genuinely *prevented*), while a
-  racing rename of an already-traversed intermediate directory is caught by the
+  across the walk. What the **flag set** actually provides is a two-part
+  taxonomy: `..`-escape, absolute jumps, and magic links are **refused during**
+  the walk (`-EXDEV` for the escaping jumps, `-ELOOP` for magic links), and
+  mount crossings are refused during the walk by `RESOLVE_NO_XDEV` rather than
+  by `RESOLVE_BENEATH` — all genuinely *prevented* — while a racing rename of an
+  already-traversed intermediate directory is caught by the
   **terminal** `path_is_under()` check returning `-EAGAIN` (*detected at final
   state*). A rename that is **reverted before the walk completes** is
   **undetected** — structurally the same out-and-back blind spot used below to
-  disqualify the macOS `..`-walk. Linux therefore qualifies under R9's
-  **"detectable → fail closed"** arm, **not** under its "delivered/atomic" arm,
-  and a residual revert-before-completion window is **disclosed, not closed**.
+  disqualify the macOS `..`-walk. R9 admits exactly two arms: **fail closed
+  where the relocation is detectable**, and otherwise **escalate under the
+  feasibility clause, which covers atomicity**. The in-scope relocation class is
+  **not wholly detectable on Linux**: in the revert-before-completion case every
+  per-step verdict is true *and* the terminal `path_is_under()` check is true,
+  which is exactly the condition R9 routes to escalation. Linux therefore
+  satisfies **neither** the "delivered/atomic" arm **nor** the "detectable →
+  fail closed" arm for the in-scope class, and **falls to R9's escalation arm**.
+  The `-EAGAIN` behaviour is retained as **partial** detection that narrows but
+  does not discharge R9; the revert-before-completion window is **undetected and
+  not closed**.
+
+**Determination for `x86_64-unknown-linux-gnu`: NOT CONTRACT-FEASIBLE — R9
+UNRESOLVED, ESCALATED, FAIL CLOSED.** Properties **A**, **B**, and **C** are
+delivered and **A2** is closed, and that evidence stands unchanged and
+inheritable. But the amended input fixes **containment atomic with the
+production of the bound object** — the property the ledger tracks as **R9** —
+the per-target-triple feasibility clause covers **every** fixed property
+**including atomicity**, and delivering A/B/C on a target does **not** discharge
+R9 on it.
+Linux joins Windows and macOS in the escalation set. *(Corrected in the PR #401
+review cycle 1: this target was previously recorded as "FEASIBLE" on the
+strength of the detectable arm, which the undetected revert-before-completion
+window does not support.)*
 
 Failing closed on `-EAGAIN` rather than retrying (which the man page suggests) is
 a **deliberate deviation** taken for security posture; its cost is that benign
-concurrent renames produce spurious read failures.
+concurrent renames produce spurious read failures. It is a hardening measure
+within an escalated target, **not** a discharge of R9.
 
 Runtime availability is **not** implied by the triple: `openat2` requires kernel
 ≥ 5.6 and returns `ENOSYS` otherwise — and seccomp-filtered container runtimes
@@ -195,7 +221,7 @@ the **availability** envelope, not the guarantee.
 > generations 1, 2, and 3-attempt-1. `rustix::fs::openat2` is called directly
 > **because** its failure mode is observable.
 
-### `x86_64-pc-windows-msvc` — BLOCKED ON PART B ONLY
+### `x86_64-pc-windows-msvc` — ESCALATED; BLOCKED ON PART B ONLY
 
 Windows has **no** beneath-resolution primitive equivalent to `RESOLVE_BENEATH`.
 The available shape is a per-component capability walk relative to a retained
@@ -229,7 +255,7 @@ dependency** exposing `FILE_ID_INFO` from a handle, or an **isolated `unsafe`
 boundary** — a change to the crate's declared safety posture. Stage may decide
 neither unilaterally.
 
-### `aarch64-apple-darwin` — INFEASIBLE FOR R9; ESCALATION TRIGGER
+### `aarch64-apple-darwin` — ESCALATED; INFEASIBLE FOR R9
 
 macOS provides **no** beneath-resolution primitive. There is no `openat2`;
 `RESOLVE_BENEATH` is a Linux flag and `O_RESOLVE_BENEATH` is FreeBSD-only
@@ -299,21 +325,36 @@ split R1 in the first place.
 | A — same-object binding | **Delivered** (`openat2`) | Delivered (handle-relative walk) | Delivered (`O_NOFOLLOW_ANY` candidate) |
 | B — object-derived identity | **Delivered** (`fstat` on fd) | **BLOCKED** — only safe from-handle accessor is low-resolution and panics instead of failing closed (R4) | **Delivered** (`fstat` on fd) |
 | C — in-episode containment | **Delivered** (`RESOLVE_BENEATH`, `-EXDEV` during walk) | Predicate delivered; enforcement per-component | Predicate delivered (single-episode under `O_NOFOLLOW_ANY`) |
-| R9 — atomicity | **Detected at final state, NOT atomic** — `-EAGAIN` fail-closed; revert-before-completion window undetected | **Preventable** via `FILE_SHARE_DELETE` omission (safe, locked); conditional on R6 | **INFEASIBLE — not preventable, only partial window-bounded detection** |
+| R9 — atomicity | **UNRESOLVED → ESCALATED** — partial final-state detection only (`-EAGAIN` fail-closed); revert-before-completion window undetected, so the "detectable → fail closed" arm is unmet | **Preventable** via `FILE_SHARE_DELETE` omission (safe, locked); conditional on R6 | **INFEASIBLE — not preventable, only partial window-bounded detection** |
 | A2 — mountpoint | Closed (`RESOLVE_NO_XDEV`) | Not closed | Not closed |
+| **Overall contract feasibility** | **ESCALATED (R9)** | **ESCALATED (Property B)** | **ESCALATED (R9, A2)** |
 
-**Escalation fires on `x86_64-pc-windows-msvc` (Property B) and on
-`aarch64-apple-darwin` (R9).** Feasibility therefore **differs across supported
-targets**, which is the precondition the lock and the operator's standing
-instruction both route to the escalation/fail-closed path.
+**Escalation fires on all three supported target triples** —
+`x86_64-unknown-linux-gnu` on **R9**, `x86_64-pc-windows-msvc` on **Property B**,
+and `aarch64-apple-darwin` on **R9** (with **A2**). **No supported target is
+contract-feasible**, which is the precondition the lock and the operator's
+standing instruction both route to the escalation/fail-closed path. The
+escalation is therefore **universal across the supported set**, not a per-target
+divergence. **R9 is the failing property on two of the three targets** — Linux
+and macOS — and Property B on the third; the determination nonetheless remains
+strictly **per-triple**, because the R9 grounds differ (partial in-kernel
+final-state detection versus no prevention route and only partial
+window-bounded detection) and delivering a property on one supported target does
+not discharge it on another.
 
-**The Linux/macOS R9 difference is one of degree, not of kind**, and is recorded
-as such: both end in a final-state containment check with the same out-and-back
-blind spot. What differs is window magnitude — an in-kernel sub-microsecond
-terminal check inside the syscall boundary versus a userspace multi-syscall
-revalidation trivially winnable by a spinning attacker — and that the Linux check
-precedes fd release. That is a defensible **risk-magnitude** argument and is not
-presented as a categorical guarantee.
+**The Linux/macOS R9 difference is one of degree, not of kind — and degree does
+not satisfy the contract.** Both end in a final-state containment check with the
+same out-and-back blind spot. The window magnitudes differ — an in-kernel
+sub-microsecond terminal check inside the syscall boundary versus a userspace
+multi-syscall revalidation trivially winnable by a spinning attacker — and on
+Linux the check precedes fd release. **That is a risk-magnitude observation and
+is expressly not a contract-satisfaction argument.** R9 admits no
+narrow-window arm: either the in-scope relocation class is detectable, in which
+case the read fails closed, or it is not, in which case the deliberation
+escalates. Because the revert-before-completion case is undetected on **both**
+targets, **both route to escalation**. Any earlier reading of this paragraph as
+grounds for treating Linux as feasible is **withdrawn** (PR #401 review
+cycle 1).
 
 ## What this deliberation settles
 
@@ -322,11 +363,13 @@ Recorded so a later authorized generation does not re-derive it.
 1. **`rustix::fs::openat2` with `BENEATH | NO_MAGICLINKS | NO_SYMLINKS | NO_XDEV`
    is the conformant Linux primitive**, verified present and safe-API in the
    locked `rustix 1.1.3`. Fail closed on **any** error — `ENOSYS`, `EPERM`,
-   `EXDEV`, `EAGAIN`, `ELOOP` — with **no fallback**. **R9 on Linux is
-   `DETECTED (in-episode, final-state), NOT ATOMIC`**, with a disclosed
-   revert-before-completion window. This qualifier is part of the settled item:
-   a later generation inheriting item 1 inherits the qualifier, not an
-   atomicity guarantee.
+   `EXDEV`, `EAGAIN`, `ELOOP` — with **no fallback**. Item 1 settles this
+   primitive for **A, B, C, and A2 only**. **R9 on Linux is `UNRESOLVED —
+   PARTIAL FINAL-STATE DETECTION ONLY, ESCALATED, FAIL CLOSED`**, with an
+   undetected revert-before-completion window. This qualifier is part of the
+   settled item: a later generation inheriting item 1 inherits an **escalated,
+   undischarged R9** — not an atomicity guarantee, and not a satisfied
+   "detectable → fail closed" arm.
 2. **`cap-std` must not be the vehicle for the containment claim**, because its
    mechanism selection is unobservable through its public API. Verified:
    `cap-primitives` tries `open_beneath` with only
@@ -380,10 +423,10 @@ additional containment check is retained alongside in-episode enforcement, and
 the crate/module location of the seam.
 
 The **minimal API contract is therefore NOT settled**, because it cannot be
-settled for two of three supported targets without operator determination. Under
-the lock's requirement that the minimal API contract be settled inside the
-deliberation **before `impl-plan` begins**, this deliberation **does not promote
-to `impl-plan`**.
+settled for **any of the three** supported targets without operator
+determination. Under the lock's requirement that the minimal API contract be
+settled inside the deliberation **before `impl-plan` begins**, this deliberation
+**does not promote to `impl-plan`**.
 
 ## Residual ledger carried forward
 
@@ -398,9 +441,12 @@ including Linux, and precondition 2 (R8 decidable, per-target hazard set
 enumerated) is not discharged for any target** — the Linux R8 hazard set is not
 enumerated, and `RESOLVE_NO_XDEV` refuses bind-mount traversal but does not
 address overlayfs, which is a single mount and lands in R4 identity-trust.
-**Precondition 4** additionally fails on Windows Part B and **precondition 5** on
-macOS R9. Because R1b's preconditions are necessary, **R1b prevention is not
-established on any target.**
+**Precondition 4** additionally fails on Windows Part B, and **precondition 5**
+fails on **both** `aarch64-apple-darwin` R9 **and** `x86_64-unknown-linux-gnu`
+R9 — on each, R9 is reached only through the **escalation** arm, which discloses
+the gap rather than delivering atomicity or establishing reliable detection.
+Because R1b's preconditions are necessary, **R1b prevention is not established
+on any target.**
 
 **R10 is explicitly not discharged.** No plan exists, so no claim about the
 decidability of the zero-name-accepting-operations count has been made. Any
@@ -436,7 +482,7 @@ carried:
 
 | Finding | Severity | Disposition |
 |---|---|---|
-| Linux R9 recorded as "Delivered" — `-EAGAIN` is final-state **detection**, not atomicity, and shares the same out-and-back blind spot used to disqualify macOS | P0 | **Corrected.** Downgraded to `DETECTED, NOT ATOMIC` with the revert-before-completion window disclosed, and carried into settled item 1 |
+| Linux R9 recorded as "Delivered" — `-EAGAIN` is final-state **detection**, not atomicity, and shares the same out-and-back blind spot used to disqualify macOS | P0 | **Corrected, then further corrected.** First downgraded to `DETECTED, NOT ATOMIC` with the revert-before-completion window disclosed; that downgrade was itself insufficient and was superseded in PR #401 review cycle 1 — see *PR #401 review cycle 1 correction* below |
 | "The kernel's own rename-serialisation" — no such serialisation exists across a path walk | P1 | **Corrected.** False premise removed |
 | Windows `share_mode` claimed unreachable through `cap-std` — it is publicly re-exported as `cap_fs_ext::OpenOptionsExt::share_mode` | P1 (false claim) | **Corrected.** Windows R9 reclassified from infeasible to authorization-gated |
 | Windows Part B reason overstated as "no safe from-handle accessor" | P1 | **Corrected.** Reason restated as low-resolution + panics instead of failing closed |
@@ -457,30 +503,85 @@ is present at the line numbers cited above.
 This verification did **not** run against an implementation plan, consumed **no**
 plan-review attempt, and opened **no** correction budget.
 
+### PR #401 review cycle 1 correction
+
+Four Copilot review threads on PR #401 — against this document, the terminal
+record, the session memory, and the `027-D` current-state paragraph — identified
+**one** blocking defect, raised four times: **`x86_64-unknown-linux-gnu` was
+still recorded as contract-*feasible*** on the strength of R9's "detectable →
+fail closed" arm, while the same text disclosed an **undetected**
+revert-before-completion window.
+
+The finding is **VALID and blocking**. R9's disposition is binary: fail closed
+where the in-scope relocation is detectable, escalate where it is not. An
+undetected relocation class means the detectable arm is **unmet**, and the lock
+routes that case to the feasibility clause, which covers atomicity. The earlier
+reading substituted a **risk-window-magnitude** comparison — Linux's window is
+narrower than macOS's — for contract satisfaction. The lock provides no
+narrow-window arm, and this is the same over-claim pattern, one step further
+down, that the original P0 finding named.
+
+Corrections applied, in this document and in every mirror:
+
+* Linux R9 is restated as **UNRESOLVED → ESCALATED, fail closed**; `-EAGAIN` is
+  retained as **partial** detection that narrows but does not discharge R9.
+* The Linux per-target determination is restated as **NOT CONTRACT-FEASIBLE**.
+* The escalation set is recomputed from **two** targets to **all three**.
+* The risk-magnitude paragraph is **expressly withdrawn** as a
+  contract-satisfaction argument and retained only as a magnitude observation.
+* Settled item 1 is narrowed to **A, B, C, and A2 only**.
+* R1b **precondition 5** is recorded as failing on Linux as well as macOS.
+* A **fifth** operator determination — the Linux R9 disposition — is added.
+
+**A, B, C, and A2 evidence for Linux is preserved intact**: `openat2` still
+delivers same-object binding, from-handle identity, in-kernel in-episode
+containment, and mountpoint refusal, all verified against vendored source. What
+is withdrawn is only the **overall feasibility label**. The terminal state is
+unchanged — this remains a **feasibility escalation before planning**, the
+plan-review attempt counter remains **zero**, the correction budget remains
+**unopened**, `027-D` remains **blocked**, and no plan, harvest, or shipment
+exists.
+
 ## Operator determination requested
 
-The escalation requires an explicit operator determination on four points. Stage
-has made none of them.
+The escalation requires an explicit operator determination on **five** points.
+Stage has made none of them.
 
-1. **`aarch64-apple-darwin`** — accept a hard fail-closed arm on a supported
+1. **`x86_64-unknown-linux-gnu` R9** — accept a hard fail-closed arm on the
+   primary release target, or accept `openat2`'s **partial** final-state
+   `-EAGAIN` detection as sufficient despite the undetected
+   revert-before-completion window, or amend the fixed input so R9 no longer
+   requires atomicity or whole-class detectability. Note that the Linux gap is
+   **R9 only**: A, B, C, and A2 are all delivered by
+   `openat2` with `BENEATH | NO_MAGICLINKS | NO_SYMLINKS | NO_XDEV`. **The
+   fixed-input amendment option is program-wide, not Linux-scoped**: exercising
+   it would also dispose of determination 2's R9 arm, and it requires a new
+   recorded amendment to the lock. The first two options are Linux-scoped.
+2. **`aarch64-apple-darwin`** — accept a hard fail-closed arm on a supported
    release target, or remove macOS from G0's supported set, or accept
    `kqueue`-based partial, window-bounded R9 detection as sufficient. Note that
    the macOS gap is **R9 and A2 only**: the traversal shape itself is
    deliverable via `O_NOFOLLOW_ANY`.
-2. **Windows Part B** — authorize a new vetted dependency exposing
+3. **Windows Part B** — authorize a new vetted dependency exposing
    `FILE_ID_INFO` from a handle, or authorize an isolated `unsafe` boundary
    outside `#![forbid(unsafe_code)]`, or accept fail-closed on Windows. This is
    the **sole** blocking Windows gap.
-3. **Windows R9** — this is **not** a feasibility question but an authorization
+4. **Windows R9** — this is **not** a feasibility question but an authorization
    one. Prevention is reachable today via `cap_fs_ext::OpenOptionsExt::share_mode`.
    The ask is to authorize a **deliberate, user-visible,
    interoperability-blocking mechanism applied to every intermediate directory
    of every corpus traversal** — materially more than "accept R6's disclosed
    side effect", which concerns one long-lived boundary handle.
-4. **The failure bound** — the lock records that whether a feasibility
+5. **The failure bound** — the lock records that whether a feasibility
    escalation counts against the renewed generation-3 failure bound is **not
    decided** and requires explicit operator determination. This deliberation
    reached escalation **without** a plan-review failure, and takes no position
    on whether the bound is consumed.
+
+Determinations 1 and 2 are **not interchangeable** as *target* determinations:
+each target must be determined on its own evidence, since delivering a property
+on one supported target does not discharge it on another. The one exception is
+determination 1's **fixed-input amendment** option, which is program-wide by
+construction and would dispose of both R9 arms at once.
 
 Until these are determined, `027-D` returns to **`blocked`** and G0 halts.

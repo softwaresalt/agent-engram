@@ -54,19 +54,24 @@ plan-review attempt counter stands at **zero**.
 
 | Triple | Outcome |
 |---|---|
-| `x86_64-unknown-linux-gnu` | Feasible — `rustix::fs::openat2` with `BENEATH \| NO_MAGICLINKS \| NO_SYMLINKS \| NO_XDEV`. R9 **detected at final state, not atomic**. |
-| `x86_64-pc-windows-msvc` | Blocked on **Property B only** — no safe from-handle high-resolution identity accessor; the one that exists is low-res and panics instead of failing closed (R4). R9 is preventable in safe Rust. |
-| `aarch64-apple-darwin` | **Infeasible for R9** — no prevention route, only partial window-bounded `kqueue` detection. Gap is R9 and A2 only. |
+| `x86_64-unknown-linux-gnu` | **ESCALATED — R9 unresolved.** A, B, C delivered and A2 closed by `rustix::fs::openat2` with `BENEATH \| NO_MAGICLINKS \| NO_SYMLINKS \| NO_XDEV`. R9 has **partial final-state detection only** (`-EAGAIN`); the revert-before-completion window is **undetected**, so R9's detectable arm is unmet and the feasibility clause fires. Fail closed. |
+| `x86_64-pc-windows-msvc` | **ESCALATED — Property B only.** No safe from-handle high-resolution identity accessor; the one that exists is low-res and panics instead of failing closed (R4). R9 is preventable in safe Rust. |
+| `aarch64-apple-darwin` | **ESCALATED — R9 infeasible** (with A2). No prevention route, only partial window-bounded `kqueue` detection. Gap is R9 and A2 only. |
+
+**No supported target is contract-feasible.** Escalation fires on all three. R9
+is the failing property on two of the three — Linux and macOS — and Property B
+on the third; the determination stays strictly per-triple because the two R9
+grounds differ.
 
 ## Why it did not proceed to impl-plan
 
 The lock requires the minimal API contract to be settled **inside the
 deliberation, before `impl-plan` begins**, and requires escalation plus
 fail-closed where a fixed property cannot be delivered on any single supported
-target. Property B is unsettled for Windows and R9 for macOS, so the precondition
-for entering `impl-plan` is unmet. Proceeding would have meant asserting a
-guarantee the mechanism does not deliver — the root cause recorded for every
-prior G0 failure.
+target. R9 is unsettled for **Linux and macOS** and Property B for **Windows**,
+so the precondition for entering `impl-plan` is unmet on every target.
+Proceeding would have meant asserting a guarantee the mechanism does not
+deliver — the root cause recorded for every prior G0 failure.
 
 ## Verification caught real defects in my own reasoning
 
@@ -85,6 +90,30 @@ independent adversarial verification. Any future generation should verify its
 feasibility claims against vendored source and adversarial review before
 promoting, not after.
 
+## PR #401 review cycle 1 — the same over-claim, one step down
+
+Four Copilot threads on PR #401 (one each against `027-D`, the closure record,
+the deliberation, and this memory) raised **one** blocking finding: **Linux was
+still labelled *feasible*** while the same text disclosed an **undetected**
+revert-before-completion R9 window. **VALID and blocking.** The first correction
+downgraded Linux R9 from "atomic" to "detected at final state", then rested
+feasibility on R9's "detectable → fail closed" arm — but an **undetected**
+in-scope relocation class means that arm is **unmet**, and the lock routes that
+case to the feasibility clause, which covers atomicity. The residual argument
+was a **risk-window-magnitude** comparison (Linux's window is narrower than
+macOS's), and the lock provides no narrow-window arm.
+
+Corrected in all four mirrors: Linux is **ESCALATED / R9 UNRESOLVED, fail
+closed**; the escalation set is recomputed from two targets to **all three**;
+the magnitude argument is **withdrawn** as contract-satisfying; settled item 1 is
+narrowed to A/B/C/A2; R1b precondition 5 now fails on Linux as well as macOS; and
+a **fifth** operator determination (Linux R9) is added. Linux's A/B/C/A2 evidence
+is preserved intact — only the overall feasibility label is withdrawn.
+
+**Lesson, sharpened:** correcting an over-claim's *wording* is not the same as
+correcting its *conclusion*. The downgrade from "atomic" to "detected" was
+accurate, and the feasibility verdict that survived it was not.
+
 ## Authoritative state
 
 * `027-D` → **`blocked`**. The 2026-09-17 operator-authorized `blocked` →
@@ -102,12 +131,12 @@ promoting, not after.
 
 ## Next operator action
 
-Four determinations are requested in the terminal record: the macOS disposition,
-the Windows Part B authorization, the Windows R9 authorization, and whether this
-escalation counts against the renewed generation-3 failure bound. Any resumption
-requires a new recorded amendment where a fixed property or the supported-target
-set changes, and in every case a fresh explicit transition of `027-D` to
-`queued`.
+**Five** determinations are requested in the terminal record: the **Linux R9**
+disposition, the macOS disposition, the Windows Part B authorization, the
+Windows R9 authorization, and whether this escalation counts against the renewed
+generation-3 failure bound. Any resumption requires a new recorded amendment
+where a fixed property or the supported-target set changes, and in every case a
+fresh explicit transition of `027-D` to `queued`.
 
 ## Artifacts
 
