@@ -264,12 +264,12 @@ records only which escalation route the operator chose, so a later reader of the
 | Supplemented by | **Amendment 2 of the same lock, 2026-09-17** — ratifies *Correction 2*'s in-episode containment requirement under amendment authority. Adds no normative content and does not reopen this record |
 | Effect on this record | None. This record stays terminal for generation 2 attempt 1 |
 
-The amendment supersedes only the conflicting G0 fixed-input language and renews
+**Amendment 1** supersedes only the conflicting G0 fixed-input language and renews
 the program's failure bound. It authorizes the **mechanism** of a future G0
 attempt; it does not start one. `027-D` remains `blocked`, and generation 3
 requires an explicit operator transition of that item to `queued`.
 
-Settled item 9 is **narrowed** by the amendment as corrected: no retained handle
+Settled item 9 is **narrowed** by **Amendment 1** as corrected: no retained handle
 or capability — root-level, per-file, or full-path — may **replace** identity
 equality, which is item 9's ground of rejection and is preserved unweakened; but
 such a retained capability is now **required alongside** identity equality, which
