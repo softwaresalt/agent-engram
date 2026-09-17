@@ -104,7 +104,12 @@ generation-3 fixed input — it seeds the walk from a name-based
 
 * **Unix targets.** `rustix::fs::fstat(fd)` and `std::os::unix::fs::MetadataExt`
   on `File::metadata()` yield `st_dev`/`st_ino` **from the open descriptor**.
-  Object-derived, safe, stable. **B is satisfiable on both Unix targets.**
+  Object-derived, safe, stable. **B's accessor is settled on both Unix
+  targets.** On `aarch64-apple-darwin` that settles the **accessor only**: the
+  accessor is object-derived and requires no further verification, but the
+  **episode that produces the object it is applied to** rests on the unverified
+  `O_NOFOLLOW_ANY` candidate, so macOS B is **not independently settled
+  end-to-end** (PR #401 review cycle 2).
 * **`file-id 0.2.3` is disqualified.** Its entire public accessor surface —
   `get_file_id`, `get_low_res_file_id`, `get_high_res_file_id` — takes
   `path: impl AsRef<Path>`. There is **no from-handle constructor**. A
@@ -261,29 +266,80 @@ macOS provides **no** beneath-resolution primitive. There is no `openat2`;
 `RESOLVE_BENEATH` is a Linux flag and `O_RESOLVE_BENEATH` is FreeBSD-only
 (confirmed in `rustix`'s own `cfg(target_os = "freebsd")` gate).
 
-**The traversal shape is better than a bare per-component walk, and this is
-recorded so the operator's determination is not distorted.** macOS 11.0+
-provides `O_NOFOLLOW_ANY`, under which a single `openat()` resolves a full
-multi-component relative path in one in-kernel `namei` and fails if **any**
-component — not merely the last — is a symlink. Because Apple Silicon has a hard
-floor of macOS 11.0, it is **unconditionally available** on
-`aarch64-apple-darwin`, with none of the runtime-availability caveat that
-`openat2` carries on Linux. Combined with a lexical no-`..` constraint on a
-caller-constructed relative path, it yields a genuine **single-episode contained
-traversal**, satisfying A, B, and C's predicate.
+**The traversal shape is *potentially* better than a bare per-component walk,
+and this is recorded so the operator's determination is not distorted — in
+either direction.** macOS 11.0+ provides `O_NOFOLLOW_ANY`, under which a single
+`openat()` resolves a full multi-component relative path in one in-kernel
+`namei` and fails if **any** component — not merely the last — is a symlink.
+Because Apple Silicon has a hard floor of macOS 11.0, the *platform* flag is
+unconditionally present on `aarch64-apple-darwin`, with none of the
+runtime-availability caveat that `openat2` carries on Linux. That is the whole
+of what the flag supplies: **symlink refusal on every component, and nothing
+else.** It is **not** a beneath-resolution primitive and supplies **no**
+boundary containment of its own, so it does **not** by itself yield the
+single-episode contained traversal **C** requires. Recorded as a **conditional
+candidate, not a delivery.**
 
-One caveat is recorded rather than glossed: **`rustix 1.1.3` does not name
-`O_NOFOLLOW_ANY`** — verified against its vendored `OFlags` definitions, which
-name `RESOLVE_BENEATH` for FreeBSD and Linux but no Darwin no-follow-any flag.
-Reaching it from safe Rust would rely on `OFlags::from_bits_retain` with an
-unnamed raw constant, which is safe but unnamed-by-the-wrapper and would itself
-need verification. It is therefore a **credible candidate**, not a settled
-mechanism.
+One caveat is recorded rather than glossed, and it is **load-bearing rather than
+cosmetic**: **`rustix 1.1.3` does not name `O_NOFOLLOW_ANY`** — verified against
+its vendored flag definitions. `OFlags` names `RESOLVE_BENEATH` only under
+`cfg(target_os = "freebsd")` (that is FreeBSD's `O_RESOLVE_BENEATH`), while
+Linux's beneath bit is `ResolveFlags::BENEATH`, an `openat2` *resolve*-argument
+bit rather than an `O_*` bit; **no Darwin no-follow-any flag is named under any
+spelling, in `OFlags` or elsewhere in the `fs` surface**. Reaching it from safe
+Rust would rely on
+`OFlags::from_bits_retain` with an unnamed raw constant, which is safe but
+unnamed-by-the-wrapper. **Three distinct things are therefore unverified, and
+none is established anywhere in this deliberation:**
 
-**What still fails is R9, and only R9 (with A2).** XNU's `namei` has no
-`LOOKUP_IS_SCOPED` equivalent and no terminal `path_is_under()` re-check, so
-mid-walk relocation of an already-traversed directory is **neither refused nor
-detected**. Three detection routes were considered and each is rejected on the
+1. **Safe flag access** — that the raw constant is correct for this target and
+   that the locked safe API propagates it **unaltered** to the underlying
+   `openat()` under `#![forbid(unsafe_code)]`. Note precisely where the risk is
+   **not**: `bitflags`' `from_bits_retain` retains unknown bits **by
+   construction**, so the wrapper is not the fail-open path.
+2. **Flag semantics, and the containment mechanism the flag does not supply** —
+   that XNU's actual behaviour delivers **A**'s one-episode, zero-name binding,
+   *and* that some mechanism delivers **C**'s requirement that the episode
+   **itself** refuse to traverse outside the boundary, **including the final
+   component as resolved**, and fail closed. Symlink refusal on every component
+   is **necessary but not sufficient** for C. A lexical no-`..` constraint on a
+   caller-constructed relative path does **not** close the gap: it is a
+   **separately-performed check whose result enters the episode as a name**,
+   which Amendment 2 excludes from satisfying C by construction. **No macOS
+   in-episode containment mechanism was identified in the locked dependency
+   graph, and the primitive space beyond that graph was not surveyed** — stated
+   that way deliberately, since an unqualified negative over an unsurveyed space
+   is the same defect class as an unqualified positive. On the evidence
+   gathered, C's antecedent is therefore not merely unverified but
+   **unsupplied**.
+3. **Positive on-target behavioural confirmation** — because Darwin's `open(2)`
+   does **not** reject unrecognised `O_` bits, an incorrect or absent constant
+   yields a **successful, symlink-*following*** open that is **indistinguishable
+   in-band** from a correct no-follow-any open. There is no error to fail closed
+   on, so source and API inspection **cannot** detect this failure mode. Only a
+   positive probe — an open through a **planted symlink** under the flag that
+   **must** fail, executed on-target — can establish (1) and (2). No such probe
+   has been run.
+
+It is therefore an **UNVERIFIED CANDIDATE**, not a settled mechanism, and
+**nothing in this deliberation rests on it.** **A and C on macOS are
+`CANDIDATE — UNVERIFIED`**: not delivered, not settled, and **not inheritable as
+evidence** by a later authorized generation. **C is the weaker of the two** — it
+lacks an identified mechanism at all, not merely a verified one. Neither A nor C
+individually, nor A/B/C as a package, may be stated as satisfied for macOS until
+all three items above are discharged.
+
+**R9 and A2 fail on grounds that are independent of that candidate, and keeping
+the two separate is what the operator's determination turns on.** R9 and A2 are
+unmet for the reasons given below, and would remain unmet even if
+`O_NOFOLLOW_ANY` were fully verified tomorrow. The A/C candidate is a
+**separate, additional** unsettled item — neither a substitute ground for the
+R9/A2 escalation nor a further escalation trigger of its own. The earlier
+reading that the macOS gap is "**R9 and A2 only**" is **withdrawn** (PR #401
+review cycle 2); the escalation grounds are R9 and A2, but the macOS surface is
+**not** otherwise settled. XNU's `namei` has no `LOOKUP_IS_SCOPED` equivalent
+and no terminal `path_is_under()` re-check, so mid-walk relocation of an
+already-traversed directory is **neither refused nor detected**. Three detection routes were considered and each is rejected on the
 merits rather than by absence:
 
 * **`..`-walk revalidation** from the produced object using handle-relative
@@ -322,12 +378,20 @@ split R1 in the first place.
 
 | Property | `x86_64-unknown-linux-gnu` | `x86_64-pc-windows-msvc` | `aarch64-apple-darwin` |
 |---|---|---|---|
-| A — same-object binding | **Delivered** (`openat2`) | Delivered (handle-relative walk) | Delivered (`O_NOFOLLOW_ANY` candidate) |
-| B — object-derived identity | **Delivered** (`fstat` on fd) | **BLOCKED** — only safe from-handle accessor is low-resolution and panics instead of failing closed (R4) | **Delivered** (`fstat` on fd) |
-| C — in-episode containment | **Delivered** (`RESOLVE_BENEATH`, `-EXDEV` during walk) | Predicate delivered; enforcement per-component | Predicate delivered (single-episode under `O_NOFOLLOW_ANY`) |
+| A — same-object binding | **Delivered** (`openat2`) | Delivered (handle-relative walk) | **CANDIDATE — UNVERIFIED** (rests on `O_NOFOLLOW_ANY`, unnamed by locked `rustix 1.1.3`; safe access, semantics, and on-target probe all outstanding) |
+| B — object-derived identity | **Delivered** (`fstat` on fd) | **BLOCKED** — only safe from-handle accessor is low-resolution and panics instead of failing closed (R4) | **Accessor settled** (`fstat` on fd, object-derived), but the episode binding the object it reads is the **unverified** A candidate — **not independently settled end-to-end** |
+| C — in-episode containment | **Delivered** (`RESOLVE_BENEATH`, `-EXDEV` during walk) | Predicate delivered; enforcement per-component | **CANDIDATE — UNVERIFIED, and no mechanism identified** — `O_NOFOLLOW_ANY` refuses symlinks only and supplies no boundary containment; a lexical no-`..` pre-check enters the episode as a **name**, which Amendment 2 excludes. None found in the locked graph; space beyond it unsurveyed |
 | R9 — atomicity | **UNRESOLVED → ESCALATED** — partial final-state detection only (`-EAGAIN` fail-closed); revert-before-completion window undetected, so the "detectable → fail closed" arm is unmet | **Preventable** via `FILE_SHARE_DELETE` omission (safe, locked); conditional on R6 | **INFEASIBLE — not preventable, only partial window-bounded detection** |
 | A2 — mountpoint | Closed (`RESOLVE_NO_XDEV`) | Not closed | Not closed |
-| **Overall contract feasibility** | **ESCALATED (R9)** | **ESCALATED (Property B)** | **ESCALATED (R9, A2)** |
+| **Overall contract feasibility** | **ESCALATED (R9)** | **ESCALATED (Property B)** | **ESCALATED (R9, A2)** — and A/C additionally **unverified candidates** |
+
+**Reading the macOS column.** The escalation grounds for `aarch64-apple-darwin`
+are **R9 and A2**, which are unmet on evidence independent of any
+`O_NOFOLLOW_ANY` question. **A and C are separately `CANDIDATE — UNVERIFIED`**:
+they are not additional escalation grounds, and they are equally not
+deliverables. Verifying `O_NOFOLLOW_ANY` would *not* clear the escalation, and
+the escalation firing on R9/A2 does *not* excuse recording A/C as settled. The
+two must be read apart (PR #401 review cycle 2).
 
 **Escalation fires on all three supported target triples** —
 `x86_64-unknown-linux-gnu` on **R9**, `x86_64-pc-windows-msvc` on **Property B**,
@@ -396,11 +460,25 @@ Recorded so a later authorized generation does not re-derive it.
    detection via `kqueue`/`EVFILT_VNODE`. `..`-walk revalidation and
    `rustix::fs::getpath` were considered and rejected for a shared re-entry
    race, the latter additionally for yielding a name.
-7. **macOS traversal shape is not the limiting factor.** `O_NOFOLLOW_ANY`
-   (macOS 11+, unconditional on Apple Silicon) gives a single-episode contained
-   traversal; it is **not named by `rustix 1.1.3`** and so remains a candidate
-   requiring verification, not a settled mechanism. The macOS gap is **R9 and
-   A2 only**.
+7. **macOS traversal shape is *unsettled*, and is not recorded as the limiting
+   factor either way.** `O_NOFOLLOW_ANY` (macOS 11+, unconditional on Apple
+   Silicon) supplies **symlink refusal on every component and nothing else** —
+   it is not a beneath-resolution primitive and supplies **no** boundary
+   containment. It is **not named by `rustix 1.1.3`**, leaving three things
+   unverified: **safe flag access** under the locked API, **flag semantics plus
+   the in-episode containment mechanism C needs and the flag does not supply**,
+   and a **positive on-target planted-symlink probe** (necessary because Darwin
+   `open(2)` ignores unrecognised `O_` bits, so a wrong or absent constant
+   yields a **successful, symlink-*following*** open, indistinguishable in-band
+   from a correct one, with no error to fail closed on). **A and C on macOS are
+   therefore `CANDIDATE —
+   UNVERIFIED`, not delivered and not inheritable as evidence**, with **C the
+   weaker**: it has no identified mechanism at all. macOS **B's accessor** is
+   settled; the episode producing the object it reads is not. The macOS
+   **escalation grounds** are **R9 and A2**, which stand on independent
+   evidence; that is *not* the same as saying the macOS gap is "R9 and A2 only",
+   a formulation **withdrawn** in PR #401 review cycle 2. This item settles only
+   that the question is **open**.
 8. **Windows R9 prevention is reachable today in safe Rust** via
    `cap_fs_ext::OpenOptionsExt::share_mode` omitting `FILE_SHARE_DELETE` on
    intermediate directory handles — conditional on R6, bounded to the held
@@ -441,7 +519,14 @@ including Linux, and precondition 2 (R8 decidable, per-target hazard set
 enumerated) is not discharged for any target** — the Linux R8 hazard set is not
 enumerated, and `RESOLVE_NO_XDEV` refuses bind-mount traversal but does not
 address overlayfs, which is a single mount and lands in R4 identity-trust.
-**Precondition 4** additionally fails on Windows Part B, and **precondition 5**
+**Precondition 4** (a primitive delivering **in-episode containment** exists on
+the target) is containment-scoped by the lock, and following PR #401 review
+cycle 2 it additionally fails on **`aarch64-apple-darwin` C** — the only
+candidate primitive there, `O_NOFOLLOW_ANY`, refuses symlinks and supplies no
+containment, so it is not a *delivering* containment primitive. **Windows Part B
+and macOS Part A are not precondition-4 failures**; they fall under the
+per-target-triple feasibility clause, which expressly covers every fixed
+property including Part B. **Precondition 5**
 fails on **both** `aarch64-apple-darwin` R9 **and** `x86_64-unknown-linux-gnu`
 R9 — on each, R9 is reached only through the **escalation** arm, which discloses
 the gap rather than delivering atomicity or establishing reliable detection.
@@ -486,7 +571,7 @@ carried:
 | "The kernel's own rename-serialisation" — no such serialisation exists across a path walk | P1 | **Corrected.** False premise removed |
 | Windows `share_mode` claimed unreachable through `cap-std` — it is publicly re-exported as `cap_fs_ext::OpenOptionsExt::share_mode` | P1 (false claim) | **Corrected.** Windows R9 reclassified from infeasible to authorization-gated |
 | Windows Part B reason overstated as "no safe from-handle accessor" | P1 | **Corrected.** Reason restated as low-resolution + panics instead of failing closed |
-| macOS `O_NOFOLLOW_ANY` (macOS 11+, unconditional on Apple Silicon) missed | P1 | **Corrected.** macOS gap narrowed to R9 and A2; flagged as unnamed by `rustix 1.1.3` |
+| macOS `O_NOFOLLOW_ANY` (macOS 11+, unconditional on Apple Silicon) missed | P1 | **Corrected, then further corrected.** First recorded as narrowing the macOS gap to R9 and A2 while flagged as unnamed by `rustix 1.1.3`; that pairing was itself an over-claim and was superseded in PR #401 review cycle 2 — A and C are now `CANDIDATE — UNVERIFIED`. See *PR #401 review cycle 2 correction* below |
 | macOS `kqueue`/`EVFILT_VNODE` handle-based detection missed; "no way to detect" was an unqualified negative | P1 | **Corrected.** Recorded as partial and window-bounded, not absent |
 | R1b preconditions 1 and 2 fail on **all** targets, not only the two escalating ones | P2 | **Corrected** in the residual ledger |
 | `EPERM` missing from the fail-closed errno set (seccomp runtimes) | P2 | **Corrected** |
@@ -496,9 +581,11 @@ carried:
 The corrected claims were re-verified directly against vendored source before
 incorporation: `cap_fs_ext` re-exports `OpenOptionsExt` (`lib.rs:37`) and
 `share_mode` is declared and implemented in `cap-primitives`
-(`fs/open_options.rs:313`, `:428`); `rustix 1.1.3` names `RESOLVE_BENEATH` for
-FreeBSD and Linux but **no** Darwin no-follow-any flag; and the in-tree prior art
-is present at the line numbers cited above.
+(`fs/open_options.rs:313`, `:428`); `rustix 1.1.3` names `OFlags::RESOLVE_BENEATH`
+under FreeBSD only, with Linux's beneath bit being `ResolveFlags::BENEATH` (an
+`openat2` resolve-argument bit), and names **no** Darwin no-follow-any flag under
+any spelling *(attribution corrected in PR #401 review cycle 2)*; and the in-tree
+prior art is present at the line numbers cited above.
 
 This verification did **not** run against an implementation plan, consumed **no**
 plan-review attempt, and opened **no** correction budget.
@@ -542,6 +629,123 @@ plan-review attempt counter remains **zero**, the correction budget remains
 **unopened**, `027-D` remains **blocked**, and no plan, harvest, or shipment
 exists.
 
+### PR #401 review cycle 2 correction
+
+Four further Copilot review threads on PR #401 — against this document, the
+terminal record, the session memory, and the `027-D` current-state paragraph —
+identified **one** blocking defect, raised four times: **`aarch64-apple-darwin`
+A and C were recorded as *delivered* via `O_NOFOLLOW_ANY`** (and the macOS gap
+correspondingly narrowed to "R9 and A2 only"), while the *same* text disclosed
+that `rustix 1.1.3` does not name the flag and that safe access to it is
+**unverified**.
+
+The finding is **VALID and blocking**. A conclusion may not be stronger than the
+caveat printed beside it. An unverified mechanism cannot discharge a fixed
+property: it establishes neither **safe flag access** under the locked API and
+`#![forbid(unsafe_code)]`, nor **flag semantics** sufficient for A's one-episode
+zero-name binding and C's own in-episode refusal to traverse outside the
+boundary including the final component. This is the **same over-claim pattern**
+the P0 finding and review cycle 1 both named — an unverified-but-plausible
+mechanism written up in the vocabulary of a settled one — surfacing on a third
+target.
+
+Corrections applied, in this document and in every mirror:
+
+* macOS **A and C** are restated as **`CANDIDATE — UNVERIFIED`** under the
+  locked safe API. Neither individually nor as an A/B/C package may they be
+  stated as settled or deliverable.
+* macOS **B** is restated as *available but not independently settled*: the
+  `fstat`-on-fd accessor is safe and present, but is exercisable only against an
+  object bound by the unverified A candidate.
+* The two unverified antecedents are named explicitly — **safe flag access** and
+  **flag semantics** — so a later generation knows exactly what must be verified,
+  together with a third: a **positive on-target planted-symlink probe**. The
+  probe is not optional rigour. Darwin's `open(2)` does **not** reject
+  unrecognised `O_` bits, so a wrong or absent constant yields a **successful,
+  symlink-following** open that is **indistinguishable in-band** from a correct
+  one — there is no error to fail closed on, and source inspection cannot see
+  it. Correspondingly, the risk is recorded as **kernel-side, not wrapper-side**:
+  `bitflags`' `from_bits_retain` retains unknown bits by construction.
+* **C's mechanism is recorded as UNSUPPLIED, not merely unverified.**
+  `O_NOFOLLOW_ANY` refuses symlinks only and supplies no boundary containment,
+  and a lexical no-`..` pre-check on a caller-constructed path enters the
+  episode **as a name**, which Amendment 2 excludes from satisfying C. No macOS
+  in-episode containment mechanism has been identified.
+* macOS **B** is split correctly: the **accessor** is settled and object-derived
+  (`fstat` on fd) and needs no re-verification; what is unsettled is the
+  **episode** that binds the object it reads. The Property B primitive audit is
+  amended from "B is satisfiable on both Unix targets" to match.
+* **R1b precondition 4** — which the lock scopes to **in-episode containment** —
+  is recorded as failing on **`aarch64-apple-darwin` C**, since no containment
+  mechanism was identified there. **Windows Part B and macOS Part A are not
+  precondition-4 failures**; they fall under the per-target-triple feasibility
+  clause, which expressly covers every fixed property including Part B.
+* The formulation "**the macOS gap is R9 and A2 only**" is **withdrawn**
+  wherever it appears. The macOS **escalation grounds** remain R9 and A2, which
+  are unmet on **independent** evidence; the A/C candidate is a **separate,
+  additional** unsettled item, neither a substitute ground nor a further
+  escalation trigger.
+* Settled item 7 is rewritten to settle only that the question is **open**, and
+  to bar inheritance of A/C on macOS as evidence.
+* The cycle-1 disposition of the `O_NOFOLLOW_ANY` verification finding is marked
+  **superseded**.
+* Operator determination 2 is restated to carry the unverified A/C candidate
+  alongside — and explicitly apart from — the R9/A2 grounds.
+* A **binding scope definition** for "gap" / "only" formulations is added below,
+  so the newly-introduced *escalation grounds* vocabulary does not make the
+  Linux and Windows phrasing read as a whole-surface clearance. No target
+  determination is changed by it.
+
+**No count changes.** Escalation still fires on **all three** supported target
+triples; R9 is still the failing property on **two** of the three; **five**
+operator determinations are still requested; all **twelve** residuals are still
+carried forward, none closed. The macOS escalation ground is unchanged, so the
+escalation set is **not** recomputed. The terminal state is likewise unchanged —
+this remains a **feasibility escalation before planning**, the generation-3
+plan-review attempt counter remains **zero**, the correction budget remains
+**unopened** (it attaches to plan-review findings, and no plan-review occurred),
+`027-D` remains **blocked**, and no plan, harvest, or shipment exists. This
+review cycle ran against a **deliberation and its mirrors, not a plan**.
+
+#### Binding scope of "gap" and "only" formulations
+
+Cycle 2 introduced the phrase **escalation grounds** for macOS, which makes the
+older "the *X* gap is *Y* **only**" phrasing used for the other two targets read
+as broader than it is. That phrasing is **hereby defined, not withdrawn**, and
+the definition binds every such formulation in this document and in all four
+mirrors. **The lock governs on any conflict**, exactly as the fixed-input table
+at the head of this document does.
+
+> "The *T* gap is *P* **only**" means **solely** that, among the **fixed
+> properties of the amended input** — Part **A** same-object binding, Part **B**
+> object-derived identity, in-episode containment (**C**), and **R9**
+> atomicity — the blocking ground on target *T* is *P*. It asserts **nothing**
+> about the residual ledger, and it **never** implies that target *T*'s surface
+> is otherwise settled or safe to inherit.
+
+**This definition does not adjudicate A2.** It quantifies over the *blocking
+ground* and settles nothing about whether A2 is an escalation ground on any
+target. The summary table records A2 as **not closed on both
+`x86_64-pc-windows-msvc` and `aarch64-apple-darwin`**, while macOS is written
+**"ESCALATED (R9, A2)"** and Windows **"ESCALATED (Property B)"**. That
+asymmetry **pre-dates cycle 2, is not created by this definition, and is not
+resolved here** — cycle 2 takes **no position** on it, and every target verdict
+stands exactly as recorded. It is flagged so a later generation sees it as an
+open question rather than a settled reading; resolving it would require a
+determination this cycle has no authority to make.
+
+The **residual ledger governs** what is undischarged, and it governs
+**uniformly**: R1b preconditions 1 and 2 (R6 soundness, R8 per-target hazard
+enumeration) fail on **every** target including Linux; R10 is undischarged
+everywhere; and **all twelve residuals are carried forward, none declared closed
+by this deliberation** (A2 is closed *only* on Linux, by `RESOLVE_NO_XDEV`, as
+settled item 1 records). Accordingly, "**the Linux gap is R9 only**" and "**the
+sole blocking Windows gap is Property B**" are **fixed-property statements**,
+not whole-surface clearances. **No target's surface is settled**, and **no
+target is safe to enter `impl-plan` on**, which is precisely why all three
+escalate. A later authorized generation that reads any "only" formulation as a
+whole-surface clearance has **misread it**.
+
 ## Operator determination requested
 
 The escalation requires an explicit operator determination on **five** points.
@@ -559,9 +763,16 @@ Stage has made none of them.
    recorded amendment to the lock. The first two options are Linux-scoped.
 2. **`aarch64-apple-darwin`** — accept a hard fail-closed arm on a supported
    release target, or remove macOS from G0's supported set, or accept
-   `kqueue`-based partial, window-bounded R9 detection as sufficient. Note that
-   the macOS gap is **R9 and A2 only**: the traversal shape itself is
-   deliverable via `O_NOFOLLOW_ANY`.
+   `kqueue`-based partial, window-bounded R9 detection as sufficient. The macOS
+   **escalation grounds are R9 and A2**, unmet on independent evidence. Note
+   separately that **A and C on macOS are `CANDIDATE — UNVERIFIED`**: the
+   traversal shape would rest on `O_NOFOLLOW_ANY`, which `rustix 1.1.3` does
+   not name, leaving safe flag access, flag semantics, and an on-target
+   planted-symlink probe all outstanding — and **C's containment mechanism is
+   unsupplied altogether**, since the flag refuses symlinks only. That
+   candidate is **not** a further escalation ground and its verification would
+   **not** clear this determination — but neither may A, C, or A/B/C as a
+   package be treated as deliverable while answering it.
 3. **Windows Part B** — authorize a new vetted dependency exposing
    `FILE_ID_INFO` from a handle, or authorize an isolated `unsafe` boundary
    outside `#![forbid(unsafe_code)]`, or accept fail-closed on Windows. This is

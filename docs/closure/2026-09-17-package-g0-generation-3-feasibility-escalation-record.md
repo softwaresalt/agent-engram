@@ -54,7 +54,7 @@ Feasibility **fails on all three supported target triples**:
 |---|---|
 | `x86_64-unknown-linux-gnu` | **ESCALATED — R9 unresolved.** A, B, and C are delivered by `rustix::fs::openat2` with `RESOLVE_BENEATH \| NO_MAGICLINKS \| NO_SYMLINKS \| NO_XDEV`, verified present and safe-API in the locked `rustix 1.1.3`, and **A2 is closed** by `RESOLVE_NO_XDEV`. But **R9 has only partial final-state detection** — `-EAGAIN` from the terminal `path_is_under()` check — and a **revert-before-completion window that is undetected**. R9's "detectable → fail closed" arm is therefore **unmet** for the in-scope relocation class, which routes to the feasibility clause. **Fail closed.** |
 | `x86_64-pc-windows-msvc` | **ESCALATED — Property B.** No safe from-handle **high-resolution** identity accessor exists in the locked graph; the one that does exist is low-resolution and panics rather than failing closed (R4). R9 is **preventable today in safe Rust** via `cap_fs_ext::OpenOptionsExt::share_mode`, so R9 is an authorization question, not a feasibility one. |
-| `aarch64-apple-darwin` | **ESCALATED — R9 infeasible (with A2).** No beneath-resolution primitive and no rename-prevention mechanism; only partial, window-bounded detection via `kqueue`/`EVFILT_VNODE`. The traversal shape itself is deliverable via `O_NOFOLLOW_ANY`, so the gap is **R9 and A2 only**. |
+| `aarch64-apple-darwin` | **ESCALATED — R9 infeasible (with A2).** No beneath-resolution primitive and no rename-prevention mechanism; only partial, window-bounded detection via `kqueue`/`EVFILT_VNODE`. The traversal shape **is not settled either**: it would rest on `O_NOFOLLOW_ANY`, which the locked `rustix 1.1.3` does not name, so **A and C are `CANDIDATE — UNVERIFIED`** — safe flag access, flag semantics, and an on-target probe all outstanding, and **C's containment mechanism unidentified** since the flag refuses symlinks only. The **escalation grounds** are R9 and A2, on independent evidence; the unverified A/C candidate is a **separate** unsettled item, not a further ground. |
 
 **No supported target is contract-feasible.** **R9 is the failing property on two
 of the three targets** — Linux and macOS — and Property B on the third. The
@@ -102,10 +102,30 @@ graph, not in documentation:
 * **`cap_fs_ext::MetadataExt::{dev, ino}`** is a safe from-handle Windows
   identity accessor, but is low-resolution and **panics** rather than failing
   closed — disqualified on R4 for the same reason as `same-file`.
-* **`rustix 1.1.3`** exposes `openat2` as a safe function with the full
-  `ResolveFlags` set, Linux-gated only. It names `RESOLVE_BENEATH` for FreeBSD
-  and Linux but **no Darwin no-follow-any flag**, so macOS `O_NOFOLLOW_ANY`
-  remains an unverified candidate rather than a settled mechanism.
+* **`rustix 1.1.3`** exposes `openat2` as a safe function with the
+  `ResolveFlags` bits, Linux-gated only. `OFlags` names `RESOLVE_BENEATH` only
+  under `cfg(target_os = "freebsd")` (FreeBSD's `O_RESOLVE_BENEATH`), while
+  Linux's beneath bit is `ResolveFlags::BENEATH`, an `openat2` *resolve*-argument
+  bit rather than an `O_*` bit; **no Darwin no-follow-any flag is named under any
+  spelling**, so macOS `O_NOFOLLOW_ANY`
+  remains an **unverified candidate** rather than a settled mechanism. **Three
+  things are unverified and none is established here:** *safe flag access* —
+  that the raw constant is correct and the locked safe API propagates it
+  unaltered under `#![forbid(unsafe_code)]` (the risk is **kernel-side**, not
+  wrapper-side: `from_bits_retain` retains unknown bits by construction);
+  *flag semantics* — that XNU actually delivers A's one-episode zero-name
+  binding; and a *positive on-target planted-symlink probe*, necessary because
+  Darwin's `open(2)` ignores unrecognised `O_` bits, so a wrong constant yields
+  a **successful, symlink-following** open indistinguishable in-band from a
+  correct one, with no error to fail closed on. **C is weaker still: no
+  containment mechanism was identified** — the flag refuses symlinks only, and a
+  lexical no-`..` pre-check enters the episode **as a name**, which Amendment 2
+  excludes. None was found in the locked graph and the space beyond it was not
+  surveyed, so C is unsupplied **on the evidence gathered**.
+  Consequently **macOS A and C are `CANDIDATE — UNVERIFIED`**, not deliverable,
+  and **not inheritable as evidence**; macOS B's `fstat`-on-fd **accessor is
+  settled** and object-derived, but the **episode** binding the object it reads
+  is the unverified A candidate, so B is not independently settled end-to-end.
 * **`src/lib.rs:10`** declares `#![forbid(unsafe_code)]`, the binding reason the
   remaining Windows gap cannot be closed inside this crate.
 
@@ -116,9 +136,12 @@ composition**, and **R1b's five prevention preconditions** are carried forward
 unmodified. **None is declared closed.**
 
 **R1b preconditions 1 and 2 fail on *every* target** (R6 undecided everywhere;
-the R8 per-target hazard set enumerated nowhere), **precondition 4 fails on
-Windows Part B**, and **precondition 5 fails on both Linux R9 and macOS R9** —
-on each, R9 is reached only through the escalation arm. R1b prevention is
+the R8 per-target hazard set enumerated nowhere), **precondition 4 — which the
+lock scopes to in-episode containment — fails on macOS C** (no containment
+mechanism identified in the locked graph; Windows Part B and macOS Part A fall
+under the feasibility clause instead, which covers every fixed property — PR
+#401 review cycle 2), and **precondition 5 fails on both Linux R9 and macOS
+R9** — on each, R9 is reached only through the escalation arm. R1b prevention is
 therefore **not established on any target**. **R10 is not discharged**; no plan
 exists, so no decidability claim was made.
 
@@ -156,6 +179,71 @@ escalation before planning, the plan-review attempt counter remains **zero**,
 the correction budget remains **unopened**, `027-D` remains **blocked**, and no
 plan, harvest, or shipment exists. This review cycle ran against a
 **deliberation and its mirrors, not a plan**, and likewise consumed no
+plan-review attempt and opened no correction budget.
+
+### PR #401 review cycle 2
+
+Four further Copilot review threads on PR #401 — against this record, the
+deliberation, the session memory, and the `027-D` current-state paragraph —
+raised **one** blocking finding four times: **macOS A and C were recorded as
+*delivered* via `O_NOFOLLOW_ANY`**, and the macOS gap correspondingly narrowed
+to "**R9 and A2 only**", while the same text disclosed that the locked
+`rustix 1.1.3` does **not name** the flag and that safe access to it is
+**unverified**. The finding is **VALID and blocking**: a conclusion may not be
+stronger than the caveat printed beside it, and an unverified mechanism
+discharges no fixed property. It is the **same over-claim pattern** as the
+original P0 and as review cycle 1, surfacing on a third target.
+
+macOS **A and C** are corrected to **`CANDIDATE — UNVERIFIED`** under the locked
+safe API, with three unverified antecedents named explicitly — **safe flag
+access**, **flag semantics**, and a **positive on-target planted-symlink
+probe** (necessary because Darwin's `open(2)` ignores unrecognised `O_` bits, so
+a wrong or absent constant yields a **successful, symlink-following** open,
+indistinguishable in-band from a correct one). **C is weaker than A**: **no
+containment mechanism was identified** — the flag refuses symlinks only, and a
+lexical no-`..` pre-check enters the episode as a **name**, which Amendment 2
+excludes. None was found in the locked graph and the space beyond it was not
+surveyed, so C is unsupplied **on the evidence gathered**. macOS **B** is split: the
+`fstat`-on-fd **accessor is settled** and object-derived, while the **episode**
+binding the object it reads is not — so B is not independently settled
+end-to-end. **R1b precondition 4** — which the lock scopes to **in-episode
+containment** — is recorded as failing on **macOS C**; Windows Part B and macOS
+Part A fall under the feasibility clause instead, which covers every fixed
+property. The phrase "the macOS gap is R9 and
+A2 only" is **withdrawn** wherever it appears. The macOS target **remains
+ESCALATED on R9 and A2**, which are unmet on evidence **independent** of the
+`O_NOFOLLOW_ANY` question: verifying the flag would **not** clear the
+escalation, and the escalation does **not** excuse recording A/C as settled. The
+two are recorded apart.
+
+**Scope of "gap" and "only" formulations.** Cycle 2's *escalation grounds*
+vocabulary makes the older "the *T* gap is *P* **only**" phrasing read as
+broader than it is. That phrasing is **defined, not withdrawn**, and **the lock
+governs on any conflict**: it means solely that, among the **fixed properties of
+the amended input** — Part A, Part B, in-episode containment (C), and R9
+atomicity — the blocking ground on target *T* is *P*. It asserts **nothing**
+about the residual ledger and never implies target *T* is otherwise settled or
+safe to inherit. **It does not adjudicate A2**: the summary table records A2 as
+not closed on **both** Windows and macOS, while macOS reads "ESCALATED (R9, A2)"
+and Windows "ESCALATED (Property B)". That asymmetry **pre-dates cycle 2, is not
+created by this definition, and is not resolved here** — cycle 2 takes **no
+position** on it and every target verdict stands as recorded; it is flagged only
+so a later generation sees it as an open question. The residual
+ledger governs uniformly — R1b preconditions 1 and 2 fail on **every** target
+including Linux, R10 is undischarged everywhere, and all twelve residuals are
+carried with **none declared closed by this deliberation** (A2 is closed *only*
+on Linux, by `RESOLVE_NO_XDEV`). **No target's surface is settled**,
+which is why all three escalate. No target's verdict is changed by this
+definition.
+
+**No counts change.** Escalation still fires on **all three** targets, R9 is
+still the failing property on **two** of the three, **five** operator
+determinations are still requested, and all **twelve** residuals are still
+carried forward with none closed. The terminal state is unchanged: this remains
+a feasibility escalation before planning, the plan-review attempt counter
+remains **zero**, the correction budget remains **unopened**, `027-D` remains
+**blocked**, and no plan, harvest, or shipment exists. Like cycle 1, this cycle
+ran against a **deliberation and its mirrors, not a plan**, and so consumed no
 plan-review attempt and opened no correction budget.
 
 ## Correction budget
@@ -202,7 +290,14 @@ reserved to the operator.
 2. **`aarch64-apple-darwin`** — accept a hard fail-closed arm on a supported
    release target, remove macOS from G0's supported set, or accept
    `kqueue`-based partial, window-bounded R9 detection as sufficient. The macOS
-   gap is **R9 and A2 only**; the traversal shape is deliverable.
+   **escalation grounds are R9 and A2**, unmet on independent evidence.
+   Separately, **A and C are `CANDIDATE — UNVERIFIED`**: the traversal shape
+   would rest on `O_NOFOLLOW_ANY`, unnamed by the locked `rustix 1.1.3`, leaving
+   safe flag access, flag semantics, and an on-target probe outstanding, and **no
+      containment mechanism identified for C** at all. That candidate is **not** a
+   further escalation ground and verifying it would **not** clear this
+   determination — but A, C, and A/B/C as a package must **not** be treated as
+   deliverable while answering it.
 3. **Windows Part B** — authorize a vetted dependency exposing `FILE_ID_INFO`
    from a handle, authorize an isolated `unsafe` boundary outside
    `#![forbid(unsafe_code)]`, or accept fail-closed on Windows. This is the
