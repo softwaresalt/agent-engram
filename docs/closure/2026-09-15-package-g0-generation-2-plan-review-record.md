@@ -16,6 +16,7 @@ authority: docs/decisions/2026-09-14-checkpoint-resolution-decomposed-program-lo
 branch: chore/stage-g0-generation-2-planning
 harvested: false
 shipment_assembled: false
+operator_resolution: "Route 2 — authorized 2026-09-15; recorded as Amendment 1 of docs/decisions/2026-09-14-checkpoint-resolution-decomposed-program-lock.md; Part A corrected 2026-09-16 by Correction 1 to same-object binding, and further corrected 2026-09-16 by Correction 2 to require the producing resolution episode to enforce workspace containment; that in-episode containment requirement was RATIFIED by the operator on 2026-09-17 as a distinct Amendment 2 of the same lock"
 ---
 
 ## Verdict
@@ -247,3 +248,94 @@ root-cause evidence, but makes **no** decision and takes **no** further action.
 
 Generation-1 artifacts, PR #396, `143.*`, the evidence branch, and stash
 `4EF24729` were read-only throughout and are unmodified.
+
+## Operator resolution — recorded 2026-09-15
+
+The verdict, findings, and settled items above are **unchanged**. This section
+records only which escalation route the operator chose, so a later reader of the
+*Escalation to the operator* section does not have to infer it.
+
+| Field | Value |
+|---|---|
+| Route chosen | **Route 2 — amend to Option C** (retained capability binding plus identity equality) |
+| Authorized by | Operator, routed through Orchestrator, 2026-09-15 |
+| Recorded as | Amendment 1 of `docs/decisions/2026-09-14-checkpoint-resolution-decomposed-program-lock.md` |
+| Corrected by | Correction 1 to Amendment 1, 2026-09-16, within the same Route 2 authority; further corrected by Correction 2, 2026-09-16, whose **defect disclosure** and other non-normative correction content remain under that same Route 2 authority, while its **normative same-episode containment requirement** is **not** carried by Route 2 — that requirement rests on the operator's explicit PR #400 cycle-2 directive and is ratified and frozen under ***Amendment 2*** (2026-09-17), its **sole** authority |
+| Supplemented by | **Amendment 2 of the same lock, 2026-09-17** — ratifies *Correction 2*'s in-episode containment requirement under amendment authority. Adds no normative content and does not reopen this record |
+| Effect on this record | None. This record stays terminal for generation 2 attempt 1 |
+
+**Amendment 1** supersedes only the conflicting G0 fixed-input language and renews
+the program's failure bound. It authorizes the **mechanism** of a future G0
+attempt; it does not start one. `027-D` remains `blocked`, and generation 3
+requires an explicit operator transition of that item to `queued`.
+
+Settled item 9 is **narrowed** by **Amendment 1** as corrected: no retained handle
+or capability — root-level, per-file, or full-path — may **replace** identity
+equality, which is item 9's ground of rejection and is preserved unweakened; but
+such a retained capability is now **required alongside** identity equality, which
+item 9 did not decide. **Item 9's own text above is terminal and unedited.** The
+other nine settled items stand unchanged.
+
+> [!IMPORTANT]
+> **Correction recorded 2026-09-16.** Amendment 1's Part A originally read
+> *"retained root anchor"*. A root-only anchor does not stop a relative open from
+> re-resolving mutable path components, so it did not close the finding-A1 window
+> this record escalated. Part A is corrected to a **same-object binding**:
+> verification and content reading must apply to the same already-opened object.
+> *Correction 1* in the program lock governs. **Nothing above the
+> `## Operator resolution` heading is changed** — the verdict, all findings, the
+> ten settled items, and the `## Escalation to the operator` table remain terminal
+> generation-2 evidence.
+
+> [!IMPORTANT]
+> **Second correction recorded 2026-09-16 (Correction 2).** *Correction 1* left
+> workspace containment as a **separately enforced resolve-time precondition** and
+> recorded residual R1 as "*detected* by Part B". A redirect to an
+> **outside-workspace hard link of the authorized object** defeats both: the
+> episode produces the authorized object itself, so Part A's binding is satisfied
+> and Part B's object-derived identity compares **equal**, while the resolution has
+> left the workspace. Containment is therefore corrected to a **required property
+> of the same single resolution episode that produces the bound object**; a
+> separate precheck whose result is carried into the episode as a name is raceable
+> by construction and does not satisfy it. The concrete primitive remains
+> undecided. *Correction 2* in the program lock governs.
+>
+> **Two settled items above are narrowed by *Correction 2*. Neither item's own
+> text is edited, and nothing above the `## Operator resolution` heading is
+> changed.**
+>
+> * **Settled item 6** held that the resolve-time-only containment demotion is
+>   security-sound because read-time identity equality "transitively re-affirms
+>   containment without re-checking it". **That transitive inference does not
+>   hold** — R1b is a counterexample, since identity equality holds while
+>   containment does not. Item 6 is narrowed to the **wrong-object** case (R1a),
+>   and holds there **only where R4's identity-trust precondition holds**. Its
+>   conclusion that "nothing of security value is lost by removing containment from
+>   the read path" is **withdrawn**.
+> * **Settled item 8** remains correct as to the **identity basis** and is not
+>   reopened on that ground. It is narrowed only in that a primitive which silently
+>   follows a link **out of the workspace** is no longer admissible for the
+>   producing episode, which must now fail closed on any traversal leaving the
+>   boundary, including the final component as resolved.
+
+> [!IMPORTANT]
+> **Ratified 2026-09-17 as Amendment 2.** The operator ratified *Correction 2*'s
+> in-episode containment requirement as a **distinct Amendment 2** of the program
+> lock rather than as an unratified correction nested inside Amendment 1. The
+> requirement is **in force and no longer pending**; nothing lapses. *Correction
+> 2*'s defect disclosure — the R1a/R1b split, the withdrawal of R1's unqualified
+> *"detected by Part B"*, residuals R6–R10, the per-subclass attacker-capability
+> statement, and the item 6 and item 8 narrowings recorded immediately above — is
+> **unchanged in full** and remains under the Route 2 authority.
+>
+> Amendment 2 adds **no** normative content, re-states **no** residual, decides
+> **no** primitive, discharges **nothing**, and grants **nothing**. **Effect on
+> this record: none.** It stays terminal for generation 2 attempt 1, and nothing
+> above the `## Operator resolution` heading is changed — the verdict, all
+> findings, all ten settled items' own text, and the `## Escalation to the
+> operator` table remain terminal generation-2 evidence.
+>
+> `027-D` remains **`blocked`**, pending publication of PR #400. Ratification
+> satisfies the ratification precondition only; generation 3 additionally requires
+> an explicit operator transition of `027-D` from `blocked` to `queued`, which has
+> not occurred.

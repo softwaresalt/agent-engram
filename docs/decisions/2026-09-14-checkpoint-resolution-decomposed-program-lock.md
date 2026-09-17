@@ -19,6 +19,53 @@ evidence_branch_head: 3b3edf05c4a89f61b20baeae2f2585960f3fcfc9
 excluded_packages: ["F"]
 publication_owner: ship-bounded-operator-routed
 current_state_authority: "backlog items 027-D..034-D"
+amended: true
+amendments:
+  - id: 1
+    date: 2026-09-15
+    title: "Route 2 — same-object binding plus identity equality as the G0 fixed input"
+    authorized_by: operator
+    amends: "G0 generation-2 fixed input (Fixed invariant; Deliberately undecided)"
+    discharges: "If generation 2 also fails"
+    activation: "requires an explicit transition of 027-D to queued; not performed by the recording session"
+    corrected_by: "Correction 1 (2026-09-16); Correction 2 (2026-09-16)"
+    supplemented_by: "Amendment 2 (2026-09-17)"
+  - id: 2
+    date: 2026-09-17
+    title: "In-episode workspace containment — ratified as a fixed property of the producing resolution episode"
+    authorized_by: "operator, explicit ratification"
+    ratified: true
+    ratification_date: 2026-09-17
+    amends: "G0 generation-2 fixed input (### Deliberately undecided) and Amendment 1 (#### Still deliberately undecided), by fixing in-episode workspace containment as a required property of the resolution episode that produces the bound object; ratifies the normative requirement drafted as Correction 2 to Amendment 1"
+    ratifies: "Correction 2's normative in-episode containment requirement — authority transfers to this amendment"
+    incorporates_unchanged: "Correction 2's twelve-residual ledger (R1a, R1b, R2-R10, A2), the R2 x R5 x R7 composition, R1b's five prevention preconditions, the per-target-triple feasibility clause covering every fixed property including Part B, and the generation-2 settled-item 6 and 8 narrowings — authority for these remains Correction 2 / Route 2"
+    supersedes: "Correction 2's flagged-and-unratified ratification status only; and, under amendment authority, both twice-recorded 'whether a workspace-containment check is retained at all is undecided' bullets (Deliberately undecided; Amendment 1's Still deliberately undecided) — plus their consequential mirrors (the 'if ratification is withheld the requirement lapses' conditional; the 'resolve ratification before 027-D is queued' open item). See the body section 'What this supersedes, and only this'"
+    freezes: "Correction 2's normative in-episode containment text is amendable only by a new recorded amendment from 2026-09-17; Route 2 correction authority no longer reaches it. Correction 2's defect disclosure remains correctable within Route 2"
+    discharges: "nothing"
+    grants: "nothing — no generation, no publication authority, no pull-request authority"
+    activation: "027-D remains blocked; generation 3 still requires an explicit operator transition of 027-D to queued"
+corrections:
+  - id: 1
+    applies_to_amendment: 1
+    date: 2026-09-16
+    title: "Part A corrected from retained root anchor to same-object binding"
+    authorized_by: "operator, within the existing Route 2 authority"
+    corrects: "Amendment 1 — Part A; Amendment 1's narrowing of settled item 9"
+    adds: "one precision requirement to Part B — identity must denote the object, not a name for it"
+    discharges: "nothing"
+    grants: "nothing"
+    corrected_by: "Correction 2 (2026-09-16)"
+  - id: 2
+    applies_to_amendment: 1
+    date: 2026-09-16
+    title: "Containment fixed as a required property of the single resolution episode"
+    authorized_by: "operator — explicit directive in the PR #400 cycle-2 correction instruction, which is the recorded ORIGIN of the new normative requirement; since 2026-09-17 that requirement's AUTHORITY is amendments[2] and its text is frozen against correction-level editing. Within the existing Route 2 authority for the defect disclosure, which remains correctable under Route 2"
+    corrects: "Correction 1 — Part A's scope sentence, the Containment section, and residual R1; the Fixed invariant callout; generation-2 settled items 6 and 8. Does NOT include the two 'containment retained at all is undecided' sites: this correction drafted the text that supersedes them, but the superseding authority over those two previously undecided sites is amendments[2] — see amendments[2].supersedes"
+    adds: "in-episode containment requirement; residuals R6-R10; per-target feasibility escalation covering every fixed property"
+    discharges: "nothing"
+    grants: "nothing"
+    ratification: "RESOLVED 2026-09-17 — the operator ratified the normative requirement as a distinct Amendment 2 (see amendments[2]). The requirement is in force and is no longer pending. This correction's defect disclosure remains recorded here under the Route 2 authority"
+    ratified_as: "Amendment 2 (2026-09-17)"
 ---
 
 ## Authority
@@ -272,6 +319,13 @@ around G0, without a further explicit operator authorization recorded as an
 amendment to this document. Stage escalates to the operator and stops. Silent
 re-attempt is prohibited.
 
+> [!NOTE]
+> **Discharged by Amendment 1 (2026-09-15).** Generation 2 failed its plan-review
+> gate at attempt 1 and the program halted as this clause requires. The further
+> explicit operator authorization the clause demands was granted and is recorded
+> as *Amendment 1*. The clause itself is **preserved unchanged** and re-applies to
+> generation 3.
+
 ## G0 generation-2 fixed input
 
 The operator fixes **one invariant** and **one piece of root-cause evidence** as
@@ -279,6 +333,17 @@ the entire non-negotiable input to the generation-2 deliberation. Nothing else
 about G0 is fixed here.
 
 ### Fixed invariant
+
+> [!IMPORTANT]
+> **Amended by Amendment 1 (2026-09-15), as corrected by Correction 1
+> (2026-09-16) and Correction 2 (2026-09-16), whose in-episode containment
+> requirement was ratified by Amendment 2 (2026-09-17).** This invariant is
+> **retained in full** and is still non-negotiable, but it is **no longer the whole
+> fixed input**: a same-object binding between verification and read is now fixed
+> alongside it, that binding's own resolution episode must enforce workspace
+> containment, and the identity compared below must denote the **object** rather
+> than a name for it. Read this section together with *Amendment 1*,
+> *Correction 1*, *Correction 2*, and *Amendment 2*.
 
 > **Read-time canonical identity must equal the opaque stored authorized
 > canonical identity.** Remaining inside the workspace is not sufficient.
@@ -297,13 +362,31 @@ about G0 is fixed here.
 
 ### Deliberately undecided
 
+> [!IMPORTANT]
+> **Amended in part by Amendment 1 (2026-09-15), as corrected by Correction 1
+> (2026-09-16) and Correction 2 (2026-09-16), and by Amendment 2 (2026-09-17).**
+> The first three items below remain
+> undecided. What changed is the **minimal contract**: a same-object binding
+> between verification and read is now a fixed input rather than a deferrable
+> option, and *Correction 2*, **as ratified by *Amendment 2***, fixes workspace
+> containment as a required property of the
+> resolution episode that produces the bound object. The concrete primitive
+> that realizes either remains undecided. See *Amendment 1*, *Correction 1*,
+> *Correction 2*, and *Amendment 2*.
+
 **Storage, type, and API shape are deliberately undecided and must be chosen in
 the G0 deliberation.** This lock fixes no implementation structure:
 
 * how the authorized canonical identity is **stored** is undecided;
 * what **type** represents it is undecided;
 * the **API surface** that produces and compares it is undecided;
-* whether a workspace-containment check is retained at all is undecided.
+* ~~whether a workspace-containment check is retained at all is undecided.~~
+  **Superseded by *Amendment 2* (2026-09-17), which ratified the requirement
+  drafted as *Correction 2* (2026-09-16).** Containment is **fixed** as a
+  required property of the resolution episode that produces the bound object.
+  What remains undecided is the concrete primitive that realizes it, and whether
+  any additional separate check is retained **in addition to** — never in place
+  of — that in-episode enforcement.
 
 **The minimal API contract must be settled inside the deliberation, before
 `impl-plan` begins within that same Stage operation.** Generation 1 failed three
@@ -481,3 +564,867 @@ behaviour of this program lock or of the publication operation.
 | `docs/compound/workflow-issues/carry-forward-pipeline-state-before-next-claim-2026-09-08.md` | Package A (`032-D`) | Legitimate pipeline state — stash updates, session memory, intentional gitignore changes — must be classified by provenance rather than treated as generic dirty-worktree dirt. Directly relevant to A's tracked-write phase/destination taxonomy. |
 | `docs/compound/workflow-issues/backlogit-shipment-ship-non-terminating-large-covering-feature-2026-09-06.md` | Package E (`034-D`) and the one-release-unit-per-package rule | `backlogit shipment ship` did not complete within a bounded observation window against a large covering-feature roster. Supports keeping each package in its own small release unit and informs E's closure-parity design. |
 | `docs/compound/gh-reviews-endpoint-paginate-hides-head-review-2026-07-22.md` | Package C (`031-D`) | Un-paginated `gh` list endpoints truncate the HEAD record and silently falsify a load-bearing gate. Directly supports C's exhaustive-pagination requirement for open-PR discovery. |
+
+## Amendments
+
+This document is immutable except by a recorded amendment. Each amendment names
+exactly what it supersedes. Every constraint an amendment does not name survives
+unchanged.
+
+### Amendment 1 — same-object binding plus identity equality
+
+> [!IMPORTANT]
+> **Part A of this amendment was corrected on 2026-09-16.** As originally
+> published at commit `a0645b33`, Part A required only a *retained root anchor*.
+> Three independent reviews established that a root-only anchor does not deliver
+> the property this amendment was granted to deliver. The original wording is
+> preserved below, struck through, so the review record on PR #400 stays
+> reproducible. **The operative text is *Correction 1* as further corrected by
+> *Correction 2* (2026-09-16), both at the end of this amendment**, whose
+> in-episode containment requirement was **ratified as *Amendment 2*
+> (2026-09-17)**. Neither
+> correction grants anything nor discharges anything.
+
+| Field | Value |
+|---|---|
+| Date | 2026-09-15 |
+| Granted by | Operator, routed through Orchestrator |
+| Stage session | `stage-g0-program-lock-amendment-2026-09-15` |
+| Trigger | G0 generation 2 `FAIL` at plan-review attempt 1 |
+| Trigger record | `docs/closure/2026-09-15-package-g0-generation-2-plan-review-record.md` |
+| Route chosen | Route 2 of that record's *Escalation to the operator* table |
+| Amends | `## G0 generation-2 fixed input` — `### Fixed invariant` and `### Deliberately undecided` |
+| Discharges | `### If generation 2 also fails`, for one generation only |
+
+#### Why
+
+The generation-2 adversarial panel established that the fixed input as originally
+written cannot deliver the root-cause evidence it was written to enforce. A
+stored-value-compared-for-equality identity, holding no retained handle or anchor,
+does reject ancestor substitutions completed **before** the read-time comparison.
+It cannot do more than that:
+
+* it cannot reject substitutions performed inside the **compare-to-read window**,
+  because the content read re-traverses the entire resolved path after the
+  comparison returns (finding A1, four-persona consensus);
+* it cannot detect mountpoint substitution at all, because canonical *pathnames*
+  are names, not object identities (finding A2).
+
+The defect is in the fixed input itself, not in the deliberation that honoured it.
+Two generations failed by asserting a guarantee the fixed mechanism does not
+deliver. This amendment changes the mechanism rather than narrowing the claim.
+
+#### The amended G0 fixed input
+
+Both parts are fixed. Neither alone is sufficient.
+
+> [!WARNING]
+> **Part A as published below is superseded by *Correction 1*.** It is retained
+> verbatim as the text the PR #400 review threads quote. Do not implement it.
+
+~~**Part A — retained root anchor.** The workspace root is resolved and validated
+once, and a handle to that resolved root is **retained**. Every subsequent corpus
+read is performed **through the retained anchor**, so no read re-traverses mutable
+ancestor path components between resolve time and read time.~~
+
+**Part B — opaque per-file canonical identity equality.** Unchanged from
+`### Fixed invariant`: read-time canonical identity must equal the opaque stored
+authorized canonical identity, compared for equality and never reconstructed,
+parsed, or re-derived. Remaining inside the workspace is not sufficient.
+*Correction 1* adds a precision requirement to this part without relaxing it.
+
+~~Part A closes the compare-to-read ancestor window.~~ Part B remains the
+read-time authority against per-file substitution and preserves the generation-1
+correction that containment is not a substitute for identity.
+
+#### What this supersedes, and only this
+
+* The original fixed input's treatment of stored-value equality as the **sole and
+  complete** read-time mechanism. The equality requirement survives in full; its
+  **sufficiency** does not.
+* The `### Deliberately undecided` framing **only** where it left the binding
+  outside the minimal contract. The binding is now a fixed input.
+* The generation-2 review record's settled item 9 is **narrowed**. *Correction 1*
+  restates this narrowing; read that restatement, not this bullet.
+
+Nothing else in the fixed input changes. `### Root-cause evidence` is preserved
+verbatim and is strengthened rather than relaxed. *Correction 1* states precisely
+which windows the strengthened mechanism closes and which it only detects, as
+further corrected by *Correction 2*.
+
+#### Still deliberately undecided
+
+This amendment fixes a **property**, not a structure. The first three originally
+undecided items stand, and the anchor's own realization joins them; the fourth is
+superseded by ***Amendment 2*** (2026-09-17), which ratified the requirement
+drafted as *Correction 2*:
+
+* how the authorized canonical identity is **stored**;
+* what **type** represents it;
+* the **API surface** that produces and compares it;
+* ~~whether a workspace-containment check is retained at all;~~ **superseded by
+  *Amendment 2* (2026-09-17)**, ratifying the requirement drafted as
+  *Correction 2* — containment is fixed
+  as a property of the resolution episode **that produces the bound object**;
+  only its primitive, and whether an additional check is retained
+  alongside it, stay undecided;
+* which concrete primitive realizes the same-object binding, and its type and API.
+
+No crate or module name is decided here. **The minimal API contract must still be
+settled inside the deliberation, before `impl-plan` begins within that same Stage
+operation.**
+
+#### Constraints preserved unchanged
+
+This amendment reaches the G0 fixed input and nothing else. In particular it
+leaves untouched:
+
+* the **Authority split** — the backlog remains the sole authority for status,
+  state, and cursor, and this document remains non-status authority;
+* the **lifecycle terms** `PLAN_REVIEW_PASS` and `LANDED_COMPLETE`, and the
+  fail-closed dependency rule;
+* the **locked dependency graph** and the **package registry**. G0 remains the
+  single prerequisite for every other package. **No package is re-sequenced**, and
+  no downstream package becomes eligible;
+* the **program advancement contract**, items 1-8 — including item 8: one
+  mechanical correction round per package maximum, with architecture-level P0/P1
+  findings blocking immediately and never opening the correction budget;
+* the **role handoff** table, including Stage's prohibition on creating or merging
+  any pull request;
+* every prohibition under **Explicitly not authorized**. PR #396, `143.*`, the
+  evidence branch, and stash `4EF24729` remain untouchable, and no downstream
+  package may be planned, deliberated, or harvested;
+* **Package F's** exclusion from this program;
+* the **publication route's expiry**. This amendment creates no new publication
+  authority and no new pull-request authority.
+
+#### Circuit and generation terms
+
+The combined Package G circuit and the G0 generation-1 circuit remain
+**OPEN/triggered**. The generation-2 circuit is now **also OPEN/triggered**. This
+amendment resets, reopens, and clears none of them.
+
+A generation 3 authorized under this amendment is a **separate
+operator-authorized work unit**, not a reset:
+
+* it carries a **new artifact name** and a **fresh attempt counter starting at
+  zero**;
+* it **must not** edit, amend, or extend any generation-1 or generation-2
+  deliberation, plan, hardening section, or review record;
+* generation-2 artifacts become **read-only evidence**. The review record's ten
+  **settled items** are inheritable as evidence so a later generation does not
+  re-litigate them, but a plan that inherits them is still a new plan, and
+  inheritance never converts a settled item into an unexamined assumption;
+* its operation shape is **unchanged** — the full Stage package operation defined
+  in `## Package registry` and in `### Authorized operation, once 027-D is
+  queued`.
+
+**The failure bound is renewed, not consumed.** If generation 3 also fails its
+plan-review gate, the program halts again. No generation 4 may be created and no
+downstream package may be re-sequenced around G0 without a further explicit
+operator authorization recorded as a **new** amendment to this document.
+
+#### Activation boundary
+
+> [!IMPORTANT]
+> This amendment authorizes the **mechanism and shape** of a future G0 attempt. It
+> does **not** start one, and the session that recorded it performed none.
+
+Consistent with the Authority split, **whether a G0 operation is authorized right
+now is read from the backlog, not from this document.**
+
+* `027-D` remains **`blocked`**. The recording session did not transition it.
+* Starting generation 3 requires an explicit operator transition of `027-D` to
+  `queued`, exactly as the original publication gate required before generation 2.
+* The recording session performed **no** deliberation, **no** planning, **no** plan
+  hardening, **no** plan-review, **no** harvest, and assembled **no** shipment. It
+  created no branch and no pull request, and modified no source, test, template, or
+  configuration file.
+
+#### Correction 1 to Amendment 1 — 2026-09-16
+
+| Field | Value |
+|---|---|
+| Date | 2026-09-16 |
+| Authorized by | Operator, **within the existing Route 2 authority** |
+| Stage session | `stage-g0-amendment-1-correction-2026-09-16` |
+| Trigger | Three blocking review threads on PR #400, all one root issue |
+| Corrects | Amendment 1 — **Part A**; Amendment 1's narrowing of settled item 9 |
+| Adds | One precision requirement to Part B, as an entailment of Part A |
+| Corrected by | **Correction 2 (2026-09-16)** — Part A's scope sentence, the `##### Containment` section, and residual **R1** below are superseded |
+| Discharges | **Nothing** |
+| Grants | **Nothing.** No generation, no publication authority, no PR authority |
+| In-force basis | Amendment 1 is published on `main` at commit `a0645b33` |
+
+##### Why the correction is necessary
+
+Amendment 1's Part A claimed that retaining a handle to the **workspace root**
+stops reads from re-traversing mutable path components. It does not. Opening
+`a/file` relative to a retained root handle still resolves the mutable `a`
+component at open time, so replacing `a` after the identity comparison and before
+the anchored open redirects the read. The generation-2 finding A1 window therefore
+stayed open, and Amendment 1 asserted a guarantee its own mechanism could not
+deliver — the identical over-claim that terminated generations 1 and 2.
+
+This correction stays inside Route 2. The operator's Route 2 text was *"adopt
+retained anchor plus identity equality **so the read cannot re-traverse mutable
+ancestors**"*. The purpose clause is the authorization; "retained anchor" was the
+description of a means that provably fails that purpose. Correcting the means to
+deliver the already-authorized purpose is repair inside the grant. It selects no
+new property, re-sequences no package, and decides no primitive.
+
+##### Part A — same-object binding between verification and read
+
+Each corpus read resolves its target by name in **exactly one resolution
+episode**, producing one filesystem object. "One episode" counts resolutions, not
+syscalls: a capability traversal that walks each component in sequence to produce
+a single object is one episode. Both the read-time identity verification and
+**every byte** of the content read are performed against **that same already-
+obtained object**.
+
+After the verification point the read performs **zero** name-accepting filesystem
+operations. This is a countable predicate, and plan review verifies it by
+enumerating path-taking call sites across the **transitive** call graph reachable
+after verification; the required count is zero. In particular, after verification
+there is no re-open by pathname, no re-resolution of any path component, and no
+handing of the pathname to a downstream consumer that re-opens it — including
+re-opening through a procfs-style or other synthetic name for the object. Every
+byte any consumer receives must originate from the bound object.
+
+Verification must **succeed before any content is released**. On mismatch the read
+fails closed, returns no content, and takes no pathname-based fallback or retry.
+
+**Neither a root reference nor a parent-directory reference satisfies Part A.**
+Reaching `a/file` through a retained root reference still resolves the mutable `a`
+component; reaching `file` through a retained parent reference still resolves the
+mutable leaf name inside a mutable directory. Both leave finding A1 open, one
+component apart.
+
+A **retained full-path capability** — the resolved traversal from workspace root
+through leaf, held as capabilities — is permitted as a *realization* of Part A and
+as hardening of the open. It is **not** an equivalent substitute for the binding,
+and it satisfies Part A **only if** the single object that traversal produces is
+the same object that is both verified and read. Retaining the directory chain
+while reaching the leaf by name in a second operation does **not** satisfy Part A.
+
+##### Part B — opaque per-file identity equality, with one precision requirement
+
+Part B is **retained in full** and remains an **independently required** check.
+Part A binds *which object is read consistently*; it says nothing about *which
+object is authorized*. An attacker who wins the pre-open race obtains a fully
+Part-A-compliant read of an attacker-chosen object. Part B is the only tie to an
+authorization decision, and neither part can be dropped for the other.
+
+The evidence compels one precision that Amendment 1 left open:
+
+> **The identity must denote the object, not a name for it.** Both the stored
+> authorized identity and the read-time identity must be obtained **from the bound
+> object**, not by resolving a pathname.
+
+A canonicalized path string is a **name**, and names are invariant under
+rename-over, hardlink substitution at the authorized path, and mount overlay. An
+identity that is a name therefore detects none of those, while reading as
+compliant. This precision is an entailment of Part A: if read-time identity may be
+re-derived from a pathname, Part A's binding is vacuous. It does **not** follow
+that an object-denoting identity detects mount overlay in general — see A2 and R4
+below, which govern.
+
+This is a requirement on **provenance**, not on type. A value whose domain is
+pathnames fails Part B regardless of how it was obtained: reading a synthetic name
+back from the bound object and canonicalizing it yields a name, not an object
+identity. Which concrete identity primitive is used, how wide it is, and how it is
+stored **remain undecided** and belong to the deliberation. Deriving the read-time
+value freshly from the bound object on each read is **required, not prohibited**:
+the prohibition on reconstructing, parsing, or re-deriving binds the **stored
+authorized value**, which stays opaque and is only ever compared for equality.
+**Derivation symmetry is required** — the stored value must have been produced by
+the same handle-side procedure at authorization time.
+
+##### Containment
+
+> [!WARNING]
+> **This entire sub-section is superseded by *Correction 2* (2026-09-16).** It is
+> retained verbatim as the text the PR #400 cycle-2 review threads quote. The
+> operative containment text is *Correction 2*'s `##### Containment — restated`.
+
+Workspace containment remains a **necessary** resolve-time precondition. It is not
+sufficient, and identity is not a substitute for it either. Generation 1's
+correction was *"containment is not a substitute for identity"*; it must not be
+inverted into *"identity is a substitute for containment"*. Whether a containment
+check is additionally retained on the **read** path stays undecided. That a
+root-anchored capability chain may make such a read-path check redundant is an
+observation for the deliberation, not a decision by this lock.
+
+##### Disclosed residual windows
+
+> [!WARNING]
+> **Residual R1 below, and the scope sentence introducing this table, are
+> superseded by *Correction 2* (2026-09-16).** R1's disposition — "*detected* by
+> Part B" — is an over-claim: the same-object subclass is a counterexample. R1 is
+> split into R1a and R1b, and R6, R7, R8, and R9 are added. R2, R3, R4, R5, and A2
+> below are **unchanged**. See *Correction 2*'s residual table for the operative
+> scope.
+
+Part A closes the **verification-to-read** window and nothing wider. An
+undisclosed residual is the exact defect that terminated both prior generations,
+so the residuals are named here and a generation-3 plan must carry them rather
+than rediscover them:
+
+| ID | Residual | Disposition |
+|---|---|---|
+| R1 | **Resolve-to-open.** Substitution completed before the single open | Not *prevented* by Part A. *Detected* by Part B — but only because Part B now denotes the object, and only where R4's identity-trust precondition holds |
+| R2 | **Authorization capture.** Substitution before the authorized identity is captured poisons the stored value | Detected by neither part. Mitigable only by binding capture to the same object lifetime |
+| R3 | **In-place mutation** of the authorized object | Out of scope. Identity equality carries **no** content-integrity claim; a content digest bound to the object would be a separate requirement |
+| R4 | **Identity stability and reuse** — inode reuse after unlink, volume-serial instability, overlay and network filesystems | Undecided. Must fail closed where identity cannot be trusted |
+| R5 | **Corpus membership.** Part A binds each file individually, but membership is still obtained by name-based enumeration, so the set read need not be the set authorized | Detected by neither part. The set-composition analogue of R2 |
+| A2 | **Mountpoint substitution** | Addressed **only to the extent** that identity denotes the object. **Not declared closed** |
+
+Settled item 8 is not reopened, and A2 is not declared resolved.
+
+##### Settled item 9 — restated narrowing
+
+This restatement supersedes Amendment 1's item-9 bullet. **Item 9's own text in
+the review record is terminal and is not edited.**
+
+What item 9 correctly rejected, and what remains rejected, is the retained-
+capability shape **as a replacement for** the stored-compared-by-equality identity
+invariant. No retained handle or capability — root-level, per-file, or full-path —
+may substitute for Part B. What item 9 did **not** decide is whether such a
+retained handle or capability is **required alongside** identity equality. It is.
+Item 9's ground of rejection is preserved unweakened; only its scope as an
+exclusion of that shape *in any role* is narrowed.
+
+##### What this correction does not do
+
+* It **discharges nothing** and **renews nothing**. Amendment 1's discharge of
+  `### If generation 2 also fails` is neither re-consumed nor extended, and the
+  renewed failure bound stands exactly as Amendment 1 left it.
+* It grants **no** generation, **no** publication authority, and **no**
+  pull-request authority.
+* It re-sequences **no** package and makes **no** downstream package eligible. G0
+  remains the sole prerequisite.
+* It leaves untouched every constraint listed under
+  *Constraints preserved unchanged*.
+* It decides **no** API surface beyond the entailment that no pathname-only
+  identity API can satisfy Part A. Trait shape, method count, handle type,
+  ownership and lifetime model, error taxonomy, and naming all remain undecided,
+  and the minimal API contract is still settled inside the deliberation.
+* `027-D` remains **`blocked`**. The correcting session started no generation and
+  performed no deliberation, planning, hardening, plan-review, harvest, or
+  shipment assembly.
+
+#### Correction 2 to Amendment 1 — 2026-09-16
+
+| Field | Value |
+|---|---|
+| Date | 2026-09-16 |
+| Authorized by | Operator — **explicit directive** in the PR #400 cycle-2 correction instruction for the new normative requirement; **within the existing Route 2 authority** for the defect disclosure |
+| Stage session | `stage-g0-amendment-1-correction-2-2026-09-16` |
+| Trigger | Three blocking review threads on PR #400 at head `2ca552c5`, all one root issue |
+| Corrects | *Correction 1* — Part A's scope sentence, the `##### Containment` sub-section, and residual **R1**; the `### Fixed invariant` callout; generation-2 settled items **6** and **8**. **Not** the two "whether a workspace-containment check is retained at all is undecided" sites (`### Deliberately undecided` and Amendment 1's `#### Still deliberately undecided`): this correction **drafted** the superseding text, but the **superseding authority** over those two previously undecided sites is ***Amendment 2*** (2026-09-17) |
+| Adds | The in-episode containment requirement; residuals **R6**–**R10**; a per-target-triple feasibility-escalation clause covering every fixed property |
+| Ratification | **RESOLVED 2026-09-17 — ratified as *Amendment 2*.** ~~Flagged. The new requirement supersedes an item Amendment 1 re-recorded as undecided; the operator may prefer a new Amendment 2. Not decided here~~ |
+| Discharges | **Nothing** |
+| Grants | **Nothing.** No generation, no publication authority, no PR authority |
+| Retained unchanged | Part A's same-object binding; Part B in full; residuals R2, R3, R4, R5. A2's **substance** is unchanged and its disposition is elaborated, not weakened |
+
+##### Why the correction is necessary
+
+*Correction 1* left workspace containment as a **necessary resolve-time
+precondition** enforced separately from the resolution episode, and recorded R1's
+disposition as "*detected* by Part B". Both are wrong in the same place.
+
+A **hard link** is a second directory entry for the same object. If a resolution
+episode is redirected to an outside-workspace hard link of the authorized object,
+the episode produces the **authorized object itself**. Part A is satisfied — one
+episode, one object, verified and read — and Part B's object-derived identity
+compares **equal**, because it *is* the same object. Neither part observes that the
+resolution left the workspace.
+
+Containment therefore has **no backstop** in exactly the class where a separately
+performed containment check is defeated. A separate check is raceable by
+construction whenever its result is carried **as a name** into a later resolution:
+between the check and the episode, a redirect is planted at a component the check
+already cleared, and the episode resolves somewhere the check never saw. R1 as
+published asserted an unqualified "*detected* by Part B" over the whole
+resolve-to-open class; the same-object subclass is a counterexample, and an
+unqualified disposition over a class that has a counterexample is the exact
+over-claim pattern that terminated generations 1 and 2.
+
+This correction's **defect disclosure** — the R1a/R1b split, the withdrawal of the
+unqualified "*detected* by Part B", residuals R6 through R10, the per-subclass
+attacker-capability statement, and the falsification of settled item 6 — is repair
+of an over-claim and is squarely **inside** the Route 2 grant on Correction 1's own
+precedent.
+
+The **new normative requirement** is on a different footing, and this document
+states that plainly rather than inferring authority it does not have:
+
+* Correction 1's `##### Containment` asserted that "workspace containment remains a
+  **necessary** resolve-time precondition". **That affirmative framing originated
+  in Correction 1 itself.** The generation-1 root-cause evidence states only the
+  *negative* proposition — a containment check is "**not a substitute** for the
+  identity equality check" — which establishes insufficiency, not necessity.
+* `### Deliberately undecided` expressly reserved "whether a workspace-containment
+  check is retained at all" to the deliberation, and **Amendment 1 re-affirmed that
+  exact bullet** under `#### Still deliberately undecided`.
+
+So fixing containment as a required property of the producing episode **does** flip
+a twice-recorded *undecided* item to *fixed*, and a correction cannot bootstrap
+that authority from a property a prior correction introduced. It is recorded here
+on an **explicit operator directive** given in the PR #400 cycle-2 correction
+instruction: *the same one resolution episode that produces the bound object must
+enforce workspace containment as a required property; a separate raceable
+containment precheck is insufficient; do not choose a concrete primitive.* That
+directive, not an "adds no property" inference, is the **origin** of this
+requirement. **Since 2026-09-17 its *authority* is *Amendment 2***, which ratified
+it; see `### Amendment 2 — in-episode workspace containment, ratified`.
+
+> [!IMPORTANT]
+> **Ratification RESOLVED on 2026-09-17 — recorded as *Amendment 2*.** The
+> paragraph below is preserved struck through as the text the PR #400 cycle-2
+> review threads quote. The operator has since ratified the normative requirement
+> as a **distinct Amendment 2**, not as an unratified correction nested inside
+> Amendment 1. The requirement is **in force**; nothing lapses. Read
+> `### Amendment 2 — in-episode workspace containment, ratified` below.
+
+> [!IMPORTANT]
+> ~~**Ratification flagged for the operator.** Because this requirement supersedes
+> an item that Amendment 1 itself re-recorded as undecided, the operator may prefer
+> to ratify it as a new **Amendment 2** rather than as a correction nested inside
+> Amendment 1. That determination is **not made here**. If ratification is
+> withheld, the defect disclosure in this correction stands on its own and only the
+> normative requirement lapses. Resolve this **before** `027-D` is transitioned
+> `blocked` → `queued`.~~
+
+Beyond that single requirement, this correction selects no property, re-sequences
+no package, and **decides no primitive**.
+
+##### Part A — extended: containment is a property of the resolution episode
+
+Part A's same-object binding, as stated in *Correction 1*, is **retained
+unchanged**. Part B is **retained unchanged** and remains independently required.
+*Correction 2* adds one requirement to Part A and corrects one sentence of its
+scope.
+
+> **The single resolution episode that produces the bound object must itself
+> enforce workspace containment as a required property of that episode.**
+
+Stated as the enforceable predicate:
+
+* The episode **must not traverse outside the workspace boundary**, including the
+  final component as resolved, and must **fail closed** if it would. Containment is
+  a property of the **traversal**, never of the object. An object has no location —
+  only directory entries do — and the object at issue in R1b has entries on both
+  sides of the boundary. This correction claims **traversal** containment and
+  **claims nothing** about where the produced object "is".
+* Containment must hold for **the same episode** that produces the object that is
+  verified and read. Not for an earlier resolution of the same pathname, and not
+  for a separate check standing before, after, or alongside the episode.
+* A separately-performed containment check does **not** satisfy this requirement
+  **when its result is carried into the episode as a name** — a pathname, a
+  canonicalized string, or any other value the episode must re-resolve. Such a
+  check is raceable by construction. A result carried as a **bound reference** that
+  the episode resolves against, and never re-accepts by name, is **not** excluded
+  by this clause; that is the shape R6 governs. To be unambiguous: **binding a
+  boundary reference is not itself the enforcement.** The enforcement is the
+  episode's own refusal to traverse outside that bound reference.
+* An additional containment check retained **elsewhere** is neither required nor
+  forbidden, but it can **never be the enforcement**.
+
+**Episode counting is unchanged and is not affected by containment.**
+*Correction 1*'s rule stands: one episode counts resolutions, not syscalls, and a
+capability traversal that walks each component in sequence to produce a single
+object is one episode. Establishing the workspace boundary is **outside** the
+episode count, and an episode consulting an already-bound boundary does **not**
+thereby become two episodes. This exclusion is a **counting convention only**. It
+is **not** a licence to re-resolve: a boundary re-derived by name on each read is
+disclosed as R6, not exempted by this convention.
+
+**Correction to Part A's scope sentence.** *Correction 1* stated that "Part A
+closes the verification-to-read window and nothing wider." That sentence is
+**superseded**: Part A as extended also constrains the **resolve-time traversal**,
+which is wider. The residual table below, and not that sentence, states the scope.
+
+**The concrete primitive that realizes in-episode containment remains UNDECIDED**,
+together with its type, API, and platform strategy.
+
+**Feasibility escalation, evaluated per supported target triple.** "Supported
+platform" means **target triple**, not `cfg` family: a guarantee established for
+one Unix target does **not** generalize to another. If the deliberation finds that
+**on any single supported target** no available primitive can deliver a fixed
+property of this input — containment as a property of the producing episode,
+containment **atomic with** the production of the bound object (R9), **or Part B's
+object-derived identity obtained from the bound object** — it must **escalate to
+the operator and fail closed for that target**. The clause covers **every fixed
+property**, not containment alone: Part B is as capable of being platform-infeasible
+as Part A, and an escape hatch for one and not the other would push the weaker
+property into a silent substitution. A primitive that delivers a property on one
+supported target does **not** discharge it on another. The deliberation must
+**not** substitute a separately-performed check on the weaker target and describe
+it as satisfying Part A or Part B. Asserting a guarantee the chosen mechanism
+cannot deliver is the failure mode that terminated both prior generations; this
+clause exists to make that outcome an escalation rather than an over-claim.
+
+> [!NOTE]
+> **Escalation may be the expected outcome, not an exceptional one.** R9's own
+> construction implies that where no atomic beneath-resolution primitive exists,
+> the non-atomicity is generally undetectable and the escalation therefore fires.
+> The operator transitioning `027-D` to `queued` should expect that. **Whether such
+> an escalation counts against the renewed failure bound is NOT decided here** and
+> requires an explicit operator determination; this correction neither relieves nor
+> tightens that bound.
+
+##### Containment — restated
+
+This restatement **supersedes** *Correction 1*'s `##### Containment` sub-section.
+
+Workspace containment remains **necessary and not sufficient** — necessary under
+***Amendment 2* (2026-09-17)**, whose recorded **origin** is the operator directive
+described above, and **not** by inference from generation 1, which
+established only insufficiency. Identity remains no substitute for it. Generation 1's rule — *"containment is not a
+substitute for identity"* — stands and is **not** inverted; Part B remains
+independently required and is not weakened anywhere by this correction. What
+changes is **where containment lives**: it is a required property of the resolution
+episode, not a precondition evaluated before it. The word *precondition* in
+*Correction 1* implied a prior, separable check; that implication is **withdrawn**.
+
+*Correction 1*'s "whether a containment check is additionally retained on the
+**read** path stays undecided" is **narrowed, and is vacuous only in one direction**:
+a **post-verification, name-accepting** containment check is vacuous, because Part A
+already requires zero name-accepting operations after verification, so such a check
+would have no name left to consume — and if it performs a filesystem operation it is
+not merely vacuous but **prohibited** by Part A's zero-count predicate, since it
+reopens the verification-to-read re-resolution window Part A exists to close. A
+**pre-verification** check, or a **handle-based** revalidation of an already-bound
+reference, consumes no name and is **not** excluded — R6 explicitly leaves boundary
+revalidation undecided, and this correction does not foreclose it.
+
+Two other sites in this document previously said "whether a workspace-containment
+check is retained at all is undecided" — `### Deliberately undecided` under
+`## G0 generation-2 fixed input`, and Amendment 1's `#### Still deliberately
+undecided`. **Both are superseded — under *amendment* authority, by *Amendment 2*
+(2026-09-17), which ratified the requirement drafted here; this correction alone
+could not reach them** — and both are marked at their own location. Containment
+as an in-episode property of the resolution episode
+is **fixed**. What remains undecided is the concrete primitive, and whether any
+additional separate check is retained **in addition to** — never in place of — the
+in-episode enforcement.
+
+##### Disclosed residual windows — corrected and extended
+
+R2, R3, R4, and R5 are **unchanged in substance** and are restated in the table
+below only so the ledger is complete in one place. A2's **substance is unchanged**
+and its disposition is **elaborated**, not weakened. R1 is corrected and split into
+R1a and R1b. R6, R7, R8, R9, and R10 are new disclosures. The residual table, not
+any prose scope sentence, states what the fixed input does and does not claim.
+
+**Attacker capability, stated per subclass.** The R1 class does **not** have a
+single capability precondition, and in-episode containment is **never inert**:
+
+* The **race** subclass requires write access to **any directory traversed by the
+  read episode** — including directories **inside** the workspace, which an agent
+  writes to continuously — in order to plant a redirect between any check and the
+  episode. On Windows this planting step is **unprivileged**: directory junctions
+  and other reparse points require no privilege, unlike symbolic links, which
+  require `SeCreateSymbolicLink` or Developer Mode.
+* The **untrusted-pathname** subclass requires **no attacker write at all**. A
+  caller-supplied relative path such as `../../outside/link-to-authorized-object`
+  produces R1b directly, with no race to win.
+* The **pre-existing-link** subclass requires no write **at read time**: a symlink,
+  junction, or reparse point already present in checked-out or extracted content
+  redirects the episode on its first traversal.
+* A2 (mountpoint substitution) and R4 (overlay and network filesystems) redirect
+  resolution with **no** directory-write capability of any kind.
+
+Only the race subclass depends on write capability. In-episode containment is the
+required prevention for the **R1b subclasses above — race, untrusted-pathname, and
+pre-existing-link — conditionally and per the table**, and no absence of attacker
+capability makes it unnecessary. It does **not** close **A2** or **R4**, which are
+listed here for their *capability* profile and not as things containment prevents;
+their dispositions are in the table below and govern.
+
+| ID | Kind | Residual | Disposition |
+|---|---|---|---|
+| R1a | DETECTED-CONDITIONAL | **Resolve-to-open, wrong object.** Substitution completed before the single open, landing on an object other than the authorized one | Not prevented by Part A's binding. *Detected* by Part B — only because Part B denotes the object, and only where R4's identity-trust precondition holds |
+| R1b | PREVENTED-CONDITIONAL | **Resolve-to-open, same object via an outside-workspace name.** The redirected episode reaches the authorized object through a name outside the workspace; an outside-workspace hard link is the canonical instance | **Detected by neither part.** Part B's identity compares equal **by construction** wherever the identity primitive faithfully denotes the object (R4), so Part B is **structurally** blind here rather than incidentally so. Neither fixed part **as written before this correction** prevented it. Prevention requires containment to hold as a property of the producing episode — the requirement added above — or the elimination of the read-time resolution episode altogether; **no other mechanism named by this lock prevents it**, and this enumeration is not a survey of the mechanism space. Prevention is conditional on the numbered preconditions below the table, which are **necessary but not asserted to be exhaustive**. **Harm class is boundary, audit, and policy — not content**: the bytes returned are the authorized object's own, exactly as in R7 |
+| R2 | DISCLOSED-NOT-CLOSED | **Authorization capture** (unchanged from *Correction 1*) | Detected by neither part. Mitigable only by binding capture to the same object lifetime |
+| R3 | OUT-OF-SCOPE | **In-place mutation** of the authorized object (unchanged) | Identity equality carries **no** content-integrity claim |
+| R4 | TRUST-PRECONDITION | **Identity stability and reuse** (unchanged) | Must fail closed where identity cannot be trusted |
+| R5 | DISCLOSED-NOT-CLOSED | **Corpus membership** by name-based enumeration (unchanged) | Detected by neither part. The set-composition analogue of R2 |
+| R6 | OPEN-DESIGN-QUESTION | **Boundary establishment and boundary drift.** In-episode containment is relative to a workspace boundary. A boundary re-derived **by name** per read inherits the raceable re-resolution that containment exists to remove. A boundary bound once can later **cease to denote the workspace** — its directory renamed, moved, or replaced, or its mount detached after binding — and every read is then "contained" inside a boundary that is no longer the workspace | Undecided. How the boundary is established, bound, and revalidated belongs to the deliberation. Must fail closed where boundary identity or continuity cannot be trusted. **Platform-asymmetric side effect, disclosed:** holding a long-lived boundary handle is not behaviourally neutral — on some targets it blocks rename or deletion of that directory by other processes unless the open opts into delete-sharing, turning boundary binding into a user-visible interoperability surface as well as a drift surface. R1b's prevention is conditional on R6 being resolved soundly |
+| R7 | DISCLOSED-NOT-CLOSED | **In-workspace same-object aliasing.** A second **in-workspace** name for the authorized object. The episode is fully contained and produces the authorized object | Detected by neither part and **not prevented** by in-episode containment. **Not claimed closed.** No wrong-content claim is broken — the bytes are the authorized object's own — and no claim is made about **which** name reached the object. Boundary-internal hard links, mounts, junctions, and reparse points are **not excluded** by traversal containment. **Functional narrowing, disclosed:** requiring the episode not to traverse outside the boundary *including the final component as resolved* means that on any target lacking root-scoped in-kernel symlink resolution, reading a link target portably costs either a second episode or a name-accepting operation — so in-workspace symlinked corpus entries may become unreadable on the weaker targets. That narrowing is a consequence of the requirement, not a separate decision |
+| R8 | CONSTRAINS-PRIMITIVE | **Namespace aliasing in the boundary predicate.** The boundary relation is subject to case-insensitive matching, 8.3 short-name aliases, directory junctions and other reparse points, `\\?\` and `\??\` device-path forms, per-user drive mappings, and alternate data streams; on POSIX, to bind mounts and overlay layers; on case-insensitive-by-default volumes, to case folding, and to firmlink- or redirect-style layers where a published path and its backing path differ; and on **every** target to `..` parent-traversal escape — including `..` reached through a symlink — and to relative-symlink escape | Any boundary predicate evaluated over **strings** is defeated by these, yielding a false "contained" verdict. This **constrains** the undecided primitive rather than deciding it, and the episode must fail closed where the boundary relation cannot be decided. The hazard set is **per target triple** and must be enumerated for each supported target rather than per `cfg` family |
+| R9 | ESCALATES | **Intra-episode traversal non-atomicity.** "One episode" is a **resolution count, not an atomicity claim.** In a per-component capability walk — one episode under Part A, and one shape available where no beneath-resolution primitive exists, stated here as the shape this residual is framed against and not as a preferred realization — per-step containment holds at steps *t₁…tₙ* while the object is produced at *tₙ*. Relocating an already-cleared intermediate directory out of the boundary mid-walk leaves every step's verdict true and the produced object outside | Disclosed, **not closed**. Must **fail closed where the relocation is detectable**; where it is not — and by R9's own construction every per-step verdict is true, so it generally is not — the deliberation must **escalate** under the feasibility clause, which covers atomicity as stated there. This is a residual **in the remedy**, not in the attack, and is disclosed here for that reason |
+| R10 | CONSTRAINS-VERIFICATION | **Decidability of the zero-name-accepting-operations predicate.** Part A's countable "zero path-taking call sites across the transitive call graph after verification" is stated as mechanically verifiable. In a real Rust codebase it is not decidable by syntactic enumeration: path-accepting APIs are generic over `AsRef<Path>` and are indistinguishable from non-filesystem generics; trait-object and function-pointer dispatch create edges no enumeration sees; `Drop` implementations can perform name-based cleanup after the verification point with ordering governed by scope exit rather than by the verification point; the graph extends into third-party crate internals and into process-spawning APIs that also accept names; and the whole graph is multiplied by the feature and target matrix, under every combination of which the count must be zero | Disclosed as a **constraint on verification**, not a relaxation of Part A. The predicate stands unweakened. A generation-3 plan must state **how** it makes the count decidable — for example by bounding the post-verification region so that no name is in scope within it — rather than asserting a zero it cannot establish. Asserting an unestablishable zero is the same over-claim pattern this correction exists to remove |
+| A2 | DISCLOSED-NOT-CLOSED | **Mountpoint substitution** | **Substance unchanged and still NOT declared closed.** In-episode containment does **not** close A2: a mount planted at an in-boundary path is traversed entirely within the boundary. A2 closes only if the undecided primitive also refuses mountpoint traversal, which this correction does not decide. A2 and R4 are **jointly weakest in the same place** — mount, overlay, and network filesystems are simultaneously where identity trust fails and where traversal containment is least informative |
+
+**Cardinality check.** Eleven `R`-keyed residuals (R1a, R1b, R2–R10) plus A2 —
+**twelve** in total. A generation-3 plan must carry all twelve, plus the
+R2 × R5 × R7 composition below.
+
+**R1b prevention preconditions**, to be discharged item by item and **necessary but
+not asserted exhaustive**:
+
+1. **R6** is resolved soundly — the boundary is established, bound, and revalidated
+   without name-based re-derivation, and its continuity is trusted or fails closed.
+2. **R8** is decidable — the boundary relation is not evaluated over strings, and
+   the per-target hazard set is enumerated and handled.
+3. **A2** does not apply — or the chosen primitive independently refuses mountpoint
+   traversal.
+4. A primitive delivering in-episode containment **exists on the target in
+   question**; otherwise the feasibility clause escalates instead.
+5. **R9** atomicity is delivered, detectable, or escalated.
+
+**Scope of in-episode containment.** The requirement binds the corpus **read**
+episode only. It does **not** extend to authorization capture (R2) or to name-based
+corpus enumeration (R5), and **neither is narrowed by it**. The composition is
+disclosed rather than closed: an outside-workspace object enumerated and authorized
+under R5 and R2 can subsequently be reached by a **fully contained** read episode
+through an in-workspace hard link (R7), satisfying Part A, Part B, and in-episode
+containment simultaneously. **R2 × R5 × R7 remains open**, and whether containment
+is additionally required of the capture and enumeration episodes is **undecided**.
+
+##### Settled item 6 — narrowing
+
+Generation-2 settled item 6 held that the resolve-time-only containment demotion is
+security-sound because identity equality at read time "is strictly stronger than
+containment" and "transitively re-affirms containment without re-checking it".
+**That transitive inference does not hold.** R1b is a counterexample: identity
+equality holds while containment does not, because the substituted name reaches the
+same object. Item 6 is **narrowed to the wrong-object case (R1a)**, and even there
+it holds **only where R4's identity-trust precondition holds** — the same condition
+the R1a row carries. Item 6's conclusion that "nothing of security value is lost by
+removing containment from the read path" is **withdrawn**.
+
+##### Settled item 8 — narrowing
+
+Generation-2 settled item 8 blessed a symlink-following primitive as the identity
+basis as a reasoned, disclosed trade-off. That remains true **as to the identity
+basis**, and item 8 is **not reopened** on that ground. It is **narrowed** in one
+respect: in-episode containment requires the producing episode to fail closed on
+any traversal leaving the boundary, **including the final component as resolved**,
+so a primitive that silently follows a link **out of the workspace** is no longer
+admissible for the producing episode. This narrowing is disclosed here to the same
+standard as item 6's.
+
+**Both settled items' own text in the review record is terminal and is not
+edited**, exactly as item 9's is. Both narrowings are recorded here and mirrored
+under that record's `## Operator resolution` heading.
+
+##### What this correction does not do
+
+* It **discharges nothing** and **renews nothing**. Amendment 1's discharge of
+  `### If generation 2 also fails` is neither re-consumed nor extended, and the
+  renewed failure bound stands exactly as Amendment 1 left it.
+* It grants **no** generation, **no** publication authority, and **no**
+  pull-request authority.
+* It re-sequences **no** package and makes **no** downstream package eligible. G0
+  remains the sole prerequisite.
+* It leaves untouched every constraint listed under
+  *Constraints preserved unchanged*.
+* It **decides no primitive**. It fixes a property and constrains the primitive
+  space by disclosure; it names no crate, module, syscall, trait, or API shape, and
+  the minimal API contract is still settled inside the deliberation.
+* It does **not** weaken Part A's same-object binding or Part B's object-derived
+  opaque identity equality. Both are retained in full and both remain
+  **independently required**.
+* `027-D` remains **`blocked`**. The correcting session started no generation and
+  performed no deliberation, planning, hardening, plan-review, harvest, or
+  shipment assembly.
+
+### Amendment 2 — in-episode workspace containment, ratified
+
+> [!IMPORTANT]
+> This amendment **ratifies** a requirement that already exists in text. It adds
+> **no** new normative content, changes **no normative predicate**, re-states
+> **no**
+> residual, and decides **no** primitive. The operative text of the requirement is
+> *Correction 2 to Amendment 1* (2026-09-16), adopted here **by reference and
+> unchanged**. What this amendment changes is the requirement's **authority
+> status**: it is **ratified and in force**, not flagged and pending.
+
+| Field | Value |
+|---|---|
+| Date | 2026-09-17 |
+| Granted by | Operator, **explicit ratification**, routed through Orchestrator |
+| Ratification statement | *"Ratify same-episode containment as Amendment 2 and continue PR #400."* |
+| Stage session | `stage-g0-amendment-2-ratification-2026-09-17` |
+| Trigger | The ratification question flagged by *Correction 2 to Amendment 1* and carried as open in `027-D` and in the cycle-2 session memory |
+| Amends | `## G0 generation-2 fixed input` — `### Deliberately undecided`; and Amendment 1's `#### Still deliberately undecided`. Fixes in-episode workspace containment as a required property of the resolution episode that produces the bound object |
+| Adopts by reference | Two distinct effects, declared separately below in `Ratifies` and `Incorporates unchanged` |
+| Ratifies | **Authority transfers to Amendment 2** — *Correction 2*'s normative in-episode containment requirement, and that text alone |
+| Incorporates unchanged | **Authority remains *Correction 2* / Route 2** — the twelve-residual ledger (R1a, R1b, R2–R10, A2), the R2 × R5 × R7 composition, R1b's five prevention preconditions, the per-target-triple feasibility clause **covering every fixed property, Part B included**, and the settled-item 6 and 8 narrowings |
+| Freezes | *Correction 2*'s **normative** containment text, against correction-level editing, from 2026-09-17. Its **defect disclosure** stays correctable under Route 2 |
+| Supersedes | *Correction 2*'s **ratification status only**, plus — under amendment authority — **both** twice-recorded *"whether a workspace-containment check is retained at all is undecided"* bullets and their consequential mirrors |
+| Discharges | **Nothing** |
+| Grants | **Nothing.** No generation, no publication authority, no pull-request authority |
+| Activation | **None.** `027-D` remains **`blocked`** |
+
+#### The ratified requirement
+
+> **The single resolution episode that produces the bound object must itself
+> enforce workspace containment as a required property of that episode.**
+
+That requirement is ratified **in full and verbatim**, together with **every**
+qualification *Correction 2* attaches to it. *Correction 2*'s text governs; the
+following restatement is a reader's aid and is **not** a closed enumeration:
+
+* containment is a property of the **traversal** and never of the object;
+* the episode must **fail closed** rather than traverse outside the boundary,
+  **including the final component as resolved** — see **R7** for the disclosed
+  functional narrowing this imposes on in-workspace symlinked corpus entries on
+  targets lacking root-scoped in-kernel symlink resolution;
+* containment must hold for **the same episode** that produces the object that is
+  verified and read — **not** for an earlier resolution of the same pathname, and
+  **not** for a separate check standing before, after, or alongside the episode;
+* a separately-performed check whose result is carried into the episode **as a
+  name** does not satisfy it, because such a check is raceable by construction;
+* a result carried as a **bound reference** that the episode resolves against and
+  never re-accepts by name is **not excluded** by that clause — that is the shape
+  **R6** governs — but **binding a boundary reference is not itself the
+  enforcement**; the enforcement is the episode's own refusal to traverse outside
+  it;
+* an additional containment check retained **elsewhere** is neither required nor
+  forbidden, but it can **never be** the enforcement;
+* boundary establishment sits **outside** the episode count as a **counting
+  convention only**, and not as a licence to re-resolve.
+
+#### Why a distinct amendment rather than a nested correction
+
+*Correction 2* stated the problem against itself and did not paper over it. Fixing
+containment as a required property flips an item that
+`### Deliberately undecided` reserved to the deliberation and that Amendment 1
+**re-recorded** as undecided under `#### Still deliberately undecided`. A
+correction operates **within** an existing grant; it cannot convert a twice-recorded
+*undecided* item into a *fixed* input on its own authority, and it cannot bootstrap
+that authority from a property a prior correction introduced.
+
+An **amendment** is the instrument this document defines for exactly that change:
+*"This document is immutable except by a recorded amendment."* The operator has
+therefore ratified the requirement as **Amendment 2**, and Amendment 2 — not
+*Correction 2*, and not an inference — is the **authority** for the normative
+in-episode containment requirement from 2026-09-17 forward.
+
+The 2026-09-16 operator directive given in the PR #400 cycle-2 correction
+instruction remains the requirement's recorded **origin**. It is no longer its sole
+recorded basis.
+
+#### Relationship to Amendment 1, Correction 1, and Correction 2
+
+Amendment 2 is **additive to** and **not a replacement for** Amendment 1. The chain
+reads in order:
+
+| Record | Date | Effect, after this ratification |
+|---|---|---|
+| **Amendment 1** | 2026-09-15 | **Stands.** Fixed the two-part input and discharged `### If generation 2 also fails` for one generation. Not re-consumed, not extended, not superseded by this amendment |
+| **Correction 1 to Amendment 1** | 2026-09-16 | **Stands as corrected.** Replaced Part A's retained root anchor with the same-object binding, and added Part B's object-denoting precision requirement |
+| **Correction 2 to Amendment 1** | 2026-09-16 | **Stands in full.** Its **defect disclosure** — the R1a/R1b split, the withdrawal of R1's unqualified "detected by Part B", residuals R6–R10, the per-subclass attacker-capability statement, the settled-item 6 and 8 narrowings — remains recorded under the Route 2 authority, exactly where it was and unweakened. Only its **ratification status** is superseded |
+| **Amendment 2** | 2026-09-17 | **Ratifies** *Correction 2*'s normative requirement as a fixed input under amendment authority |
+
+Both Part A's same-object binding and Part B's object-derived opaque identity
+equality are **retained in full** and remain **independently required**. Generation
+1's rule — *"containment is not a substitute for identity"* — stands and is **not**
+inverted. Containment is **necessary and not sufficient**; identity is no
+substitute for containment, and containment is no substitute for identity.
+
+#### What this supersedes, and only this — Amendment 2
+
+* **Both twice-recorded *undecided* sites**, named explicitly here so that this
+  document's own rule — *"every constraint an amendment does not name survives
+  unchanged"* — reaches them under **amendment** authority rather than only under
+  *Correction 2*'s: the fourth bullet of `### Deliberately undecided` under
+  `## G0 generation-2 fixed input`, and the fourth bullet of Amendment 1's
+  `#### Still deliberately undecided`, each of which read *"whether a
+  workspace-containment check is retained at all is undecided"*. **Both are
+  superseded.** Containment is **fixed** as a required property of the producing
+  resolution episode. Both sites are struck at their own location.
+* *Correction 2*'s `Ratification` field and its ratification callout: **"flagged;
+  the operator may prefer a new Amendment 2; not decided here"**. The operator has
+  now decided. Both sites are marked at their own location and the prior text is
+  preserved struck through.
+* The conditional in every mirror that read *"if ratification is withheld, only the
+  normative requirement lapses"*. **Ratification was not withheld. Nothing lapses.**
+* The open item *"resolve ratification before `027-D` is transitioned `blocked` →
+  `queued`"*. That precondition is **satisfied**. It is **not** the only
+  precondition — see `#### Activation boundary — Amendment 2` below.
+
+**Authority freeze over the ratified text.** The requirement's operative text
+lives physically inside *Correction 2*, a correction recorded under the Route 2
+grant. From **2026-09-17**, that grant no longer reaches it: *Correction 2*'s
+**normative in-episode containment text is amendable only by a new recorded
+amendment**, and no correction — however authorized — may edit, narrow, or extend
+it. *Correction 2*'s **defect disclosure** remains correctable within Route 2, as
+it always was. This clause exists so that adoption **by reference** does not leave
+ratified text mutable at correction level.
+
+Nothing else changes. The twelve disclosed residual windows, the five R1b
+prevention preconditions, the feasibility-escalation clause, the episode-counting
+convention, the read-path carve-out, and every `#### Constraints preserved
+unchanged` item survive **exactly** as *Correction 2* left them.
+
+#### Still deliberately undecided — Amendment 2
+
+Ratifying a **property** decides no **structure**. These remain undecided and must
+be settled inside the generation-3 deliberation:
+
+* how the authorized identity is **stored**, what **type** represents it, and the
+  **API surface** that produces and compares it;
+* which concrete primitive realizes the **same-object binding**;
+* which concrete primitive realizes **in-episode containment**, and its type, API,
+  and per-target-triple platform strategy;
+* whether any **additional** separate containment check is retained **in addition
+  to** — never in place of — the in-episode enforcement;
+* **R6** boundary establishment, binding, and revalidation.
+
+**The minimal API contract must still be settled inside the deliberation, before
+`impl-plan` begins within that same Stage operation.**
+
+#### Constraints preserved unchanged — Amendment 2
+
+This amendment reaches the ratification status of one requirement in the G0 fixed
+input and nothing else. Every item listed under Amendment 1's
+`#### Constraints preserved unchanged` survives untouched, including the Authority
+split, the lifecycle terms and fail-closed dependency rule, the locked dependency
+graph and package registry, the program advancement contract items 1–8, the role
+handoff table, every prohibition under `### Explicitly not authorized`, Package F's
+exclusion, and the publication route's expiry.
+
+**The failure bound is neither renewed nor consumed by this amendment.** It stands
+exactly as Amendment 1 left it: if generation 3 also fails its plan-review gate,
+the program halts again, and no generation 4 and no re-sequencing around G0 may
+occur without a further explicit operator authorization recorded as a **new**
+amendment.
+
+Whether a feasibility escalation in generation 3 counts against that renewed bound
+**remains undecided** and still requires an explicit operator determination. This
+amendment does not decide it.
+
+#### Activation boundary — Amendment 2
+
+> [!IMPORTANT]
+> Ratification authorizes the **property**. It does **not** start generation 3.
+> `027-D` remains **`blocked`**.
+
+Consistent with the Authority split, **whether a G0 operation is authorized right
+now is read from the backlog, not from this document.**
+
+* `027-D` remains **`blocked`**. The ratifying session did not transition it.
+* Starting generation 3 requires **three** things, of which ratification is only
+  the first: (1) the ratification question resolved — **now satisfied**;
+  (2) **publication of PR #400**, which has not occurred — this amendment is
+  recorded on branch `chore/g0-route2-lock-amendment` and is not yet merged; and
+  (3) an **explicit operator transition of `027-D` from `blocked` to `queued`**,
+  which has **not** occurred and which this amendment does not perform or
+  authorize.
+* Generation 3 carries a **new artifact name** and a **fresh attempt counter
+  starting at zero**, must not edit, amend, or extend any generation-1 or
+  generation-2 artifact, and must start from the two-part fixed input as corrected
+  and ratified, the **twelve** disclosed residual windows plus the R2 × R5 × R7
+  composition, and the review record's ten settled items as narrowed.
+* The combined Package G, generation-1, and generation-2 circuits all remain
+  **OPEN/triggered**. This amendment resets, reopens, and clears none of them.
+* The ratifying session performed **no** deliberation, **no** planning, **no** plan
+  hardening, **no** plan-review, **no** harvest, and assembled **no** shipment. It
+  created no branch and no pull request, and modified no source, test, template, or
+  configuration file.
