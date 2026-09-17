@@ -12,9 +12,22 @@ corrects: docs/memory/2026-09-16-stage-g0-amendment-1-correction.md
 review_cycle: 2
 pr: 400
 pr_head_at_review: 2ca552c550e97bf7408ddf3c8073e6ab52ec0142
+ratification: "RESOLVED 2026-09-17 — the operator ratified the normative requirement as a distinct Amendment 2 of the program lock; see docs/memory/2026-09-17-stage-g0-amendment-2-ratification.md"
 ---
 
 # Stage session memory — Correction 2 to program lock Amendment 1
+
+> [!IMPORTANT]
+> **Ratification resolved 2026-09-17 by session
+> `stage-g0-amendment-2-ratification-2026-09-17`.** Every statement in this file
+> that records the ratification question as **open**, **flagged**, or **pending**
+> is **superseded**. The operator ratified the normative in-episode containment
+> requirement as a **distinct Amendment 2** of the program lock, not as an
+> unratified correction nested inside Amendment 1. The requirement is **in force**;
+> **nothing lapses**. The technical content of this memory — the defect, the
+> authority finding, the adversarial rounds, the invariant delta, and the residual
+> ledger — is **unchanged and remains accurate**. The program lock's
+> `### Amendment 2` section is the authority; this memory file is not.
 
 ## Outcome
 
@@ -85,11 +98,17 @@ split, R6–R10, the item-6 falsification, the per-subclass capability statement
 independently inside the Route 2 grant as repair of an over-claim, on Correction
 1's own precedent.
 
-> **Ratification is flagged, not assumed.** The operator may prefer to ratify the
+> ~~**Ratification is flagged, not assumed.** The operator may prefer to ratify the
 > new requirement as **Amendment 2**. That determination is recorded as open in the
 > lock and in `027-D`, and must be resolved **before** `027-D` is transitioned
 > `blocked` → `queued`. If ratification is withheld, only the normative requirement
-> lapses; the disclosure stands.
+> lapses; the disclosure stands.~~
+>
+> **RESOLVED 2026-09-17.** The operator ratified the requirement as **Amendment
+> 2**. It was **not withheld**, so **nothing lapses**: both the normative
+> requirement and the disclosure stand. The ratification precondition on `027-D` is
+> **satisfied**; the separate `blocked` → `queued` transition is **not**, and
+> `027-D` remains `blocked`.
 
 ## Adversarial confirmation
 
@@ -228,8 +247,10 @@ alongside in-episode enforcement.
   enforce workspace containment as a required property"*, that *"a separate
   raceable containment precheck is insufficient"*, and that no concrete primitive
   be chosen. That directive is the recorded approval for the requirement.
-  **Ratification as Amendment 2 remains flagged and open** — see
-  `## Authority finding`.
+  ~~**Ratification as Amendment 2 remains flagged and open** — see
+  `## Authority finding`.~~ **RATIFIED 2026-09-17 as Amendment 2** — the operator
+  directive remains the requirement's recorded **origin**; Amendment 2 is now its
+  **authority**.
 * **ActionResult** — `applied`, after five adversarial rounds cleared every P0 and
   P1.
 
@@ -269,11 +290,18 @@ Stash entries `1674E8DE` and `2A9C802B` remain **active and untouched**. Shipmen
 
 ## Next steps
 
-Blocked on the operator. **First**, the ratification question flagged under
+> [!NOTE]
+> **Partly superseded 2026-09-17.** The ratification question below was
+> **resolved**: the operator ratified the requirement as **Amendment 2**. The
+> remaining steps stand.
+
+Blocked on the operator. ~~**First**, the ratification question flagged under
 `## Authority finding` must be resolved — the new normative requirement supersedes
 an item Amendment 1 re-recorded as undecided, so the operator may prefer a new
-Amendment 2. Orchestrator owns pushing the branch, updating PR #400, replying to
-the three cycle-2 threads, and resolving them. Generation 3 still requires an
+Amendment 2.~~ **Ratification was granted on 2026-09-17 and recorded as Amendment
+2.** Orchestrator owns pushing the branch, updating PR #400, replying to
+the three cycle-2 threads, and resolving them. Generation 3 still requires
+publication of PR #400 **and** an
 explicit transition of `027-D` from `blocked` to `queued`, and must start from the
 twice-corrected two-part fixed input, **twelve** disclosed residual windows (R1a,
 R1b, R2–R10, A2) plus the R2 × R5 × R7 composition, and the review record's ten
@@ -283,7 +311,7 @@ settled items as narrowed.
 
 | Item | Status |
 |---|---|
-| Ratification of the new normative requirement (Correction 2 vs. a new Amendment 2) | **Open — must resolve before `027-D` → `queued`** |
+| Ratification of the new normative requirement (Correction 2 vs. a new Amendment 2) | **CLOSED 2026-09-17 — ratified as Amendment 2.** ~~Open — must resolve before `027-D` → `queued`~~ |
 | Whether a feasibility escalation in generation 3 counts against the renewed failure bound | **Open — not decided here** |
 | Stale `publication_state: staged-pending-publication` / `staging_pr_owner_unresolved: true` in the lock frontmatter, contradicting the PR #397 publication recorded in `027-D` | **Pre-existing. Deliberately NOT fixed under Correction 2's grant** — flagged by Architecture, needs a separately authorized edit |
 | Rust P2 disclosures (boundary-handle delete-sharing behaviour, per-target boundary hazard enumeration, symlinked-corpus narrowing on weaker targets) | Folded into R6, R7, R8 as disclosures |

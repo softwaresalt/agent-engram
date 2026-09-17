@@ -16,7 +16,7 @@ authority: docs/decisions/2026-09-14-checkpoint-resolution-decomposed-program-lo
 branch: chore/stage-g0-generation-2-planning
 harvested: false
 shipment_assembled: false
-operator_resolution: "Route 2 — authorized 2026-09-15; recorded as Amendment 1 of docs/decisions/2026-09-14-checkpoint-resolution-decomposed-program-lock.md; Part A corrected 2026-09-16 by Correction 1 to same-object binding, and further corrected 2026-09-16 by Correction 2 to require the producing resolution episode to enforce workspace containment"
+operator_resolution: "Route 2 — authorized 2026-09-15; recorded as Amendment 1 of docs/decisions/2026-09-14-checkpoint-resolution-decomposed-program-lock.md; Part A corrected 2026-09-16 by Correction 1 to same-object binding, and further corrected 2026-09-16 by Correction 2 to require the producing resolution episode to enforce workspace containment; that in-episode containment requirement was RATIFIED by the operator on 2026-09-17 as a distinct Amendment 2 of the same lock"
 ---
 
 ## Verdict
@@ -261,6 +261,7 @@ records only which escalation route the operator chose, so a later reader of the
 | Authorized by | Operator, routed through Orchestrator, 2026-09-15 |
 | Recorded as | Amendment 1 of `docs/decisions/2026-09-14-checkpoint-resolution-decomposed-program-lock.md` |
 | Corrected by | Correction 1 to Amendment 1, 2026-09-16, within the same Route 2 authority; further corrected by Correction 2, 2026-09-16, within the same authority |
+| Supplemented by | **Amendment 2 of the same lock, 2026-09-17** — ratifies *Correction 2*'s in-episode containment requirement under amendment authority. Adds no normative content and does not reopen this record |
 | Effect on this record | None. This record stays terminal for generation 2 attempt 1 |
 
 The amendment supersedes only the conflicting G0 fixed-input language and renews
@@ -316,3 +317,25 @@ other nine settled items stand unchanged.
 >   follows a link **out of the workspace** is no longer admissible for the
 >   producing episode, which must now fail closed on any traversal leaving the
 >   boundary, including the final component as resolved.
+
+> [!IMPORTANT]
+> **Ratified 2026-09-17 as Amendment 2.** The operator ratified *Correction 2*'s
+> in-episode containment requirement as a **distinct Amendment 2** of the program
+> lock rather than as an unratified correction nested inside Amendment 1. The
+> requirement is **in force and no longer pending**; nothing lapses. *Correction
+> 2*'s defect disclosure — the R1a/R1b split, the withdrawal of R1's unqualified
+> *"detected by Part B"*, residuals R6–R10, the per-subclass attacker-capability
+> statement, and the item 6 and item 8 narrowings recorded immediately above — is
+> **unchanged in full** and remains under the Route 2 authority.
+>
+> Amendment 2 adds **no** normative content, re-states **no** residual, decides
+> **no** primitive, discharges **nothing**, and grants **nothing**. **Effect on
+> this record: none.** It stays terminal for generation 2 attempt 1, and nothing
+> above the `## Operator resolution` heading is changed — the verdict, all
+> findings, all ten settled items' own text, and the `## Escalation to the
+> operator` table remain terminal generation-2 evidence.
+>
+> `027-D` remains **`blocked`**, pending publication of PR #400. Ratification
+> satisfies the ratification precondition only; generation 3 additionally requires
+> an explicit operator transition of `027-D` from `blocked` to `queued`, which has
+> not occurred.
