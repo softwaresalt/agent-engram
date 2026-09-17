@@ -60,7 +60,7 @@ corrections:
     date: 2026-09-16
     title: "Containment fixed as a required property of the single resolution episode"
     authorized_by: "operator — explicit directive in the PR #400 cycle-2 correction instruction, which is the recorded ORIGIN of the new normative requirement; since 2026-09-17 that requirement's AUTHORITY is amendments[2] and its text is frozen against correction-level editing. Within the existing Route 2 authority for the defect disclosure, which remains correctable under Route 2"
-    corrects: "Correction 1 — Part A's scope sentence, the Containment section, and residual R1; the Fixed invariant callout; both 'containment retained at all is undecided' sites; generation-2 settled items 6 and 8"
+    corrects: "Correction 1 — Part A's scope sentence, the Containment section, and residual R1; the Fixed invariant callout; generation-2 settled items 6 and 8. Does NOT include the two 'containment retained at all is undecided' sites: this correction drafted the text that supersedes them, but the superseding authority over those two previously undecided sites is amendments[2] — see amendments[2].supersedes"
     adds: "in-episode containment requirement; residuals R6-R10; per-target feasibility escalation covering every fixed property"
     discharges: "nothing"
     grants: "nothing"
@@ -381,8 +381,8 @@ the G0 deliberation.** This lock fixes no implementation structure:
 * what **type** represents it is undecided;
 * the **API surface** that produces and compares it is undecided;
 * ~~whether a workspace-containment check is retained at all is undecided.~~
-  **Superseded by *Correction 2* (2026-09-16), ratified as *Amendment 2*
-  (2026-09-17).** Containment is **fixed** as a
+  **Superseded by *Amendment 2* (2026-09-17), which ratified the requirement
+  drafted as *Correction 2* (2026-09-16).** Containment is **fixed** as a
   required property of the resolution episode that produces the bound object.
   What remains undecided is the concrete primitive that realizes it, and whether
   any additional separate check is retained **in addition to** — never in place
@@ -656,13 +656,15 @@ further corrected by *Correction 2*.
 
 This amendment fixes a **property**, not a structure. The first three originally
 undecided items stand, and the anchor's own realization joins them; the fourth is
-superseded by *Correction 2*, **as ratified by *Amendment 2* (2026-09-17)**:
+superseded by ***Amendment 2*** (2026-09-17), which ratified the requirement
+drafted as *Correction 2*:
 
 * how the authorized canonical identity is **stored**;
 * what **type** represents it;
 * the **API surface** that produces and compares it;
 * ~~whether a workspace-containment check is retained at all;~~ **superseded by
-  *Correction 2*, ratified as *Amendment 2* (2026-09-17)** — containment is fixed
+  *Amendment 2* (2026-09-17)**, ratifying the requirement drafted as
+  *Correction 2* — containment is fixed
   as a property of the resolution episode **that produces the bound object**;
   only its primitive, and whether an additional check is retained
   alongside it, stay undecided;
@@ -919,7 +921,7 @@ exclusion of that shape *in any role* is narrowed.
 | Authorized by | Operator — **explicit directive** in the PR #400 cycle-2 correction instruction for the new normative requirement; **within the existing Route 2 authority** for the defect disclosure |
 | Stage session | `stage-g0-amendment-1-correction-2-2026-09-16` |
 | Trigger | Three blocking review threads on PR #400 at head `2ca552c5`, all one root issue |
-| Corrects | *Correction 1* — Part A's scope sentence, the `##### Containment` sub-section, and residual **R1**; the `### Fixed invariant` callout; **both** "whether a workspace-containment check is retained at all is undecided" sites (`### Deliberately undecided` and Amendment 1's `#### Still deliberately undecided`); generation-2 settled items **6** and **8** |
+| Corrects | *Correction 1* — Part A's scope sentence, the `##### Containment` sub-section, and residual **R1**; the `### Fixed invariant` callout; generation-2 settled items **6** and **8**. **Not** the two "whether a workspace-containment check is retained at all is undecided" sites (`### Deliberately undecided` and Amendment 1's `#### Still deliberately undecided`): this correction **drafted** the superseding text, but the **superseding authority** over those two previously undecided sites is ***Amendment 2*** (2026-09-17) |
 | Adds | The in-episode containment requirement; residuals **R6**–**R10**; a per-target-triple feasibility-escalation clause covering every fixed property |
 | Ratification | **RESOLVED 2026-09-17 — ratified as *Amendment 2*.** ~~Flagged. The new requirement supersedes an item Amendment 1 re-recorded as undecided; the operator may prefer a new Amendment 2. Not decided here~~ |
 | Discharges | **Nothing** |
@@ -1101,8 +1103,10 @@ revalidation undecided, and this correction does not foreclose it.
 Two other sites in this document previously said "whether a workspace-containment
 check is retained at all is undecided" — `### Deliberately undecided` under
 `## G0 generation-2 fixed input`, and Amendment 1's `#### Still deliberately
-undecided`. **Both are superseded by this correction**, and both are marked at
-their own location. Containment as an in-episode property of the resolution episode
+undecided`. **Both are superseded — under *amendment* authority, by *Amendment 2*
+(2026-09-17), which ratified the requirement drafted here; this correction alone
+could not reach them** — and both are marked at their own location. Containment
+as an in-episode property of the resolution episode
 is **fixed**. What remains undecided is the concrete primitive, and whether any
 additional separate check is retained **in addition to** — never in place of — the
 in-episode enforcement.

@@ -33,7 +33,10 @@ corrected_by: docs/memory/2026-09-16-stage-g0-amendment-1-correction.md; docs/me
 > binding is satisfied and object-derived identity compares **equal**, while the
 > resolution has left the workspace. Containment is now a required property of the
 > **same single resolution episode** that produces the bound object. *Correction 2*
-> in the program lock is the authority.
+> in the program lock **contains** that operative containment text and the
+> accompanying defect disclosure; since **2026-09-17** the **authority** for the
+> normative containment requirement is ***Amendment 2***, which ratified it and
+> froze it against correction-level editing.
 
 ## Outcome
 

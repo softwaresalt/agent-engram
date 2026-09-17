@@ -30,7 +30,11 @@ corrected_by: docs/memory/2026-09-16-stage-g0-amendment-1-correction-2.md
 > property of that episode, and splits R1 into R1a (wrong object — detected by
 > Part B where R4 holds) and R1b (same object via an outside-workspace name —
 > detected by neither part). The concrete primitive remains undecided.
-> *Correction 2* in the program lock is the authority; this memory file is not
+> *Correction 2* in the program lock **contains** that operative containment text
+> and this defect disclosure; since **2026-09-17** the **authority** for the
+> normative containment requirement is ***Amendment 2***, which ratified it and
+> froze it against correction-level editing (the defect disclosure remains
+> correctable under Route 2). This memory file is not
 > contract authority. The `## Action contract`, `## Files changed`, and
 > `## Validation` sections below are immutable facts about the 2026-09-16
 > Correction 1 session and are unchanged.
