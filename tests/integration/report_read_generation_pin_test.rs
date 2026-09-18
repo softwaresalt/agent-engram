@@ -192,7 +192,12 @@ fn metrics_snapshot(workspace_id: &str, workspace: &Path) -> WorkspaceSnapshot {
         workspace_id: workspace_id.to_owned(),
         workspace_uuid: format!("uuid-{workspace_id}"),
         branch: BRANCH.to_owned(),
-        data_dir: workspace.join(".engram-data"),
+        // Must match where `seed_metrics_workspace` writes usage events
+        // (`workspace/.engram/metrics/...`): `metrics::load_summary` resolves
+        // its usage file from this pinned `data_dir`, so a data_dir that
+        // does not point at the same `.engram` directory the fixture seeded
+        // would make the seeded events unreachable.
+        data_dir: workspace.join(".engram"),
         path: workspace.to_string_lossy().into_owned(),
         last_flush: None,
         stale_files: false,
