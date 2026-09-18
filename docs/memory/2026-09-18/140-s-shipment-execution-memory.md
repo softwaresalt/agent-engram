@@ -227,3 +227,125 @@ pre-accepted `.backlogit/stash.jsonl` modification.
 6. Only after operator-approved merge: Step 6 post-merge closure (safe-close via
    `shipment-reconcile`, operational-closure, compound-refresh, mandatory P-020
    compact-context, backlog index resync).
+
+## PR #404 creation, CI, and Copilot-review disposition (this session segment)
+
+* **PR #404 created**: `https://github.com/softwaresalt/agent-engram/pull/404`,
+  base `main`, from the feature branch. Body includes the `## Local Review Readiness`
+  block (updated twice this segment as HEAD advanced).
+* **CI flake recurrence**: `start-launcher-windows`
+  (`launcher_fails_open_to_copilot_within_one_prewarm_budget`, 8s wall-clock budget)
+  failed intermittently on 3 of 4 pushed HEADs this segment (`adf2d274`: 3 failures
+  then pass on rerun; `1745e531`: 1 failure then pass on rerun; `4f4d4486`: passed on
+  first attempt). Confirmed environmental/hosted-runner timing variance, not a
+  regression — PR diff never touches the relevant files, and this exact flake matches
+  a pre-existing deferred entry, `F58ECAA8` (reused, no new capture, per the
+  discovery/reuse protocol). `build` job passed cleanly on every HEAD.
+* **Copilot-review engagement (2 passes, re-arms per push)**:
+  * **Pass 1** (at HEAD `adf2d274`, after the reconciliation-frontmatter fix): 6
+    threads raised, "Changes recommended."
+    1. `dax_lint.rs` Generation-mode `root_path()` gap — pre-existing, confirmed via
+       pre-migration `tools/lint.rs::pinned_workspace_root` also Managed-mode-only.
+       Deferred as new stash `9BB01D31` (medium).
+    2. 142.046-T static guard's substring-matching misses aliased vars
+       (`root`/`scan_root`) and omits `registry.rs` from scope — guard-methodology
+       redesign, out of scope (adding `registry.rs` to scope would make the guard RED
+       against its own new `registry_path_for` helper with no F24-style allow-list).
+       Deferred as new stash `A3E0E607` (medium).
+    3. Restates the known metrics.rs writer/reader `data_dir` divergence — reused
+       `E6CA4ED1` (late-surfacing thread, reply+resolve, no new entry).
+    4. Same divergence pattern in `eval.rs`/retrieval_eval (different file/task,
+       142.042-T) — distinct per the same-contract-surface discovery test. Deferred
+       as new stash `7C23A682` (high).
+    5. Critiques the `report_read_generation_pin_test.rs` fixture fix (`eda83c03`) as
+       masking rather than fixing the divergence — reused `E6CA4ED1` (same root
+       cause, reply+resolve, no new entry).
+    6. Missing `recommendation:` frontmatter in
+       `.backlogit/reconcile/140-S-pre-20260918T001534.md` — **in-scope** (140-S's
+       own artifact, trivial completion), fixed directly, commit `adf2d274`.
+    All 6 threads replied-to (citing the deferred entry ID or fix commit) and
+    resolved via GraphQL. P-018 gate re-run: `SATISFIED` at `adf2d274`.
+  * Pushed `1745e531` (runtime-verification + operational-closure docs) and
+    `4f4d4486` (typo fix inside the closure doc, see below).
+  * **Pass 2** (at HEAD `4f4d4486`, against the new closure docs): 2 more threads.
+    7. Typo in `docs/closure/2026-09-18-140-s-operational-closure.md`'s validator
+       evidence sentence ("harnesses +ent the static guard") — **in-scope** (own
+       artifact, trivial typo), fixed directly, commit `4f4d4486`.
+    8. `metrics.rs::load_usage_events`/`load_summary` join a caller-supplied
+       `branch` string (from public `branch_name`/`compare_to` tool parameters) into
+       a filesystem path with no sanitization (potential path-traversal / arbitrary
+       file read). Confirmed **pre-existing**: `git show main:src/tools/read.rs`
+       shows the identical unsanitized join already existed pre-140-S
+       (`parsed.branch_name`/`compare_to` → `metrics::compute_summary` with no
+       validation); 140-S only relocated the read call to the new pinned-context
+       `load_summary`/`load_usage_events`. A real fix needs a shared branch-name
+       sanitizer applied uniformly across the untouched writer path and all reader
+       paths — materially larger than this shipment's scope. Deferred as new stash
+       `DB0661A6` (high, requires_deliberation: true).
+    Both threads replied-to and resolved. P-018 gate re-run: `SATISFIED` at final
+    HEAD `4f4d4486`, 0 unresolved threads.
+* **Discovery/reuse protocol applied consistently**: searched both
+  `.backlogit/stash.jsonl` (active) and `.backlogit/archive/stash.jsonl` (archived)
+  before every capture this segment. Confirmed 3 exact reuse matches (`F58ECAA8` for
+  the CI flake, `E6CA4ED1` ×2 for the metrics.rs divergence) and confirmed zero prior
+  matches before each of the 4 new captures (`9BB01D31`, `A3E0E607`, `7C23A682`,
+  `DB0661A6`).
+* **PR body updated twice** via `gh pr edit` to keep the `## Local Review Readiness`
+  block current with the final reviewed HEAD (`4f4d4486`), all 8 Copilot findings and
+  their dispositions, and the complete follow-up stash list.
+
+## Runtime verification and operational closure (pre-merge)
+
+* Built release binary (`cargo build --release --bin engram`, ~6m12s). `engram
+  --version` PASS (embedded SHA matched HEAD). `engram daemon-status` — spawned an
+  isolated test daemon (PID 38536, confirmed distinct from the ~9 pre-existing
+  `C:\Tools\engram.exe` tooling daemons via `Get-Process`), all critical health checks
+  green, only expected transient yellows; cleanly terminated afterward
+  (`Stop-Process -Id 38536 -Force`).
+* `contract_initialize`/`contract_tools` test names were stale (matches existing
+  deferred entry `DA0AF326`, reused, no new capture) — used the correct current test
+  names instead.
+* Found 2 tests failing under `--release` profile only
+  (`shim_aborts_unresolved_startup_after_client_disconnects`,
+  `shim_recovers_after_timed_out_daemon_later_becomes_ready`) — confirmed unrelated to
+  140-S's diff and release-profile-specific via an immediate debug-mode re-run (19/19
+  green). Documented as an observation only (loosely related to existing entry
+  `FFA32805` re: CI never testing release profile); no new stash entry.
+* Wrote `docs/closure/2026-09-18-140-s-runtime-verification.md` — verdict
+  `PASS_WITH_FOLLOW_UP`.
+* Wrote `docs/closure/2026-09-18-140-s-operational-closure.md` — `mode: pre-merge`,
+  overall status `READY_WITH_CONDITIONS` (condition: explicit operator merge approval
+  per P-014 and the dark-mode activation record's
+  `merge_approval_pre_authorized=false`). Compaction status left `pending` (finalized
+  only at post-merge Step 6). Source-artifact-cleanup section is a placeholder
+  awaiting post-merge Step 6.
+* Committed both docs (`1745e531`), later fixed a typo in the closure doc (`4f4d4486`,
+  per Copilot pass 2 finding 7 above).
+
+## Final pre-merge state (end of this session segment)
+
+* **PR #404**: OPEN, `mergeable: MERGEABLE`, `mergeStateStatus: CLEAN`, HEAD
+  `4f4d4486`.
+* **CI**: `build` PASS (6m19s), `start-launcher-windows` PASS (2m4s) — both green at
+  final HEAD.
+* **P-018 copilot-review gate**: `SATISFIED` at final HEAD `4f4d4486`, 0 unresolved
+  threads (8 total threads across 2 passes, all replied-to and resolved).
+* **P-009 merge-strategy check**: repo settings confirmed
+  `allow_merge_commit=true, allow_squash_merge=false, allow_rebase_merge=false` —
+  merge-commit-only, compliant.
+* **Pipeline-topology gate** (`--phase lifecycle`): re-run, exit 0, all 5 checks
+  passed (`detect_before_consistency`, `active_shipment_invariant`,
+  `branch_ownership` → `BRANCH_OK`, `worktree_topology` → `WORKTREE_TOPOLOGY_OK`,
+  `shipment_readiness`).
+* **Branch/worktree**: still on
+  `feat/140-s-migrate-services-to-pinned-context-and-enforce-read-path-pinning`;
+  `git status --short` shows only the pre-accepted dirty `.backlogit/stash.jsonl`
+  (now carrying 4 new entries from this full session: `9BB01D31`, `A3E0E607`,
+  `7C23A682`, `DB0661A6`, plus the 2 from the prior segment, `E6CA4ED1`, `10EE5E43`).
+* **Halted for explicit operator merge approval** per
+  `merge_approval_pre_authorized=false` /
+  `admin_fallback_pre_authorized=false` — no merge attempted, no admin fallback
+  attempted. This is the terminal state for this session.
+* PR #396 and PR #390 were not mutated at any point this session (out of scope per
+  the dark-mode activation record).
+* 141-S was never claimed or processed.
