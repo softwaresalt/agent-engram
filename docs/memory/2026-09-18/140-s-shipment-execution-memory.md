@@ -66,6 +66,73 @@ Both fixes are in-scope per P-021 C1: same shipment, completing the already-auth
 read-path-pinning migration correctly (the guard test's own acceptance criterion
 requires all F25-F36 services to be genuinely pinned, not just textually passing).
 
+## Local review gate (Step 4.4) — outcome
+
+Invoked the `review` skill (`mode:report-only`) against the full diff (`2589c350..HEAD`,
+`src/` + `tests/`). Reviewer returned one P1 finding:
+
+**Metrics writer/reader `data_dir` divergence under `ENGRAM_DATA_DIR`** — the metrics
+usage-events WRITER (`usage_path`/`resolve_usage_path`/`append_event_line`, untouched by
+this shipment) resolves its file from raw `workspace_path`, while 142.043-T's newly
+migrated READ handlers resolve via `context.data_dir()`. These coincide only in the
+default (unconfigured) case; under a configured `ENGRAM_DATA_DIR` they diverge, and reads
+silently return empty/null instead of the real data — arguably violating 142.043-T's own
+acceptance criterion "Managed-mode behavior is unchanged."
+
+**Investigated and attempted a direct fix** (route the writer's default path through
+`resolve_data_dir(workspace_path)` to match the reader) — this is technically "in-scope"
+by P-021 C1 reasoning (same task's own acceptance criterion), so a same-shipment fix was
+attempted first rather than deferred outright. **The fix was reverted** after it
+reproduced two concrete regressions in `tests/integration/usage_telemetry_emit.rs`
+(`t067_004_branch_aware_path_is_cross_platform`,
+`t067_004_dual_source_correlation_id_emits_records`), root-caused to this dev/CI shell
+having an ambient `ENGRAM_DATA_DIR` env var set to a fixed external path (confirmed via
+`$env:ENGRAM_DATA_DIR`) — introducing a live env-var read into the writer path is
+unsafe without first threading a single pinned `data_dir` value through the entire
+background-writer subsystem (channel messages, branch-switch/generation transitions,
+override/containment semantics), which is a materially larger change than 142.043-T's
+stated scope (`owned files: src/services/metrics.rs` + its own pin test, narrowly about
+the 4 read handlers). Reverted via `git checkout -- src/services/metrics.rs`; confirmed
+`cargo check`, targeted metrics tests (`integration_usage_telemetry_emit`,
+`integration_metrics_service_pin`, `integration_report_read_generation_pin`), clippy, and
+fmt all clean at the reverted (i.e., 140-S's actual shipped) state.
+
+**Captured as P-021 deferred stash entry `E6CA4ED1`** (kind: bug, priority: high,
+requires-deliberation: yes) via the Step 4.4a threadless defer-capture procedure
+(pre-PR, no review thread exists yet). Source refs: shipment_id=140-S, feature_id=142-F,
+task_id=142.043-T, PR=N/A, review-thread=N/A.
+
+## Local Review Readiness — final verdict
+
+The dispatched reviewer's raw verdict was `BLOCKED` (based solely on the P1 finding
+above, evaluated without P-021 deferral context). Applying Ship's P-021 C1/C2
+classification per Step 4.4a: the P1 finding is a genuine regression introduced by
+142.043-T, but the only way to fix it *safely and completely* (thread a single pinned
+`data_dir` through the entire background-writer subsystem — channel messages,
+branch-switch/generation transitions, override/containment semantics, plus new test
+coverage for a real writer under a deliberately-diverged `ENGRAM_DATA_DIR`) is
+materially larger than 142.043-T's stated 2-hour-rule, single-owned-file scope, and a
+narrow attempt at the fix was proven unsafe (reproduced 2 new regressions). It therefore
+fails the C1 "ONLY completing the exact change already authorized" test and correctly
+follows the Step 4.4a defer-capture procedure rather than a direct fix.
+
+**Final readiness outcome: `READY_WITH_FOLLOWUPS`.**
+
+Follow-up / residual-risk items for the PR body:
+* Stash `E6CA4ED1` (P1/high, requires deliberation) — metrics writer/reader `data_dir`
+  consistency under `ENGRAM_DATA_DIR`.
+* Stash `10EE5E43` (P2-equivalent/medium, requires deliberation) — release-archive
+  smoke test flakiness investigation (later full-suite evidence suggests this may be
+  transient/environmental rather than a deterministic defect; noted in the entry's
+  Ship-owned residual-risk annotation, entry itself left unedited per the C2
+  single-write invariant).
+
+No P0 findings. No other unresolved P1 findings (the constitution/Rust/correctness/
+maintainability/security/test-coverage passes all came back clean). Reviewed HEAD:
+`cd55e95d` (session-memory update commit) at time of this review pass; no further
+production-code changes were made afterward, so this remains the reviewed HEAD through
+Step 5.
+
 ## Deferred out-of-scope finding (P-021 C2 captured)
 
 During full-suite verification, `integration_release_archive_smoke_workflow`'s
