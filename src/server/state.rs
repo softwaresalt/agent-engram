@@ -136,6 +136,7 @@ pub struct ReadRequestContext {
     workspace_id: String,
     branch: String,
     data_dir: PathBuf,
+    root_path: Option<PathBuf>,
     source: ReadSource,
 }
 
@@ -167,12 +168,23 @@ impl ReadRequestContext {
             .snapshot_workspace()
             .await
             .ok_or(WorkspaceError::NotSet)?;
-        Ok(Arc::new(Self {
+        Ok(Self::from_workspace_snapshot(snapshot))
+    }
+
+    /// Capture a context from an already-pinned managed-mode workspace snapshot.
+    ///
+    /// Handlers that already took an atomic [`DispatchSnapshot`] can use this
+    /// constructor to thread that exact workspace view into services expecting a
+    /// [`ReadRequestContext`], without re-reading live `AppState`.
+    #[must_use]
+    pub fn from_workspace_snapshot(snapshot: WorkspaceSnapshot) -> Arc<Self> {
+        Arc::new(Self {
             workspace_id: snapshot.workspace_id,
             branch: snapshot.branch,
             data_dir: snapshot.data_dir,
+            root_path: Some(PathBuf::from(snapshot.path)),
             source: ReadSource::Managed,
-        }))
+        })
     }
 
     /// Capture a context from an already-opened generation (plan unit F17).
@@ -205,6 +217,9 @@ impl ReadRequestContext {
             workspace_id: workspace_id.into(),
             branch: branch.into(),
             data_dir,
+            // A sealed generation has no live workspace filesystem root to
+            // expose -- it reads from the runtime copy's data directory only.
+            root_path: None,
             source: ReadSource::Generation(generation),
         })
     }
@@ -225,6 +240,23 @@ impl ReadRequestContext {
     #[must_use]
     pub fn data_dir(&self) -> &Path {
         &self.data_dir
+    }
+
+    /// The live workspace filesystem root, when this context was pinned from
+    /// a managed-mode snapshot.
+    ///
+    /// `data_dir` is a database/data location that is not guaranteed to bear
+    /// any fixed positional relationship to the workspace root (the two are
+    /// independently configured), so callers that need to scan or resolve
+    /// paths under the actual workspace tree (for example, `.engram`-relative
+    /// files) must use this accessor rather than deriving a root from
+    /// `data_dir`.
+    ///
+    /// Returns `None` in generation/ReadServer mode, which has no live
+    /// workspace filesystem root to expose.
+    #[must_use]
+    pub fn root_path(&self) -> Option<&Path> {
+        self.root_path.as_deref()
     }
 
     /// The generation backing this context, when one exists.

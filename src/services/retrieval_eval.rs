@@ -22,8 +22,10 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use tokio::io::AsyncWriteExt;
+use tokio::sync::oneshot;
 
 use sha2::{Digest, Sha256};
 
@@ -34,9 +36,57 @@ use crate::models::retrieval_eval::{
     GraphMetrics, RetrievalEvalConfig, RetrievalEvalReport, RetrievalEvalThresholds, RetrievalMode,
     SemanticMetrics,
 };
+use crate::server::state::ReadRequestContext;
 use crate::services::code_graph;
 use crate::services::parsing::{ExtractedEdge, Language, canonical, parse_source};
 use crate::services::search::{SearchCandidate, hybrid_rank_of};
+
+struct GenerationPinTestHook {
+    reached: Option<oneshot::Sender<()>>,
+    resume: Option<oneshot::Receiver<()>>,
+}
+
+fn generation_pin_test_hooks() -> &'static Mutex<HashMap<String, GenerationPinTestHook>> {
+    static HOOKS: OnceLock<Mutex<HashMap<String, GenerationPinTestHook>>> = OnceLock::new();
+    HOOKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Install a one-shot barrier reached immediately after the retrieval-eval
+/// service accepts a caller-pinned read context.
+#[doc(hidden)]
+pub fn install_generation_pin_test_hook(
+    method: &str,
+    reached: oneshot::Sender<()>,
+    resume: oneshot::Receiver<()>,
+) {
+    let hook = GenerationPinTestHook {
+        reached: Some(reached),
+        resume: Some(resume),
+    };
+    generation_pin_test_hooks()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(method.to_owned(), hook);
+}
+
+async fn maybe_pause_generation_pin_test_hook(method: &str) {
+    let pending_resume = {
+        let mut hooks = generation_pin_test_hooks()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(mut hook) = hooks.remove(method) else {
+            return;
+        };
+        if let Some(reached) = hook.reached.take() {
+            let _ = reached.send(());
+        }
+        hook.resume.take()
+    };
+
+    if let Some(resume) = pending_resume {
+        let _ = resume.await;
+    }
+}
 
 /// Maximum bytes retained from a derived known-item query.
 ///
@@ -1205,6 +1255,38 @@ pub async fn latest_report(
         })
     })?;
     Ok(Some(report))
+}
+
+/// Load the latest retrieval-evaluation report through the caller's pinned read
+/// context.
+///
+/// The caller owns request pinning and `.engram` path resolution; this service
+/// consumes that pinned view without consulting live `AppState`.
+///
+/// # Errors
+///
+/// Returns an error when the persisted run directory or newest report cannot be
+/// read or decoded.
+pub async fn load_latest_report(
+    context: &ReadRequestContext,
+    engram_dir: &Path,
+    enabled: bool,
+) -> Result<RetrievalEvalReport, EngramError> {
+    tracing::debug!(
+        workspace_id = context.workspace_id(),
+        has_generation = context.generation().is_some(),
+        "loading retrieval eval report through caller-pinned context"
+    );
+    maybe_pause_generation_pin_test_hook("load_latest_report").await;
+
+    if let Some(report) = latest_report(engram_dir, context.branch()).await? {
+        return Ok(report);
+    }
+
+    Ok(RetrievalEvalReport::empty(
+        enabled,
+        context.branch().to_owned(),
+    ))
 }
 
 // ── Threshold comparison (081.007-T) ─────────────────────────────────────

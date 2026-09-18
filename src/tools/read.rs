@@ -1,6 +1,5 @@
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -10,10 +9,11 @@ use crate::db::connect_db;
 use crate::db::queries::{CodeGraphQueries, FindPathResult, QueryGraphResult, SymbolFilter};
 use crate::errors::{CodeGraphError, EngramError, QueryError, SystemError, WorkspaceError};
 use crate::models::TraversalDirection;
-use crate::server::state::{DispatchSnapshot, SharedState};
+use crate::server::state::{DispatchSnapshot, ReadRequestContext, SharedState};
 use crate::services::embedding;
 use crate::services::metrics;
-use crate::services::search::{SearchCandidate, hybrid_search};
+use crate::services::registry;
+use crate::services::search::query_memory_results;
 use crate::services::search::{SearchRegion, UnifiedSearchResult, merge_unified_results};
 
 struct GenerationPinTestHook {
@@ -92,6 +92,24 @@ async fn maybe_pinned_dispatch_context(
     context
 }
 
+async fn pinned_read_request_context(
+    state: &SharedState,
+    method: &str,
+) -> Result<Arc<ReadRequestContext>, EngramError> {
+    let context = ReadRequestContext::from_managed_state(state.as_ref())
+        .await
+        .map_err(EngramError::Workspace)?;
+    maybe_pause_generation_pin_test_hook(method).await;
+    Ok(context)
+}
+
+async fn queries_from_read_context(
+    context: &ReadRequestContext,
+) -> Result<CodeGraphQueries, EngramError> {
+    let db = connect_db(context.data_dir(), context.branch()).await?;
+    Ok(CodeGraphQueries::new(db))
+}
+
 async fn pinned_queries(
     state: &SharedState,
     method: &str,
@@ -115,54 +133,6 @@ async fn queries_from_context(context: &DispatchSnapshot) -> Result<CodeGraphQue
     Ok(CodeGraphQueries::new(db))
 }
 
-async fn pinned_workspace_path_and_branch(
-    state: &SharedState,
-    method: &str,
-) -> Result<(PathBuf, String), EngramError> {
-    let context = pinned_dispatch_context(state, method).await?;
-    Ok((
-        PathBuf::from(context.workspace.path),
-        context.workspace.branch,
-    ))
-}
-
-async fn load_registry_status(workspace_path: &Path) -> Result<Option<Value>, EngramError> {
-    let workspace_path = workspace_path.to_path_buf();
-    let registry_path = workspace_path.join(".engram").join("registry.yaml");
-
-    tokio::task::spawn_blocking(move || {
-        match crate::services::registry::load_registry(&registry_path) {
-            Ok(Some(mut config)) => {
-                let _ = crate::services::registry::validate_sources(&mut config, &workspace_path);
-                let sources: Vec<Value> = config
-                    .sources
-                    .iter()
-                    .map(|source| {
-                        json!({
-                            "content_type": source.content_type,
-                            "language": source.language,
-                            "path": source.path,
-                            "status": source.status.as_str(),
-                        })
-                    })
-                    .collect();
-
-                Ok(Some(json!({
-                    "sources": sources,
-                    "total_sources": config.sources.len(),
-                })))
-            }
-            Ok(None) | Err(_) => Ok(None),
-        }
-    })
-    .await
-    .map_err(|e| {
-        EngramError::System(SystemError::DatabaseError {
-            reason: format!("registry status worker failed: {e}"),
-        })
-    })?
-}
-
 // ── Workspace statistics ─────────────────────────────────────────────────
 
 /// Return aggregate code graph statistics for the current workspace.
@@ -175,7 +145,8 @@ pub async fn get_workspace_statistics(
     // more useful than an IndexInProgress error. Callers can inspect
     // `scan_status.running` in workspace_status to detect mid-index state.
 
-    let (context, cg_queries) = pinned_queries(&state, "get_workspace_statistics").await?;
+    let context = pinned_read_request_context(&state, "get_workspace_statistics").await?;
+    let cg_queries = queries_from_read_context(context.as_ref()).await?;
 
     let code_files = cg_queries.count_code_files().await.unwrap_or(0);
     let functions = cg_queries.count_functions().await.unwrap_or(0);
@@ -184,7 +155,7 @@ pub async fn get_workspace_statistics(
     let edges = cg_queries.count_code_edges().await.unwrap_or(0);
 
     let embedding_status = embedding::status(Some(&cg_queries)).await?;
-    let registry_status = load_registry_status(Path::new(&context.workspace.path)).await?;
+    let registry_status = registry::load_registry_status(context.as_ref()).await?;
 
     let mut result = serde_json::Map::from_iter([
         ("code_files".to_owned(), json!(code_files)),
@@ -234,57 +205,16 @@ pub async fn query_memory(state: SharedState, params: Option<Value>) -> Result<V
     // Validate query length before any DB or model work.
     embedding::validate_query_length(&parsed.query)?;
 
-    let (_context, queries) = pinned_queries(&state, "query_memory").await?;
-    let mut candidates: Vec<SearchCandidate> = Vec::new();
-    let content_records = queries
-        .select_content_records(parsed.content_type.as_deref())
-        .await?;
-    for cr in content_records {
-        candidates.push(SearchCandidate {
-            id: format!("content_record:{}", cr.id),
-            source_type: cr.content_type.clone(),
-            content: cr.content.clone(),
-            embedding: cr.embedding.clone(),
-            title: content_record_title(&cr),
-            file_path: Some(cr.file_path.clone()),
-            line_range: content_record_line_range(&cr),
-            record_kind: Some(cr.record_kind.clone()),
-            heading_path: cr.heading_path.clone(),
-            fallback_reason: cr.fallback_reason.clone(),
-            lint_summary: cr.lint_summary.clone(),
-            suggestions: cr.suggestions.clone(),
-        });
-    }
-
-    // Include backlog content records when the filter is unset or explicitly
-    // requests "backlog" content.  Backlog records live in a separate relation
-    // (`backlog_content_record`) and have no embedding, so they participate
-    // only in lexical (BM25) matching.
-    let include_backlog = parsed
-        .content_type
-        .as_deref()
-        .is_none_or(|ct| ct == "backlog");
-    if include_backlog {
-        let backlog_records = queries.select_backlog_content_records(None).await?;
-        for bcr in backlog_records {
-            candidates.push(SearchCandidate {
-                id: format!("backlog_content_record:{}", bcr.file_path),
-                source_type: bcr.content_type,
-                content: bcr.content,
-                embedding: None,
-                title: Some(bcr.file_path.clone()),
-                file_path: Some(bcr.file_path),
-                line_range: None,
-                record_kind: Some("file".to_owned()),
-                heading_path: Vec::new(),
-                fallback_reason: None,
-                lint_summary: None,
-                suggestions: Vec::new(),
-            });
-        }
-    }
-
-    let results = hybrid_search(&parsed.query, &candidates, parsed.limit)?;
+    let context = pinned_read_request_context(&state, "query_memory").await?;
+    let queries = queries_from_read_context(context.as_ref()).await?;
+    let results = query_memory_results(
+        context.as_ref(),
+        &queries,
+        &parsed.query,
+        parsed.limit,
+        parsed.content_type.as_deref(),
+    )
+    .await?;
 
     Ok(json!({ "results": results }))
 }
@@ -1147,22 +1077,15 @@ pub async fn get_health_report(
     let embedding_status = embedding::status(None).await?;
     let metrics_summary = if let Some(context) = dispatch_context {
         let branch = context.workspace.branch.clone();
-        let wp = PathBuf::from(&context.workspace.path);
-        let br = branch.clone();
-        match tokio::task::spawn_blocking(move || metrics::compute_summary(&wp, &br)).await {
-            Ok(Ok(summary)) => serde_json::to_value(json!({
+        let read_context = ReadRequestContext::from_workspace_snapshot(context.workspace);
+        match metrics::load_summary(read_context.as_ref(), None).await {
+            Ok(summary) => serde_json::to_value(json!({
                 "branch": branch,
                 "summary": summary,
             }))
             .unwrap_or(Value::Null),
-            Ok(Err(EngramError::Metrics(crate::errors::MetricsError::NotFound { .. }))) => {
-                Value::Null
-            }
-            Ok(Err(error)) => return Err(error),
-            Err(join_error) => {
-                tracing::warn!(error = %join_error, "metrics computation task panicked");
-                Value::Null
-            }
+            Err(EngramError::Metrics(crate::errors::MetricsError::NotFound { .. })) => Value::Null,
+            Err(error) => return Err(error),
         }
     } else {
         Value::Null
@@ -1207,29 +1130,14 @@ pub async fn get_branch_metrics(
             reason: error.to_string(),
         })
     })?;
-    let (workspace_path, current_branch) =
-        pinned_workspace_path_and_branch(&state, "get_branch_metrics").await?;
-    let branch_name = parsed.branch_name.unwrap_or(current_branch);
-    let wp = workspace_path.clone();
-    let br = branch_name.clone();
-    let summary = tokio::task::spawn_blocking(move || metrics::compute_summary(&wp, &br))
-        .await
-        .map_err(|error| {
-            EngramError::Metrics(crate::errors::MetricsError::WriteFailed {
-                reason: format!("metrics computation task panicked: {error}"),
-            })
-        })??;
+    let context = pinned_read_request_context(&state, "get_branch_metrics").await?;
+    let branch_name = parsed
+        .branch_name
+        .unwrap_or_else(|| context.branch().to_owned());
+    let summary = metrics::load_summary(context.as_ref(), Some(branch_name.as_str())).await?;
 
     if let Some(compare_to) = parsed.compare_to {
-        let wp2 = workspace_path.clone();
-        let br2 = compare_to.clone();
-        let comparison = tokio::task::spawn_blocking(move || metrics::compute_summary(&wp2, &br2))
-            .await
-            .map_err(|error| {
-                EngramError::Metrics(crate::errors::MetricsError::WriteFailed {
-                    reason: format!("metrics computation task panicked: {error}"),
-                })
-            })??;
+        let comparison = metrics::load_summary(context.as_ref(), Some(compare_to.as_str())).await?;
         return Ok(json!({
             "branch_name": branch_name,
             "summary": summary,
@@ -1267,24 +1175,10 @@ pub async fn get_token_savings_report(
     state: SharedState,
     _params: Option<Value>,
 ) -> Result<Value, EngramError> {
-    let (workspace_path, branch) =
-        pinned_workspace_path_and_branch(&state, "get_token_savings_report").await?;
-    let wp = workspace_path.clone();
-    let br = branch.clone();
-    // Load events once, then derive both the summary and the (report-only)
-    // per-correlation breakdown from the same read.
-    let (summary, by_correlation_id) = tokio::task::spawn_blocking(move || {
-        let events = metrics::load_events(&wp, &br)?;
-        let summary = crate::models::metrics::MetricsSummary::from_events(&events);
-        let by_correlation_id = crate::models::metrics::correlation_metrics(&events);
-        Ok::<_, EngramError>((summary, by_correlation_id))
-    })
-    .await
-    .map_err(|error| {
-        EngramError::Metrics(crate::errors::MetricsError::WriteFailed {
-            reason: format!("metrics computation task panicked: {error}"),
-        })
-    })??;
+    let context = pinned_read_request_context(&state, "get_token_savings_report").await?;
+    let branch = context.branch().to_owned();
+    let (summary, by_correlation_id) =
+        metrics::load_query_statistics(context.as_ref(), None).await?;
     #[allow(clippy::cast_precision_loss)]
     let average_tokens = if summary.total_tool_calls == 0 {
         0.0
@@ -1681,19 +1575,10 @@ pub async fn get_evaluation_report(
     _params: Option<Value>,
 ) -> Result<Value, EngramError> {
     let context = pinned_dispatch_context(&state, "get_evaluation_report").await?;
-    let workspace_path = PathBuf::from(&context.workspace.path);
-    let branch = context.workspace.branch.clone();
+    let read_context = ReadRequestContext::from_workspace_snapshot(context.workspace);
     let config = context.config.evaluation.clone();
 
-    let wp = workspace_path.clone();
-    let br = branch.clone();
-    let events = tokio::task::spawn_blocking(move || metrics::load_events(&wp, &br))
-        .await
-        .map_err(|e| {
-            EngramError::Metrics(crate::errors::MetricsError::WriteFailed {
-                reason: format!("metrics load task panicked: {e}"),
-            })
-        })??;
+    let events = metrics::load_usage_events(read_context.as_ref(), None).await?;
 
     let report = crate::services::evaluation::evaluate(&events, &config);
 

@@ -19,11 +19,16 @@
 //!   block comment) rather than re-lexing.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use powerbi_tmdl_parser::{DaxDiagnostic, extract_dax_references};
+use tokio::sync::oneshot;
 
+use crate::errors::{EngramError, SystemError};
 use crate::models::powerbi::PowerBiSemanticModel;
+use crate::models::registry::{ContentSourceStatus, RegistryConfig};
+use crate::server::state::ReadRequestContext;
 use crate::services::powerbi_indexer::{ModelScopeSchema, collect_powerbi_files_in_workspace};
 use crate::services::powerbi_tmdl::{canonical_tmdl_model_path, extract_tmdl_semantic_model};
 use crate::services::verify::{Severity, VerifyFinding, VerifyReport};
@@ -34,6 +39,53 @@ use crate::services::verify::{Severity, VerifyFinding, VerifyReport};
 /// best-practice analyzers in favour of `VAR` / `RETURN` variables, which are
 /// clearer and avoid nested-row-context pitfalls.
 const DEPRECATED_FUNCTIONS: &[&str] = &["EARLIER", "EARLIEST"];
+
+struct GenerationPinTestHook {
+    reached: Option<oneshot::Sender<()>>,
+    resume: Option<oneshot::Receiver<()>>,
+}
+
+fn generation_pin_test_hooks() -> &'static Mutex<HashMap<String, GenerationPinTestHook>> {
+    static HOOKS: OnceLock<Mutex<HashMap<String, GenerationPinTestHook>>> = OnceLock::new();
+    HOOKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Install a one-shot barrier reached immediately after the DAX lint service
+/// accepts a caller-pinned read context.
+#[doc(hidden)]
+pub fn install_generation_pin_test_hook(
+    method: &str,
+    reached: oneshot::Sender<()>,
+    resume: oneshot::Receiver<()>,
+) {
+    let hook = GenerationPinTestHook {
+        reached: Some(reached),
+        resume: Some(resume),
+    };
+    generation_pin_test_hooks()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(method.to_owned(), hook);
+}
+
+async fn maybe_pause_generation_pin_test_hook(method: &str) {
+    let pending_resume = {
+        let mut hooks = generation_pin_test_hooks()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(mut hook) = hooks.remove(method) else {
+            return;
+        };
+        if let Some(reached) = hook.reached.take() {
+            let _ = reached.send(());
+        }
+        hook.resume.take()
+    };
+
+    if let Some(resume) = pending_resume {
+        let _ = resume.await;
+    }
+}
 
 /// Run the Tier-1 DAX lint over every measure and calculated column in a TMDL
 /// document.
@@ -596,6 +648,105 @@ pub enum LintError {
     },
 }
 
+fn map_lint_error(err: LintError) -> EngramError {
+    match err {
+        LintError::ModelPathNotIndexed(path) => {
+            crate::errors::EngramError::Workspace(crate::errors::WorkspaceError::NotFound { path })
+        }
+        LintError::FileUnreadable { path, reason } => {
+            EngramError::System(SystemError::DatabaseError {
+                reason: format!("failed to read indexed Power BI model file '{path}': {reason}"),
+            })
+        }
+    }
+}
+
+struct PinnedLintPaths {
+    registry_path: PathBuf,
+    scan_root: PathBuf,
+}
+
+fn pinned_lint_paths(context: &ReadRequestContext) -> Result<PinnedLintPaths, EngramError> {
+    // `data_dir` is a database/data location with no fixed positional
+    // relationship to the workspace root (the two are independently
+    // configured), so the scan root and registry path must come from the
+    // context's captured live root, not from deriving a guess out of
+    // `data_dir`.
+    let root = context
+        .root_path()
+        .ok_or(crate::errors::WorkspaceError::NotSet)?
+        .to_path_buf();
+    let registry_path = crate::services::registry::registry_path_for(&root);
+    Ok(PinnedLintPaths {
+        registry_path,
+        scan_root: root,
+    })
+}
+
+/// Load the DAX lint report through the caller's pinned read context.
+///
+/// The caller owns request pinning and workspace-root capture; this service
+/// consumes that pinned view without consulting live app state or opening a
+/// database of its own.
+///
+/// # Errors
+///
+/// Returns any registry-validation error, active-model read error, or worker
+/// join failure encountered while computing the lint report.
+pub async fn load_lint_report(
+    context: &ReadRequestContext,
+    model_path_filter: Option<&str>,
+) -> Result<VerifyReport, EngramError> {
+    tracing::debug!(
+        workspace_id = context.workspace_id(),
+        has_generation = context.generation().is_some(),
+        "loading DAX lint report through caller-pinned context"
+    );
+    maybe_pause_generation_pin_test_hook("load_lint_report").await;
+
+    let pinned_paths = pinned_lint_paths(context)?;
+    let model_path_filter = model_path_filter.map(ToOwned::to_owned);
+
+    tokio::task::spawn_blocking(move || -> Result<VerifyReport, EngramError> {
+        let (source_paths, max_file_size) =
+            match crate::services::registry::load_registry(&pinned_paths.registry_path) {
+                Ok(Some(mut config)) => {
+                    crate::services::registry::validate_sources(
+                        &mut config,
+                        &pinned_paths.scan_root,
+                    )?;
+                    let limit = config.max_file_size_bytes;
+                    let paths = config
+                        .sources
+                        .into_iter()
+                        .filter(|source| {
+                            source.content_type == "powerbi"
+                                && source.status == ContentSourceStatus::Active
+                        })
+                        .map(|source| source.path)
+                        .collect::<Vec<_>>();
+                    (paths, limit)
+                }
+                Ok(None) => (Vec::new(), RegistryConfig::default().max_file_size_bytes),
+                Err(error) => return Err(error),
+            };
+
+        lint_indexed_models(
+            &pinned_paths.scan_root,
+            &source_paths,
+            max_file_size,
+            model_path_filter.as_deref(),
+        )
+        .map_err(map_lint_error)
+    })
+    .await
+    .map_err(|error| {
+        EngramError::System(SystemError::DatabaseError {
+            reason: format!("load_lint_report worker failed: {error}"),
+        })
+    })?
+}
+
 /// Aggregated per-scope state collected while walking the indexed `.tmdl` files.
 #[derive(Default)]
 struct ScopeState {
@@ -607,7 +758,7 @@ struct ScopeState {
 /// references against a model-scope-aggregated schema rebuilt from the CURRENT
 /// on-disk state of every sibling `.tmdl` file.
 ///
-/// `workspace_root` is the bound workspace directory; `source_paths` are the
+/// `scan_root` is the bound workspace directory; `source_paths` are the
 /// registry `powerbi` content-source paths (relative to the workspace root);
 /// `max_file_size` is the registry's per-file byte limit. A discovered `.tmdl`
 /// that resolves (via `canonicalize`) outside the canonical workspace root — for
@@ -627,7 +778,7 @@ struct ScopeState {
 /// clears a previously-broken reference — independent of which files an
 /// incremental index pass reprocessed.
 pub fn lint_indexed_models(
-    workspace_root: &Path,
+    scan_root: &Path,
     source_paths: &[String],
     max_file_size: u64,
     model_path_filter: Option<&str>,
@@ -635,18 +786,18 @@ pub fn lint_indexed_models(
     // Canonical workspace root for the symlink-containment guard below. When the
     // root cannot be canonicalised the guard is skipped (there is nothing safe to
     // compare against), which matches the pre-existing lenient behaviour.
-    let canonical_root = workspace_root.canonicalize().ok();
+    let canonical_root = scan_root.canonicalize().ok();
 
     // Group every indexed `.tmdl` file by its canonical model scope, unioning
     // each parsed model into that scope's aggregated schema (BTreeMap keeps the
     // findings order deterministic across scopes).
     let mut scopes: BTreeMap<String, ScopeState> = BTreeMap::new();
     for source_path in source_paths {
-        let source_dir = workspace_root.join(source_path);
+        let source_dir = scan_root.join(source_path);
         if !source_dir.is_dir() {
             continue;
         }
-        for file_path in collect_powerbi_files_in_workspace(&source_dir, workspace_root) {
+        for file_path in collect_powerbi_files_in_workspace(&source_dir, scan_root) {
             let is_tmdl = file_path
                 .extension()
                 .and_then(|ext| ext.to_str())
@@ -673,7 +824,7 @@ pub fn lint_indexed_models(
                 }
             }
             let rel_path = file_path
-                .strip_prefix(workspace_root)
+                .strip_prefix(scan_root)
                 .unwrap_or(&file_path)
                 .to_string_lossy()
                 .replace('\\', "/");

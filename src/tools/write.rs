@@ -16,6 +16,8 @@ use crate::db::workspace::{resolve_git_branch, workspace_hash};
 use crate::errors::{CodeGraphError, EngramError, MetricsError, SystemError, WorkspaceError};
 use crate::models::config::CodeGraphConfig;
 use crate::models::health::ScanProgress;
+#[cfg(feature = "git-graph")]
+use crate::server::state::ReadRequestContext;
 use crate::server::state::{
     ClaimOutcome, CompletionOutcome, CoordinatorCell, DispatchSnapshot, DriverTaskGuard, OwnerKind,
     OwnerPermit, OwnerProgressScope, RequestOutcome, SharedState, WorkMask,
@@ -23,14 +25,6 @@ use crate::server::state::{
 };
 use crate::services::dehydration;
 use crate::services::hydration;
-
-#[cfg(feature = "git-graph")]
-async fn workspace_path(state: &SharedState) -> Result<PathBuf, EngramError> {
-    if let Some(snapshot) = state.snapshot_workspace().await {
-        return Ok(PathBuf::from(snapshot.path));
-    }
-    Err(EngramError::Workspace(WorkspaceError::NotSet))
-}
 
 pub async fn flush_state(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
     // FR-153: Reject flush while indexing — code graph may be in inconsistent state
@@ -1297,14 +1291,12 @@ pub async fn index_git_history(
     state: SharedState,
     params: Option<Value>,
 ) -> Result<Value, EngramError> {
-    let ws_path = workspace_path(&state).await?;
-    let (data_dir, branch) = {
-        let snap = state
-            .snapshot_workspace()
-            .await
-            .ok_or(EngramError::Workspace(WorkspaceError::NotSet))?;
-        (snap.data_dir.clone(), snap.branch.clone())
-    };
+    let snapshot = state
+        .snapshot_workspace()
+        .await
+        .ok_or(EngramError::Workspace(WorkspaceError::NotSet))?;
+    let ws_path = PathBuf::from(&snapshot.path);
+    let context = ReadRequestContext::from_workspace_snapshot(snapshot);
 
     let parsed: IndexGitHistoryParams = serde_json::from_value(params.unwrap_or_else(|| json!({})))
         .map_err(|e| {
@@ -1321,12 +1313,17 @@ pub async fn index_git_history(
 
     let depth = parsed.depth.unwrap_or(0); // None → service uses default 500
 
-    let db = connect_db(&data_dir, &branch).await?;
+    let db = connect_db(context.data_dir(), context.branch()).await?;
     let queries = CodeGraphQueries::new(db);
 
-    let summary =
-        crate::services::git_graph::index_git_history(&queries, &ws_path, depth, parsed.force)
-            .await?;
+    let summary = crate::services::git_graph::index_git_history_from_context(
+        context.as_ref(),
+        &queries,
+        &ws_path,
+        depth,
+        parsed.force,
+    )
+    .await?;
 
     serde_json::to_value(&summary).map_err(|e| {
         EngramError::System(SystemError::DatabaseError {

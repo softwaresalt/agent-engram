@@ -5,9 +5,16 @@
 //! When the `embeddings` feature is disabled, the engine falls back to
 //! keyword-only ranking (the vector component is zero).
 
-use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
+use serde::{Deserialize, Serialize};
+use tokio::sync::oneshot;
+
+use crate::db::queries::CodeGraphQueries;
 use crate::errors::EngramError;
+use crate::models::{BacklogContentRecord, ContentRecord};
+use crate::server::state::ReadRequestContext;
 use crate::services::embedding;
 
 /// Weight for vector similarity in final score.
@@ -67,6 +74,152 @@ pub struct SearchCandidate {
     pub fallback_reason: Option<String>,
     pub lint_summary: Option<String>,
     pub suggestions: Vec<String>,
+}
+
+struct GenerationPinTestHook {
+    reached: Option<oneshot::Sender<()>>,
+    resume: Option<oneshot::Receiver<()>>,
+}
+
+fn generation_pin_test_hooks() -> &'static Mutex<HashMap<String, GenerationPinTestHook>> {
+    static HOOKS: OnceLock<Mutex<HashMap<String, GenerationPinTestHook>>> = OnceLock::new();
+    HOOKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Install a one-shot barrier reached immediately after the search service accepts a pinned context.
+#[doc(hidden)]
+pub fn install_generation_pin_test_hook(
+    method: &str,
+    reached: oneshot::Sender<()>,
+    resume: oneshot::Receiver<()>,
+) {
+    let hook = GenerationPinTestHook {
+        reached: Some(reached),
+        resume: Some(resume),
+    };
+    generation_pin_test_hooks()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(method.to_owned(), hook);
+}
+
+async fn maybe_pause_generation_pin_test_hook(method: &str) {
+    let pending_resume = {
+        let mut hooks = generation_pin_test_hooks()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(mut hook) = hooks.remove(method) else {
+            return;
+        };
+        if let Some(reached) = hook.reached.take() {
+            let _ = reached.send(());
+        }
+        hook.resume.take()
+    };
+
+    if let Some(resume) = pending_resume {
+        let _ = resume.await;
+    }
+}
+
+fn content_record_title(record: &ContentRecord) -> Option<String> {
+    record.heading_path.last().cloned().or_else(|| {
+        std::path::Path::new(&record.file_path)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .filter(|stem| !stem.is_empty())
+            .map(ToOwned::to_owned)
+    })
+}
+
+fn content_record_line_range(record: &ContentRecord) -> Option<String> {
+    match (record.line_start, record.line_end) {
+        (Some(start), Some(end)) => Some(format!("L{start}-L{end}")),
+        (Some(start), None) => Some(format!("L{start}")),
+        _ => None,
+    }
+}
+
+fn content_record_candidate(record: ContentRecord) -> SearchCandidate {
+    SearchCandidate {
+        id: format!("content_record:{}", record.id),
+        source_type: record.content_type.clone(),
+        content: record.content.clone(),
+        embedding: record.embedding.clone(),
+        title: content_record_title(&record),
+        file_path: Some(record.file_path.clone()),
+        line_range: content_record_line_range(&record),
+        record_kind: Some(record.record_kind.clone()),
+        heading_path: record.heading_path.clone(),
+        fallback_reason: record.fallback_reason.clone(),
+        lint_summary: record.lint_summary.clone(),
+        suggestions: record.suggestions.clone(),
+    }
+}
+
+fn backlog_content_candidate(record: BacklogContentRecord) -> SearchCandidate {
+    SearchCandidate {
+        id: format!("backlog_content_record:{}", record.file_path),
+        source_type: record.content_type.clone(),
+        content: record.content.clone(),
+        embedding: None,
+        title: Some(record.file_path.clone()),
+        file_path: Some(record.file_path),
+        line_range: None,
+        record_kind: Some("file".to_owned()),
+        heading_path: Vec::new(),
+        fallback_reason: None,
+        lint_summary: None,
+        suggestions: Vec::new(),
+    }
+}
+
+/// Run `query_memory`'s content search over queries opened by the caller's pinned context.
+///
+/// The caller owns request pinning and query opening; this service consumes that
+/// pinned view without opening or re-deriving a database path of its own. That
+/// keeps managed-mode behavior unchanged today while letting a read-server pass
+/// its already-pinned generation context through the same seam.
+///
+/// # Errors
+///
+/// Returns any content-query or query-validation error from the provided
+/// [`CodeGraphQueries`] or from [`hybrid_search`].
+pub async fn query_memory_results(
+    context: &ReadRequestContext,
+    queries: &CodeGraphQueries,
+    query: &str,
+    limit: usize,
+    content_type: Option<&str>,
+) -> Result<Vec<SearchResult>, EngramError> {
+    tracing::debug!(
+        workspace_id = context.workspace_id(),
+        has_generation = context.generation().is_some(),
+        limit,
+        content_type = ?content_type,
+        "running query_memory through caller-pinned context"
+    );
+    maybe_pause_generation_pin_test_hook("query_memory_results").await;
+
+    let mut candidates: Vec<SearchCandidate> = queries
+        .select_content_records(content_type)
+        .await?
+        .into_iter()
+        .map(content_record_candidate)
+        .collect();
+
+    let include_backlog = content_type.is_none_or(|ct| ct == "backlog");
+    if include_backlog {
+        candidates.extend(
+            queries
+                .select_backlog_content_records(None)
+                .await?
+                .into_iter()
+                .map(backlog_content_candidate),
+        );
+    }
+
+    hybrid_search(query, &candidates, limit)
 }
 
 // ── Unified Semantic Search Types (Phase 7 — US5) ────────────────────────

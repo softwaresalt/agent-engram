@@ -5,15 +5,19 @@
 //! All `git2` operations execute inside `tokio::task::spawn_blocking`
 //! to avoid blocking the async runtime.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use chrono::{TimeZone, Utc};
 use git2::{Delta, DiffOptions, Repository, Sort};
+use tokio::sync::oneshot;
 
 use crate::{
     db::queries::CodeGraphQueries,
     errors::{EngramError, GitGraphError},
     models::{ChangeRecord, ChangeType, CommitNode},
+    server::state::ReadRequestContext,
 };
 
 /// Default number of commits to walk when no depth is specified.
@@ -24,6 +28,52 @@ const CONTEXT_LINES: u32 = 20;
 
 /// Maximum diff lines per file before truncation.
 const MAX_DIFF_LINES: usize = 500;
+
+struct GenerationPinTestHook {
+    reached: Option<oneshot::Sender<()>>,
+    resume: Option<oneshot::Receiver<()>>,
+}
+
+fn generation_pin_test_hooks() -> &'static Mutex<HashMap<String, GenerationPinTestHook>> {
+    static HOOKS: OnceLock<Mutex<HashMap<String, GenerationPinTestHook>>> = OnceLock::new();
+    HOOKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Install a one-shot barrier reached immediately after the git-graph service accepts a pinned context.
+#[doc(hidden)]
+pub fn install_generation_pin_test_hook(
+    method: &str,
+    reached: oneshot::Sender<()>,
+    resume: oneshot::Receiver<()>,
+) {
+    let hook = GenerationPinTestHook {
+        reached: Some(reached),
+        resume: Some(resume),
+    };
+    generation_pin_test_hooks()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(method.to_owned(), hook);
+}
+
+async fn maybe_pause_generation_pin_test_hook(method: &str) {
+    let pending_resume = {
+        let mut hooks = generation_pin_test_hooks()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(mut hook) = hooks.remove(method) else {
+            return;
+        };
+        if let Some(reached) = hook.reached.take() {
+            let _ = reached.send(());
+        }
+        hook.resume.take()
+    };
+
+    if let Some(resume) = pending_resume {
+        let _ = resume.await;
+    }
+}
 
 /// Summary returned by [`index_git_history`].
 #[derive(Debug, serde::Serialize)]
@@ -36,6 +86,35 @@ pub struct IndexSummary {
     pub total_changes: u32,
     /// Wall-clock milliseconds for the full indexing run.
     pub elapsed_ms: u64,
+}
+
+/// Index git history through the caller's pinned read context.
+///
+/// The caller owns request pinning, query opening, and workspace-root capture.
+/// This service consumes that pinned view without opening or re-deriving a
+/// database path of its own. The repository path remains a caller-supplied,
+/// already-pinned operational input.
+///
+/// # Errors
+///
+/// Returns any git-repository discovery or history-walk error from
+/// [`index_git_history`], plus a worker-join error if the test barrier task is
+/// cancelled while a test is pausing the request.
+pub async fn index_git_history_from_context(
+    context: &ReadRequestContext,
+    db: &CodeGraphQueries,
+    workspace_path: &Path,
+    depth: u32,
+    force: bool,
+) -> Result<IndexSummary, EngramError> {
+    tracing::debug!(
+        workspace_id = context.workspace_id(),
+        has_generation = context.generation().is_some(),
+        "indexing git history through caller-pinned context"
+    );
+    maybe_pause_generation_pin_test_hook("index_git_history_from_context").await;
+
+    index_git_history(db, workspace_path, depth, force).await
 }
 
 /// Index the git history of the workspace into `commit_node` records.
