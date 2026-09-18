@@ -46,7 +46,7 @@ report) was applied directly (`adf2d274`).
   green/healthy), `api`/MCP (full contract-test suite green in canonical
   debug-mode gate; a release-profile-only timing sensitivity in 2/19
   pre-existing, unmodified shim tests was observed and confirmed unrelated
-  to 140-S), `background-job` (all 6 service-migration harnesses +ent the
+  to 140-S), `background-job` (all 6 service-migration harnesses plus the
   static guard, all green).
 - **Manual checkpoints**: none declared for these surfaces beyond the
   automated probes.
