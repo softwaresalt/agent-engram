@@ -203,16 +203,14 @@ async fn dax_lint_service_stays_on_the_old_generation_after_publication() {
     let context = ReadRequestContext::from_managed_state(fixture.state.as_ref())
         .await
         .expect("capture pinned managed lint context");
-    let workspace_root = PathBuf::from(&fixture.snap_a.path);
 
     let (reached_tx, reached_rx) = oneshot::channel();
     let (resume_tx, resume_rx) = oneshot::channel();
     dax_lint::install_generation_pin_test_hook("load_lint_report", reached_tx, resume_rx);
 
     let context = Arc::clone(&context);
-    let task = tokio::spawn(async move {
-        dax_lint::load_lint_report(context.as_ref(), &workspace_root, None).await
-    });
+    let task =
+        tokio::spawn(async move { dax_lint::load_lint_report(context.as_ref(), None).await });
 
     reached_rx
         .await

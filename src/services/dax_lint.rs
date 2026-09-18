@@ -666,16 +666,21 @@ struct PinnedLintPaths {
     scan_root: PathBuf,
 }
 
-fn pinned_lint_paths(context: &ReadRequestContext) -> PinnedLintPaths {
-    let data_dir = context.data_dir().to_path_buf();
-    let scan_root = data_dir
-        .parent()
-        .map_or_else(|| data_dir.clone(), Path::to_path_buf);
-    let registry_path = data_dir.join("registry.yaml");
-    PinnedLintPaths {
+fn pinned_lint_paths(context: &ReadRequestContext) -> Result<PinnedLintPaths, EngramError> {
+    // `data_dir` is a database/data location with no fixed positional
+    // relationship to the workspace root (the two are independently
+    // configured), so the scan root and registry path must come from the
+    // context's captured live root, not from deriving a guess out of
+    // `data_dir`.
+    let root = context
+        .root_path()
+        .ok_or(crate::errors::WorkspaceError::NotSet)?
+        .to_path_buf();
+    let registry_path = crate::services::registry::registry_path_for(&root);
+    Ok(PinnedLintPaths {
         registry_path,
-        scan_root,
-    }
+        scan_root: root,
+    })
 }
 
 /// Load the DAX lint report through the caller's pinned read context.
@@ -690,7 +695,6 @@ fn pinned_lint_paths(context: &ReadRequestContext) -> PinnedLintPaths {
 /// join failure encountered while computing the lint report.
 pub async fn load_lint_report(
     context: &ReadRequestContext,
-    _pinned_path_hint: &Path,
     model_path_filter: Option<&str>,
 ) -> Result<VerifyReport, EngramError> {
     tracing::debug!(
@@ -700,7 +704,7 @@ pub async fn load_lint_report(
     );
     maybe_pause_generation_pin_test_hook("load_lint_report").await;
 
-    let pinned_paths = pinned_lint_paths(context);
+    let pinned_paths = pinned_lint_paths(context)?;
     let model_path_filter = model_path_filter.map(ToOwned::to_owned);
 
     tokio::task::spawn_blocking(move || -> Result<VerifyReport, EngramError> {

@@ -5,7 +5,7 @@
 //! the workspace root for security and existence.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use serde_json::{Value, json};
@@ -114,6 +114,19 @@ pub fn parse_registry_yaml(yaml_str: &str) -> Result<RegistryConfig, EngramError
     Ok(config)
 }
 
+/// Resolve the `.engram/registry.yaml` path for a given live workspace root.
+///
+/// Kept as a single shared helper so every caller that needs the registry
+/// file's on-disk location derives it identically from the actual workspace
+/// root, rather than each caller guessing at a fixed positional relationship
+/// between the registry file and some other directory (for example, the
+/// database data directory, which is independently configured and carries no
+/// such relationship).
+#[must_use]
+pub fn registry_path_for(workspace_root: &Path) -> PathBuf {
+    workspace_root.join(".engram").join("registry.yaml")
+}
+
 /// Load a [`RegistryConfig`] from a file at the given path.
 ///
 /// Returns `Ok(None)` if the file does not exist (legacy fallback).
@@ -163,15 +176,17 @@ pub async fn load_registry_status(
     );
     maybe_pause_generation_pin_test_hook("load_registry_status").await;
 
-    let data_dir = context.data_dir().to_path_buf();
-    let workspace_root = data_dir
-        .parent()
-        .map_or_else(|| data_dir.clone(), Path::to_path_buf);
-    let registry_path = data_dir.join("registry.yaml");
+    let Some(root) = context.root_path().map(Path::to_path_buf) else {
+        // ReadServer/generation mode has no live workspace filesystem root;
+        // registry status is a soft, best-effort statistic, so degrade to
+        // "unavailable" rather than erroring the whole request.
+        return Ok(None);
+    };
+    let registry_path = registry_path_for(&root);
 
     tokio::task::spawn_blocking(move || match load_registry(&registry_path) {
         Ok(Some(mut config)) => {
-            let _ = validate_sources(&mut config, &workspace_root);
+            let _ = validate_sources(&mut config, &root);
             let sources: Vec<Value> = config
                 .sources
                 .iter()

@@ -147,8 +147,9 @@ fn registry_service_reads_through_the_caller_pinned_context() {
         "registry service must not open a database directly"
     );
     assert!(
-        service_body.contains("context.data_dir()"),
-        "registry service must resolve registry.yaml from the caller-pinned context"
+        service_body.contains("context.root_path()"),
+        "registry service must resolve registry.yaml from the caller-pinned context's live \
+         workspace root, not from the independently-configured data directory"
     );
 
     let read_source_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

@@ -124,12 +124,7 @@ pub async fn lint_dax(state: SharedState, params: Option<Value>) -> Result<Value
         .map(|path| path.trim().to_owned())
         .filter(|path| !path.is_empty());
 
-    let report = load_lint_report(
-        read_context.as_ref(),
-        read_context.data_dir(),
-        model_path.as_deref(),
-    )
-    .await?;
+    let report = load_lint_report(read_context.as_ref(), model_path.as_deref()).await?;
 
     serde_json::to_value(&report).map_err(|e| {
         EngramError::System(SystemError::DatabaseError {
