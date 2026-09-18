@@ -25,15 +25,29 @@ report) was applied directly (`adf2d274`).
 
 ## CI status and unresolved review items
 
-- Hosted CI (PR #404, HEAD `adf2d274`): `build` **PASS**,
-  `start-launcher-windows` **PASS** (required 2 reruns; pre-existing hosted-runner
-  timing flake, stash `F58ECAA8`).
+**Corrected 2026-09-18 (readiness audit)**: this section previously cited
+stale evidence pinned to HEAD `adf2d274` (Copilot pass 1 only) after two
+further content commits and two further Copilot passes had already landed.
+The status below reflects the last HEAD examined by this audit,
+`afb705ab`; this record does not track HEAD advances that occur after the
+commit containing it — the PR's mutable `## Local Review Readiness` block
+is the authoritative current-HEAD source.
+
+- Hosted CI (PR #404, HEAD `afb705ab`): `build` **PASS**,
+  `start-launcher-windows` **PASS** (required reruns across several pushed
+  HEADs; pre-existing hosted-runner timing flake, stash `F58ECAA8`).
 - Local adversarial review: `READY_WITH_FOLLOWUPS`, `P0=0, P1=0` blocking.
-- GitHub-hosted Copilot review: engaged automatically, 6 comments across 6
-  threads, all replied-to and resolved. P-018 gate
+- GitHub-hosted Copilot review: engaged automatically across 3 review
+  passes (re-arming per push), 9 threads total, all replied-to and
+  resolved as of `afb705ab`. P-018 gate
   (`autoharness gate copilot-review 404 ...`) verdict: **`SATISFIED`** for
-  HEAD `adf2d274`, 0 unresolved threads.
-- No unresolved review items remain open on this PR.
+  HEAD `afb705ab`, 0 unresolved threads at that HEAD.
+- A 3rd Copilot pass, submitted after `afb705ab` was pushed, flagged that
+  this closure record and the shipment execution memory checkpoint had not
+  been refreshed after that push, and that the follow-up stash list below
+  omitted `DB0661A6`. Both are corrected in this same audit pass; see the
+  follow-up row below for the corrected list.
+- No unresolved review items remain open on this PR as of this audit.
 
 ## Runtime verification report
 
@@ -170,7 +184,7 @@ post-merge closure (Step 6), which has not yet run. This shipment is still
 | rollback-procedure | **Satisfied** — standard GitHub Release reinstall + `.engram/` flush; no migration to reverse. |
 | owner | **Satisfied** — repository maintainer / release owner. |
 | validation-window | **Satisfied** — through next tagged release + 48h. |
-| follow-up (optional) | **Satisfied** — 5 newly-captured/reused deferred stash entries (`E6CA4ED1`, `7C23A682`, `9BB01D31`, `A3E0E607`) plus reused `10EE5E43`, `F58ECAA8`, `DA0AF326`; none block this PR's own scope. |
+| follow-up (optional) | **Satisfied** — **corrected 2026-09-18 (readiness audit)**: 6 stash entries newly captured during 140-S (`E6CA4ED1`, `10EE5E43`, `9BB01D31`, `A3E0E607`, `7C23A682`, `DB0661A6` — the last of these, a path-traversal-shaped finding on `branch_name`/`compare_to`, was previously omitted from this row) plus 2 entries reused from a prior shipment (`F58ECAA8`, `DA0AF326`); none block this PR's own scope. |
 
 **Overall status: `READY_WITH_CONDITIONS`**
 

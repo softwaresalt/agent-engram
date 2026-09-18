@@ -19,8 +19,20 @@ title: Retrieval eval service pin memory
 ## Decisions and rationale
 
 * Kept `get_retrieval_eval_report` MCP-only; no CLI wiring changed
-* Preserved the existing `.engram` report path contract by continuing to resolve the report directory from the pinned workspace path in the handler, while moving the branch-sensitive read logic behind the service seam
-* Left `retrieval_eval` semantic ranking on `hybrid_rank_of`; it already operates on in-memory candidates and does not need the pinned `query_memory_results` service seam from `search.rs`
+* **Corrected 2026-09-18 (140-S readiness audit)**: the bullet below originally
+  claimed the reader "continues to resolve the report directory from the
+  pinned workspace path." That is not what the shipped code does: the
+  handler passes `context.data_dir()` to `load_latest_report`, while
+  `run_retrieval_eval`'s writer still persists under
+  `workspace_path.join(".engram")` (`src/tools/eval.rs`). These two
+  locations coincide only in the unconfigured default case and diverge
+  under a configured `ENGRAM_DATA_DIR`; this is a real reader/writer path
+  divergence, not a preserved contract. Tracked as deferred stash
+  `7C23A682` (same architectural class as metrics.rs's `E6CA4ED1`); no fix
+  is included in 142.042-T's scope (single-owned-file migration). Left
+  `retrieval_eval` semantic ranking on `hybrid_rank_of`; it already operates
+  on in-memory candidates and does not need the pinned `query_memory_results`
+  service seam from `search.rs`
 
 ## Validation
 

@@ -282,8 +282,11 @@ pre-accepted `.backlogit/stash.jsonl` modification.
        sanitizer applied uniformly across the untouched writer path and all reader
        paths — materially larger than this shipment's scope. Deferred as new stash
        `DB0661A6` (high, requires_deliberation: true).
-    Both threads replied-to and resolved. P-018 gate re-run: `SATISFIED` at final
-    HEAD `4f4d4486`, 0 unresolved threads.
+    Both threads replied-to and resolved. P-018 gate re-run: `SATISFIED` at
+    HEAD `4f4d4486` (the HEAD current at that point in the session; a further
+    checkpoint commit and a 3rd Copilot pass followed — see the correction
+    note at the top of the "Pre-merge state as of commit `4f4d4486`" section
+    below).
 * **Discovery/reuse protocol applied consistently**: searched both
   `.backlogit/stash.jsonl` (active) and `.backlogit/archive/stash.jsonl` (archived)
   before every capture this segment. Confirmed 3 exact reuse matches (`F58ECAA8` for
@@ -322,14 +325,26 @@ pre-accepted `.backlogit/stash.jsonl` modification.
 * Committed both docs (`1745e531`), later fixed a typo in the closure doc (`4f4d4486`,
   per Copilot pass 2 finding 7 above).
 
-## Final pre-merge state (end of this session segment)
+## Pre-merge state as of commit `4f4d4486` (historical checkpoint)
 
-* **PR #404**: OPEN, `mergeable: MERGEABLE`, `mergeStateStatus: CLEAN`, HEAD
-  `4f4d4486`.
+**Corrected 2026-09-18 (readiness audit)**: this section, as originally
+written in the commit containing this record, called `4f4d4486` the "final"
+HEAD. That claim was already stale at the moment of that commit, because
+the commit containing this record was itself pushed after `4f4d4486` (and a
+3rd Copilot pass ran after that push, flagging the same staleness on this
+file and on the operational-closure doc, plus a missing follow-up stash
+entry there). This section is left below as an accurate historical record
+of state at commit `4f4d4486`; it is not further edited to chase each
+subsequent HEAD. The PR's mutable `## Local Review Readiness` block — not
+this file — is the operator-visible, gating-authoritative source for
+current-HEAD status.
+
+* **PR #404**: as of `4f4d4486`: OPEN, `mergeable: MERGEABLE`,
+  `mergeStateStatus: CLEAN`, HEAD `4f4d4486`.
 * **CI**: `build` PASS (6m19s), `start-launcher-windows` PASS (2m4s) — both green at
-  final HEAD.
-* **P-018 copilot-review gate**: `SATISFIED` at final HEAD `4f4d4486`, 0 unresolved
-  threads (8 total threads across 2 passes, all replied-to and resolved).
+  that HEAD.
+* **P-018 copilot-review gate**: `SATISFIED` at HEAD `4f4d4486`, 0 unresolved
+  threads at that point (8 total threads across 2 passes, all replied-to and resolved).
 * **P-009 merge-strategy check**: repo settings confirmed
   `allow_merge_commit=true, allow_squash_merge=false, allow_rebase_merge=false` —
   merge-commit-only, compliant.

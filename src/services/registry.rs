@@ -156,10 +156,13 @@ pub fn load_registry(registry_path: &Path) -> Result<Option<RegistryConfig>, Eng
 
 /// Load registry status through the caller's pinned read context.
 ///
-/// Reads the registry file from the pinned `.engram` data directory and
-/// validates its source paths against the matching pinned workspace root. The
-/// caller owns request pinning; this service consumes that pinned view without
-/// consulting live `AppState` or opening any database of its own.
+/// Reads `registry.yaml` from `.engram` under the caller's pinned live
+/// workspace root (`context.root_path()`), not the independently
+/// configurable pinned data directory (`context.data_dir()`) — those two
+/// locations intentionally diverge whenever `ENGRAM_DATA_DIR` retargets the
+/// data directory away from `{workspace}/.engram`. The caller owns request
+/// pinning; this service consumes that pinned view without consulting live
+/// `AppState` or opening any database of its own.
 ///
 /// # Errors
 ///
