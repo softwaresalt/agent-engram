@@ -112,3 +112,37 @@ Ship post-merge closure protocol (Step 6) applies to source/shipment scope — t
 Stage's own artifacts becoming visible on `main`; no shipment closure, no operational-closure
 artifact, no compact-context mandatory invocation is triggered by this specific merge since P-020
 attaches to shipment-scoped release units, and this session created none.
+
+## Addendum (post-publication, 2026-09-18) — PR #403 Copilot review corrections
+
+This addendum supersedes stale content above; the original narrative above is left intact
+verbatim as a historical record of the state observed during the #402 session itself, not
+rewritten.
+
+1. **PR #402 has since merged.** GitHub confirms `state: MERGED`, merge commit
+   `b9b0eb98e00d47566c392480cef8580a7730cc81`, merged at `2026-09-18T04:55:36Z` (matches local
+   `main` history: `b9b0eb98 docs(stage): publish Group A/B checkpoint-lane determination
+   (no shipment, no implementation) (#402)`). The "Final state" section's `State: OPEN` line,
+   the "Exact approval needed before merge" section, and Resume-hint steps (1)-(3) above are
+   **OBSOLETE** as of this addendum — no further approval, gate re-run, or merge action is
+   needed for #402. This addendum, not the original prose above it, is authoritative for #402's
+   current disposition.
+2. **The P-020 exemption claim in Resume-hint step (4) is contested, not settled.** Ship's
+   original framing asserted that "no compact-context mandatory invocation is triggered by
+   this specific merge since P-020 attaches to shipment-scoped release units." A PR #403
+   Copilot review comment correctly notes that P-020's Statement text
+   (`.github/policies/workflow-policies.md` P-020) mandates compact-context invocation "at
+   every post-merge closure" with no explicit shipment-only carve-out in that text, and that
+   the "no-shipment, publication-only... Step 1.5 staging-artifact publication path" framing
+   used above to justify the exemption is not a documented exception anywhere in
+   `.github/agents/_ship.agent.md`. Ship is not authorized to unilaterally settle this
+   policy-interpretation question, and actually invoking compact-context for the #402 merge is
+   outside PR #403's tightly-bounded docs/memory-hygiene scope (that would be closure
+   execution, not a documentation correction). This is captured as a P-021
+   deferred-scope-expansion stash entry for Stage's mandatory C6 deliberation intake:
+   `F8136703` — "Determine whether P-020 compact-context invocation was required for PR #402
+   merge (no-shipment, publication-only Ship session) and remediate if so." No compact-context
+   invocation and no other execution was performed in PR #403 to resolve this question; the
+   original step (4) exemption claim above should be read as **Ship's contested, unresolved
+   position at the time it was written**, not settled fact, pending Stage's disposition of the
+   linked stash entry.
