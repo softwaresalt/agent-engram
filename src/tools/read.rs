@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -10,10 +10,10 @@ use crate::db::connect_db;
 use crate::db::queries::{CodeGraphQueries, FindPathResult, QueryGraphResult, SymbolFilter};
 use crate::errors::{CodeGraphError, EngramError, QueryError, SystemError, WorkspaceError};
 use crate::models::TraversalDirection;
-use crate::server::state::{DispatchSnapshot, SharedState};
+use crate::server::state::{DispatchSnapshot, ReadRequestContext, SharedState};
 use crate::services::embedding;
 use crate::services::metrics;
-use crate::services::search::{SearchCandidate, hybrid_search};
+use crate::services::search::query_memory_results;
 use crate::services::search::{SearchRegion, UnifiedSearchResult, merge_unified_results};
 
 struct GenerationPinTestHook {
@@ -90,6 +90,24 @@ async fn maybe_pinned_dispatch_context(
         maybe_pause_generation_pin_test_hook(method).await;
     }
     context
+}
+
+async fn pinned_read_request_context(
+    state: &SharedState,
+    method: &str,
+) -> Result<Arc<ReadRequestContext>, EngramError> {
+    let context = ReadRequestContext::from_managed_state(state.as_ref())
+        .await
+        .map_err(EngramError::Workspace)?;
+    maybe_pause_generation_pin_test_hook(method).await;
+    Ok(context)
+}
+
+async fn queries_from_read_context(
+    context: &ReadRequestContext,
+) -> Result<CodeGraphQueries, EngramError> {
+    let db = connect_db(context.data_dir(), context.branch()).await?;
+    Ok(CodeGraphQueries::new(db))
 }
 
 async fn pinned_queries(
@@ -234,57 +252,16 @@ pub async fn query_memory(state: SharedState, params: Option<Value>) -> Result<V
     // Validate query length before any DB or model work.
     embedding::validate_query_length(&parsed.query)?;
 
-    let (_context, queries) = pinned_queries(&state, "query_memory").await?;
-    let mut candidates: Vec<SearchCandidate> = Vec::new();
-    let content_records = queries
-        .select_content_records(parsed.content_type.as_deref())
-        .await?;
-    for cr in content_records {
-        candidates.push(SearchCandidate {
-            id: format!("content_record:{}", cr.id),
-            source_type: cr.content_type.clone(),
-            content: cr.content.clone(),
-            embedding: cr.embedding.clone(),
-            title: content_record_title(&cr),
-            file_path: Some(cr.file_path.clone()),
-            line_range: content_record_line_range(&cr),
-            record_kind: Some(cr.record_kind.clone()),
-            heading_path: cr.heading_path.clone(),
-            fallback_reason: cr.fallback_reason.clone(),
-            lint_summary: cr.lint_summary.clone(),
-            suggestions: cr.suggestions.clone(),
-        });
-    }
-
-    // Include backlog content records when the filter is unset or explicitly
-    // requests "backlog" content.  Backlog records live in a separate relation
-    // (`backlog_content_record`) and have no embedding, so they participate
-    // only in lexical (BM25) matching.
-    let include_backlog = parsed
-        .content_type
-        .as_deref()
-        .is_none_or(|ct| ct == "backlog");
-    if include_backlog {
-        let backlog_records = queries.select_backlog_content_records(None).await?;
-        for bcr in backlog_records {
-            candidates.push(SearchCandidate {
-                id: format!("backlog_content_record:{}", bcr.file_path),
-                source_type: bcr.content_type,
-                content: bcr.content,
-                embedding: None,
-                title: Some(bcr.file_path.clone()),
-                file_path: Some(bcr.file_path),
-                line_range: None,
-                record_kind: Some("file".to_owned()),
-                heading_path: Vec::new(),
-                fallback_reason: None,
-                lint_summary: None,
-                suggestions: Vec::new(),
-            });
-        }
-    }
-
-    let results = hybrid_search(&parsed.query, &candidates, parsed.limit)?;
+    let context = pinned_read_request_context(&state, "query_memory").await?;
+    let queries = queries_from_read_context(context.as_ref()).await?;
+    let results = query_memory_results(
+        context.as_ref(),
+        &queries,
+        &parsed.query,
+        parsed.limit,
+        parsed.content_type.as_deref(),
+    )
+    .await?;
 
     Ok(json!({ "results": results }))
 }
