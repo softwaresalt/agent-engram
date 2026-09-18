@@ -15,7 +15,7 @@
 //! run has ever been persisted for the branch.
 
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::Value;
 use tokio::sync::oneshot;
@@ -24,17 +24,15 @@ use crate::db::connect_db;
 use crate::db::queries::CodeGraphQueries;
 use crate::errors::{EngramError, SystemError, WorkspaceError};
 use crate::models::retrieval_eval::{RetrievalEvalConfig, RetrievalEvalReport};
-use crate::server::state::SharedState;
+use crate::server::state::{ReadRequestContext, SharedState};
 use crate::services::retrieval_eval;
 
 /// Workspace facts needed to run a retrieval-evaluation.
 struct SnapshotParts {
     /// Absolute workspace root (for reading indexed source files).
     workspace_path: PathBuf,
-    /// `.engram` data directory (for the code-graph database).
-    data_dir: PathBuf,
-    /// Active branch.
-    branch: String,
+    /// Caller-pinned read context for database resolution and report loading.
+    context: Arc<ReadRequestContext>,
     /// Retrieval-eval configuration.
     config: RetrievalEvalConfig,
 }
@@ -105,10 +103,11 @@ async fn snapshot_parts(state: &SharedState, method: &str) -> Result<SnapshotPar
         .await
         .ok_or(EngramError::Workspace(WorkspaceError::NotSet))?;
     maybe_pause_generation_pin_test_hook(method).await;
+    let workspace_path = PathBuf::from(ctx.workspace.path.clone());
+    let context = ReadRequestContext::from_workspace_snapshot(ctx.workspace);
     Ok(SnapshotParts {
-        workspace_path: PathBuf::from(ctx.workspace.path),
-        data_dir: ctx.workspace.data_dir,
-        branch: ctx.workspace.branch,
+        workspace_path,
+        context,
         config: ctx.config.retrieval_eval,
     })
 }
@@ -127,8 +126,8 @@ fn to_value(report: &RetrievalEvalReport) -> Result<Value, EngramError> {
 /// Kept as a dedicated helper (rather than inlined in the caller) so `connect_db`
 /// is only ever reached through a pinned-snapshot-derived path, never called
 /// directly from a handler body.
-async fn open_queries(parts: &SnapshotParts) -> Result<CodeGraphQueries, EngramError> {
-    let db = connect_db(&parts.data_dir, &parts.branch).await?;
+async fn open_queries(context: &ReadRequestContext) -> Result<CodeGraphQueries, EngramError> {
+    let db = connect_db(context.data_dir(), context.branch()).await?;
     Ok(CodeGraphQueries::new(db))
 }
 
@@ -150,9 +149,12 @@ pub async fn run_retrieval_eval(
 ) -> Result<Value, EngramError> {
     let parts = snapshot_parts(&state, "run_retrieval_eval").await?;
     if !parts.config.enabled {
-        return to_value(&RetrievalEvalReport::empty(false, parts.branch));
+        return to_value(&RetrievalEvalReport::empty(
+            false,
+            parts.context.branch().to_owned(),
+        ));
     }
-    let queries = open_queries(&parts).await?;
+    let queries = open_queries(parts.context.as_ref()).await?;
 
     // Read the indexed function corpus. An initialized but un-indexed workspace
     // returns an empty vector normally, so an actual query error must propagate
@@ -212,7 +214,7 @@ pub async fn run_retrieval_eval(
     graph.index_stale = inventory.index_stale;
     graph.unreadable_files = inventory.unreadable_files;
 
-    let mut report = RetrievalEvalReport::empty(true, parts.branch);
+    let mut report = RetrievalEvalReport::empty(true, parts.context.branch().to_owned());
     // Record the *effective* cutoff actually used by the semantic compute
     // (`evaluate_semantic` normalizes `k = 0` to `1`), so the reported `k`
     // matches the metrics that were computed against it.
@@ -268,11 +270,11 @@ pub async fn get_retrieval_eval_report(
 ) -> Result<Value, EngramError> {
     let parts = snapshot_parts(&state, "get_retrieval_eval_report").await?;
     let engram_dir = parts.workspace_path.join(".engram");
-    if let Some(report) = retrieval_eval::latest_report(&engram_dir, &parts.branch).await? {
-        return to_value(&report);
-    }
-    to_value(&RetrievalEvalReport::empty(
+    let report = retrieval_eval::load_latest_report(
+        parts.context.as_ref(),
+        &engram_dir,
         parts.config.enabled,
-        parts.branch,
-    ))
+    )
+    .await?;
+    to_value(&report)
 }

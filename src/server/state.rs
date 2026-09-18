@@ -167,12 +167,22 @@ impl ReadRequestContext {
             .snapshot_workspace()
             .await
             .ok_or(WorkspaceError::NotSet)?;
-        Ok(Arc::new(Self {
+        Ok(Self::from_workspace_snapshot(snapshot))
+    }
+
+    /// Capture a context from an already-pinned managed-mode workspace snapshot.
+    ///
+    /// Handlers that already took an atomic [`DispatchSnapshot`] can use this
+    /// constructor to thread that exact workspace view into services expecting a
+    /// [`ReadRequestContext`], without re-reading live `AppState`.
+    #[must_use]
+    pub fn from_workspace_snapshot(snapshot: WorkspaceSnapshot) -> Arc<Self> {
+        Arc::new(Self {
             workspace_id: snapshot.workspace_id,
             branch: snapshot.branch,
             data_dir: snapshot.data_dir,
             source: ReadSource::Managed,
-        }))
+        })
     }
 
     /// Capture a context from an already-opened generation (plan unit F17).
