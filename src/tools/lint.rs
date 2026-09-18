@@ -8,7 +8,6 @@
 //! tool is read-only and daemon-backed (the resolved schema is required, per
 //! decision D1).
 
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Deserialize;
@@ -83,16 +82,16 @@ async fn maybe_pause_generation_pin_test_hook(method: &str) {
 async fn pinned_lint_context(
     state: &SharedState,
     method: &str,
-) -> Result<(PathBuf, Arc<ReadRequestContext>), EngramError> {
+) -> Result<Arc<ReadRequestContext>, EngramError> {
     let context = state
         .snapshot_dispatch_context()
         .await
         .ok_or(EngramError::Workspace(WorkspaceError::NotSet))?;
     maybe_pause_generation_pin_test_hook(method).await;
 
-    let workspace_root = PathBuf::from(context.workspace.path.clone());
-    let read_context = ReadRequestContext::from_workspace_snapshot(context.workspace);
-    Ok((workspace_root, read_context))
+    Ok(ReadRequestContext::from_workspace_snapshot(
+        context.workspace,
+    ))
 }
 
 /// Lint the DAX in the bound workspace's indexed Power BI model(s).
@@ -109,7 +108,7 @@ async fn pinned_lint_context(
 ///   decoded as UTF-8 (the registry could not be validated, or a serialization
 ///   failure occurred).
 pub async fn lint_dax(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
-    let (workspace_root, read_context) = pinned_lint_context(&state, "lint_dax").await?;
+    let read_context = pinned_lint_context(&state, "lint_dax").await?;
 
     let parsed: LintDaxParams = match params {
         Some(value) if !value.is_null() => serde_json::from_value(value).map_err(|e| {
@@ -127,7 +126,7 @@ pub async fn lint_dax(state: SharedState, params: Option<Value>) -> Result<Value
 
     let report = load_lint_report(
         read_context.as_ref(),
-        &workspace_root,
+        read_context.data_dir(),
         model_path.as_deref(),
     )
     .await?;

@@ -269,10 +269,9 @@ pub async fn get_retrieval_eval_report(
     _params: Option<Value>,
 ) -> Result<Value, EngramError> {
     let parts = snapshot_parts(&state, "get_retrieval_eval_report").await?;
-    let engram_dir = parts.workspace_path.join(".engram");
     let report = retrieval_eval::load_latest_report(
         parts.context.as_ref(),
-        &engram_dir,
+        parts.context.data_dir(),
         parts.config.enabled,
     )
     .await?;

@@ -19,7 +19,7 @@
 //!   block comment) rather than re-lexing.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use powerbi_tmdl_parser::{DaxDiagnostic, extract_dax_references};
@@ -661,6 +661,23 @@ fn map_lint_error(err: LintError) -> EngramError {
     }
 }
 
+struct PinnedLintPaths {
+    registry_path: PathBuf,
+    scan_root: PathBuf,
+}
+
+fn pinned_lint_paths(context: &ReadRequestContext) -> PinnedLintPaths {
+    let data_dir = context.data_dir().to_path_buf();
+    let scan_root = data_dir
+        .parent()
+        .map_or_else(|| data_dir.clone(), Path::to_path_buf);
+    let registry_path = data_dir.join("registry.yaml");
+    PinnedLintPaths {
+        registry_path,
+        scan_root,
+    }
+}
+
 /// Load the DAX lint report through the caller's pinned read context.
 ///
 /// The caller owns request pinning and workspace-root capture; this service
@@ -673,7 +690,7 @@ fn map_lint_error(err: LintError) -> EngramError {
 /// join failure encountered while computing the lint report.
 pub async fn load_lint_report(
     context: &ReadRequestContext,
-    workspace_root: &Path,
+    _pinned_path_hint: &Path,
     model_path_filter: Option<&str>,
 ) -> Result<VerifyReport, EngramError> {
     tracing::debug!(
@@ -683,15 +700,17 @@ pub async fn load_lint_report(
     );
     maybe_pause_generation_pin_test_hook("load_lint_report").await;
 
-    let workspace_root = workspace_root.to_path_buf();
+    let pinned_paths = pinned_lint_paths(context);
     let model_path_filter = model_path_filter.map(ToOwned::to_owned);
 
     tokio::task::spawn_blocking(move || -> Result<VerifyReport, EngramError> {
-        let registry_path = workspace_root.join(".engram").join("registry.yaml");
         let (source_paths, max_file_size) =
-            match crate::services::registry::load_registry(&registry_path) {
+            match crate::services::registry::load_registry(&pinned_paths.registry_path) {
                 Ok(Some(mut config)) => {
-                    crate::services::registry::validate_sources(&mut config, &workspace_root)?;
+                    crate::services::registry::validate_sources(
+                        &mut config,
+                        &pinned_paths.scan_root,
+                    )?;
                     let limit = config.max_file_size_bytes;
                     let paths = config
                         .sources
@@ -709,7 +728,7 @@ pub async fn load_lint_report(
             };
 
         lint_indexed_models(
-            &workspace_root,
+            &pinned_paths.scan_root,
             &source_paths,
             max_file_size,
             model_path_filter.as_deref(),
@@ -735,7 +754,7 @@ struct ScopeState {
 /// references against a model-scope-aggregated schema rebuilt from the CURRENT
 /// on-disk state of every sibling `.tmdl` file.
 ///
-/// `workspace_root` is the bound workspace directory; `source_paths` are the
+/// `scan_root` is the bound workspace directory; `source_paths` are the
 /// registry `powerbi` content-source paths (relative to the workspace root);
 /// `max_file_size` is the registry's per-file byte limit. A discovered `.tmdl`
 /// that resolves (via `canonicalize`) outside the canonical workspace root — for
@@ -755,7 +774,7 @@ struct ScopeState {
 /// clears a previously-broken reference — independent of which files an
 /// incremental index pass reprocessed.
 pub fn lint_indexed_models(
-    workspace_root: &Path,
+    scan_root: &Path,
     source_paths: &[String],
     max_file_size: u64,
     model_path_filter: Option<&str>,
@@ -763,18 +782,18 @@ pub fn lint_indexed_models(
     // Canonical workspace root for the symlink-containment guard below. When the
     // root cannot be canonicalised the guard is skipped (there is nothing safe to
     // compare against), which matches the pre-existing lenient behaviour.
-    let canonical_root = workspace_root.canonicalize().ok();
+    let canonical_root = scan_root.canonicalize().ok();
 
     // Group every indexed `.tmdl` file by its canonical model scope, unioning
     // each parsed model into that scope's aggregated schema (BTreeMap keeps the
     // findings order deterministic across scopes).
     let mut scopes: BTreeMap<String, ScopeState> = BTreeMap::new();
     for source_path in source_paths {
-        let source_dir = workspace_root.join(source_path);
+        let source_dir = scan_root.join(source_path);
         if !source_dir.is_dir() {
             continue;
         }
-        for file_path in collect_powerbi_files_in_workspace(&source_dir, workspace_root) {
+        for file_path in collect_powerbi_files_in_workspace(&source_dir, scan_root) {
             let is_tmdl = file_path
                 .extension()
                 .and_then(|ext| ext.to_str())
@@ -801,7 +820,7 @@ pub fn lint_indexed_models(
                 }
             }
             let rel_path = file_path
-                .strip_prefix(workspace_root)
+                .strip_prefix(scan_root)
                 .unwrap_or(&file_path)
                 .to_string_lossy()
                 .replace('\\', "/");
