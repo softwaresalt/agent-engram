@@ -3,7 +3,7 @@
 //! Provides non-blocking event recording via a `tokio::sync::mpsc` channel
 //! and summary computation from persisted JSONL files.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::{BufRead, BufReader};
 use std::path::{Component, Path, PathBuf};
 #[cfg(test)]
@@ -12,17 +12,64 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use tokio::io::AsyncWriteExt;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use crate::errors::{EngramError, MetricsError};
-use crate::models::metrics::{MetricsConfig, MetricsSummary, UsageEvent};
+use crate::models::metrics::{CorrelationMetrics, MetricsConfig, MetricsSummary, UsageEvent};
+use crate::server::state::ReadRequestContext;
 
 const RECENT_EVENTS_LIMIT: usize = 256;
 #[cfg(not(test))]
 const BRANCH_CONTROL_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(test)]
 const BRANCH_CONTROL_TIMEOUT: Duration = Duration::from_millis(100);
+
+struct GenerationPinTestHook {
+    reached: Option<oneshot::Sender<()>>,
+    resume: Option<oneshot::Receiver<()>>,
+}
+
+fn generation_pin_test_hooks() -> &'static Mutex<HashMap<String, GenerationPinTestHook>> {
+    static HOOKS: OnceLock<Mutex<HashMap<String, GenerationPinTestHook>>> = OnceLock::new();
+    HOOKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Install a one-shot barrier reached immediately after the metrics service accepts a pinned context.
+#[doc(hidden)]
+pub fn install_generation_pin_test_hook(
+    method: &str,
+    reached: oneshot::Sender<()>,
+    resume: oneshot::Receiver<()>,
+) {
+    let hook = GenerationPinTestHook {
+        reached: Some(reached),
+        resume: Some(resume),
+    };
+    generation_pin_test_hooks()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(method.to_owned(), hook);
+}
+
+async fn maybe_pause_generation_pin_test_hook(method: &str) {
+    let pending_resume = {
+        let mut hooks = generation_pin_test_hooks()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(mut hook) = hooks.remove(method) else {
+            return;
+        };
+        if let Some(reached) = hook.reached.take() {
+            let _ = reached.send(());
+        }
+        hook.resume.take()
+    };
+
+    if let Some(resume) = pending_resume {
+        let _ = resume.await;
+    }
+}
 
 #[derive(Debug)]
 enum MetricsMessage {
@@ -580,8 +627,16 @@ fn metrics_dir(workspace_path: &Path, branch: &str) -> PathBuf {
     workspace_path.join(".engram").join("metrics").join(branch)
 }
 
+fn metrics_dir_from_data_dir(data_dir: &Path, branch: &str) -> PathBuf {
+    data_dir.join("metrics").join(branch)
+}
+
 fn usage_path(workspace_path: &Path, branch: &str) -> PathBuf {
     metrics_dir(workspace_path, branch).join("usage.jsonl")
+}
+
+fn usage_path_from_data_dir(data_dir: &Path, branch: &str) -> PathBuf {
+    metrics_dir_from_data_dir(data_dir, branch).join("usage.jsonl")
 }
 
 fn summary_path(workspace_path: &Path, branch: &str) -> PathBuf {
@@ -1240,26 +1295,11 @@ async fn shutdown_inner() -> Result<(), EngramError> {
     }
 }
 
-/// Compute a `MetricsSummary` from the `usage.jsonl` file on disk.
-///
-/// Reads `{workspace_path}/.engram/metrics/{branch}/usage.jsonl` line by
-/// line, deserializes each line as a `UsageEvent`, and aggregates into a
-/// `MetricsSummary`. Silently discards the final line if it fails to parse
-/// (concurrent-append tolerance).
-pub fn compute_summary(workspace_path: &Path, branch: &str) -> Result<MetricsSummary, EngramError> {
-    let events = load_events(workspace_path, branch)?;
-    Ok(MetricsSummary::from_events(&events))
-}
-
-/// Load raw usage events for a branch from the `.engram/` data directory.
-///
-/// # Errors
-///
-/// Returns [`MetricsError::NotFound`] when no events file exists for the branch.
-/// Returns [`MetricsError::ParseError`] when event lines cannot be parsed.
-pub fn load_events(workspace_path: &Path, branch: &str) -> Result<Vec<UsageEvent>, EngramError> {
-    let usage_path = usage_path(workspace_path, branch);
-    let file = std::fs::File::open(&usage_path).map_err(|error| {
+fn load_events_from_usage_path(
+    usage_path: &Path,
+    branch: &str,
+) -> Result<Vec<UsageEvent>, EngramError> {
+    let file = std::fs::File::open(usage_path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             EngramError::Metrics(MetricsError::NotFound {
                 branch: branch.to_owned(),
@@ -1303,6 +1343,144 @@ pub fn load_events(workspace_path: &Path, branch: &str) -> Result<Vec<UsageEvent
     }
 
     Ok(events)
+}
+
+fn load_events_from_data_dir(
+    data_dir: &Path,
+    branch: &str,
+) -> Result<Vec<UsageEvent>, EngramError> {
+    load_events_from_usage_path(&usage_path_from_data_dir(data_dir, branch), branch)
+}
+
+/// Load raw usage events for a branch through the caller's pinned read context.
+///
+/// The caller owns request pinning; this service consumes that pinned view
+/// without consulting live `AppState` or re-deriving a workspace root.
+///
+/// # Errors
+///
+/// Returns [`MetricsError::NotFound`] when no events file exists for the target
+/// branch, [`MetricsError::ParseError`] when event lines cannot be parsed, or a
+/// [`MetricsError::WriteFailed`] join error if the blocking reader panics.
+pub async fn load_usage_events(
+    context: &ReadRequestContext,
+    branch_override: Option<&str>,
+) -> Result<Vec<UsageEvent>, EngramError> {
+    tracing::debug!(
+        workspace_id = context.workspace_id(),
+        has_generation = context.generation().is_some(),
+        branch_override = ?branch_override,
+        "loading usage events through caller-pinned context"
+    );
+    maybe_pause_generation_pin_test_hook("load_usage_events").await;
+
+    let data_dir = context.data_dir().to_path_buf();
+    let branch = branch_override.unwrap_or(context.branch()).to_owned();
+    tokio::task::spawn_blocking(move || load_events_from_data_dir(&data_dir, &branch))
+        .await
+        .map_err(|error| {
+            EngramError::Metrics(MetricsError::WriteFailed {
+                reason: format!("metrics load task panicked: {error}"),
+            })
+        })?
+}
+
+/// Load a `MetricsSummary` through the caller's pinned read context.
+///
+/// The caller owns request pinning; this service resolves the metrics file from
+/// the pinned `.engram` data directory and target branch without consulting
+/// live `AppState`.
+///
+/// # Errors
+///
+/// Returns [`MetricsError::NotFound`] when no events file exists for the target
+/// branch, [`MetricsError::ParseError`] when event lines cannot be parsed, or a
+/// [`MetricsError::WriteFailed`] join error if the blocking reader panics.
+pub async fn load_summary(
+    context: &ReadRequestContext,
+    branch_override: Option<&str>,
+) -> Result<MetricsSummary, EngramError> {
+    tracing::debug!(
+        workspace_id = context.workspace_id(),
+        has_generation = context.generation().is_some(),
+        branch_override = ?branch_override,
+        "loading metrics summary through caller-pinned context"
+    );
+    maybe_pause_generation_pin_test_hook("load_summary").await;
+
+    let data_dir = context.data_dir().to_path_buf();
+    let branch = branch_override.unwrap_or(context.branch()).to_owned();
+    tokio::task::spawn_blocking(move || {
+        let events = load_events_from_data_dir(&data_dir, &branch)?;
+        Ok::<_, EngramError>(MetricsSummary::from_events(&events))
+    })
+    .await
+    .map_err(|error| {
+        EngramError::Metrics(MetricsError::WriteFailed {
+            reason: format!("metrics summary task panicked: {error}"),
+        })
+    })?
+}
+
+/// Load both the summary and per-correlation query statistics through the
+/// caller's pinned read context.
+///
+/// The caller owns request pinning; this service reads the pinned generation's
+/// persisted usage file exactly once, then derives the aggregate summary and
+/// report-only correlation breakdown from that same event set.
+///
+/// # Errors
+///
+/// Returns [`MetricsError::NotFound`] when no events file exists for the target
+/// branch, [`MetricsError::ParseError`] when event lines cannot be parsed, or a
+/// [`MetricsError::WriteFailed`] join error if the blocking reader panics.
+pub async fn load_query_statistics(
+    context: &ReadRequestContext,
+    branch_override: Option<&str>,
+) -> Result<(MetricsSummary, BTreeMap<String, CorrelationMetrics>), EngramError> {
+    tracing::debug!(
+        workspace_id = context.workspace_id(),
+        has_generation = context.generation().is_some(),
+        branch_override = ?branch_override,
+        "loading query statistics through caller-pinned context"
+    );
+    maybe_pause_generation_pin_test_hook("load_query_statistics").await;
+
+    let data_dir = context.data_dir().to_path_buf();
+    let branch = branch_override.unwrap_or(context.branch()).to_owned();
+    tokio::task::spawn_blocking(move || {
+        let events = load_events_from_data_dir(&data_dir, &branch)?;
+        let summary = MetricsSummary::from_events(&events);
+        let by_correlation_id = crate::models::metrics::correlation_metrics(&events);
+        Ok::<_, EngramError>((summary, by_correlation_id))
+    })
+    .await
+    .map_err(|error| {
+        EngramError::Metrics(MetricsError::WriteFailed {
+            reason: format!("query statistics task panicked: {error}"),
+        })
+    })?
+}
+
+/// Compute a `MetricsSummary` from the `usage.jsonl` file on disk.
+///
+/// Reads `{workspace_path}/.engram/metrics/{branch}/usage.jsonl` line by
+/// line, deserializes each line as a `UsageEvent`, and aggregates into a
+/// `MetricsSummary`. Silently discards the final line if it fails to parse
+/// (concurrent-append tolerance).
+pub fn compute_summary(workspace_path: &Path, branch: &str) -> Result<MetricsSummary, EngramError> {
+    let events = load_events(workspace_path, branch)?;
+    Ok(MetricsSummary::from_events(&events))
+}
+
+/// Load raw usage events for a branch from the `.engram/` data directory.
+///
+/// # Errors
+///
+/// Returns [`MetricsError::NotFound`] when no events file exists for the branch.
+/// Returns [`MetricsError::ParseError`] when event lines cannot be parsed.
+pub fn load_events(workspace_path: &Path, branch: &str) -> Result<Vec<UsageEvent>, EngramError> {
+    load_events_from_usage_path(&usage_path(workspace_path, branch), branch)
 }
 
 /// Compute and atomically write `summary.json` for a branch.

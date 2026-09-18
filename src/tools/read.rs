@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Deserialize;
@@ -132,17 +131,6 @@ async fn pinned_queries(
 async fn queries_from_context(context: &DispatchSnapshot) -> Result<CodeGraphQueries, EngramError> {
     let db = connect_db(&context.workspace.data_dir, &context.workspace.branch).await?;
     Ok(CodeGraphQueries::new(db))
-}
-
-async fn pinned_workspace_path_and_branch(
-    state: &SharedState,
-    method: &str,
-) -> Result<(PathBuf, String), EngramError> {
-    let context = pinned_dispatch_context(state, method).await?;
-    Ok((
-        PathBuf::from(context.workspace.path),
-        context.workspace.branch,
-    ))
 }
 
 // ── Workspace statistics ─────────────────────────────────────────────────
@@ -1089,22 +1077,15 @@ pub async fn get_health_report(
     let embedding_status = embedding::status(None).await?;
     let metrics_summary = if let Some(context) = dispatch_context {
         let branch = context.workspace.branch.clone();
-        let wp = PathBuf::from(&context.workspace.path);
-        let br = branch.clone();
-        match tokio::task::spawn_blocking(move || metrics::compute_summary(&wp, &br)).await {
-            Ok(Ok(summary)) => serde_json::to_value(json!({
+        let read_context = ReadRequestContext::from_workspace_snapshot(context.workspace);
+        match metrics::load_summary(read_context.as_ref(), None).await {
+            Ok(summary) => serde_json::to_value(json!({
                 "branch": branch,
                 "summary": summary,
             }))
             .unwrap_or(Value::Null),
-            Ok(Err(EngramError::Metrics(crate::errors::MetricsError::NotFound { .. }))) => {
-                Value::Null
-            }
-            Ok(Err(error)) => return Err(error),
-            Err(join_error) => {
-                tracing::warn!(error = %join_error, "metrics computation task panicked");
-                Value::Null
-            }
+            Err(EngramError::Metrics(crate::errors::MetricsError::NotFound { .. })) => Value::Null,
+            Err(error) => return Err(error),
         }
     } else {
         Value::Null
@@ -1149,29 +1130,14 @@ pub async fn get_branch_metrics(
             reason: error.to_string(),
         })
     })?;
-    let (workspace_path, current_branch) =
-        pinned_workspace_path_and_branch(&state, "get_branch_metrics").await?;
-    let branch_name = parsed.branch_name.unwrap_or(current_branch);
-    let wp = workspace_path.clone();
-    let br = branch_name.clone();
-    let summary = tokio::task::spawn_blocking(move || metrics::compute_summary(&wp, &br))
-        .await
-        .map_err(|error| {
-            EngramError::Metrics(crate::errors::MetricsError::WriteFailed {
-                reason: format!("metrics computation task panicked: {error}"),
-            })
-        })??;
+    let context = pinned_read_request_context(&state, "get_branch_metrics").await?;
+    let branch_name = parsed
+        .branch_name
+        .unwrap_or_else(|| context.branch().to_owned());
+    let summary = metrics::load_summary(context.as_ref(), Some(branch_name.as_str())).await?;
 
     if let Some(compare_to) = parsed.compare_to {
-        let wp2 = workspace_path.clone();
-        let br2 = compare_to.clone();
-        let comparison = tokio::task::spawn_blocking(move || metrics::compute_summary(&wp2, &br2))
-            .await
-            .map_err(|error| {
-                EngramError::Metrics(crate::errors::MetricsError::WriteFailed {
-                    reason: format!("metrics computation task panicked: {error}"),
-                })
-            })??;
+        let comparison = metrics::load_summary(context.as_ref(), Some(compare_to.as_str())).await?;
         return Ok(json!({
             "branch_name": branch_name,
             "summary": summary,
@@ -1209,24 +1175,10 @@ pub async fn get_token_savings_report(
     state: SharedState,
     _params: Option<Value>,
 ) -> Result<Value, EngramError> {
-    let (workspace_path, branch) =
-        pinned_workspace_path_and_branch(&state, "get_token_savings_report").await?;
-    let wp = workspace_path.clone();
-    let br = branch.clone();
-    // Load events once, then derive both the summary and the (report-only)
-    // per-correlation breakdown from the same read.
-    let (summary, by_correlation_id) = tokio::task::spawn_blocking(move || {
-        let events = metrics::load_events(&wp, &br)?;
-        let summary = crate::models::metrics::MetricsSummary::from_events(&events);
-        let by_correlation_id = crate::models::metrics::correlation_metrics(&events);
-        Ok::<_, EngramError>((summary, by_correlation_id))
-    })
-    .await
-    .map_err(|error| {
-        EngramError::Metrics(crate::errors::MetricsError::WriteFailed {
-            reason: format!("metrics computation task panicked: {error}"),
-        })
-    })??;
+    let context = pinned_read_request_context(&state, "get_token_savings_report").await?;
+    let branch = context.branch().to_owned();
+    let (summary, by_correlation_id) =
+        metrics::load_query_statistics(context.as_ref(), None).await?;
     #[allow(clippy::cast_precision_loss)]
     let average_tokens = if summary.total_tool_calls == 0 {
         0.0
@@ -1623,19 +1575,10 @@ pub async fn get_evaluation_report(
     _params: Option<Value>,
 ) -> Result<Value, EngramError> {
     let context = pinned_dispatch_context(&state, "get_evaluation_report").await?;
-    let workspace_path = PathBuf::from(&context.workspace.path);
-    let branch = context.workspace.branch.clone();
+    let read_context = ReadRequestContext::from_workspace_snapshot(context.workspace);
     let config = context.config.evaluation.clone();
 
-    let wp = workspace_path.clone();
-    let br = branch.clone();
-    let events = tokio::task::spawn_blocking(move || metrics::load_events(&wp, &br))
-        .await
-        .map_err(|e| {
-            EngramError::Metrics(crate::errors::MetricsError::WriteFailed {
-                reason: format!("metrics load task panicked: {e}"),
-            })
-        })??;
+    let events = metrics::load_usage_events(read_context.as_ref(), None).await?;
 
     let report = crate::services::evaluation::evaluate(&events, &config);
 
