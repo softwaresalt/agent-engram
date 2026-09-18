@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Deserialize;
@@ -13,6 +13,7 @@ use crate::models::TraversalDirection;
 use crate::server::state::{DispatchSnapshot, ReadRequestContext, SharedState};
 use crate::services::embedding;
 use crate::services::metrics;
+use crate::services::registry;
 use crate::services::search::query_memory_results;
 use crate::services::search::{SearchRegion, UnifiedSearchResult, merge_unified_results};
 
@@ -144,43 +145,6 @@ async fn pinned_workspace_path_and_branch(
     ))
 }
 
-async fn load_registry_status(workspace_path: &Path) -> Result<Option<Value>, EngramError> {
-    let workspace_path = workspace_path.to_path_buf();
-    let registry_path = workspace_path.join(".engram").join("registry.yaml");
-
-    tokio::task::spawn_blocking(move || {
-        match crate::services::registry::load_registry(&registry_path) {
-            Ok(Some(mut config)) => {
-                let _ = crate::services::registry::validate_sources(&mut config, &workspace_path);
-                let sources: Vec<Value> = config
-                    .sources
-                    .iter()
-                    .map(|source| {
-                        json!({
-                            "content_type": source.content_type,
-                            "language": source.language,
-                            "path": source.path,
-                            "status": source.status.as_str(),
-                        })
-                    })
-                    .collect();
-
-                Ok(Some(json!({
-                    "sources": sources,
-                    "total_sources": config.sources.len(),
-                })))
-            }
-            Ok(None) | Err(_) => Ok(None),
-        }
-    })
-    .await
-    .map_err(|e| {
-        EngramError::System(SystemError::DatabaseError {
-            reason: format!("registry status worker failed: {e}"),
-        })
-    })?
-}
-
 // ── Workspace statistics ─────────────────────────────────────────────────
 
 /// Return aggregate code graph statistics for the current workspace.
@@ -193,7 +157,8 @@ pub async fn get_workspace_statistics(
     // more useful than an IndexInProgress error. Callers can inspect
     // `scan_status.running` in workspace_status to detect mid-index state.
 
-    let (context, cg_queries) = pinned_queries(&state, "get_workspace_statistics").await?;
+    let context = pinned_read_request_context(&state, "get_workspace_statistics").await?;
+    let cg_queries = queries_from_read_context(context.as_ref()).await?;
 
     let code_files = cg_queries.count_code_files().await.unwrap_or(0);
     let functions = cg_queries.count_functions().await.unwrap_or(0);
@@ -202,7 +167,7 @@ pub async fn get_workspace_statistics(
     let edges = cg_queries.count_code_edges().await.unwrap_or(0);
 
     let embedding_status = embedding::status(Some(&cg_queries)).await?;
-    let registry_status = load_registry_status(Path::new(&context.workspace.path)).await?;
+    let registry_status = registry::load_registry_status(context.as_ref()).await?;
 
     let mut result = serde_json::Map::from_iter([
         ("code_files".to_owned(), json!(code_files)),

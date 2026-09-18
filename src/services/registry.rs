@@ -4,19 +4,69 @@
 //! [`validate_sources`] to check each declared source path against
 //! the workspace root for security and existence.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 
+use serde_json::{Value, json};
+use tokio::sync::oneshot;
 use tracing::{info, warn};
 
-use crate::errors::{EngramError, RegistryError};
+use crate::errors::{EngramError, RegistryError, SystemError};
 use crate::models::registry::{ContentSourceStatus, RegistryConfig};
+use crate::server::state::ReadRequestContext;
 
 /// Maximum allowed value for `max_file_size_bytes` (100 MB).
 const MAX_FILE_SIZE_LIMIT: u64 = 100 * 1024 * 1024;
 
 /// Maximum allowed value for `batch_size`.
 const MAX_BATCH_SIZE: usize = 500;
+
+struct GenerationPinTestHook {
+    reached: Option<oneshot::Sender<()>>,
+    resume: Option<oneshot::Receiver<()>>,
+}
+
+fn generation_pin_test_hooks() -> &'static Mutex<HashMap<String, GenerationPinTestHook>> {
+    static HOOKS: OnceLock<Mutex<HashMap<String, GenerationPinTestHook>>> = OnceLock::new();
+    HOOKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Install a one-shot barrier reached immediately after the registry service accepts a pinned context.
+#[doc(hidden)]
+pub fn install_generation_pin_test_hook(
+    method: &str,
+    reached: oneshot::Sender<()>,
+    resume: oneshot::Receiver<()>,
+) {
+    let hook = GenerationPinTestHook {
+        reached: Some(reached),
+        resume: Some(resume),
+    };
+    generation_pin_test_hooks()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(method.to_owned(), hook);
+}
+
+async fn maybe_pause_generation_pin_test_hook(method: &str) {
+    let pending_resume = {
+        let mut hooks = generation_pin_test_hooks()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(mut hook) = hooks.remove(method) else {
+            return;
+        };
+        if let Some(reached) = hook.reached.take() {
+            let _ = reached.send(());
+        }
+        hook.resume.take()
+    };
+
+    if let Some(resume) = pending_resume {
+        let _ = resume.await;
+    }
+}
 
 /// Parse a [`RegistryConfig`] from a YAML string.
 ///
@@ -89,6 +139,65 @@ pub fn load_registry(registry_path: &Path) -> Result<Option<RegistryConfig>, Eng
         config.sources.len()
     );
     Ok(Some(config))
+}
+
+/// Load registry status through the caller's pinned read context.
+///
+/// Reads the registry file from the pinned `.engram` data directory and
+/// validates its source paths against the matching pinned workspace root. The
+/// caller owns request pinning; this service consumes that pinned view without
+/// consulting live `AppState` or opening any database of its own.
+///
+/// # Errors
+///
+/// Returns an error only if the blocking worker itself fails to join. Missing,
+/// unreadable, or invalid registries remain a soft `Ok(None)` result so
+/// statistics reads preserve their existing managed-mode fallback behaviour.
+pub async fn load_registry_status(
+    context: &ReadRequestContext,
+) -> Result<Option<Value>, EngramError> {
+    tracing::debug!(
+        workspace_id = context.workspace_id(),
+        has_generation = context.generation().is_some(),
+        "loading registry status through caller-pinned context"
+    );
+    maybe_pause_generation_pin_test_hook("load_registry_status").await;
+
+    let data_dir = context.data_dir().to_path_buf();
+    let workspace_root = data_dir
+        .parent()
+        .map_or_else(|| data_dir.clone(), Path::to_path_buf);
+    let registry_path = data_dir.join("registry.yaml");
+
+    tokio::task::spawn_blocking(move || match load_registry(&registry_path) {
+        Ok(Some(mut config)) => {
+            let _ = validate_sources(&mut config, &workspace_root);
+            let sources: Vec<Value> = config
+                .sources
+                .iter()
+                .map(|source| {
+                    json!({
+                        "content_type": source.content_type,
+                        "language": source.language,
+                        "path": source.path,
+                        "status": source.status.as_str(),
+                    })
+                })
+                .collect();
+
+            Ok(Some(json!({
+                "sources": sources,
+                "total_sources": config.sources.len(),
+            })))
+        }
+        Ok(None) | Err(_) => Ok(None),
+    })
+    .await
+    .map_err(|e| {
+        EngramError::System(SystemError::DatabaseError {
+            reason: format!("registry status worker failed: {e}"),
+        })
+    })?
 }
 
 /// Validate all source paths in a [`RegistryConfig`] against the workspace root.
