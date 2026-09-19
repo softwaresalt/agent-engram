@@ -126,7 +126,9 @@ never used or needed.
 ## Closure references
 
 * Operational closure: `docs/closure/2026-09-18-140-s-operational-closure.md`
-  (final status: `READY` post-merge; releasability evidence fully satisfied).
+  (final status: `READY_WITH_CONDITIONS` — releasability evidence
+  satisfied except for the unresolved `95D6C74C` monitoring-plan
+  baseline/threshold follow-up).
 * Runtime verification: `docs/closure/2026-09-18-140-s-runtime-verification.md`
   (verdict: `PASS_WITH_FOLLOW_UP`).
 * Reconciliation: `.backlogit/reconcile/140-S-pre-20260918T235400Z.md`,

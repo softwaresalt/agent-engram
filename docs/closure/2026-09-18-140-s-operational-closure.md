@@ -1,6 +1,6 @@
 ---
 title: 140-S Migrate Services to Pinned Context and Enforce Read-Path Pinning — Operational Closure
-description: Releasability evidence per .autoharness/workspace-profile.yaml runtime_validation.releasability for PR #404 (140-S), pre-merge.
+description: Releasability evidence per .autoharness/workspace-profile.yaml runtime_validation.releasability for PR #404 (140-S), post-merge.
 ---
 
 ## Mode
@@ -208,17 +208,22 @@ just-closed release unit itself).
 |---|---|
 | healthy-signal | **Satisfied** — CLI version/daemon-status probes green; full test suite green. |
 | failure-signal | **Satisfied** — named above. |
-| monitoring-plan | **Satisfied** — standard daemon log observation, no shipment-specific additions needed. |
+| monitoring-plan | **Satisfied with a follow-up** — standard daemon log observation covers the general case; the plan does not yet name concrete numeric baselines/thresholds for the migrated services specifically. Tracked as unresolved follow-up `95D6C74C`; not yet resolved by Stage. |
 | rollback-trigger | **Satisfied** — named above. |
 | rollback-procedure | **Satisfied** — standard GitHub Release reinstall + `.engram/` flush; no migration to reverse. |
 | owner | **Satisfied** — repository maintainer / release owner. |
 | validation-window | **Satisfied** — through next tagged release + 48h. |
-| follow-up (optional) | **Satisfied** — 7 stash entries total: 6 captured during the initial implementation/review cycle (`E6CA4ED1`, `10EE5E43`, `9BB01D31`, `A3E0E607`, `7C23A682`, `DB0661A6`) plus 1 captured during this session's readiness-audit/post-corrective-commit cycle (`95D6C74C`, monitoring-plan completeness gap), plus 2 entries reused from a prior shipment (`F58ECAA8`, `DA0AF326`); none block this PR's own scope. |
+| follow-up (optional) | **Satisfied (tracked)** — 9 stash entries are referenced in this shipment's follow-up disposition: 7 captured for/during 140-S itself (`E6CA4ED1`, `10EE5E43`, `9BB01D31`, `A3E0E607`, `7C23A682`, `DB0661A6` captured during implementation/review, plus `95D6C74C` captured during this session's readiness-audit cycle) plus 2 entries reused/cross-referenced from a prior shipment (`F58ECAA8`, `DA0AF326`, not newly captured here); none block this PR's own scope, but `95D6C74C` remains unresolved (see monitoring-plan row above). |
 
-**Overall status: `READY_WITH_CONDITIONS` at time of merge; now `READY` post-merge** — merge
-completed via merge commit, all conditions were satisfied at merge time
-(P-014 approval reasoning below), and post-merge closure (this document)
-is now complete.
+**Overall status: `READY_WITH_CONDITIONS`** — merge completed via merge
+commit; `closure_status` for this shipment's own execution is `READY` (all
+of 140-S's authorized manifest work is done, verified, and archived), but
+`releasability` for the shipped change remains `READY_WITH_CONDITIONS`
+rather than unconditionally `READY` because follow-up `95D6C74C` (the
+monitoring-plan baseline/threshold gap) is not yet resolved. This
+distinction — completion status vs. release evidence — is deliberate:
+completing 140-S's own scope does not retroactively resolve a still-open,
+deferred follow-up item.
 
 ### P-014 approval-basis note (this session's re-resumption)
 
