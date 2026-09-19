@@ -211,3 +211,34 @@ SHA-256 snapshot, `59263E8FFB779485E135A7AA41D9DAAC89B4A996B767D128D76A1AD2E7040
 `138-S` — five shipment IDs: 134-S, 135-S, 136-S, 137-S, 138-S) to close
 under this same covering feature by skipping `shipment ship` entirely and
 going straight to manual safe-close.
+
+## Addendum (2026-09-18): reused for `140-S` without re-attempting the command
+
+Shipment `140-S` (manifest: 7 tasks, all already individually
+`done`/archived) closes under the identical shared covering feature
+`142-F` during its own post-merge closure. `backlogit shipment ship 140-S`
+was **not attempted at all** for this closure, for the same reasoning
+applied to `137-S`/`138-S`. The generic `backlogit move 140-S --status
+shipped` fallback *was* independently re-attempted and confirmed rejected
+outright by the CLI (same class of error, exit code 9) — that specific
+sub-finding is genuinely re-confirmed for `140-S`. `140-S` closed cleanly
+via the identical manual archive-file procedure (see
+`.backlogit/archive/140-S.md` AUDIT RATIONALE); covering feature `142-F`
+verified untouched (still `active`, byte-identical to its pre-closure
+SHA-256 snapshot, `59263E8FFB779485E135A7AA41D9DAAC89B4A996B767D128D76A1AD2E70404C3`,
+802 bytes — unchanged since the `138-S` snapshot, confirming the
+intervening `139-S` closure also left it untouched).
+
+Note: this compound entry's log shows no explicit addendum was recorded
+for the intervening `139-S` closure, even though `139-S`'s own archive
+file (`.backlogit/archive/139-S.md`) independently documents the same
+reuse reasoning inline in its AUDIT RATIONALE. That is a pre-existing gap
+in this compound entry's addendum log, not introduced by this closure;
+it is noted here for traceability but left uncorrected, as retroactively
+authoring history for a prior, already-merged shipment is out of scope
+for this closure (P-021) and does not affect the accuracy of the
+`139-S` archive record itself, which already carries the equivalent
+reasoning. This is now the seventh consecutive shipment (134-S, 135-S,
+136-S, 137-S, 138-S, 139-S, 140-S — seven shipment IDs) to close under
+this same covering feature by skipping `shipment ship` entirely and going
+straight to manual safe-close.
