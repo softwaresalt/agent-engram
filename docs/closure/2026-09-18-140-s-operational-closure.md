@@ -192,10 +192,15 @@ window; no shipment-specific owner override.
 
 ## Compaction status (P-020)
 
-`pending` — finalized to `done` or `degraded` at the end of this
-post-merge closure pass (Step 6, item 8), immediately below the backlog
-safe-close performed in this same session. See the terminal report for the
-final compaction outcome.
+`done` — mandatory `compact-context` invocation (`target: all`) completed
+during this post-merge closure pass (Step 6, item 8). The 140-S release
+unit's 3 memory files (24 KB + 2 smaller task memos, all eligible under
+the "completed feature or chore" candidate rule) were consolidated into
+`docs/memory/compacted/2026-09-18-140-s-migrate-services-to-pinned-context-and-enforce-read-path-pinning-compacted.md`;
+verbose originals moved to `docs/archive/memory/2026-09-18/` (traceable,
+not deleted). No plans or other closure artifacts qualified as compaction
+candidates this pass (below file-count/age thresholds beyond the
+just-closed release unit itself).
 
 ## Releasability evidence
 
