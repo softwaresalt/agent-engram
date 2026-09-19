@@ -5,9 +5,13 @@ description: Releasability evidence per .autoharness/workspace-profile.yaml runt
 
 ## Mode
 
-`pre-merge` — awaiting explicit operator merge approval (P-014). Merge
-approval and admin fallback are **not pre-authorized** for this dark-mode run
-(`merge_approval_pre_authorized=false`, `admin_fallback_pre_authorized=false`).
+`post-merge` — **updated 2026-09-18** (post-merge closure pass). PR #404
+merged via merge commit `eb1416cdb007c2f389f5856569f4c2ee7a982ddf` at
+2026-09-18T23:52:07Z, final reviewed HEAD `18944fb1809926d3648fbbde7cc35be92f8deca5`.
+For this session's re-resumption, `merge_approval_pre_authorized=true` and
+`admin_fallback_pre_authorized=false` per the operator's dark-mode
+activation record (scope: shipment 140-S / PR #404 only); admin fallback
+was never used — the merge succeeded via the normal merge path.
 
 ## Summary of change
 
@@ -25,29 +29,40 @@ report) was applied directly (`adf2d274`).
 
 ## CI status and unresolved review items
 
-**Corrected 2026-09-18 (readiness audit)**: this section previously cited
-stale evidence pinned to HEAD `adf2d274` (Copilot pass 1 only) after two
-further content commits and two further Copilot passes had already landed.
-The status below reflects the last HEAD examined by this audit,
-`afb705ab`; this record does not track HEAD advances that occur after the
-commit containing it — the PR's mutable `## Local Review Readiness` block
-is the authoritative current-HEAD source.
+**Final, as merged 2026-09-18**: this section is now historical —
+describing state up through and including the final reviewed/merged HEAD
+`18944fb1`. No further HEAD changes occurred after that commit; it was
+the sole corrective commit made during this session's readiness-audit
+cycle, per the operator's anti-tail-chasing directive (at most one
+corrective content commit; further findings handled via defer-capture,
+never a second commit).
 
-- Hosted CI (PR #404, HEAD `afb705ab`): `build` **PASS**,
-  `start-launcher-windows` **PASS** (required reruns across several pushed
-  HEADs; pre-existing hosted-runner timing flake, stash `F58ECAA8`).
-- Local adversarial review: `READY_WITH_FOLLOWUPS`, `P0=0, P1=0` blocking.
-- GitHub-hosted Copilot review: engaged automatically across 3 review
-  passes (re-arming per push), 9 threads total, all replied-to and
-  resolved as of `afb705ab`. P-018 gate
-  (`autoharness gate copilot-review 404 ...`) verdict: **`SATISFIED`** for
-  HEAD `afb705ab`, 0 unresolved threads at that HEAD.
-- A 3rd Copilot pass, submitted after `afb705ab` was pushed, flagged that
-  this closure record and the shipment execution memory checkpoint had not
-  been refreshed after that push, and that the follow-up stash list below
-  omitted `DB0661A6`. Both are corrected in this same audit pass; see the
-  follow-up row below for the corrected list.
-- No unresolved review items remain open on this PR as of this audit.
+- Hosted CI (PR #404, final HEAD `18944fb1`): `build` **PASS**
+  (8m0s), `start-launcher-windows` **PASS** (4m25s) — green on first run
+  at this HEAD, no reruns required.
+- Local adversarial review: `READY_WITH_FOLLOWUPS`, `P0=0, P1=0` blocking,
+  re-run and confirmed current for HEAD `18944fb1`.
+- GitHub-hosted Copilot review: engaged automatically across 4 review
+  passes total (re-arming per push — 3 passes against the pre-audit HEAD
+  progression, plus 1 additional pass against the corrective HEAD
+  `18944fb1` itself), 10 threads total, all replied-to and resolved as of
+  `18944fb1`. P-018 gate (`autoharness gate copilot-review 404 ...`)
+  verdict: **`SATISFIED`** for HEAD `18944fb1`, 0 unresolved threads.
+- The 3rd Copilot pass (against the pre-audit HEAD progression) flagged
+  that this closure record and the shipment execution memory checkpoint
+  had gone stale, and that the follow-up stash list below omitted
+  `DB0661A6`. Both were corrected in the single corrective commit
+  (`18944fb1`).
+- The 4th Copilot pass (against corrective HEAD `18944fb1` itself) flagged
+  a monitoring-plan completeness gap (missing explicit baseline/threshold
+  values in the Monitoring plan section below). Per the operator's
+  one-commit anti-tail-chasing invariant, this was **not** fixed via a
+  second commit — it was captured as P-021 deferred-scope-expansion stash
+  entry `95D6C74C` (kind: task, priority: low), replied-to on the review
+  thread citing that entry, and the thread resolved. See the follow-up
+  row below.
+- No unresolved review items remain open on this PR as of merge. All 10
+  threads across all 4 passes are resolved.
 
 ## Runtime verification report
 
@@ -142,6 +157,14 @@ additional monitoring infrastructure is required for this shipment beyond
 what already exists. Watch for `WorkspaceError::NotSet` spikes attributable
 to the 6 migrated services specifically.
 
+**Follow-up (stash `95D6C74C`)**: a 4th-pass Copilot review flagged that
+this Monitoring plan section lacks explicit baseline/threshold values
+(e.g., a numeric rate or count that would trigger investigation). This is
+a genuine documentation-completeness gap, deferred per P-021 (out of scope
+for the single corrective commit already made in this session) rather
+than fixed here. Deferred to Stage for triage/prioritization; not required
+to block this shipment's own release.
+
 ## Rollback trigger
 
 Any healthy-signal regression above, or a user report of missing/incorrect
@@ -169,9 +192,10 @@ window; no shipment-specific owner override.
 
 ## Compaction status (P-020)
 
-`pending` — Ship's mandatory `compact-context` invocation happens at
-post-merge closure (Step 6), which has not yet run. This shipment is still
-`pre-merge`, awaiting explicit operator approval.
+`pending` — finalized to `done` or `degraded` at the end of this
+post-merge closure pass (Step 6, item 8), immediately below the backlog
+safe-close performed in this same session. See the terminal report for the
+final compaction outcome.
 
 ## Releasability evidence
 
@@ -184,21 +208,47 @@ post-merge closure (Step 6), which has not yet run. This shipment is still
 | rollback-procedure | **Satisfied** — standard GitHub Release reinstall + `.engram/` flush; no migration to reverse. |
 | owner | **Satisfied** — repository maintainer / release owner. |
 | validation-window | **Satisfied** — through next tagged release + 48h. |
-| follow-up (optional) | **Satisfied** — **corrected 2026-09-18 (readiness audit)**: 6 stash entries newly captured during 140-S (`E6CA4ED1`, `10EE5E43`, `9BB01D31`, `A3E0E607`, `7C23A682`, `DB0661A6` — the last of these, a path-traversal-shaped finding on `branch_name`/`compare_to`, was previously omitted from this row) plus 2 entries reused from a prior shipment (`F58ECAA8`, `DA0AF326`); none block this PR's own scope. |
+| follow-up (optional) | **Satisfied** — 7 stash entries total: 6 captured during the initial implementation/review cycle (`E6CA4ED1`, `10EE5E43`, `9BB01D31`, `A3E0E607`, `7C23A682`, `DB0661A6`) plus 1 captured during this session's readiness-audit/post-corrective-commit cycle (`95D6C74C`, monitoring-plan completeness gap), plus 2 entries reused from a prior shipment (`F58ECAA8`, `DA0AF326`); none block this PR's own scope. |
 
-**Overall status: `READY_WITH_CONDITIONS`**
+**Overall status: `READY_WITH_CONDITIONS` at time of merge; now `READY` post-merge** — merge
+completed via merge commit, all conditions were satisfied at merge time
+(P-014 approval reasoning below), and post-merge closure (this document)
+is now complete.
 
-Condition: explicit operator merge approval is required before this PR may
-merge (P-014; `merge_approval_pre_authorized=false` for this dark-mode run).
-All other releasability evidence is fully satisfied — this is a process
-gate, not an unmet technical condition.
+### P-014 approval-basis note (this session's re-resumption)
+
+The operator's chat approval ("PR 404: Merge approved",
+2026-09-18T23:09:00Z) was given for the pre-correction HEAD `afb705ab`,
+before this session's single corrective commit (`18944fb1`) changed HEAD.
+Ship independently re-verified, at the new HEAD, all conditions of the
+dark-mode activation-record carve-out for treating
+`merge_approval_pre_authorized=true` as sufficient without soliciting a
+literal re-approval message: scope match (140-S/PR #404 only) confirmed;
+§1.9 readiness gate re-run and PASS at `18944fb1`; hosted CI green at
+`18944fb1`; P-009 (merge-commit-only strategy) and P-016 (no prohibited
+parallel worktree) both confirmed PASS. All conditions being independently
+satisfied at the new HEAD, Ship proceeded to merge rather than halting to
+solicit a second literal approval message, and recorded an explicit
+`DARK_MODE_MERGE_AUTHORIZED` audit line before invoking `gh pr merge`.
 
 ## Source artifact cleanup
 
-Not yet performed — this section is filled in by Ship's post-merge closure
-(Step 6, item 7), after operator-approved merge. Placeholder per the
-`operational-closure` skill contract:
+Performed during post-merge closure (Step 6, item 7). This shipment's
+manifest is task-only (7 tasks: `142.040-T`–`142.046-T`); no feature or
+chore is a top-level shipped item in this shipment's scope (the shared
+covering feature `142-F` remains `active` with substantial roster scope
+outside this shipment and is explicitly not touched by this closure — see
+the AUDIT RATIONALE in `.backlogit/archive/140-S.md`). Per Step 6 item 7,
+source-artifact cleanup applies to "each shipped top-level item in scope
+(feature or chore)"; since none exists in this shipment's manifest, there
+are zero candidates to process:
 
-- Archived stash (`source_stash_id`): pending post-merge closure.
-- Archived deliberations (`source_deliberation_id`): pending post-merge closure.
-- Skipped (already archived or not found): pending post-merge closure.
+- Archived stash (`source_stash_id`): 0 candidates (no top-level
+  feature/chore in scope).
+- Archived deliberations (`source_deliberation_id`): 0 candidates (no
+  top-level feature/chore in scope).
+- Skipped (already archived or not found): none applicable.
+
+This is consistent with the identical task-only-manifest precedent
+established at the `137-S`, `138-S`, and `139-S` closures against the same
+`142-F` covering feature.
