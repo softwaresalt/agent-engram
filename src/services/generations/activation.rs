@@ -1318,6 +1318,11 @@ fn reconcile_cumulative_bytes(
 /// Resolve every sealed inventory entry, revalidate its digest, and open the
 /// generation database through the F09 runtime-copy path.
 ///
+/// The cumulative sealed-inventory bytes tracked here remain the bound-checking
+/// input for validation, but the returned disk-usage value is the size of the
+/// opened runtime-copy database file itself so observability reports what was
+/// actually retained under `runtime_root` rather than the full sealed inventory.
+///
 /// Runs on a blocking thread: every step here is synchronous filesystem or
 /// database work, and running it on the async runtime would stall unrelated
 /// tasks for the whole duration of a database copy.
@@ -1446,9 +1451,16 @@ fn resolve_and_open(
                     "failed to open generation {generation_id} via runtime copy: {source}"
                 ))
             })?;
+    let runtime_copy_bytes = std::fs::metadata(opened.runtime_copy().path())
+        .map_err(|source| {
+            transient(format!(
+                "failed to stat runtime copy for generation {generation_id}: {source}"
+            ))
+        })?
+        .len();
 
     GenerationReadContext::new(opened)
-        .map(|context| (context, cumulative_bytes))
+        .map(|context| (context, runtime_copy_bytes))
         .map_err(|source| {
             transient(format!(
                 "opened generation {generation_id} did not yield a valid read context: {source}"

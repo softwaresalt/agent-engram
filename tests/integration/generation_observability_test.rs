@@ -37,6 +37,7 @@ struct Fixture {
 #[derive(Clone, Copy)]
 struct SeededGeneration {
     bytes: u64,
+    sealed_inventory_bytes: u64,
 }
 
 impl Fixture {
@@ -66,6 +67,14 @@ impl Fixture {
     }
 
     fn seed_generation(&self, label: &str) -> SeededGeneration {
+        self.seed_generation_with_extra_artifacts(label, &[])
+    }
+
+    fn seed_generation_with_extra_artifacts(
+        &self,
+        label: &str,
+        extra_artifacts: &[(&str, &[u8])],
+    ) -> SeededGeneration {
         let dir = self.generations_root.path().join(label);
         fs::create_dir_all(&dir).expect("generation directory");
         let db_path = dir.join(GENERATION_DATABASE_FILE_NAME);
@@ -78,17 +87,49 @@ impl Fixture {
                 .expect("seed row");
         }
         let bytes = fs::metadata(&db_path).expect("db metadata").len();
-        SeededGeneration { bytes }
+        let sealed_inventory_bytes = extra_artifacts.iter().fold(bytes, |total, (relative_path, contents)| {
+            let artifact_path = dir.join(relative_path);
+            if let Some(parent) = artifact_path.parent() {
+                fs::create_dir_all(parent).expect("extra artifact parent directory");
+            }
+            fs::write(&artifact_path, contents).expect("write extra artifact");
+            total + fs::metadata(&artifact_path).expect("extra artifact metadata").len()
+        });
+        SeededGeneration {
+            bytes,
+            sealed_inventory_bytes,
+        }
     }
 
     fn publish_valid_revision(&self, label: &str, revision: u64) -> SeededGeneration {
-        let seeded = self.seed_generation(label);
-        let db_path = self
-            .generations_root
-            .path()
-            .join(label)
-            .join(GENERATION_DATABASE_FILE_NAME);
-        self.publish_manifest(label, revision, &sha256_hex(&db_path));
+        self.publish_valid_revision_with_extra_artifacts(label, revision, &[])
+    }
+
+    fn publish_valid_revision_with_extra_artifacts(
+        &self,
+        label: &str,
+        revision: u64,
+        extra_artifacts: &[(&str, &[u8])],
+    ) -> SeededGeneration {
+        let seeded = self.seed_generation_with_extra_artifacts(label, extra_artifacts);
+        let mut inventory = vec![ManifestFileDigest::new(
+            format!("{label}/{GENERATION_DATABASE_FILE_NAME}"),
+            sha256_hex(
+                &self
+                    .generations_root
+                    .path()
+                    .join(label)
+                    .join(GENERATION_DATABASE_FILE_NAME),
+            ),
+        )];
+        for (relative_path, _contents) in extra_artifacts {
+            let artifact_path = self.generations_root.path().join(label).join(relative_path);
+            inventory.push(ManifestFileDigest::new(
+                format!("{label}/{relative_path}"),
+                sha256_hex(&artifact_path),
+            ));
+        }
+        self.publish_manifest_with_inventory(label, revision, inventory);
         seeded
     }
 
@@ -99,16 +140,29 @@ impl Fixture {
     }
 
     fn publish_manifest(&self, label: &str, revision: u64, digest: &str) {
+        self.publish_manifest_with_inventory(
+            label,
+            revision,
+            vec![ManifestFileDigest::new(
+                format!("{label}/{GENERATION_DATABASE_FILE_NAME}"),
+                digest,
+            )],
+        );
+    }
+
+    fn publish_manifest_with_inventory(
+        &self,
+        label: &str,
+        revision: u64,
+        inventory: Vec<ManifestFileDigest>,
+    ) {
         let manifest = GenerationManifest::new(
             GenerationId::new(label).expect("fixture generation id"),
             GenerationRevision::new(revision),
             SUPPORTED_MANIFEST_SCHEMA_VERSION,
             BranchIdentity::new(SERVED_BRANCH, Some(format!("source-rev-{revision}"))),
             WorkspaceIdentity::new(HARNESS_WORKSPACE),
-            SealedInventory::new(vec![ManifestFileDigest::new(
-                format!("{label}/{GENERATION_DATABASE_FILE_NAME}"),
-                digest,
-            )]),
+            SealedInventory::new(inventory),
             GenerationProvenance::new("generation-observability-harness", fixture_created_at()),
         );
         fs::write(
@@ -299,6 +353,53 @@ fn assert_inventory_unchanged(
     let runtime_after = capture_file_inventory(fixture.runtime_root.path());
     assert_eq!(generations_after, *generations_before);
     assert_eq!(runtime_after, *runtime_before);
+}
+
+
+#[tokio::test]
+async fn workspace_status_reports_runtime_copy_bytes_not_whole_inventory_bytes() {
+    let fixture = Fixture::new();
+    let activator = fixture.activator();
+    let state = bound_state(&fixture, Arc::clone(&activator)).await;
+
+    let seeded = fixture.publish_valid_revision_with_extra_artifacts(
+        "gen-observe-extra",
+        1,
+        &[("sealed/notes.bin", b"extra sealed artifact bytes")],
+    );
+    assert!(
+        seeded.sealed_inventory_bytes > seeded.bytes,
+        "the extra sealed artifact must make the inventory larger than the copied database"
+    );
+
+    activator
+        .activate_initial()
+        .await
+        .expect("initial activation must succeed");
+
+    let status = tools::dispatch(Arc::clone(&state), "get_workspace_status", None)
+        .await
+        .expect("get_workspace_status should succeed");
+    let generation = generation_report(&status);
+    let retained_runtime_copies = object_field(generation, "retained_runtime_copies");
+    assert_eq!(
+        retained_runtime_copies.get("count").and_then(Value::as_u64),
+        Some(1)
+    );
+
+    let disk_usage_bytes = object_field(generation, "disk_usage_bytes");
+    assert_eq!(
+        disk_usage_bytes
+            .get("active_generation")
+            .and_then(Value::as_u64),
+        Some(seeded.bytes)
+    );
+    assert_eq!(
+        disk_usage_bytes
+            .get("retained_runtime_copies")
+            .and_then(Value::as_u64),
+        Some(seeded.bytes)
+    );
 }
 
 #[tokio::test]
