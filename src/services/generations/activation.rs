@@ -787,7 +787,7 @@ impl GenerationActivator {
         self.with_rejections(RejectionCache::len)
     }
 
-    pub(crate) async fn observability_snapshot(&self) -> ActivationObservabilitySnapshot {
+    pub(crate) fn observability_snapshot(&self) -> ActivationObservabilitySnapshot {
         let last_failed_revision = self.with_rejections(RejectionCache::latest_revision);
         self.with_observability_mut(|state| {
             state.prune_runtime_copies();
@@ -1747,7 +1747,7 @@ mod observability_snapshot_tests {
             state.active_generation_bytes = Some(42);
         });
 
-        let snapshot = activator.observability_snapshot().await;
+        let snapshot = activator.observability_snapshot();
 
         assert_eq!(snapshot.active_revision, Some(GenerationRevision::new(7)));
         assert_eq!(
@@ -1773,7 +1773,7 @@ mod observability_snapshot_tests {
             );
         });
 
-        let snapshot = activator.observability_snapshot().await;
+        let snapshot = activator.observability_snapshot();
 
         assert_eq!(snapshot.retained_runtime_copy_count, 0);
         assert_eq!(snapshot.retained_context_count, 0);

@@ -1082,7 +1082,7 @@ async fn generation_observability_status(
     current_branch: &str,
 ) -> Option<GenerationObservabilityStatus> {
     let activator = state.generation_activator().await?;
-    let snapshot = activator.observability_snapshot().await;
+    let snapshot = activator.observability_snapshot();
     let diverged = snapshot
         .served_branch
         .as_ref()
