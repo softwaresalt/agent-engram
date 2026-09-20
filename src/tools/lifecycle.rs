@@ -92,6 +92,49 @@ pub struct WorkspaceStatus {
     /// (081-F). Exposed for autoharness capability discovery without parsing
     /// `.engram/config.toml`.
     pub retrieval_eval_enabled: bool,
+    /// Read-server generation observability reported from activation-service
+    /// state rather than from a fresh filesystem scan on the read path.
+    pub generation: Option<GenerationObservabilityStatus>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GenerationObservabilityStatus {
+    pub active_revision: Option<crate::services::generations::GenerationRevision>,
+    pub published_revision: Option<crate::services::generations::GenerationRevision>,
+    pub last_failed_revision: Option<crate::services::generations::GenerationRevision>,
+    pub branch_divergence: BranchDivergenceStatus,
+    pub retained_runtime_copies: RetainedRuntimeCopiesStatus,
+    pub retained_contexts: RetainedContextsStatus,
+    pub activation_deadlines: ActivationDeadlineStatus,
+    pub disk_usage_bytes: GenerationDiskUsageStatus,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BranchDivergenceStatus {
+    pub served_branch: Option<String>,
+    pub current_branch: String,
+    pub diverged: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RetainedRuntimeCopiesStatus {
+    pub count: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RetainedContextsStatus {
+    pub count: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ActivationDeadlineStatus {
+    pub configured_ms: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GenerationDiskUsageStatus {
+    pub active_generation: Option<u64>,
+    pub retained_runtime_copies: u64,
 }
 
 /// Summary statistics for the indexed code graph.
@@ -1034,6 +1077,41 @@ pub async fn get_daemon_status(state: &AppState) -> Result<DaemonStatus, EngramE
     })
 }
 
+async fn generation_observability_status(
+    state: &AppState,
+    current_branch: &str,
+) -> Option<GenerationObservabilityStatus> {
+    let activator = state.generation_activator().await?;
+    let snapshot = activator.observability_snapshot().await;
+    let diverged = snapshot
+        .served_branch
+        .as_ref()
+        .is_some_and(|served_branch| served_branch != current_branch);
+    Some(GenerationObservabilityStatus {
+        active_revision: snapshot.active_revision,
+        published_revision: snapshot.published_revision,
+        last_failed_revision: snapshot.last_failed_revision,
+        branch_divergence: BranchDivergenceStatus {
+            served_branch: snapshot.served_branch,
+            current_branch: current_branch.to_owned(),
+            diverged,
+        },
+        retained_runtime_copies: RetainedRuntimeCopiesStatus {
+            count: snapshot.retained_runtime_copy_count,
+        },
+        retained_contexts: RetainedContextsStatus {
+            count: snapshot.retained_context_count,
+        },
+        activation_deadlines: ActivationDeadlineStatus {
+            configured_ms: snapshot.activation_deadline_ms,
+        },
+        disk_usage_bytes: GenerationDiskUsageStatus {
+            active_generation: snapshot.active_generation_bytes,
+            retained_runtime_copies: snapshot.retained_runtime_copy_bytes,
+        },
+    })
+}
+
 pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, EngramError> {
     // 086.004-T: read the workspace binding AND its config TOGETHER at handler
     // entry via one `snapshot_dispatch_context()` (the pattern `tools/eval.rs`
@@ -1105,6 +1183,8 @@ pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, E
         .display()
         .to_string();
 
+    let generation = generation_observability_status(state, &snapshot.branch).await;
+
     Ok(WorkspaceStatus {
         path: snapshot.path,
         branch: snapshot.branch,
@@ -1117,6 +1197,7 @@ pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, E
         // Read from the SAME dispatch-context snapshot as the workspace binding
         // above (not a separate later read), for capability discovery (086.004-T).
         retrieval_eval_enabled,
+        generation,
     })
 }
 

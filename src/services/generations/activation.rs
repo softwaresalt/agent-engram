@@ -31,14 +31,16 @@ use std::fs::File;
 use std::future::Future;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
 
-use crate::db::cozo_backend::{ExistingDbLocation, open_existing_generation_via_runtime_copy};
+use crate::db::cozo_backend::{
+    ExistingDbLocation, OpenedGeneration, open_existing_generation_via_runtime_copy,
+};
 use crate::errors::ActivationError;
 
 use super::{
@@ -510,6 +512,10 @@ impl RejectionCache {
     fn len(&self) -> usize {
         self.records.len()
     }
+
+    fn latest_revision(&self) -> Option<GenerationRevision> {
+        self.records.keys().next_back().copied()
+    }
 }
 
 /// Exponential backoff for the `attempts`-th consecutive transient failure.
@@ -608,6 +614,32 @@ struct ActiveGeneration {
     context: GenerationReadContext,
 }
 
+#[derive(Debug, Clone)]
+struct RuntimeCopyLease {
+    disk_usage_bytes: u64,
+    generation: std::sync::Weak<OpenedGeneration>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ObservabilityState {
+    published_revision: Option<GenerationRevision>,
+    active_generation_bytes: Option<u64>,
+    runtime_copies: BTreeMap<String, RuntimeCopyLease>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ActivationObservabilitySnapshot {
+    pub active_revision: Option<GenerationRevision>,
+    pub published_revision: Option<GenerationRevision>,
+    pub last_failed_revision: Option<GenerationRevision>,
+    pub served_branch: Option<String>,
+    pub retained_runtime_copy_count: usize,
+    pub retained_context_count: usize,
+    pub activation_deadline_ms: u64,
+    pub active_generation_bytes: Option<u64>,
+    pub retained_runtime_copy_bytes: u64,
+}
+
 /// Owns generation activation for one daemon process.
 ///
 /// A single activator instance is the whole activation surface: it holds the
@@ -638,6 +670,7 @@ pub struct GenerationActivator {
     /// Number of times the manifest has actually been JSON-parsed, as
     /// opposed to short-circuited by the Fix5 fingerprint probe.
     manifest_read_attempts: AtomicUsize,
+    observability: Mutex<ObservabilityState>,
 }
 
 impl GenerationActivator {
@@ -665,6 +698,7 @@ impl GenerationActivator {
             validation_attempts: AtomicUsize::new(0),
             open_attempts: AtomicUsize::new(0),
             manifest_read_attempts: AtomicUsize::new(0),
+            observability: Mutex::new(ObservabilityState::default()),
         }
     }
 
@@ -745,6 +779,37 @@ impl GenerationActivator {
         self.with_rejections(RejectionCache::len)
     }
 
+    pub(crate) async fn observability_snapshot(&self) -> ActivationObservabilitySnapshot {
+        let active_revision = self.active_revision().await;
+        let served_branch = active_revision.map(|_| self.expected.branch().to_owned());
+        let last_failed_revision = self.with_rejections(RejectionCache::latest_revision);
+        self.with_observability(|state| {
+            let retained_context_count = state
+                .runtime_copies
+                .values()
+                .filter_map(|lease| lease.generation.upgrade())
+                .map(|generation| Arc::strong_count(&generation).saturating_sub(1))
+                .sum();
+            let retained_runtime_copy_bytes = state
+                .runtime_copies
+                .values()
+                .map(|lease| lease.disk_usage_bytes)
+                .sum();
+            ActivationObservabilitySnapshot {
+                active_revision,
+                published_revision: state.published_revision,
+                last_failed_revision,
+                served_branch,
+                retained_runtime_copy_count: state.runtime_copies.len(),
+                retained_context_count,
+                activation_deadline_ms: u64::try_from(self.deadline.as_millis())
+                    .unwrap_or(u64::MAX),
+                active_generation_bytes: state.active_generation_bytes,
+                retained_runtime_copy_bytes,
+            }
+        })
+    }
+
     /// Run `action` against the rejection cache, recovering from poisoning.
     ///
     /// The cache is advisory bookkeeping: a panic elsewhere must not make the
@@ -762,6 +827,39 @@ impl GenerationActivator {
             Ok(mut guard) => action(&mut guard),
             Err(poisoned) => action(&mut poisoned.into_inner()),
         }
+    }
+
+    fn with_observability<T>(&self, action: impl FnOnce(&ObservabilityState) -> T) -> T {
+        match self.observability.lock() {
+            Ok(guard) => action(&guard),
+            Err(poisoned) => action(&poisoned.into_inner()),
+        }
+    }
+
+    fn with_observability_mut<T>(&self, action: impl FnOnce(&mut ObservabilityState) -> T) -> T {
+        match self.observability.lock() {
+            Ok(mut guard) => action(&mut guard),
+            Err(poisoned) => action(&mut poisoned.into_inner()),
+        }
+    }
+
+    fn note_published_revision(&self, revision: GenerationRevision) {
+        self.with_observability_mut(|state| state.published_revision = Some(revision));
+    }
+
+    fn note_active_generation(&self, context: &GenerationReadContext, disk_usage_bytes: u64) {
+        let generation_id = context.generation_id().as_str().to_owned();
+        let generation = Arc::downgrade(context.shared_opened_generation());
+        self.with_observability_mut(|state| {
+            state.active_generation_bytes = Some(disk_usage_bytes);
+            state.runtime_copies.insert(
+                generation_id,
+                RuntimeCopyLease {
+                    disk_usage_bytes,
+                    generation,
+                },
+            );
+        });
     }
 
     /// Cached fingerprint/outcome pair from the last full manifest read, if
@@ -818,9 +916,11 @@ impl GenerationActivator {
         self.manifest_read_attempts.fetch_add(1, Ordering::SeqCst);
         let manifest = parse_manifest(&read_manifest_bytes_blocking(self.store.clone()).await?)?;
         let revision = manifest.revision();
+        self.note_published_revision(revision);
         match self.validate_and_open(manifest).await {
-            Ok(context) => {
-                self.publish_active(revision, context.clone()).await;
+            Ok((context, disk_usage_bytes)) => {
+                self.publish_active(revision, context.clone(), disk_usage_bytes)
+                    .await;
                 Ok(context)
             }
             Err(error) => {
@@ -902,6 +1002,7 @@ impl GenerationActivator {
             }
         };
         let revision = manifest.revision();
+        self.note_published_revision(revision);
 
         if !self.is_strictly_newer(revision).await || !self.may_attempt(revision) {
             return Ok(None);
@@ -916,8 +1017,9 @@ impl GenerationActivator {
         }
 
         match self.validate_and_open(manifest).await {
-            Ok(context) => {
-                self.publish_active(revision, context.clone()).await;
+            Ok((context, disk_usage_bytes)) => {
+                self.publish_active(revision, context.clone(), disk_usage_bytes)
+                    .await;
                 Ok(Some(context))
             }
             Err(error) => {
@@ -1005,7 +1107,7 @@ impl GenerationActivator {
     async fn validate_and_open(
         &self,
         manifest: GenerationManifest,
-    ) -> Result<GenerationReadContext, ActivationError> {
+    ) -> Result<(GenerationReadContext, u64), ActivationError> {
         self.validation_attempts.fetch_add(1, Ordering::SeqCst);
         let validated = ValidatedManifest::validate(manifest, &self.expected)?;
 
@@ -1030,7 +1132,13 @@ impl GenerationActivator {
     /// The write lock is held only for the swap itself -- never across the
     /// open -- so a concurrent reader waits at most for one pointer
     /// assignment.
-    async fn publish_active(&self, revision: GenerationRevision, context: GenerationReadContext) {
+    async fn publish_active(
+        &self,
+        revision: GenerationRevision,
+        context: GenerationReadContext,
+        disk_usage_bytes: u64,
+    ) {
+        self.note_active_generation(&context, disk_usage_bytes);
         {
             let mut active = self.active.write().await;
             *active = Some(ActiveGeneration { revision, context });
@@ -1172,7 +1280,7 @@ fn resolve_and_open(
     store: &GenerationStore,
     runtime_root: &Path,
     validated: &ValidatedManifest,
-) -> Result<GenerationReadContext, ActivationError> {
+) -> Result<(GenerationReadContext, u64), ActivationError> {
     let manifest = validated.manifest();
     let generation_id = manifest.generation_id();
     // Paired so the manifest-attested digest for the database entry can
@@ -1282,11 +1390,13 @@ fn resolve_and_open(
                 ))
             })?;
 
-    GenerationReadContext::new(opened).map_err(|source| {
-        transient(format!(
-            "opened generation {generation_id} did not yield a valid read context: {source}"
-        ))
-    })
+    GenerationReadContext::new(opened)
+        .map(|context| (context, cumulative_bytes))
+        .map_err(|source| {
+            transient(format!(
+                "opened generation {generation_id} did not yield a valid read context: {source}"
+            ))
+        })
 }
 
 /// Upper bound on the durable manifest file size.

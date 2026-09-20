@@ -41,7 +41,7 @@ use crate::errors::WorkspaceError;
 use crate::models::config::{DaemonMode, WorkspaceConfig};
 use crate::models::health::ScanProgress;
 use crate::services::connection::ConnectionRegistry;
-use crate::services::generations::GenerationReadContext;
+use crate::services::generations::{GenerationActivator, GenerationReadContext};
 use crate::services::hydration::FileFingerprint;
 
 /// Atomic point-in-time snapshot of workspace binding and config taken at dispatch entry.
@@ -1164,6 +1164,7 @@ pub struct AppState {
     /// no interior-mutability path, so no code path can observe two different
     /// modes within one process lifetime.
     mode: DaemonMode,
+    generation_activator: RwLock<Option<Arc<GenerationActivator>>>,
 }
 
 /// Exclusive ownership of an identity-changing workspace publication.
@@ -1209,6 +1210,7 @@ impl AppState {
             reliability: ReliabilityCounters::default(),
             hydration_ready: AtomicBool::new(false),
             mode,
+            generation_activator: RwLock::new(None),
         }
     }
 
@@ -1731,6 +1733,21 @@ impl AppState {
     /// Return the total number of tool calls recorded since startup.
     pub fn tool_call_count(&self) -> u64 {
         self.tool_call_count.load(Ordering::Relaxed)
+    }
+
+    /// Register or clear the generation activator used by lifecycle reporting.
+    ///
+    /// Read-server observability must report from the activation service's
+    /// in-memory state instead of re-scanning the filesystem on the read path.
+    /// Integration tests and future read-server wiring install the activator
+    /// here so lifecycle handlers can query it through [`AppState`] alone.
+    #[doc(hidden)]
+    pub async fn set_generation_activator(&self, activator: Option<Arc<GenerationActivator>>) {
+        *self.generation_activator.write().await = activator;
+    }
+
+    pub(crate) async fn generation_activator(&self) -> Option<Arc<GenerationActivator>> {
+        self.generation_activator.read().await.clone()
     }
 
     /// Increment the watcher-event counter and record the current UTC timestamp.
