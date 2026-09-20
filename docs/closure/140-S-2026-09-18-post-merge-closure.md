@@ -57,10 +57,11 @@ pointer required by the topology gate's naming convention (unlike the
 in the same pass). This gap caused
 `autoharness gate pipeline-topology --mode agent --shipment 141-S --phase pre_claim --json`
 to block with `PREDECESSOR_CLOSURE_INCOMPLETE` (`closure_complete: null`)
-even though 140-S's own execution and release evidence were already
-complete and unchanged. This file is added as a direct, minimal repair
-of that gap — no existing closure content is altered, and no 141-S work
-is claimed or started by this repair.
+even though 140-S's own execution was already complete and its release
+evidence (`releasability: READY_WITH_CONDITIONS`, per the Releasability
+section below) was already recorded and unchanged. This file is added
+as a direct, minimal repair of that gap — no existing closure content
+is altered, and no 141-S work is claimed or started by this repair.
 
 ## Summary
 
@@ -105,8 +106,11 @@ Verdict: **`PASS_WITH_FOLLOW_UP`** — full report:
 [`docs/closure/2026-09-18-140-s-runtime-verification.md`](./2026-09-18-140-s-runtime-verification.md).
 Build/check/fmt/clippy all clean; all 7 manifest tasks' own harnesses
 pass green; full `cargo test --all-targets --no-fail-fast` 538/538 test
-binaries green; hosted CI (`build`, `start-launcher-windows`) green for
-the reviewed HEAD.
+binaries green; hosted CI (`build`, `start-launcher-windows`) green at
+pre-merge HEAD `adf2d274` (per the linked runtime-verification report
+above) and again at final merged HEAD `18944fb1` (per
+[`docs/closure/2026-09-18-140-s-operational-closure.md`](./2026-09-18-140-s-operational-closure.md),
+which is the authoritative record for the final reviewed/merged HEAD).
 
 ## Shipment Safe-Close
 
