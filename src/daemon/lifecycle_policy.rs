@@ -4,23 +4,31 @@
 //! The composition root ([`crate::daemon::ipc_server`]) owns framing and the
 //! accept loop; every lifecycle edge it crosses is delegated here.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
+use std::path::Path;
 use std::sync::Arc;
 #[cfg(test)]
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tracing::{debug, error, info, warn};
 
 use crate::daemon::ttl::TtlTimer;
-use crate::errors::EngramError;
+use crate::db::workspace::{
+    canonicalize_workspace, load_or_create_workspace_id, resolve_data_dir, resolve_git_branch,
+    workspace_hash,
+};
+use crate::errors::{EngramError, SystemError, WorkspaceError};
 use crate::models::WatcherEvent;
-use crate::models::config::WorkspaceConfig;
+use crate::models::config::{DaemonMode, WorkspaceConfig};
 use crate::server::state::{
     AppState, CompletionOutcome, CoordinatorCell, DispatchSnapshot, DriverTaskGuard, OwnerKind,
     OwnerPermit, SharedState, WorkspaceSnapshot,
 };
+use crate::services::config::parse_config;
+use crate::services::connection::validate_workspace_path;
 
 /// Record the daemon lifecycle start edge.
 ///
@@ -42,6 +50,168 @@ pub fn on_shutdown(state: &AppState) {
         uptime_seconds = state.uptime_seconds(),
         "daemon lifecycle shutdown"
     );
+}
+
+static STARTUP_HYDRATION_CALLS: AtomicUsize = AtomicUsize::new(0);
+static STARTUP_SOURCE_SCAN_CALLS: AtomicUsize = AtomicUsize::new(0);
+static OFFLINE_SOURCE_SCAN_CALLS: AtomicUsize = AtomicUsize::new(0);
+static WATCHER_REGISTRATION_CALLS: AtomicUsize = AtomicUsize::new(0);
+static IMPLICIT_SYNC_CALLS: AtomicUsize = AtomicUsize::new(0);
+static SHUTDOWN_FLUSH_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+/// Direct lifecycle activity counters for integration tests.
+///
+/// These counters are incremented at the exact daemon lifecycle seams that
+/// perform hydration, source scans, watcher registration, implicit sync, and
+/// shutdown flushing. Tests use them to prove those activities were skipped
+/// rather than inferring absence from timing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LifecycleActivityCounters {
+    /// Managed-mode startup calls into `set_workspace`, which hydrates and
+    /// queues background database hydration.
+    pub startup_hydration_calls: usize,
+    /// Managed-mode startup performs the initial source scan / auto-sync.
+    pub startup_source_scan_calls: usize,
+    /// Background offline source scans attempted during hydration.
+    pub offline_source_scan_calls: usize,
+    /// Workspace watcher registrations attempted for this daemon lifecycle.
+    pub watcher_registration_calls: usize,
+    /// Implicit lifecycle syncs attempted outside explicit user requests.
+    pub implicit_sync_calls: usize,
+    /// Shutdown graph flush attempts performed before exit.
+    pub shutdown_flush_calls: usize,
+}
+
+/// Reset lifecycle activity counters.
+///
+/// This is a test support seam used by integration tests that exercise the
+/// public daemon entry points in-process.
+#[doc(hidden)]
+pub fn reset_lifecycle_activity_counters() {
+    STARTUP_HYDRATION_CALLS.store(0, Ordering::SeqCst);
+    STARTUP_SOURCE_SCAN_CALLS.store(0, Ordering::SeqCst);
+    OFFLINE_SOURCE_SCAN_CALLS.store(0, Ordering::SeqCst);
+    WATCHER_REGISTRATION_CALLS.store(0, Ordering::SeqCst);
+    IMPLICIT_SYNC_CALLS.store(0, Ordering::SeqCst);
+    SHUTDOWN_FLUSH_CALLS.store(0, Ordering::SeqCst);
+}
+
+/// Snapshot lifecycle activity counters.
+///
+/// This is a test support seam used by integration tests that exercise the
+/// public daemon entry points in-process.
+#[doc(hidden)]
+#[must_use]
+pub fn lifecycle_activity_counters() -> LifecycleActivityCounters {
+    LifecycleActivityCounters {
+        startup_hydration_calls: STARTUP_HYDRATION_CALLS.load(Ordering::SeqCst),
+        startup_source_scan_calls: STARTUP_SOURCE_SCAN_CALLS.load(Ordering::SeqCst),
+        offline_source_scan_calls: OFFLINE_SOURCE_SCAN_CALLS.load(Ordering::SeqCst),
+        watcher_registration_calls: WATCHER_REGISTRATION_CALLS.load(Ordering::SeqCst),
+        implicit_sync_calls: IMPLICIT_SYNC_CALLS.load(Ordering::SeqCst),
+        shutdown_flush_calls: SHUTDOWN_FLUSH_CALLS.load(Ordering::SeqCst),
+    }
+}
+
+pub(crate) fn record_startup_hydration_call() {
+    STARTUP_HYDRATION_CALLS.fetch_add(1, Ordering::SeqCst);
+}
+
+pub(crate) fn record_startup_source_scan_call() {
+    STARTUP_SOURCE_SCAN_CALLS.fetch_add(1, Ordering::SeqCst);
+}
+
+pub(crate) fn record_offline_source_scan_call() {
+    OFFLINE_SOURCE_SCAN_CALLS.fetch_add(1, Ordering::SeqCst);
+}
+
+pub(crate) fn record_watcher_registration_call() {
+    WATCHER_REGISTRATION_CALLS.fetch_add(1, Ordering::SeqCst);
+}
+
+pub(crate) fn record_implicit_sync_call() {
+    IMPLICIT_SYNC_CALLS.fetch_add(1, Ordering::SeqCst);
+}
+
+fn map_publication_error(error: crate::server::state::CoordinatorError) -> EngramError {
+    match error {
+        crate::server::state::CoordinatorError::SequenceExhausted => {
+            EngramError::System(SystemError::InvalidParams {
+                reason: error.to_string(),
+            })
+        }
+        crate::server::state::CoordinatorError::WorkspaceLimit { limit } => {
+            EngramError::Workspace(WorkspaceError::LimitReached { limit })
+        }
+    }
+}
+
+/// Publish the cheap `ReadServer` startup binding without managed hydration.
+///
+/// Read-server startup still publishes workspace identity and configuration so
+/// mode-gated lifecycle and read paths can observe the attested workspace, but
+/// it deliberately skips managed-mode hydration, scanning, watcher work, and
+/// metrics initialization.
+///
+/// # Errors
+///
+/// Returns [`EngramError`] when path validation, config loading, or workspace
+/// publication fails.
+pub(crate) async fn run_read_server_startup(
+    state: SharedState,
+    workspace: String,
+    ttl: Arc<TtlTimer>,
+    shutdown_tx: Arc<watch::Sender<bool>>,
+) -> Result<(), EngramError> {
+    validate_workspace_path(&workspace)?;
+    let canonical = canonicalize_workspace(&workspace)?;
+    let workspace_uuid = load_or_create_workspace_id(&canonical)?;
+    let branch = resolve_git_branch(&canonical).unwrap_or_else(|_| "default".to_owned());
+    let data_dir = resolve_data_dir(&canonical);
+    let workspace_config = parse_config(&canonical)?;
+    let snapshot = WorkspaceSnapshot {
+        workspace_id: workspace_hash(&canonical, &branch),
+        workspace_uuid: workspace_uuid.to_string(),
+        branch,
+        data_dir,
+        path: canonical.display().to_string(),
+        last_flush: None,
+        stale_files: false,
+        connection_count: state.active_connections(),
+        file_mtimes: HashMap::new(),
+    };
+    let publication = state.acquire_workspace_publication().await;
+    let (generation, _admission) = state
+        .publish_workspace_generation_guarded(&publication, snapshot, Some(workspace_config))
+        .await
+        .map_err(map_publication_error)?;
+    let _ = state.set_hydration_ready_for_generation(generation);
+
+    info!(
+        generation,
+        "read-server lifecycle published startup binding without managed hydration"
+    );
+
+    ttl.reset();
+    let ttl_task = Arc::clone(&ttl);
+    tokio::spawn(async move {
+        ttl_task.run_until_expired(shutdown_tx).await;
+    });
+    Ok(())
+}
+
+/// Return `true` when a workspace watcher should be registered.
+///
+/// The watcher API has only the workspace root, so it re-resolves the daemon
+/// mode from the persisted config and delegates the policy decision here.
+/// `ReadServer` mode never registers a watcher.
+///
+/// # Errors
+///
+/// Returns [`EngramError`] when daemon-mode resolution for `workspace_root`
+/// fails.
+pub(crate) fn watcher_registration_allowed(workspace_root: &Path) -> Result<bool, EngramError> {
+    Ok(crate::daemon::ipc_server::resolve_daemon_mode(workspace_root)? == DaemonMode::Managed)
 }
 
 // ── Shared daemon driver plumbing ────────────────────────────────────────────
@@ -137,12 +307,7 @@ pub(crate) async fn join_retained_hydration(state: &AppState) -> Result<(), Engr
 
 // ── Shutdown cleanup ─────────────────────────────────────────────────────────
 
-#[cfg(test)]
-static SHUTDOWN_FLUSH_CALLS: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-
 async fn flush_all_workspaces_for_shutdown(state: &SharedState) -> Result<(), EngramError> {
-    #[cfg(test)]
     SHUTDOWN_FLUSH_CALLS.fetch_add(1, Ordering::SeqCst);
     crate::services::dehydration::flush_all_workspaces(state).await
 }
@@ -190,7 +355,11 @@ fn combine_shutdown_results(
 /// Run daemon shutdown cleanup: metrics teardown followed by a durable flush.
 pub(crate) async fn shutdown_services(state: &SharedState) -> Result<(), EngramError> {
     let metrics_result = crate::services::metrics::shutdown().await;
-    let flush_result = flush_all_workspaces_for_shutdown(state).await;
+    let flush_result = if state.mode() == DaemonMode::ReadServer {
+        Ok(())
+    } else {
+        flush_all_workspaces_for_shutdown(state).await
+    };
     combine_shutdown_results(metrics_result, flush_result)
 }
 
@@ -231,6 +400,7 @@ pub(crate) async fn drive_daemon_transferred_syncs(
                 operation_reached.store(true, Ordering::SeqCst);
             }
             let workspace_path = std::path::PathBuf::from(&current_ctx.workspace.path);
+            record_implicit_sync_call();
             let result = crate::services::code_graph::sync_workspace_with_progress(
                 &workspace_path,
                 &current_ctx.workspace.data_dir,
@@ -371,6 +541,7 @@ pub(crate) async fn run_watcher_driver(
             let operation = async {
                 let workspace_path = std::path::PathBuf::from(&snapshot.path);
                 let should_flush = if pending_reindex {
+                    record_implicit_sync_call();
                     match crate::services::code_graph::sync_workspace(
                         &workspace_path,
                         &snapshot.data_dir,

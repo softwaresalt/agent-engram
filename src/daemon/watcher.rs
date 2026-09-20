@@ -27,6 +27,9 @@ use notify_debouncer_full::{
     },
 };
 
+use crate::daemon::lifecycle_policy::{
+    record_watcher_registration_call, watcher_registration_allowed,
+};
 use crate::errors::{EngramError, WatcherError};
 use crate::models::{WatchEventKind, WatcherEvent};
 
@@ -118,6 +121,15 @@ pub fn start_watcher(
     config: WatcherConfig,
     event_tx: UnboundedSender<WatcherEvent>,
 ) -> Result<Option<WatcherHandle>, EngramError> {
+    if !watcher_registration_allowed(workspace_root)? {
+        debug!(
+            root = %workspace_root.display(),
+            "read-server lifecycle skipped workspace watcher registration"
+        );
+        return Ok(None);
+    }
+
+    record_watcher_registration_call();
     let root = workspace_root.to_path_buf();
     let excludes = config.exclude_patterns.clone();
     let debounce = Duration::from_millis(config.debounce_ms);

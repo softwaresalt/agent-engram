@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 use tokio::sync::oneshot;
 
+use crate::daemon::lifecycle_policy::record_offline_source_scan_call;
 use crate::db::connect_db;
 use crate::db::queries::CodeGraphQueries;
 use crate::db::workspace::{
@@ -816,6 +817,7 @@ async fn background_db_hydration(
             tracing::warn!(error = %e, "background_db_hydration: code graph hydration failed");
         }
 
+        record_offline_source_scan_call();
         let offline_count = match detect_offline_changes(&canonical, &cg_queries).await {
             Ok(changes) => {
                 if !changes.is_empty() {
