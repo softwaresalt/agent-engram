@@ -53,7 +53,10 @@ async fn run_lifecycle(workspace: &Path, mode: DaemonMode) -> LifecycleActivityC
             ttl,
             std::sync::Arc::new(shutdown_tx),
             shutdown_rx,
-            WatcherConfig::default(),
+            WatcherConfig {
+                daemon_mode: mode,
+                ..WatcherConfig::default()
+            },
         ),
     )
     .await

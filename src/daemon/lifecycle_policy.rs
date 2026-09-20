@@ -5,7 +5,6 @@
 //! accept loop; every lifecycle edge it crosses is delegated here.
 
 use std::collections::{BTreeSet, HashMap};
-use std::path::Path;
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::atomic::AtomicBool;
@@ -200,18 +199,13 @@ pub(crate) async fn run_read_server_startup(
     Ok(())
 }
 
-/// Return `true` when a workspace watcher should be registered.
+/// Return `true` when the authoritative daemon mode permits watcher registration.
 ///
-/// The watcher API has only the workspace root, so it re-resolves the daemon
-/// mode from the persisted config and delegates the policy decision here.
-/// `ReadServer` mode never registers a watcher.
-///
-/// # Errors
-///
-/// Returns [`EngramError`] when daemon-mode resolution for `workspace_root`
-/// fails.
-pub(crate) fn watcher_registration_allowed(workspace_root: &Path) -> Result<bool, EngramError> {
-    Ok(crate::daemon::ipc_server::resolve_daemon_mode(workspace_root)? == DaemonMode::Managed)
+/// The daemon mode is fixed in [`AppState`] for the daemon lifetime, so the
+/// watcher path must use that already-resolved mode instead of re-reading the
+/// workspace config from disk. `ReadServer` mode never registers a watcher.
+pub(crate) fn watcher_registration_allowed(mode: DaemonMode) -> bool {
+    mode == DaemonMode::Managed
 }
 
 // ── Shared daemon driver plumbing ────────────────────────────────────────────
@@ -753,6 +747,12 @@ mod tests {
             "daemon sync context tore {torn} (workspace, config) pair(s) across \
              {iterations} samples (A={observed_a}, B={observed_b})"
         );
+    }
+
+    #[test]
+    fn watcher_registration_tracks_the_resolved_daemon_mode() {
+        assert!(watcher_registration_allowed(DaemonMode::Managed));
+        assert!(!watcher_registration_allowed(DaemonMode::ReadServer));
     }
 
     #[tokio::test]

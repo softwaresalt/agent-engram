@@ -64,6 +64,7 @@ async fn run_with_shutdown_v2_exits_cleanly_on_ttl_expiry() {
     let ttl = TtlTimer::new(Duration::from_secs(10));
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let watcher_config = WatcherConfig {
+        daemon_mode: DaemonMode::Managed,
         debounce_ms: 300,
         exclude_patterns: vec![],
         watch_patterns: vec![],

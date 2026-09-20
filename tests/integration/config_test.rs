@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use engram::daemon::watcher::WatcherConfig;
 use engram::models::PluginConfig;
+use engram::models::config::DaemonMode;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -38,6 +39,7 @@ debounce_ms = 250
 
     // Simulate the daemon's watcher construction (T072).
     let watcher_config = WatcherConfig {
+        daemon_mode: DaemonMode::Managed,
         debounce_ms: plugin_config.debounce_ms,
         exclude_patterns: plugin_config.exclude_patterns.clone(),
         watch_patterns: plugin_config.watch_patterns.clone(),
@@ -67,6 +69,7 @@ fn default_exclude_patterns_include_canonical_set() {
     let plugin_config = PluginConfig::load(tmp.path());
 
     let watcher_config = WatcherConfig {
+        daemon_mode: DaemonMode::Managed,
         debounce_ms: plugin_config.debounce_ms,
         exclude_patterns: plugin_config.exclude_patterns.clone(),
         watch_patterns: plugin_config.watch_patterns.clone(),

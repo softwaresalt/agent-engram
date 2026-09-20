@@ -188,6 +188,7 @@ pub async fn run(workspace: &str) -> Result<(), EngramError> {
     // Watcher initialisation is deferred to run_with_shutdown_v2 which starts it
     // AFTER the IPC listener binds (025.002-T fix). We only build the config here.
     let watcher_config = WatcherConfig {
+        daemon_mode: mode,
         debounce_ms: plugin_config.debounce_ms,
         exclude_patterns: plugin_config.exclude_patterns.clone(),
         watch_patterns: plugin_config.watch_patterns.clone(),

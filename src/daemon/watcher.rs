@@ -31,6 +31,7 @@ use crate::daemon::lifecycle_policy::{
     record_watcher_registration_call, watcher_registration_allowed,
 };
 use crate::errors::{EngramError, WatcherError};
+use crate::models::config::DaemonMode;
 use crate::models::{WatchEventKind, WatcherEvent};
 
 /// The inner debouncer type; platform-specific but fully concrete.
@@ -41,6 +42,12 @@ type InnerDebouncer = Debouncer<RecommendedWatcher, RecommendedCache>;
 /// Configuration for the workspace file watcher.
 #[derive(Debug, Clone)]
 pub struct WatcherConfig {
+    /// The already-resolved daemon mode for this daemon lifetime.
+    ///
+    /// Watcher registration must follow the in-process mode fixed at startup,
+    /// not a later on-disk config edit. Default: [`DaemonMode::Managed`].
+    pub daemon_mode: DaemonMode,
+
     /// Duration of the debounce window in milliseconds.
     ///
     /// Events for the same path within this window are collapsed into one.
@@ -80,6 +87,7 @@ const REQUIRED_INTERNAL_EXCLUDE_PREFIXES: &[&str] = &[".engram/"];
 impl Default for WatcherConfig {
     fn default() -> Self {
         Self {
+            daemon_mode: DaemonMode::Managed,
             debounce_ms: 500,
             exclude_patterns: DEFAULT_EXCLUDE_PREFIXES
                 .iter()
@@ -121,7 +129,7 @@ pub fn start_watcher(
     config: WatcherConfig,
     event_tx: UnboundedSender<WatcherEvent>,
 ) -> Result<Option<WatcherHandle>, EngramError> {
-    if !watcher_registration_allowed(workspace_root)? {
+    if !watcher_registration_allowed(config.daemon_mode) {
         debug!(
             root = %workspace_root.display(),
             "read-server lifecycle skipped workspace watcher registration"
