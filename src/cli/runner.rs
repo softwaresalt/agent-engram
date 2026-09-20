@@ -75,6 +75,53 @@ fn friendly_error_message(err: &IpcError) -> String {
     err.message.clone()
 }
 
+enum JsonIpcErrorEnvelope {
+    Domain(ErrorResponse),
+    Transport {
+        code: i64,
+        message: String,
+        data: Option<Value>,
+    },
+}
+
+fn classify_json_ipc_error(err: IpcError) -> JsonIpcErrorEnvelope {
+    if let Some(domain_error) = ipc_error_to_response(&err) {
+        return JsonIpcErrorEnvelope::Domain(domain_error);
+    }
+
+    JsonIpcErrorEnvelope::Transport {
+        code: i64::from(err.code),
+        message: friendly_error_message(&err),
+        data: err.data,
+    }
+}
+
+fn translate_json_ipc_error(id: Option<Value>, err: IpcError) -> Value {
+    match classify_json_ipc_error(err) {
+        JsonIpcErrorEnvelope::Domain(domain_error) => {
+            crate::cli::output::tool_error_response_envelope_value(id, &domain_error)
+        }
+        JsonIpcErrorEnvelope::Transport {
+            code,
+            message,
+            data,
+        } => crate::cli::output::tool_error_envelope_value(id, code, &message, data),
+    }
+}
+
+fn emit_json_ipc_error(formatter: &OutputFormatter, id: Option<Value>, err: IpcError) -> i32 {
+    match classify_json_ipc_error(err) {
+        JsonIpcErrorEnvelope::Domain(domain_error) => {
+            formatter.tool_error_response(id, &domain_error)
+        }
+        JsonIpcErrorEnvelope::Transport {
+            code,
+            message,
+            data,
+        } => formatter.tool_error(id, code, &message, data),
+    }
+}
+
 fn ipc_error_to_response(err: &IpcError) -> Option<ErrorResponse> {
     let data = err.data.as_ref()?.as_object()?;
     let code = u16::try_from(data.get("engram_code")?.as_u64()?).ok()?;
@@ -104,17 +151,7 @@ pub fn translate_ipc_response(response: IpcResponse) -> Value {
     } = response;
 
     if let Some(error) = error {
-        if let Some(domain_error) = ipc_error_to_response(&error) {
-            return crate::cli::output::tool_error_response_envelope_value(Some(id), &domain_error);
-        }
-
-        let message = friendly_error_message(&error);
-        return crate::cli::output::tool_error_envelope_value(
-            Some(id),
-            i64::from(error.code),
-            &message,
-            error.data,
-        );
+        return translate_json_ipc_error(Some(id), error);
     }
 
     crate::cli::output::success_envelope_value(Some(id), result.unwrap_or(Value::Null))
@@ -448,15 +485,7 @@ async fn run_tool_dispatch(
                 }
             } else if let Some(err) = response.error {
                 if formatter.is_json() {
-                    if let Some(domain_error) = ipc_error_to_response(&err) {
-                        (formatter.tool_error_response(Some(id), &domain_error), None)
-                    } else {
-                        let message = friendly_error_message(&err);
-                        (
-                            formatter.tool_error(Some(id), i64::from(err.code), &message, err.data),
-                            None,
-                        )
-                    }
+                    (emit_json_ipc_error(formatter, Some(id), err), None)
                 } else {
                     let message = friendly_error_message(&err);
                     (
