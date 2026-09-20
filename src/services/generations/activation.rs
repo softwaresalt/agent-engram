@@ -622,9 +622,17 @@ struct RuntimeCopyLease {
 
 #[derive(Debug, Clone, Default)]
 struct ObservabilityState {
+    active_revision: Option<GenerationRevision>,
     published_revision: Option<GenerationRevision>,
     active_generation_bytes: Option<u64>,
     runtime_copies: BTreeMap<String, RuntimeCopyLease>,
+}
+
+impl ObservabilityState {
+    fn prune_runtime_copies(&mut self) {
+        self.runtime_copies
+            .retain(|_, lease| lease.generation.upgrade().is_some());
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -780,10 +788,12 @@ impl GenerationActivator {
     }
 
     pub(crate) async fn observability_snapshot(&self) -> ActivationObservabilitySnapshot {
-        let active_revision = self.active_revision().await;
-        let served_branch = active_revision.map(|_| self.expected.branch().to_owned());
         let last_failed_revision = self.with_rejections(RejectionCache::latest_revision);
-        self.with_observability(|state| {
+        self.with_observability_mut(|state| {
+            state.prune_runtime_copies();
+
+            let active_revision = state.active_revision;
+            let served_branch = active_revision.map(|_| self.expected.branch().to_owned());
             let retained_context_count = state
                 .runtime_copies
                 .values()
@@ -829,13 +839,6 @@ impl GenerationActivator {
         }
     }
 
-    fn with_observability<T>(&self, action: impl FnOnce(&ObservabilityState) -> T) -> T {
-        match self.observability.lock() {
-            Ok(guard) => action(&guard),
-            Err(poisoned) => action(&poisoned.into_inner()),
-        }
-    }
-
     fn with_observability_mut<T>(&self, action: impl FnOnce(&mut ObservabilityState) -> T) -> T {
         match self.observability.lock() {
             Ok(mut guard) => action(&mut guard),
@@ -847,10 +850,16 @@ impl GenerationActivator {
         self.with_observability_mut(|state| state.published_revision = Some(revision));
     }
 
-    fn note_active_generation(&self, context: &GenerationReadContext, disk_usage_bytes: u64) {
+    fn note_active_generation(
+        &self,
+        revision: GenerationRevision,
+        context: &GenerationReadContext,
+        disk_usage_bytes: u64,
+    ) {
         let generation_id = context.generation_id().as_str().to_owned();
         let generation = Arc::downgrade(context.shared_opened_generation());
         self.with_observability_mut(|state| {
+            state.active_revision = Some(revision);
             state.active_generation_bytes = Some(disk_usage_bytes);
             state.runtime_copies.insert(
                 generation_id,
@@ -859,6 +868,7 @@ impl GenerationActivator {
                     generation,
                 },
             );
+            state.prune_runtime_copies();
         });
     }
 
@@ -1138,11 +1148,14 @@ impl GenerationActivator {
         context: GenerationReadContext,
         disk_usage_bytes: u64,
     ) {
-        self.note_active_generation(&context, disk_usage_bytes);
         {
             let mut active = self.active.write().await;
-            *active = Some(ActiveGeneration { revision, context });
+            *active = Some(ActiveGeneration {
+                revision,
+                context: context.clone(),
+            });
         }
+        self.note_active_generation(revision, &context, disk_usage_bytes);
         self.with_rejections_mut(|cache| cache.prune_through(revision));
     }
 }
@@ -1699,6 +1712,72 @@ mod size_cap_tests {
         ));
         // A rejected entry must not be folded into the running total.
         assert_eq!(running_total, 90);
+    }
+}
+
+#[cfg(test)]
+mod observability_snapshot_tests {
+    use std::time::Duration;
+
+    use tempfile::TempDir;
+
+    use super::{
+        ExpectedIdentity, GenerationActivator, GenerationRevision, GenerationStore,
+        RuntimeCopyLease,
+    };
+
+    fn test_activator() -> (GenerationActivator, TempDir, TempDir) {
+        let generations = tempfile::tempdir().expect("generations tempdir");
+        let runtime = tempfile::tempdir().expect("runtime tempdir");
+        let activator = GenerationActivator::new(
+            GenerationStore::new(generations.path()).expect("generation store"),
+            runtime.path(),
+            ExpectedIdentity::new("served-branch", "workspace-alpha"),
+            Duration::from_secs(5),
+        );
+        (activator, generations, runtime)
+    }
+
+    #[tokio::test]
+    async fn snapshot_reads_active_revision_from_the_observability_state() {
+        let (activator, _generations, _runtime) = test_activator();
+        activator.with_observability_mut(|state| {
+            state.active_revision = Some(GenerationRevision::new(7));
+            state.published_revision = Some(GenerationRevision::new(9));
+            state.active_generation_bytes = Some(42);
+        });
+
+        let snapshot = activator.observability_snapshot().await;
+
+        assert_eq!(snapshot.active_revision, Some(GenerationRevision::new(7)));
+        assert_eq!(
+            snapshot.published_revision,
+            Some(GenerationRevision::new(9))
+        );
+        assert_eq!(snapshot.active_generation_bytes, Some(42));
+        assert_eq!(snapshot.served_branch.as_deref(), Some("served-branch"));
+    }
+
+    #[tokio::test]
+    async fn snapshot_prunes_dead_runtime_copy_leases_before_reporting_counts() {
+        let (activator, _generations, _runtime) = test_activator();
+        activator.with_observability_mut(|state| {
+            state.active_revision = Some(GenerationRevision::new(1));
+            state.active_generation_bytes = Some(5);
+            state.runtime_copies.insert(
+                "dead-generation".to_owned(),
+                RuntimeCopyLease {
+                    disk_usage_bytes: 5,
+                    generation: std::sync::Weak::new(),
+                },
+            );
+        });
+
+        let snapshot = activator.observability_snapshot().await;
+
+        assert_eq!(snapshot.retained_runtime_copy_count, 0);
+        assert_eq!(snapshot.retained_context_count, 0);
+        assert_eq!(snapshot.retained_runtime_copy_bytes, 0);
     }
 }
 
