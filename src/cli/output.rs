@@ -45,6 +45,12 @@ fn insert_transport_engram_fields(error_object: &mut Map<String, Value>, data: O
 }
 
 /// Build the JSON-RPC error envelope for a transport-level tool error.
+///
+/// This is the CLI's raw JSON-RPC / IPC transport-error shape. In this
+/// function, `code` is the wire-level JSON-RPC error code (for example
+/// `-32603`), not an Engram domain code. For structured domain errors that
+/// expose the stable Engram `code` / `name` pair, see
+/// [`tool_error_response_envelope_value`].
 #[must_use]
 pub(crate) fn tool_error_envelope_value(
     id: Option<Value>,
@@ -67,6 +73,11 @@ pub(crate) fn tool_error_envelope_value(
 }
 
 /// Build the JSON-RPC error envelope for a structured domain error response.
+///
+/// This is the CLI's structured Engram domain-error shape. In this function,
+/// `error.code` is the stable Engram domain code (for example `1001`), not the
+/// raw JSON-RPC transport code. For the transport-level envelope that carries
+/// wire codes such as `-32603`, see [`tool_error_envelope_value`].
 #[must_use]
 pub(crate) fn tool_error_response_envelope_value(
     id: Option<Value>,

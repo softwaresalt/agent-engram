@@ -419,6 +419,15 @@ fn content_text_view(value: &Value) -> Vec<Content> {
     vec![Content::text(value.to_string())]
 }
 
+/// Build the MCP structured payload for a transport-level IPC error.
+///
+/// This is the shim's transport-tier error shape, not the CLI's domain
+/// envelope. In this function, `jsonrpc_code` is the raw JSON-RPC wire code
+/// (for example `-32603`), and the payload intentionally does not add the
+/// CLI's top-level `code` / `name` / `data` keys. For the CLI's transport
+/// and domain envelopes, see
+/// [`crate::cli::output::tool_error_envelope_value`] and
+/// [`crate::cli::output::tool_error_response_envelope_value`].
 fn structured_ipc_error_payload(error: &IpcError) -> Value {
     match error.data.clone() {
         Some(Value::Object(mut data)) => {
