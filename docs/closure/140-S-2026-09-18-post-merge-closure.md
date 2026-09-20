@@ -38,9 +38,12 @@ This canonical, gate-discoverable evidence file follows the same
 frontmatter schema established for `134-S`, `137-S`, `138-S`, and
 `139-S` (most recently
 `docs/closure/139-S-2026-09-13-post-merge-closure.md`), all of which
-close under the same shared covering feature `142-F`. It is a thin,
-machine-readable pointer — it introduces no new facts and supersedes no
-existing content. It exists so the `pipeline-topology` gate's
+close under the same shared covering feature `142-F`. For 140-S's
+shipped execution and runtime evidence, it is a thin, machine-readable
+pointer that introduces no new facts and supersedes no existing
+content there (it does add its own repair and gate-provenance
+narrative, described below, which is not restated from the linked
+reports). It exists so the `pipeline-topology` gate's
 `shipment_readiness` check (`closure_complete`, which globs
 `docs/closure/{shipment_id}-*-post-merge-closure.md`) finds a
 correctly-named, schema-complete artifact for `140-S` on first read by a
@@ -85,9 +88,10 @@ disposition (4 review passes, 10 threads, all resolved,
 [`docs/closure/2026-09-18-140-s-operational-closure.md`](./2026-09-18-140-s-operational-closure.md).
 
 This closure covers `140-S`'s own 7-item manifest only. It does not
-re-open, re-plan, or touch any other `142-F`-covering shipment. `141-S`
-is named several times in this record (the Purpose section, the Repair
-note, and this paragraph): the topology gate's own
+re-open, re-plan, claim, or mutate any other `142-F`-covering shipment
+(beyond the one read-only predecessor-closure gate check described
+next). `141-S` is named several times in this record (the Purpose
+section, the Repair note, and this paragraph): the topology gate's own
 `--shipment 141-S --phase pre_claim` predecessor-closure check —
 quoted in the Repair note above as the invocation that originally
 blocked, and rerun by this repair's own verification step to confirm
@@ -150,9 +154,12 @@ not newly captured here). None block this PR's own scope. No
 
 This file follows the identical frontmatter schema and closure-glob
 naming convention (`{shipment_id}-{date}-post-merge-closure.md`)
-established for `134-S`, `137-S`, `138-S`, and `139-S`. It carries no
-facts beyond what is already recorded in
+established for `134-S`, `137-S`, `138-S`, and `139-S`. Its account of
+140-S's shipped execution and runtime evidence carries no facts beyond
+what is already recorded in
 `docs/closure/2026-09-18-140-s-operational-closure.md` and
 `docs/closure/2026-09-18-140-s-runtime-verification.md`, both of which
-remain the authoritative, unmodified narrative record for this
-shipment's closure.
+remain the authoritative, unmodified narrative record for that shipped
+work; the Repair note and its subsequent Copilot-review corrections
+above are this file's own new repair provenance, not restated from
+those reports.
