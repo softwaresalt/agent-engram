@@ -10,7 +10,9 @@
 //! throughout the rest of the library.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
+
+use crate::errors::ErrorBody;
 
 /// Maximum allowed byte length for a JSON-RPC method name (T081 / S101).
 ///
@@ -254,7 +256,35 @@ pub struct IpcError {
     pub code: i32,
     /// Human-readable error description.
     pub message: String,
-    /// Optional additional error context (e.g. Engram domain error code).
+    /// Optional additional error context (for Engram domain errors: stable code,
+    /// symbolic name, and structured details).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<Value>,
+}
+
+impl IpcError {
+    pub(crate) fn from_engram_error_body(code: i32, error: ErrorBody) -> Self {
+        let ErrorBody {
+            code: engram_code,
+            name: engram_name,
+            message,
+            details: engram_details,
+        } = error;
+
+        let mut data = Map::with_capacity(3);
+        data.insert(
+            "engram_code".to_owned(),
+            Value::from(u64::from(engram_code)),
+        );
+        data.insert("engram_name".to_owned(), Value::String(engram_name));
+        if let Some(details) = engram_details {
+            data.insert("engram_details".to_owned(), details);
+        }
+
+        Self {
+            code,
+            message,
+            data: Some(Value::Object(data)),
+        }
+    }
 }
