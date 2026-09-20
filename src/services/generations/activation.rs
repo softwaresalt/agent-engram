@@ -635,6 +635,48 @@ impl ObservabilityState {
     }
 }
 
+#[cfg(test)]
+struct PublishActiveTestHook {
+    reached: Option<tokio::sync::oneshot::Sender<()>>,
+    resume: std::sync::mpsc::Receiver<()>,
+}
+
+#[cfg(test)]
+fn publish_active_test_hook() -> &'static Mutex<Option<PublishActiveTestHook>> {
+    static HOOK: std::sync::OnceLock<Mutex<Option<PublishActiveTestHook>>> =
+        std::sync::OnceLock::new();
+    HOOK.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(test)]
+fn install_publish_active_test_hook(
+    reached: tokio::sync::oneshot::Sender<()>,
+    resume: std::sync::mpsc::Receiver<()>,
+) {
+    let hook = PublishActiveTestHook {
+        reached: Some(reached),
+        resume,
+    };
+    match publish_active_test_hook().lock() {
+        Ok(mut guard) => *guard = Some(hook),
+        Err(poisoned) => *poisoned.into_inner() = Some(hook),
+    }
+}
+
+#[cfg(test)]
+fn maybe_pause_publish_active_test_hook() {
+    let maybe_hook = match publish_active_test_hook().lock() {
+        Ok(mut guard) => guard.take(),
+        Err(poisoned) => poisoned.into_inner().take(),
+    };
+    if let Some(mut hook) = maybe_hook {
+        if let Some(reached) = hook.reached.take() {
+            let _ = reached.send(());
+        }
+        let _ = hook.resume.recv();
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ActivationObservabilitySnapshot {
     pub active_revision: Option<GenerationRevision>,
@@ -1139,23 +1181,25 @@ impl GenerationActivator {
     /// Publish `context` as the serving generation and prune superseded
     /// rejection records.
     ///
-    /// The write lock is held only for the swap itself -- never across the
-    /// open -- so a concurrent reader waits at most for one pointer
-    /// assignment.
+    /// The write lock covers both the pointer swap and the in-memory
+    /// observability update -- never the open itself -- so readers cannot
+    /// observe a newer active generation before its associated metadata has
+    /// advanced to the same revision.
     async fn publish_active(
         &self,
         revision: GenerationRevision,
         context: GenerationReadContext,
         disk_usage_bytes: u64,
     ) {
-        {
-            let mut active = self.active.write().await;
-            *active = Some(ActiveGeneration {
-                revision,
-                context: context.clone(),
-            });
-        }
+        let mut active = self.active.write().await;
+        *active = Some(ActiveGeneration {
+            revision,
+            context: context.clone(),
+        });
+        #[cfg(test)]
+        maybe_pause_publish_active_test_hook();
         self.note_active_generation(revision, &context, disk_usage_bytes);
+        drop(active);
         self.with_rejections_mut(|cache| cache.prune_through(revision));
     }
 }
@@ -1717,13 +1761,23 @@ mod size_cap_tests {
 
 #[cfg(test)]
 mod observability_snapshot_tests {
+    use std::fmt::Write as _;
+    use std::fs;
+    use std::path::Path;
+    use std::sync::Arc;
     use std::time::Duration;
 
+    use chrono::{DateTime, Utc};
+    use sha2::{Digest, Sha256};
     use tempfile::TempDir;
 
     use super::{
-        ExpectedIdentity, GenerationActivator, GenerationRevision, GenerationStore,
-        RuntimeCopyLease,
+        ExpectedIdentity, GENERATION_DATABASE_FILE_NAME, GenerationActivator, GenerationId,
+        GenerationManifest, GenerationRevision, GenerationStore, ManifestFileDigest,
+        RuntimeCopyLease, SUPPORTED_MANIFEST_SCHEMA_VERSION, install_publish_active_test_hook,
+    };
+    use crate::services::generations::{
+        BranchIdentity, GenerationProvenance, SealedInventory, WorkspaceIdentity,
     };
 
     fn test_activator() -> (GenerationActivator, TempDir, TempDir) {
@@ -1736,6 +1790,60 @@ mod observability_snapshot_tests {
             Duration::from_secs(5),
         );
         (activator, generations, runtime)
+    }
+
+    fn fixture_created_at() -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339("2026-09-20T00:00:00Z")
+            .expect("fixture timestamp literal must parse")
+            .with_timezone(&Utc)
+    }
+
+    fn sha256_hex(path: &Path) -> String {
+        let bytes = fs::read(path).expect("read file for digest");
+        Sha256::digest(bytes)
+            .iter()
+            .fold(String::new(), |mut hex, byte| {
+                let _ = write!(hex, "{byte:02x}");
+                hex
+            })
+    }
+
+    fn seed_generation(generations_root: &Path, label: &str) -> u64 {
+        let dir = generations_root.join(label);
+        fs::create_dir_all(&dir).expect("generation directory");
+        let db_path = dir.join(GENERATION_DATABASE_FILE_NAME);
+        {
+            let db = cozo::DbInstance::new("sqlite", db_path.to_str().expect("utf8 path"), "")
+                .expect("create db");
+            db.run_default(":create probe_row {id => val}")
+                .expect("create relation");
+            db.run_default("?[id, val] <- [[1, 'seed']] :put probe_row {id => val}")
+                .expect("seed row");
+        }
+        fs::metadata(&db_path).expect("db metadata").len()
+    }
+
+    fn publish_valid_revision(generations_root: &Path, label: &str, revision: u64) -> u64 {
+        let bytes = seed_generation(generations_root, label);
+        let db_path = generations_root.join(label).join(GENERATION_DATABASE_FILE_NAME);
+        let manifest = GenerationManifest::new(
+            GenerationId::new(label).expect("fixture generation id"),
+            GenerationRevision::new(revision),
+            SUPPORTED_MANIFEST_SCHEMA_VERSION,
+            BranchIdentity::new("served-branch", Some(format!("source-rev-{revision}"))),
+            WorkspaceIdentity::new("workspace-alpha"),
+            SealedInventory::new(vec![ManifestFileDigest::new(
+                format!("{label}/{GENERATION_DATABASE_FILE_NAME}"),
+                sha256_hex(&db_path),
+            )]),
+            GenerationProvenance::new("activation-observability-tests", fixture_created_at()),
+        );
+        fs::write(
+            generations_root.join("active.json"),
+            serde_json::to_vec(&manifest).expect("serialize manifest"),
+        )
+        .expect("write active manifest");
+        bytes
     }
 
     #[tokio::test]
@@ -1778,6 +1886,56 @@ mod observability_snapshot_tests {
         assert_eq!(snapshot.retained_runtime_copy_count, 0);
         assert_eq!(snapshot.retained_context_count, 0);
         assert_eq!(snapshot.retained_runtime_copy_bytes, 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn publish_active_keeps_active_pointer_and_observability_state_under_one_boundary() {
+        let (activator, generations, _runtime) = test_activator();
+        let activator = Arc::new(activator);
+        let first_bytes = publish_valid_revision(generations.path(), "gen-observe-1", 1);
+        activator
+            .activate_initial()
+            .await
+            .expect("initial activation must succeed");
+
+        let second_bytes = publish_valid_revision(generations.path(), "gen-observe-2", 2);
+        let (reached_tx, reached_rx) = tokio::sync::oneshot::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        install_publish_active_test_hook(reached_tx, resume_rx);
+
+        let publish = tokio::spawn({
+            let activator = Arc::clone(&activator);
+            async move {
+                activator
+                    .maybe_activate_newer()
+                    .await
+                    .expect("newer revision activation must succeed")
+            }
+        });
+
+        reached_rx
+            .await
+            .expect("publish_active hook should fire before observability advances");
+
+        let snapshot_during_publish = activator.observability_snapshot();
+        assert_eq!(snapshot_during_publish.active_revision, Some(GenerationRevision::new(1)));
+        assert_eq!(snapshot_during_publish.active_generation_bytes, Some(first_bytes));
+        assert!(
+            activator.active.try_read().is_err(),
+            "the active pointer must remain unpublished until observability is updated"
+        );
+
+        resume_tx
+            .send(())
+            .expect("publish_active hook resume should succeed");
+        let activated = publish
+            .await
+            .expect("publish task should finish without panicking");
+        assert!(activated.is_some(), "revision 2 must activate");
+
+        let snapshot_after_publish = activator.observability_snapshot();
+        assert_eq!(snapshot_after_publish.active_revision, Some(GenerationRevision::new(2)));
+        assert_eq!(snapshot_after_publish.active_generation_bytes, Some(second_bytes));
     }
 }
 
