@@ -87,14 +87,20 @@ impl Fixture {
                 .expect("seed row");
         }
         let bytes = fs::metadata(&db_path).expect("db metadata").len();
-        let sealed_inventory_bytes = extra_artifacts.iter().fold(bytes, |total, (relative_path, contents)| {
-            let artifact_path = dir.join(relative_path);
-            if let Some(parent) = artifact_path.parent() {
-                fs::create_dir_all(parent).expect("extra artifact parent directory");
-            }
-            fs::write(&artifact_path, contents).expect("write extra artifact");
-            total + fs::metadata(&artifact_path).expect("extra artifact metadata").len()
-        });
+        let sealed_inventory_bytes =
+            extra_artifacts
+                .iter()
+                .fold(bytes, |total, (relative_path, contents)| {
+                    let artifact_path = dir.join(relative_path);
+                    if let Some(parent) = artifact_path.parent() {
+                        fs::create_dir_all(parent).expect("extra artifact parent directory");
+                    }
+                    fs::write(&artifact_path, contents).expect("write extra artifact");
+                    total
+                        + fs::metadata(&artifact_path)
+                            .expect("extra artifact metadata")
+                            .len()
+                });
         SeededGeneration {
             bytes,
             sealed_inventory_bytes,
@@ -354,7 +360,6 @@ fn assert_inventory_unchanged(
     assert_eq!(generations_after, *generations_before);
     assert_eq!(runtime_after, *runtime_before);
 }
-
 
 #[tokio::test]
 async fn workspace_status_reports_runtime_copy_bytes_not_whole_inventory_bytes() {

@@ -1837,7 +1837,9 @@ mod observability_snapshot_tests {
 
     fn publish_valid_revision(generations_root: &Path, label: &str, revision: u64) -> u64 {
         let bytes = seed_generation(generations_root, label);
-        let db_path = generations_root.join(label).join(GENERATION_DATABASE_FILE_NAME);
+        let db_path = generations_root
+            .join(label)
+            .join(GENERATION_DATABASE_FILE_NAME);
         let manifest = GenerationManifest::new(
             GenerationId::new(label).expect("fixture generation id"),
             GenerationRevision::new(revision),
@@ -1930,8 +1932,14 @@ mod observability_snapshot_tests {
             .expect("publish_active hook should fire before observability advances");
 
         let snapshot_during_publish = activator.observability_snapshot();
-        assert_eq!(snapshot_during_publish.active_revision, Some(GenerationRevision::new(1)));
-        assert_eq!(snapshot_during_publish.active_generation_bytes, Some(first_bytes));
+        assert_eq!(
+            snapshot_during_publish.active_revision,
+            Some(GenerationRevision::new(1))
+        );
+        assert_eq!(
+            snapshot_during_publish.active_generation_bytes,
+            Some(first_bytes)
+        );
         assert!(
             activator.active.try_read().is_err(),
             "the active pointer must remain unpublished until observability is updated"
@@ -1946,8 +1954,14 @@ mod observability_snapshot_tests {
         assert!(activated.is_some(), "revision 2 must activate");
 
         let snapshot_after_publish = activator.observability_snapshot();
-        assert_eq!(snapshot_after_publish.active_revision, Some(GenerationRevision::new(2)));
-        assert_eq!(snapshot_after_publish.active_generation_bytes, Some(second_bytes));
+        assert_eq!(
+            snapshot_after_publish.active_revision,
+            Some(GenerationRevision::new(2))
+        );
+        assert_eq!(
+            snapshot_after_publish.active_generation_bytes,
+            Some(second_bytes)
+        );
     }
 }
 
