@@ -84,16 +84,20 @@ disposition (4 review passes, 10 threads, all resolved,
 [`docs/closure/2026-09-18-140-s-operational-closure.md`](./2026-09-18-140-s-operational-closure.md).
 
 This closure covers `140-S`'s own 7-item manifest only. It does not
-re-open, re-plan, or touch any other `142-F`-covering shipment. The only
-place `141-S` appears anywhere in this record is the topology gate's own
-`--shipment 141-S --phase pre_claim` predecessor-closure check quoted in
-the Repair note above: that was a read-only verification of *140-S's*
-closure completeness, keyed by `141-S` as the invoking shipment, run by
-`141-S`'s own separate pre-claim attempt — not by the original 140-S
-closure pass or by this repair. Neither of those two 140-S-scoped passes
-read, claimed, or mutated `141-S`'s own backlog item, task content, or
-manifest, and neither archives or otherwise mutates `142-F` itself,
-which remains `status: active` for those later shipments.
+re-open, re-plan, or touch any other `142-F`-covering shipment. `141-S`
+is named several times in this record (the Purpose section, the Repair
+note, and this paragraph), but every one of those mentions is
+provenance about a *different* actor's action, not an action taken by
+this closure or its repair: the topology gate's own
+`--shipment 141-S --phase pre_claim` predecessor-closure check quoted
+in the Repair note above was a read-only verification of *140-S's*
+closure completeness, keyed by `141-S` as the invoking shipment, and it
+was run by `141-S`'s own separate pre-claim attempt — not by the
+original 140-S closure pass or by this repair. Neither of those two
+140-S-scoped passes read, claimed, or mutated `141-S`'s own backlog
+item, task content, or manifest, and neither archives or otherwise
+mutates `142-F` itself, which remains `status: active` for those later
+shipments.
 
 ## Runtime Verification
 
