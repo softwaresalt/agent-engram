@@ -145,8 +145,10 @@ coverage.
   defining "healthy" as unconditionally 100% green would make every future
   observation window report unhealthy even when 141-S has not regressed.
 - `engram daemon-status` and `engram health` report green/healthy.
-- No increase in generic/unstructured error responses observed in IPC/MCP
-  transport logs.
+- Manual functional probes (invoke a known error-triggering call) continue
+  to return the structured error envelope rather than a bare/lossy string
+  in IPC/MCP/CLI responses (no log-based signal exists for this yet — see
+  Monitoring plan and follow-up `D77BCBBC`).
 
 ## Failure signals
 
@@ -243,7 +245,7 @@ uncompacted.
 | Required evidence | Status |
 |---|---|
 | healthy-signal | **Satisfied** — CLI version probe green (freshly built, non-dirty binary); full test suite green with one known pre-existing, unrelated exception (see runtime-verification report); hosted CI green (both `build` and `start-launcher-windows`, the latter via one operator-authorized rerun). |
-| failure-signal | **Satisfied** — named above; see Monitoring plan for the concrete log-query signal, baseline, and threshold. |
+| failure-signal | **Satisfied** — named above; see Monitoring plan for the manual functional-probe signal, baseline, and threshold (no log-query signal currently exists — see the `monitoring-plan` row below). |
 | monitoring-plan | **Satisfied with a follow-up** — a manual functional probe (invoke a known error-triggering call, confirm the returned response preserves the structured envelope rather than a bare string) with an explicit baseline and zero-tolerance alert threshold (see Monitoring plan above, corrected 2026-09-23 per PR #408 Copilot review — the earlier log-grep description named a field/log line that does not exist); automating this as a log-based signal is tracked as follow-up `D77BCBBC`. Separately, two invariants (read-server policy, generation observability) are enforced in test but not yet reachable from production dispatch, tracked as unresolved follow-ups `6C5DF765`/`9B7EC1E4`. |
 | rollback-trigger | **Satisfied** — named above. |
 | rollback-procedure | **Satisfied** — standard GitHub Release reinstall + `.engram/` flush; no migration to reverse. |

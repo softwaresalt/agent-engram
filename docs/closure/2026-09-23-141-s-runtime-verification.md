@@ -105,6 +105,13 @@ verdict.
 | `21D0F63C` | low | `3A963D34` and `5684685C` both record `feature N/A`, and `5684685C` records `requires_deliberation: false`; both are malformed per Ship's own P-021 C2 six-field capture contract (feature ID always populated) and P-021 C6 (every entry mandatorily routes through `deliberate`, so `requires_deliberation` should read `true`). Ship cannot correct these directly (P-021 C5 forbids editing stash entries post-capture); Stage should correct both fields on `3A963D34`/`5684685C` via `stash_edit` at next triage. |
 | `D77BCBBC` | low | No automated log-based monitoring signal exists for the IPC/MCP/CLI error-envelope transport fidelity shipped by 142.049-T/142.050-T — `translate_ipc_response`/`structured_ipc_error_payload` build the envelope directly into the response payload and never write it to a log stream. Current monitoring relies on a manual functional probe only (see operational-closure Monitoring plan, corrected 2026-09-23). Recommend a follow-up shipment add structured logging at the translation boundary. |
 
-All seven P-021 entries were captured with `requires_deliberation` set per
-entry (per the correction noted for `21D0F63C` above) and are pending
-Stage triage/prioritization; none block this shipment's own closure.
+Five of these are P-021 `DEFERRED SCOPE EXPANSION` captures
+(`6C5DF765`, `9B7EC1E4`, `4628001C`, `5684685C`, `3A963D34`); the
+remaining two (`21D0F63C`, `D77BCBBC`) are plain Ship follow-up
+captures (not P-021 deferred-scope entries) documenting corrections and
+gaps identified during PR #408's own review, not scope expansions
+deferred from the fix cycle. As of this writing, `5684685C`'s
+`requires_deliberation` field still reads `false` in the live stash
+record — `21D0F63C` documents the needed correction for Stage to apply
+via `stash_edit`; it has not yet been applied. All are pending Stage
+triage/prioritization; none block this shipment's own closure.
