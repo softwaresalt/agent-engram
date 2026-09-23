@@ -23,13 +23,20 @@ parity, decorates responses with captured-context provenance, enforces a
 read-server (Generation/ReadServer mode) lifecycle policy forbidding
 hydration/scan/watcher/sync work, and reports generation observability
 without requiring deletion-based invalidation. All 7 tasks were built via
-TDD, passed the full quality-gate sequence (`cargo fmt`, `cargo clippy
---all-targets -D warnings -D clippy::pedantic`, `cargo dev-test`), and
-were reviewed by a 7-persona local adversarial review (mixed
-BLOCKED/READY_WITH_FOLLOWUPS across personas; all P0/P1 findings fixed,
-3 out-of-scope findings correctly deferred as P-021 stash entries).
+TDD and passed the full quality-gate sequence (`cargo fmt`, `cargo clippy
+--all-targets -D warnings -D clippy::pedantic`, `cargo dev-test`), **with
+one known pre-existing, unrelated exception**:
+`integration_release_archive_smoke_workflow::archive_verifier_runs_the_unpacked_native_binary`
+was independently reconfirmed still failing during this shipment's own
+review round and is not caused by, or related to, any of the 7 manifest
+tasks (see `docs/closure/2026-09-23-141-s-runtime-verification.md` for
+detail). The 7 tasks were reviewed by a 7-persona local adversarial
+review (mixed BLOCKED/READY_WITH_FOLLOWUPS across personas; all P0/P1
+findings fixed, 3 out-of-scope findings correctly deferred as P-021
+stash entries).
 
 ## CI status and unresolved review items
+
 
 **Final, as merged 2026-09-23**, HEAD `0bcabd0a`:
 
@@ -62,15 +69,22 @@ BLOCKED/READY_WITH_FOLLOWUPS across personas; all P0/P1 findings fixed,
 
 ## Validator evidence (structured handoff)
 
-- **Surfaces exercised**: `cli` (version probe green; live daemon-status
+- **Surfaces exercised**: `cli` (version probe green on a freshly built,
+  non-dirty binary at this closure branch's HEAD; live daemon-status
   probe against the real dev workspace timed out on wall-clock only, not
   functionally — see runtime-verification report), `api`/MCP (full
   contract-test suite green as part of the pre-merge `cargo dev-test`
-  gate), `background-job` (not separately exercised — out of scope for
-  this shipment's 7 tasks, covered transitively by the green full suite).
+  gate, with one known pre-existing, unrelated failure — see
+  runtime-verification report), `background-job` (the required
+  `workspace-sync` probe was attempted this pass and blocked by an
+  already-running daemon holding the workspace lock; not silently
+  substituted — see runtime-verification report for the explicit blocked
+  disposition).
 - **Manual checkpoints**: none declared for these surfaces beyond the
   automated probes.
-- **Blocked prerequisites**: none.
+- **Blocked prerequisites**: `workspace-sync` (required background-job
+  probe) — see runtime-verification report. Does not change this
+  shipment's own verdict.
 - **Verdict**: `PASS_WITH_FOLLOW_UP`.
 
 ## Invariants to preserve
@@ -144,8 +158,25 @@ coverage.
 ## Monitoring plan
 
 Standard daemon log observation per `docs/log-observation-guide.md`; no
-additional monitoring infrastructure required for this shipment. Watch for
-any recurrence of unstructured/lossy error strings in IPC/MCP/CLI
+additional monitoring infrastructure required for this shipment.
+
+**Observable signal**: grep the daemon's structured log stream for the
+transport-error-envelope field shape emitted at
+`shim::transport::translate_ipc_response` and the MCP/CLI error-response
+paths introduced by 142.049-T/142.050-T (log line pattern:
+`level=error ... envelope_kind=` with a non-`EngramError`-shaped
+`envelope_kind`, or any log line matching
+`error.*(String|string).*lossy|truncated` in the IPC/MCP/CLI transport
+modules). This is a manual `grep`/log-query check against
+`docs/log-observation-guide.md`'s standard daemon log location; no
+dashboard exists for this workspace-local single-binary daemon.
+**Baseline**: zero occurrences expected — the shipped contract tests
+enforce lossless envelope propagation, so any occurrence in production
+logs indicates a regression the tests did not catch.
+**Alert threshold**: any single occurrence of a lossy/unstructured
+error string in IPC/MCP/CLI transport logs triggers investigation
+(zero-tolerance threshold, consistent with the baseline of zero).
+Watch for any recurrence of unstructured/lossy error strings in IPC/MCP/CLI
 transport logs, which would indicate a regression against this
 shipment's core transport-fidelity guarantee.
 
@@ -198,14 +229,14 @@ uncompacted.
 
 | Required evidence | Status |
 |---|---|
-| healthy-signal | **Satisfied** — CLI version probe green; full test suite green; hosted CI green (both `build` and `start-launcher-windows`, the latter via one operator-authorized rerun). |
-| failure-signal | **Satisfied** — named above. |
-| monitoring-plan | **Satisfied with a follow-up** — standard daemon log observation covers the general case; two invariants (read-server policy, generation observability) are enforced in test but not yet reachable from production dispatch, tracked as unresolved follow-ups `6C5DF765`/`9B7EC1E4`. |
+| healthy-signal | **Satisfied** — CLI version probe green (freshly built, non-dirty binary); full test suite green with one known pre-existing, unrelated exception (see runtime-verification report); hosted CI green (both `build` and `start-launcher-windows`, the latter via one operator-authorized rerun). |
+| failure-signal | **Satisfied** — named above; see Monitoring plan for the concrete log-query signal, baseline, and threshold. |
+| monitoring-plan | **Satisfied with a follow-up** — standard daemon log observation with an explicit observable log-query pattern, zero-occurrence baseline, and zero-tolerance alert threshold (see Monitoring plan above); two invariants (read-server policy, generation observability) are enforced in test but not yet reachable from production dispatch, tracked as unresolved follow-ups `6C5DF765`/`9B7EC1E4`. |
 | rollback-trigger | **Satisfied** — named above. |
 | rollback-procedure | **Satisfied** — standard GitHub Release reinstall + `.engram/` flush; no migration to reverse. |
 | owner | **Satisfied** — repository maintainer / release owner. |
 | validation-window | **Satisfied** — through next tagged release + 48h. |
-| follow-up (optional) | **Satisfied (tracked)** — 3 stash entries captured during 141-S's own local review (`6C5DF765`, `9B7EC1E4`, `4628001C`), plus 1 new advisory (validator-manifest `cli-daemon-status` command-name drift, non-blocking, recorded in the runtime-verification report). None block this PR's own scope. |
+| follow-up (optional) | **Satisfied (tracked)** — 3 stash entries captured during 141-S's own local review (`6C5DF765`, `9B7EC1E4`, `4628001C`), plus 2 additional advisory/deliberation entries captured during this closure PR's Copilot review round (`5684685C` — validator-manifest command drift; `3A963D34` — `archived_status: done` vs. documented Shipment Sequencing Protocol prose reconciliation). None block this PR's own scope. |
 
 **Overall status: `READY_WITH_CONDITIONS`** — merge completed via merge
 commit; `closure_status` for this shipment's own execution is `READY`
