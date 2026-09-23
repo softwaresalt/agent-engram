@@ -242,3 +242,25 @@ reasoning. This is now the seventh consecutive shipment (134-S, 135-S,
 136-S, 137-S, 138-S, 139-S, 140-S — seven shipment IDs) to close under
 this same covering feature by skipping `shipment ship` entirely and going
 straight to manual safe-close.
+
+## Addendum (2026-09-23): reused for `141-S` without re-attempting `shipment ship`
+
+Shipment `141-S` (manifest: 7 tasks, `142.047-T`–`142.053-T`, all already
+individually `done`/archived) closes under the identical shared covering
+feature `142-F` during its own post-merge closure. `backlogit shipment
+ship 141-S` was **not attempted at all** for this closure, for the same
+reasoning applied to `137-S`/`138-S`/`140-S`. The generic `backlogit move
+141-S --status shipped` fallback *was* independently re-attempted this
+session and confirmed rejected outright by the CLI (`Error: shipment must
+be shipped via ShipShipment, not a direct status update`, exit code 9) —
+that specific sub-finding is genuinely re-confirmed for `141-S`. `141-S`
+closed cleanly via the identical manual archive-file procedure (see
+`.backlogit/archive/141-S.md` AUDIT RATIONALE); covering feature `142-F`
+verified untouched (still `active`, byte-identical to its pre-closure
+SHA-256 snapshot, `59263E8FFB779485E135A7AA41D9DAAC89B4A996B767D128D76A1AD2E70404C3`,
+802 bytes — unchanged since the `138-S` snapshot, confirming every
+intervening closure, including this one, left it untouched). This is now
+the eighth consecutive shipment (134-S, 135-S, 136-S, 137-S, 138-S,
+139-S, 140-S, 141-S — eight shipment IDs) to close under this same
+covering feature by skipping `shipment ship` entirely and going straight
+to manual safe-close.
