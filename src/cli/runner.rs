@@ -11,7 +11,7 @@ use crate::cli::flags::GlobalFlags;
 use crate::cli::output::OutputFormatter;
 use crate::daemon::ipc_server::ipc_endpoint;
 use crate::daemon::protocol::{IpcError, IpcRequest, IpcResponse};
-use crate::errors::EngramError;
+use crate::errors::{EngramError, ErrorBody, ErrorResponse};
 use crate::shim::ipc_client;
 use crate::shim::lifecycle::{check_health, ensure_daemon_running};
 use crate::tools::capabilities::{self, ToolSurface};
@@ -73,6 +73,88 @@ fn friendly_error_message(err: &IpcError) -> String {
     }
 
     err.message.clone()
+}
+
+enum JsonIpcErrorEnvelope {
+    Domain(ErrorResponse),
+    Transport {
+        code: i64,
+        message: String,
+        data: Option<Value>,
+    },
+}
+
+fn classify_json_ipc_error(err: IpcError) -> JsonIpcErrorEnvelope {
+    if let Some(domain_error) = ipc_error_to_response(&err) {
+        return JsonIpcErrorEnvelope::Domain(domain_error);
+    }
+
+    JsonIpcErrorEnvelope::Transport {
+        code: i64::from(err.code),
+        message: friendly_error_message(&err),
+        data: err.data,
+    }
+}
+
+fn translate_json_ipc_error(id: Option<Value>, err: IpcError) -> Value {
+    match classify_json_ipc_error(err) {
+        JsonIpcErrorEnvelope::Domain(domain_error) => {
+            crate::cli::output::tool_error_response_envelope_value(id, &domain_error)
+        }
+        JsonIpcErrorEnvelope::Transport {
+            code,
+            message,
+            data,
+        } => crate::cli::output::tool_error_envelope_value(id, code, &message, data),
+    }
+}
+
+fn emit_json_ipc_error(formatter: &OutputFormatter, id: Option<Value>, err: IpcError) -> i32 {
+    match classify_json_ipc_error(err) {
+        JsonIpcErrorEnvelope::Domain(domain_error) => {
+            formatter.tool_error_response(id, &domain_error)
+        }
+        JsonIpcErrorEnvelope::Transport {
+            code,
+            message,
+            data,
+        } => formatter.tool_error(id, code, &message, data),
+    }
+}
+
+fn ipc_error_to_response(err: &IpcError) -> Option<ErrorResponse> {
+    let data = err.data.as_ref()?.as_object()?;
+    let code = u16::try_from(data.get("engram_code")?.as_u64()?).ok()?;
+    let name = data.get("engram_name")?.as_str()?.to_owned();
+    let details = data.get("engram_details").cloned();
+
+    Some(ErrorResponse {
+        error: ErrorBody {
+            code,
+            name,
+            message: friendly_error_message(err),
+            details,
+        },
+    })
+}
+
+/// Translate one daemon IPC response into the CLI JSON envelope shape.
+///
+/// Successful daemon payloads remain structured beneath `result`, preserving
+/// any provenance object the tool returned. Structured daemon domain errors are
+/// rehydrated into the F38 CLI error envelope so scripts can branch on the
+/// stable Engram code/name/details without scraping the human message.
+#[must_use]
+pub fn translate_ipc_response(response: IpcResponse) -> Value {
+    let IpcResponse {
+        id, result, error, ..
+    } = response;
+
+    if let Some(error) = error {
+        return translate_json_ipc_error(Some(id), error);
+    }
+
+    crate::cli::output::success_envelope_value(Some(id), result.unwrap_or(Value::Null))
 }
 
 fn is_indexing_method(method: &str) -> bool {
@@ -402,11 +484,15 @@ async fn run_tool_dispatch(
                     (code, None)
                 }
             } else if let Some(err) = response.error {
-                let message = friendly_error_message(&err);
-                (
-                    formatter.tool_error(Some(id), i64::from(err.code), &message, err.data),
-                    None,
-                )
+                if formatter.is_json() {
+                    (emit_json_ipc_error(formatter, Some(id), err), None)
+                } else {
+                    let message = friendly_error_message(&err);
+                    (
+                        formatter.tool_error(Some(id), i64::from(err.code), &message, err.data),
+                        None,
+                    )
+                }
             } else {
                 (formatter.cli_error("daemon returned empty response"), None)
             }
@@ -423,11 +509,12 @@ mod tests {
 
     use crate::cli::flags::GlobalFlags;
     use crate::cli::output::{OutputFormatter, OutputMode};
-    use crate::daemon::protocol::IpcError;
+    use crate::daemon::protocol::{IpcError, IpcResponse};
 
     use super::{
         INDEX_IN_PROGRESS_CODE, JSONRPC_INTERNAL_ERROR_CODE, extract_indexing_progress,
-        friendly_error_message, inject_correlation_id, render_indexing_progress,
+        friendly_error_message, inject_correlation_id, ipc_error_to_response,
+        render_indexing_progress, translate_ipc_response,
     };
 
     fn make_formatter() -> OutputFormatter {
@@ -452,6 +539,80 @@ mod tests {
             message: message.to_owned(),
             data,
         }
+    }
+
+    #[test]
+    fn ipc_error_to_response_rehydrates_structured_domain_errors() {
+        let err = make_ipc_error(
+            JSONRPC_INTERNAL_ERROR_CODE,
+            "workspace missing",
+            Some(json!({
+                "engram_code": 1001,
+                "engram_name": "WorkspaceNotFound",
+                "engram_details": { "path": "C:\\missing" }
+            })),
+        );
+
+        let response = ipc_error_to_response(&err).expect("structured domain envelope");
+        assert_eq!(response.error.code, 1001);
+        assert_eq!(response.error.name, "WorkspaceNotFound");
+        assert_eq!(
+            response.error.details,
+            Some(json!({ "path": "C:\\missing" }))
+        );
+    }
+
+    #[test]
+    fn translate_ipc_response_preserves_success_provenance() {
+        let envelope = translate_ipc_response(IpcResponse::success(
+            json!(1),
+            json!({
+                "provenance": {
+                    "workspace_id": "workspace-alpha",
+                    "branch": "feature/f42",
+                    "generation_id": "gen-42"
+                },
+                "row_count": 3
+            }),
+        ));
+
+        assert_eq!(envelope["jsonrpc"], json!("2.0"));
+        assert_eq!(
+            envelope["result"]["provenance"]["workspace_id"],
+            json!("workspace-alpha")
+        );
+        assert_eq!(
+            envelope["result"]["provenance"]["branch"],
+            json!("feature/f42")
+        );
+        assert_eq!(
+            envelope["result"]["provenance"]["generation_id"],
+            json!("gen-42")
+        );
+    }
+
+    #[test]
+    fn translate_ipc_response_rehydrates_structured_domain_errors() {
+        let envelope = translate_ipc_response(IpcResponse::error(
+            json!(1),
+            make_ipc_error(
+                JSONRPC_INTERNAL_ERROR_CODE,
+                "workspace missing",
+                Some(json!({
+                    "engram_code": 1001,
+                    "engram_name": "WorkspaceNotFound",
+                    "engram_details": { "path": "C:\\missing" }
+                })),
+            ),
+        ));
+
+        assert_eq!(envelope["error"]["code"], json!(1001));
+        assert_eq!(envelope["error"]["engram_code"], json!(1001));
+        assert_eq!(envelope["error"]["engram_name"], json!("WorkspaceNotFound"));
+        assert_eq!(
+            envelope["error"]["engram_details"]["path"],
+            json!("C:\\missing")
+        );
     }
 
     #[test]

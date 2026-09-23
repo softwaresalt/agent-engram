@@ -2,9 +2,9 @@
 //!
 //! The shim's `ServerHandler` does not execute tools locally; it forwards every
 //! `call_tool` request to the workspace daemon via the IPC client. The daemon's
-//! JSON-RPC response is parsed: if the result contains a `content` array,
-//! text items are extracted and returned as MCP content; otherwise the full
-//! result is serialised as a single text block.
+//! JSON-RPC response is translated into an MCP `CallToolResult`: successful
+//! payloads remain structured in `structured_content`, while any human-readable
+//! text is preserved as an optional secondary view in `content`.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
@@ -21,7 +21,7 @@ use tokio::sync::{Mutex, watch};
 use tokio::time::Instant;
 use tracing::instrument;
 
-use crate::daemon::protocol::IpcRequest;
+use crate::daemon::protocol::{IpcError, IpcRequest, IpcResponse};
 use crate::errors::{EngramError, ShimFailureClass, ShimStartupError};
 use crate::shim::StartupOutcome;
 use crate::shim::lifecycle::HealthOutcome;
@@ -377,27 +377,7 @@ impl ServerHandler for ShimHandler {
                 .await
                 .map_err(domain_to_mcp)?;
 
-            if let Some(wire_err) = response.error {
-                return Err(ErrorData::new(
-                    rmcp::model::ErrorCode(wire_err.code),
-                    wire_err.message,
-                    wire_err.data,
-                ));
-            }
-
-            let result_value = response.result.unwrap_or(Value::Null);
-
-            // If the daemon result has a `content` array, extract text items.
-            // Otherwise serialise the whole result as a single text block.
-            let content = if let Some(arr) = result_value.get("content").and_then(Value::as_array) {
-                arr.iter()
-                    .filter_map(|item| item.get("text").and_then(Value::as_str).map(Content::text))
-                    .collect()
-            } else {
-                vec![Content::text(result_value.to_string())]
-            };
-
-            Ok(CallToolResult::success(content))
+            Ok(translate_ipc_response(response))
         }
     }
 
@@ -423,6 +403,71 @@ impl ServerHandler for ShimHandler {
 
 fn domain_to_mcp(err: EngramError) -> ErrorData {
     ErrorData::internal_error(err.to_string(), None)
+}
+
+fn content_text_view(value: &Value) -> Vec<Content> {
+    if let Some(items) = value.get("content").and_then(Value::as_array) {
+        let text_blocks: Vec<_> = items
+            .iter()
+            .filter_map(|item| item.get("text").and_then(Value::as_str).map(Content::text))
+            .collect();
+        if !text_blocks.is_empty() {
+            return text_blocks;
+        }
+    }
+
+    vec![Content::text(value.to_string())]
+}
+
+/// Build the MCP structured payload for a transport-level IPC error.
+///
+/// This is the shim's transport-tier error shape, not the CLI's domain
+/// envelope. In this function, `jsonrpc_code` is the raw JSON-RPC wire code
+/// (for example `-32603`), and the payload intentionally does not add the
+/// CLI's top-level `code` / `name` / `data` keys. For the CLI's transport
+/// and domain envelopes, see
+/// [`crate::cli::output::tool_error_envelope_value`] and
+/// [`crate::cli::output::tool_error_response_envelope_value`].
+fn structured_ipc_error_payload(error: &IpcError) -> Value {
+    match error.data.clone() {
+        Some(Value::Object(mut data)) => {
+            data.entry("jsonrpc_code".to_owned())
+                .or_insert_with(|| Value::from(i64::from(error.code)));
+            data.entry("message".to_owned())
+                .or_insert_with(|| Value::String(error.message.clone()));
+            Value::Object(data)
+        }
+        Some(data) => serde_json::json!({
+            "jsonrpc_code": error.code,
+            "message": error.message,
+            "wire_data": data,
+        }),
+        None => serde_json::json!({
+            "jsonrpc_code": error.code,
+            "message": error.message,
+        }),
+    }
+}
+
+/// Translate one daemon IPC response into the MCP `tools/call` result shape.
+///
+/// Successful daemon payloads remain structured in `structured_content` so MCP
+/// clients can read provenance and result metadata without scraping prose.
+/// Error payloads preserve the F38 `engram_code` / `engram_name` /
+/// `engram_details` envelope at the top level of `structured_content`, while
+/// keeping the daemon message as the optional human-readable text view.
+#[must_use]
+pub fn translate_ipc_response(response: IpcResponse) -> CallToolResult {
+    if let Some(error) = response.error {
+        let mut result = CallToolResult::error(vec![Content::text(error.message.clone())]);
+        result.structured_content = Some(structured_ipc_error_payload(&error));
+        return result;
+    }
+
+    let result_value = response.result.unwrap_or(Value::Null);
+    let mut result = CallToolResult::success(content_text_view(&result_value));
+    result.structured_content = Some(result_value);
+    result
 }
 
 /// Translate a degraded startup outcome into a tool-level `CallToolResult`

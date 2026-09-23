@@ -17,6 +17,8 @@ use tracing::{debug, error, info, warn};
 
 use crate::daemon::lifecycle_policy::{
     drive_daemon_transferred_syncs, flush_daemon_snapshot, guarded_daemon_sync_context,
+    record_implicit_sync_call, record_startup_hydration_call, record_startup_source_scan_call,
+    run_read_server_startup,
 };
 use crate::daemon::ttl::TtlTimer;
 use crate::errors::{ActivationError, EngramError};
@@ -337,6 +339,18 @@ pub(crate) async fn run_startup_driver(
         tokio::time::sleep(Duration::from_millis(delay_ms)).await;
     }
 
+    if state.mode() == crate::models::config::DaemonMode::ReadServer {
+        if let Err(error) =
+            run_read_server_startup(Arc::clone(&state), workspace, ttl, Arc::clone(&shutdown_tx))
+                .await
+        {
+            error!(%error, "read-server startup publication failed - initiating shutdown");
+            let _ = shutdown_tx.send(true);
+        }
+        return;
+    }
+
+    record_startup_hydration_call();
     if let Err(error) = crate::tools::lifecycle::set_workspace(Arc::clone(&state), workspace).await
     {
         error!(%error, "workspace hydration failed — initiating shutdown");
@@ -391,6 +405,8 @@ pub(crate) async fn run_startup_driver(
     let operation = async {
         let mut backfill_result = None;
         let workspace_path = std::path::PathBuf::from(&snapshot.path);
+        record_startup_source_scan_call();
+        record_implicit_sync_call();
         let should_flush = match crate::services::code_graph::sync_workspace(
             &workspace_path,
             &snapshot.data_dir,

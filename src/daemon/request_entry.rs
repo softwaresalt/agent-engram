@@ -238,10 +238,7 @@ fn spawn_background_reconciliation(gate: &Arc<ReadServerStartupGate>) {
 
 /// Build the refusal response for a typed availability error.
 fn refusal(frame: &Frame, error: EngramError) -> IpcResponse {
-    IpcResponse::error(
-        frame.id.clone().unwrap_or(Value::Null),
-        error_transport::to_ipc_error(error),
-    )
+    error_transport::to_response(frame.id.clone().unwrap_or(Value::Null), error)
 }
 
 /// Deserialize and dispatch a single raw request line, returning an [`IpcResponse`].
@@ -306,7 +303,7 @@ pub async fn process_request(line: &str, state: &SharedState) -> (IpcResponse, b
         method => (
             match tools::dispatch(Arc::clone(state), method, request.params).await {
                 Ok(result) => IpcResponse::success(id, result),
-                Err(e) => IpcResponse::error(id, error_transport::to_ipc_error(e)),
+                Err(e) => error_transport::to_response(id, e),
             },
             false,
         ),

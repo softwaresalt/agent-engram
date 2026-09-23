@@ -130,6 +130,41 @@ pub async fn snapshot_graph_handler_context(
         .ok_or(EngramError::Workspace(WorkspaceError::NotSet))
 }
 
+fn read_response_provenance(context: &ReadRequestContext) -> Option<Value> {
+    Some(json!({
+        "workspace_id": context.workspace_id(),
+        "branch": context.branch(),
+        "generation_id": context.generation()?.generation_id().as_str(),
+    }))
+}
+
+fn decorate_successful_read_response(
+    method: &str,
+    read_context: Option<&Arc<ReadRequestContext>>,
+    result: Result<Value, EngramError>,
+) -> Result<Value, EngramError> {
+    let is_read = capabilities::descriptor(method)
+        .is_some_and(|descriptor| descriptor.capability == CapabilityClass::Read);
+    if !is_read {
+        return result;
+    }
+
+    let Some(provenance) =
+        read_context.and_then(|context| read_response_provenance(context.as_ref()))
+    else {
+        return result;
+    };
+
+    match result {
+        Ok(Value::Object(mut object)) => {
+            object.insert("provenance".to_owned(), provenance);
+            Ok(Value::Object(object))
+        }
+        Ok(other) => Ok(other),
+        Err(error) => Err(error),
+    }
+}
+
 fn should_record_metrics(method: &str) -> bool {
     matches!(
         method,
@@ -311,15 +346,35 @@ fn extract_counts(method: &str, value: &Value) -> (u32, u32, u32, BTreeMap<Strin
     }
 }
 
-#[tracing::instrument(
-    name = "tool_dispatch",
-    skip(state, params),
-    fields(tool = %method)
-)]
+/// Dispatch a tool call without a caller-supplied captured read context.
+///
+/// Managed-mode and in-process callers use this wrapper; read-server entry
+/// seams that already captured a [`ReadRequestContext`] should call
+/// [`dispatch_with_read_context`] so response provenance reports the pinned
+/// generation that actually served the request.
 pub async fn dispatch(
     state: SharedState,
     method: &str,
     params: Option<Value>,
+) -> Result<Value, EngramError> {
+    dispatch_with_read_context(state, method, params, None).await
+}
+
+/// Dispatch a tool call using an already-captured read context when one exists.
+///
+/// Read-server entry seams pass the request's pinned [`ReadRequestContext`] so
+/// successful `Read` responses report provenance for the exact generation that
+/// served the call, even if a newer generation activates before serialization.
+#[tracing::instrument(
+    name = "tool_dispatch",
+    skip(state, params, read_context),
+    fields(tool = %method)
+)]
+pub async fn dispatch_with_read_context(
+    state: SharedState,
+    method: &str,
+    params: Option<Value>,
+    read_context: Option<&Arc<ReadRequestContext>>,
 ) -> Result<Value, EngramError> {
     let start = std::time::Instant::now();
     let request_bytes = params
@@ -442,6 +497,8 @@ pub async fn dispatch(
         "index_git_history" => write::index_git_history(state.clone(), params).await,
         _ => Err(not_implemented(method)),
     };
+
+    let result = decorate_successful_read_response(method, read_context, result);
 
     // Record latency for all calls (lifecycle calls are cheap; the count stays
     // accurate and the VecDeque caps at 1 000 samples automatically).

@@ -6,9 +6,9 @@
 //! module does not define a parallel error shape — it is the named seam through
 //! which the daemon converts domain failures into transport payloads.
 
-use serde_json::json;
+use serde_json::Value;
 
-use crate::daemon::protocol::IpcError;
+use crate::daemon::protocol::{IpcError, IpcResponse};
 use crate::errors::{EngramError, ErrorResponse};
 
 /// Domain error carried by daemon operations.
@@ -31,14 +31,18 @@ pub fn to_wire(error: DomainError) -> WireError {
 
 /// Convert a domain error into the JSON-RPC error object sent on the IPC wire.
 ///
-/// The stable Engram error code is preserved in `data.engram_code` so clients
-/// can distinguish domain failures behind the single JSON-RPC internal-error code.
+/// The stable Engram error code, symbolic name, and structured details are
+/// preserved in `data` so clients can distinguish domain failures behind the
+/// single JSON-RPC internal-error code without flattening detail fields into
+/// the human-readable message string.
 #[must_use]
 pub fn to_ipc_error(error: DomainError) -> IpcError {
     let wire = to_wire(error);
-    IpcError {
-        code: JSONRPC_INTERNAL_ERROR,
-        message: wire.error.message,
-        data: Some(json!({ "engram_code": wire.error.code })),
-    }
+    IpcError::from_engram_error_body(JSONRPC_INTERNAL_ERROR, wire.error)
+}
+
+/// Convert a domain error into a full JSON-RPC error response.
+#[must_use]
+pub fn to_response(id: Value, error: DomainError) -> IpcResponse {
+    IpcResponse::error(id, to_ipc_error(error))
 }
