@@ -137,7 +137,13 @@ coverage.
 
 ## Healthy signals
 
-- `cargo test --all-targets --no-fail-fast` stays green.
+- `cargo test --all-targets --no-fail-fast` introduces no *new* failures
+  beyond the known, pre-existing, unrelated exception
+  `integration_release_archive_smoke_workflow::archive_verifier_runs_the_unpacked_native_binary`
+  (see Summary of change and the linked runtime-verification report). This
+  named exception is a pre-existing condition, not a 141-S regression;
+  defining "healthy" as unconditionally 100% green would make every future
+  observation window report unhealthy even when 141-S has not regressed.
 - `engram daemon-status` and `engram health` report green/healthy.
 - No increase in generic/unstructured error responses observed in IPC/MCP
   transport logs.
@@ -160,25 +166,32 @@ coverage.
 Standard daemon log observation per `docs/log-observation-guide.md`; no
 additional monitoring infrastructure required for this shipment.
 
-**Observable signal**: grep the daemon's structured log stream for the
-transport-error-envelope field shape emitted at
-`shim::transport::translate_ipc_response` and the MCP/CLI error-response
-paths introduced by 142.049-T/142.050-T (log line pattern:
-`level=error ... envelope_kind=` with a non-`EngramError`-shaped
-`envelope_kind`, or any log line matching
-`error.*(String|string).*lossy|truncated` in the IPC/MCP/CLI transport
-modules). This is a manual `grep`/log-query check against
-`docs/log-observation-guide.md`'s standard daemon log location; no
-dashboard exists for this workspace-local single-binary daemon.
-**Baseline**: zero occurrences expected — the shipped contract tests
-enforce lossless envelope propagation, so any occurrence in production
-logs indicates a regression the tests did not catch.
-**Alert threshold**: any single occurrence of a lossy/unstructured
-error string in IPC/MCP/CLI transport logs triggers investigation
-(zero-tolerance threshold, consistent with the baseline of zero).
-Watch for any recurrence of unstructured/lossy error strings in IPC/MCP/CLI
-transport logs, which would indicate a regression against this
-shipment's core transport-fidelity guarantee.
+**Observable signal (corrected 2026-09-23, PR #408 review)**: the
+prior version of this section named a
+`shim::transport::translate_ipc_response` log line with an
+`envelope_kind=` field. That field and log line do not exist —
+`translate_ipc_response`/`structured_ipc_error_payload`
+(`src/shim/transport.rs:431-471`) build the F38 error envelope
+(`jsonrpc_code`, `message`, and, when present in `error.data`, the
+daemon's `engram_code`/`engram_name`/`engram_details` fields) directly
+into the MCP `structured_content`/CLI response payload; they do not
+write it to any log stream. There is currently no log-based signal for
+this behavior. The actual, verifiable check is a manual functional
+probe: invoke a CLI or MCP call known to trigger an `EngramError` (for
+example, an invalid workspace path) and inspect the returned
+`structured_content` (MCP) or structured stdout (CLI) for the
+`jsonrpc_code`/`message` envelope shape — not a bare, lossy string.
+**Baseline**: every deliberately-triggered error response returns the
+structured envelope shape; the shipped contract tests enforce this at
+build time, so a manual probe should never observe a bare string
+message in place of the envelope.
+**Alert threshold**: any single manual probe (or user report) that
+observes a bare/lossy string response instead of the structured
+envelope triggers investigation (zero-tolerance threshold, consistent
+with the baseline above). No automated log-based alert exists for this
+signal until a future shipment adds structured logging at the
+translation boundary; that gap is tracked as a follow-up (stash
+`D77BCBBC`, captured with this correction).
 
 **Follow-up (stash `6C5DF765`, `9B7EC1E4`)**: the read-server lifecycle
 policy and generation observability reporting shipped by this PR are not
@@ -231,12 +244,12 @@ uncompacted.
 |---|---|
 | healthy-signal | **Satisfied** — CLI version probe green (freshly built, non-dirty binary); full test suite green with one known pre-existing, unrelated exception (see runtime-verification report); hosted CI green (both `build` and `start-launcher-windows`, the latter via one operator-authorized rerun). |
 | failure-signal | **Satisfied** — named above; see Monitoring plan for the concrete log-query signal, baseline, and threshold. |
-| monitoring-plan | **Satisfied with a follow-up** — standard daemon log observation with an explicit observable log-query pattern, zero-occurrence baseline, and zero-tolerance alert threshold (see Monitoring plan above); two invariants (read-server policy, generation observability) are enforced in test but not yet reachable from production dispatch, tracked as unresolved follow-ups `6C5DF765`/`9B7EC1E4`. |
+| monitoring-plan | **Satisfied with a follow-up** — a manual functional probe (invoke a known error-triggering call, confirm the returned response preserves the structured envelope rather than a bare string) with an explicit baseline and zero-tolerance alert threshold (see Monitoring plan above, corrected 2026-09-23 per PR #408 Copilot review — the earlier log-grep description named a field/log line that does not exist); automating this as a log-based signal is tracked as follow-up `D77BCBBC`. Separately, two invariants (read-server policy, generation observability) are enforced in test but not yet reachable from production dispatch, tracked as unresolved follow-ups `6C5DF765`/`9B7EC1E4`. |
 | rollback-trigger | **Satisfied** — named above. |
 | rollback-procedure | **Satisfied** — standard GitHub Release reinstall + `.engram/` flush; no migration to reverse. |
 | owner | **Satisfied** — repository maintainer / release owner. |
 | validation-window | **Satisfied** — through next tagged release + 48h. |
-| follow-up (optional) | **Satisfied (tracked)** — 3 stash entries captured during 141-S's own local review (`6C5DF765`, `9B7EC1E4`, `4628001C`), plus 2 additional advisory/deliberation entries captured during this closure PR's Copilot review round (`5684685C` — validator-manifest command drift; `3A963D34` — `archived_status: done` vs. documented Shipment Sequencing Protocol prose reconciliation). None block this PR's own scope. |
+| follow-up (optional) | **Satisfied (tracked)** — 3 stash entries captured during 141-S's own local review (`6C5DF765`, `9B7EC1E4`, `4628001C`), plus 4 additional entries captured during closure PR #408's two Copilot review rounds: `5684685C` (validator-manifest command drift, advisory), `3A963D34` (`archived_status: done` vs. documented Shipment Sequencing Protocol prose reconciliation, requires deliberation), `21D0F63C` (correct malformed `feature`/`requires_deliberation` fields on `3A963D34`/`5684685C` at next Stage triage — Ship cannot edit stash entries post-capture per P-021 C5), and `D77BCBBC` (add automated log-based monitoring for envelope-fidelity signal). None block this PR's own scope. |
 
 **Overall status: `READY_WITH_CONDITIONS`** — merge completed via merge
 commit; `closure_status` for this shipment's own execution is `READY`

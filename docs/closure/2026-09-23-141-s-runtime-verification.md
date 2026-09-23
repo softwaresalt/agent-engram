@@ -102,7 +102,9 @@ verdict.
 | `4628001C` | medium (provisional) | `get_workspace_status`'s code_graph stats block unconditionally calls `connect_db`, in tension with 142.052-T's no-hydration read-server policy. Pre-existing design tradeoff, not a 141-S regression; requires deliberation on whether to migrate to pinned generation context. |
 | `5684685C` | low (advisory) | Validator-manifest (`.autoharness/workspace-profile.yaml`) names 3 stale probe commands (`cli-daemon-status`, `mcp-initialize-handshake`, `mcp-tool-invocation`). Non-blocking documentation drift; recommend a `workspace-profile.yaml` correction in a future maintenance pass. |
 | `3A963D34` | medium (requires deliberation) | Reconcile `backlogit.instructions.md`'s Shipment Sequencing Protocol prose ("predecessor `status == shipped`") against the established `archived_status: done` manual safe-close convention used across `133-S`–`141-S`. Empirically the `pipeline-topology` gate already treats archived+done as satisfying the dependency (proven by 141-S's own successful claim); this is a documentation-prose reconciliation, not a functional blocker for `142-S`. |
+| `21D0F63C` | low | `3A963D34` and `5684685C` both record `feature N/A`, and `5684685C` records `requires_deliberation: false`; both are malformed per Ship's own P-021 C2 six-field capture contract (feature ID always populated) and P-021 C6 (every entry mandatorily routes through `deliberate`, so `requires_deliberation` should read `true`). Ship cannot correct these directly (P-021 C5 forbids editing stash entries post-capture); Stage should correct both fields on `3A963D34`/`5684685C` via `stash_edit` at next triage. |
+| `D77BCBBC` | low | No automated log-based monitoring signal exists for the IPC/MCP/CLI error-envelope transport fidelity shipped by 142.049-T/142.050-T — `translate_ipc_response`/`structured_ipc_error_payload` build the envelope directly into the response payload and never write it to a log stream. Current monitoring relies on a manual functional probe only (see operational-closure Monitoring plan, corrected 2026-09-23). Recommend a follow-up shipment add structured logging at the translation boundary. |
 
-All five P-021 entries were captured with `requires_deliberation` set per
-entry and are pending Stage triage/prioritization; none block this
-shipment's own closure.
+All seven P-021 entries were captured with `requires_deliberation` set per
+entry (per the correction noted for `21D0F63C` above) and are pending
+Stage triage/prioritization; none block this shipment's own closure.
