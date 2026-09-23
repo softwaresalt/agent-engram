@@ -183,8 +183,16 @@ window; no shipment-specific owner override.
 ## Compaction status (P-020)
 
 `done` — mandatory `compact-context` invocation (`target: all`) completed
-during this post-merge closure pass. See the compact-context invocation
-record below for details of what was consolidated.
+during this post-merge closure pass (Step 6, item 8). The 141-S release
+unit's 5 memory files (~24 KB total, all eligible under the
+"completed feature or chore" candidate rule) were consolidated into
+`docs/memory/compacted/2026-09-23-141-s-error-transport-response-provenance-lifecycle-policy-and-generation-observability-compacted.md`;
+verbose originals moved to `docs/archive/memory/2026-09-23/` (traceable,
+not deleted). No plans qualified as compaction candidates this pass. This
+closure artifact and the accompanying runtime-verification report were
+authored directly (not compacted), consistent with the `140-S` closure
+precedent of leaving the just-produced closure record itself
+uncompacted.
 
 ## Releasability evidence
 
