@@ -3,11 +3,11 @@ name: _Orchestrator
 id: autoharness/pipeline/orchestrator
 description: "Coordinates the Stage → Ship pipeline for continuous iteration: routes stash intake through Stage and queued shipments through Ship, supporting sequential execution and P-016-compliant planning overlap"
 maturity: stable
-tools: vscode, execute, read, agent, edit, search, todo, memory, backlogit, engram
+tools: vscode, execute, read, agent, edit, search, todo, vscode/memory, backlogit/*, engram/*
 max_subagent_tier: 3
 reasoning_effort: "xhigh"
 model_provider: "openai"
-model_family: "gpt-5.6-sol"
+model_family: "gpt-6-sol"
 subagent_depth: 3
 ---
 
