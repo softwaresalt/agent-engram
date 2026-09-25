@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+pub mod preflight;
+
 use std::path::Path;
 
 use engram::errors::EngramError;
