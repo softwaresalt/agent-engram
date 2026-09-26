@@ -54,6 +54,209 @@ fn dedent(source: &str) -> String {
         .join("\n")
 }
 
+const FAKE_MCP_SERVER: &str = r#"
+import json
+import os
+import queue
+import sys
+import threading
+import time
+
+mode = os.environ["ENGRAM_FAKE_MCP_MODE"]
+requests = queue.Queue()
+eof_event = threading.Event()
+
+def read_requests():
+    for line in sys.stdin:
+        requests.put(json.loads(line))
+    eof_event.set()
+
+def write_response(value):
+    sys.stdout.write(json.dumps(value, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+
+threading.Thread(target=read_requests, daemon=True).start()
+
+while True:
+    request = requests.get(timeout=30.0)
+    method = request.get("method")
+    if method == "initialize":
+        write_response({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "protocolVersion": "2025-11-25",
+                "serverInfo": {"name": "fake-mcp", "version": "1.0"},
+            },
+        })
+    elif method == "tools/list":
+        if mode == "unresponsive":
+            time.sleep(90.0)
+            raise SystemExit(10)
+
+        tools = [{"name": "fake_tool", "description": "ready"}]
+        if mode == "drop-at-eof":
+            tools[0]["description"] = "x" * 13_000
+        response = (
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "result": {"tools": tools},
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        if mode == "drop-at-eof":
+            if len(response) < 12_288:
+                raise RuntimeError("fake tools/list response is too short")
+            sys.stdout.write(response[:8192])
+            sys.stdout.flush()
+            if eof_event.wait(timeout=2.0):
+                raise SystemExit(10)
+            sys.stdout.write(response[8192:])
+            sys.stdout.flush()
+        else:
+            sys.stdout.write(response)
+            sys.stdout.flush()
+
+        if mode == "exit-3":
+            if not eof_event.wait(timeout=30.0):
+                raise SystemExit(4)
+            raise SystemExit(3)
+        if mode == "panic":
+            sys.stderr.write("panicked at fake MCP server\n")
+            sys.stderr.flush()
+        elif mode == "backtrace":
+            sys.stderr.write("stack backtrace: fake MCP server\n")
+            sys.stderr.flush()
+
+        if not eof_event.wait(timeout=30.0):
+            raise SystemExit(4)
+        raise SystemExit(10)
+"#;
+
+const MCP_STDIO_TEST_HARNESS: &str = r#"
+from contextlib import redirect_stdout
+import io
+import os
+from pathlib import Path
+import runpy
+import sys
+import time
+
+module = runpy.run_path(sys.argv[1])
+base = Path(sys.argv[2])
+scenario = sys.argv[3]
+mode = sys.argv[4]
+expected_error = sys.argv[5]
+expected_detail = sys.argv[6]
+timeout_override = sys.argv[7]
+fake_server = base / "fake_mcp_server.py"
+verify_mcp_stdio = module["verify_mcp_stdio"]
+verifier_globals = verify_mcp_stdio.__globals__
+real_subprocess = verifier_globals["subprocess"]
+supports_timeout_override = "MCP_STDIO_TIMEOUT_SECONDS" in verifier_globals
+
+class SubprocessSeam:
+    def __init__(self):
+        self.process = None
+
+    def __getattr__(self, name):
+        return getattr(real_subprocess, name)
+
+    def Popen(self, args, **kwargs):
+        environment = dict(kwargs.get("env", os.environ))
+        environment["ENGRAM_FAKE_MCP_MODE"] = mode
+        kwargs["env"] = environment
+        self.process = real_subprocess.Popen(
+            [sys.executable, str(fake_server)],
+            **kwargs,
+        )
+        return self.process
+
+seam = SubprocessSeam()
+verifier_globals["subprocess"] = seam
+if timeout_override:
+    verifier_globals["MCP_STDIO_TIMEOUT_SECONDS"] = float(timeout_override)
+
+captured_stdout = io.StringIO()
+started = time.monotonic()
+try:
+    with redirect_stdout(captured_stdout):
+        verify_mcp_stdio(Path(sys.executable), base)
+except module["SmokeFailure"] as error:
+    failure = str(error)
+else:
+    failure = None
+elapsed = time.monotonic() - started
+
+if scenario == "read-before-close":
+    if failure is not None:
+        assert "non-JSON stdout from MCP stdio" in failure, failure
+        raise AssertionError(
+            "RED: F-ARCHIVE-U1 read-before-close; "
+            f"observed current verifier failure: {failure}"
+        )
+    evidence = captured_stdout.getvalue().splitlines()
+    tool_count = next(
+        (line.partition("=")[2] for line in evidence
+         if line.startswith("MCP_TOOL_COUNT=")),
+        None,
+    )
+    assert tool_count is not None and int(tool_count) >= 1, evidence
+    assert "MCP_STDIN_CLOSE_EXIT=10" in evidence, evidence
+elif scenario == "exit-stderr-guard":
+    assert failure is not None, "fake MCP server failure was not detected"
+    assert expected_error in failure, failure
+    if expected_detail:
+        assert expected_detail in failure, failure
+    assert seam.process is not None and seam.process.poll() is not None
+elif scenario == "unresponsive":
+    assert failure is not None, "unresponsive fake MCP server was accepted"
+    assert (
+        "MCP stdio process hung after stdin closed" in failure
+        or "MCP stdio response timeout before id 2" in failure
+    ), failure
+    assert seam.process is not None and seam.process.poll() is not None, (
+        "unresponsive MCP child was not reaped"
+    )
+    if supports_timeout_override:
+        assert elapsed < 10.0, f"configured timeout was not honored: {elapsed:.2f}s"
+    else:
+        assert elapsed < 50.0, f"current verifier exceeded its bounded timeout: {elapsed:.2f}s"
+else:
+    raise AssertionError(f"unknown harness scenario: {scenario}")
+"#;
+
+fn run_fake_mcp_stdio_case(
+    scenario: &str,
+    mode: &str,
+    expected_error: &str,
+    expected_detail: &str,
+    timeout_override: Option<&str>,
+) -> Output {
+    let temporary = TempDir::new().expect("create temporary MCP server directory");
+    let fake_server = temporary.path().join("fake_mcp_server.py");
+    fs::write(&fake_server, dedent(FAKE_MCP_SERVER))
+        .unwrap_or_else(|error| panic!("failed to create fake MCP server: {error}"));
+    let verifier = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/verify-release-archive.py");
+
+    Command::new("python")
+        .arg("-c")
+        .arg(dedent(MCP_STDIO_TEST_HARNESS))
+        .arg(verifier)
+        .arg(temporary.path())
+        .arg(scenario)
+        .arg(mode)
+        .arg(expected_error)
+        .arg(expected_detail)
+        .arg(timeout_override.unwrap_or(""))
+        .output()
+        .unwrap_or_else(|error| panic!("failed to run fake MCP verifier harness: {error}"))
+}
+
 fn native_release_target() -> Option<(&'static str, &'static str, &'static str)> {
     if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
         Some(("x86_64-pc-windows-msvc", "engram.exe", ".zip"))
@@ -546,6 +749,42 @@ fn archive_verifier_resolves_a_relative_work_dir_once_for_all_checks() {
         .unwrap_or_else(|error| panic!("failed to exercise relative work directory: {error}"));
 
     assert_python_success(&output, "relative work directory verification");
+}
+
+#[test]
+fn archive_verifier_reads_mcp_responses_before_closing_stdin() {
+    let output = run_fake_mcp_stdio_case("read-before-close", "drop-at-eof", "", "", None);
+
+    assert_python_success(&output, "RED: F-ARCHIVE-U1 read-before-close");
+}
+
+#[test]
+fn archive_verifier_keeps_exit_and_stderr_checks_after_reading_first() {
+    for (mode, expected_error, expected_detail) in [
+        ("exit-3", "expected classified admission exit 10", ""),
+        ("panic", "MCP stdio process panicked", "panicked at"),
+        (
+            "backtrace",
+            "MCP stdio process panicked",
+            "stack backtrace:",
+        ),
+    ] {
+        let output = run_fake_mcp_stdio_case(
+            "exit-stderr-guard",
+            mode,
+            expected_error,
+            expected_detail,
+            None,
+        );
+        assert_python_success(&output, "MCP exit and stderr guard");
+    }
+}
+
+#[test]
+fn archive_verifier_bounds_an_unresponsive_mcp_server() {
+    let output = run_fake_mcp_stdio_case("unresponsive", "unresponsive", "", "", Some("2"));
+
+    assert_python_success(&output, "bounded unresponsive MCP server guard");
 }
 
 #[test]
