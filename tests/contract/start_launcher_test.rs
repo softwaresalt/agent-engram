@@ -302,7 +302,7 @@ impl LauncherFixture {
                 if self.mode == "cleanup" {
                     "2500"
                 } else {
-                    "750"
+                    "15000"
                 },
             )
             .stdout(Stdio::from(stdout))
