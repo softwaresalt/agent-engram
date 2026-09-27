@@ -54,6 +54,26 @@ struct Observation {
     surface_advertised: Option<bool>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExpectedOutcome {
+    ReadyHealth,
+    SuccessfulWorkflow,
+    GenerationBackedRead,
+    Refusal { code: u16 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DeclaredSurfaceExpectation {
+    surface: ToolSurface,
+    outcome: ExpectedOutcome,
+}
+
+#[derive(Debug)]
+struct DescriptorParityRow<'a> {
+    descriptor: &'a ToolDescriptor,
+    surfaces: Vec<DeclaredSurfaceExpectation>,
+}
+
 #[derive(Debug)]
 struct RawObservation {
     accepted: bool,
@@ -647,13 +667,6 @@ fn sample_object_value(
     )
 }
 
-fn descriptor_requires_refusal(descriptor: &ToolDescriptor) -> bool {
-    descriptor.name != "_health"
-        && (descriptor.capability != CapabilityClass::Read
-            || !descriptor.read_server_available
-            || descriptor.name == "_shutdown")
-}
-
 async fn exercise_declared_surface(
     descriptor: &ToolDescriptor,
     surface: ToolSurface,
@@ -664,7 +677,10 @@ async fn exercise_declared_surface(
         fixture.verify_daemon_marker()?;
     }
 
-    let expect_refusal = descriptor_requires_refusal(descriptor);
+    let expect_refusal = matches!(
+        expected_outcome(descriptor),
+        ExpectedOutcome::Refusal { .. }
+    );
     let binding_before = if expect_refusal {
         Some(
             fixture
@@ -1143,6 +1159,45 @@ fn expected_refusal_code(descriptor: &ToolDescriptor) -> u16 {
     }
 }
 
+fn expected_outcome(descriptor: &ToolDescriptor) -> ExpectedOutcome {
+    if descriptor.capability == CapabilityClass::Control {
+        ExpectedOutcome::Refusal {
+            code: expected_refusal_code(descriptor),
+        }
+    } else if descriptor.name == "_health" {
+        ExpectedOutcome::ReadyHealth
+    } else if descriptor.input_ownership == InputOwnership::CliFrontend
+        && descriptor.capability == CapabilityClass::Read
+        && descriptor.read_server_available
+    {
+        ExpectedOutcome::SuccessfulWorkflow
+    } else if generation_read(descriptor) {
+        ExpectedOutcome::GenerationBackedRead
+    } else {
+        ExpectedOutcome::Refusal {
+            code: expected_refusal_code(descriptor),
+        }
+    }
+}
+
+fn descriptor_parity_matrix(descriptors: &[ToolDescriptor]) -> Vec<DescriptorParityRow<'_>> {
+    descriptors
+        .iter()
+        .map(|descriptor| {
+            let outcome = expected_outcome(descriptor);
+            DescriptorParityRow {
+                descriptor,
+                surfaces: descriptor
+                    .surfaces
+                    .iter()
+                    .copied()
+                    .map(|surface| DeclaredSurfaceExpectation { surface, outcome })
+                    .collect(),
+            }
+        })
+        .collect()
+}
+
 fn describe_failure(
     descriptor: &ToolDescriptor,
     surface: ToolSurface,
@@ -1167,10 +1222,11 @@ fn describe_failure(
 
 fn record_matrix_failures(
     descriptor: &ToolDescriptor,
-    surface: ToolSurface,
+    expectation: DeclaredSurfaceExpectation,
     observation: &Observation,
     failures: &mut Vec<String>,
 ) {
+    let surface = expectation.surface;
     if descriptor.name == "_health" && descriptor.surfaces != [ToolSurface::DirectIpc] {
         failures.push(format!(
             "{F54_RED_MARKER}: _health must be direct-IPC-only, declared {:?}",
@@ -1184,87 +1240,112 @@ fn record_matrix_failures(
         ));
     }
 
-    if descriptor.name == "_health" {
-        let is_ready = observation
-            .response
-            .as_ref()
-            .and_then(|response| response.get("status"))
-            .and_then(Value::as_str)
-            == Some("ready");
-        if !observation.accepted || !is_ready {
-            failures.push(describe_failure(
-                descriptor,
-                surface,
-                observation,
-                "a ready direct-IPC health result",
-            ));
+    match expectation.outcome {
+        ExpectedOutcome::ReadyHealth => {
+            let is_ready = observation
+                .response
+                .as_ref()
+                .and_then(|response| response.get("status"))
+                .and_then(Value::as_str)
+                == Some("ready");
+            if !observation.accepted || !is_ready {
+                failures.push(describe_failure(
+                    descriptor,
+                    surface,
+                    observation,
+                    "a ready direct-IPC health result",
+                ));
+            }
         }
-        return;
+        ExpectedOutcome::SuccessfulWorkflow => {
+            // `doctor --smoke` is a declared, non-destructive CLI workflow
+            // rather than a generation-backed read tool. Its smoke result
+            // does not claim generation provenance.
+            if !observation.accepted {
+                failures.push(describe_failure(
+                    descriptor,
+                    surface,
+                    observation,
+                    "a successful non-destructive read-server workflow",
+                ));
+            }
+        }
+        ExpectedOutcome::GenerationBackedRead => {
+            if !observation.accepted {
+                failures.push(describe_failure(
+                    descriptor,
+                    surface,
+                    observation,
+                    "an accepted read result",
+                ));
+            }
+            if observation.generation.as_deref() != Some(EXPECTED_GENERATION) {
+                failures.push(describe_failure(
+                    descriptor,
+                    surface,
+                    observation,
+                    "serving-generation provenance",
+                ));
+            }
+        }
+        ExpectedOutcome::Refusal { code } => {
+            if observation.accepted {
+                failures.push(describe_failure(
+                    descriptor,
+                    surface,
+                    observation,
+                    "a read-server refusal",
+                ));
+            }
+            if observation.refusal_code != Some(code) {
+                failures.push(describe_failure(
+                    descriptor,
+                    surface,
+                    observation,
+                    &format!("stable F38 refusal code {code}"),
+                ));
+            }
+            if observation.side_effect_count != 0 {
+                failures.push(describe_failure(
+                    descriptor,
+                    surface,
+                    observation,
+                    "zero filesystem and workspace-binding side effects",
+                ));
+            }
+        }
     }
+}
 
-    // `doctor --smoke` is a declared, non-destructive CLI workflow rather than
-    // a generation-backed read tool. It must complete successfully in
-    // read-server mode, but its smoke result does not claim generation
-    // provenance.
-    if descriptor.input_ownership == InputOwnership::CliFrontend
-        && descriptor.capability == CapabilityClass::Read
-        && descriptor.read_server_available
-    {
-        if !observation.accepted {
-            failures.push(describe_failure(
-                descriptor,
-                surface,
-                observation,
-                "a successful non-destructive read-server workflow",
-            ));
-        }
-        return;
-    }
+#[test]
+fn generated_matrix_structurally_matches_f19_descriptors_and_declared_surfaces() {
+    let descriptors = all_descriptors();
+    assert!(
+        !descriptors.is_empty(),
+        "{F54_RED_MARKER}: the F19 registry must declare descriptors"
+    );
+    let matrix = descriptor_parity_matrix(&descriptors);
 
-    if generation_read(descriptor) {
-        if !observation.accepted {
-            failures.push(describe_failure(
-                descriptor,
-                surface,
-                observation,
-                "an accepted read result",
-            ));
-        }
-        if observation.generation.as_deref() != Some(EXPECTED_GENERATION) {
-            failures.push(describe_failure(
-                descriptor,
-                surface,
-                observation,
-                "serving-generation provenance",
-            ));
-        }
-        return;
-    }
-
-    if observation.accepted {
-        failures.push(describe_failure(
-            descriptor,
-            surface,
-            observation,
-            "a read-server refusal",
-        ));
-    }
-    let expected_code = expected_refusal_code(descriptor);
-    if observation.refusal_code != Some(expected_code) {
-        failures.push(describe_failure(
-            descriptor,
-            surface,
-            observation,
-            &format!("stable F38 refusal code {expected_code}"),
-        ));
-    }
-    if observation.side_effect_count != 0 {
-        failures.push(describe_failure(
-            descriptor,
-            surface,
-            observation,
-            "zero filesystem and workspace-binding side effects",
-        ));
+    assert_eq!(
+        matrix.len(),
+        descriptors.len(),
+        "{F54_RED_MARKER}: the generated matrix must have one row per F19 descriptor"
+    );
+    for (descriptor, row) in descriptors.iter().zip(&matrix) {
+        assert!(
+            std::ptr::eq(descriptor, row.descriptor),
+            "{F54_RED_MARKER}: each F19 descriptor must appear exactly once in the matrix"
+        );
+        let matrix_surfaces = row
+            .surfaces
+            .iter()
+            .map(|expectation| expectation.surface)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            matrix_surfaces, descriptor.surfaces,
+            "{F54_RED_MARKER}: matrix surfaces for {} must exactly match its F19 declaration",
+            descriptor.name
+        );
     }
 }
 
@@ -1277,22 +1358,16 @@ async fn generated_matrix_exercises_only_declared_surfaces_and_checks_real_behav
         .unwrap_or_else(|error| panic!("{F54_BLOCK_MARKER}: {error}"));
 
     let descriptors = all_descriptors();
-    assert!(
-        !descriptors.is_empty(),
-        "{F54_RED_MARKER}: the F19 registry must declare descriptors"
-    );
-    let expected_count = descriptors
+    let matrix = descriptor_parity_matrix(&descriptors);
+
+    let expected_count = matrix.iter().map(|row| row.surfaces.len()).sum::<usize>();
+    let mut cases = matrix
         .iter()
-        .map(|descriptor| descriptor.surfaces.len())
-        .sum::<usize>();
-    let mut cases = descriptors
-        .iter()
-        .flat_map(|descriptor| {
-            descriptor
-                .surfaces
+        .flat_map(|row| {
+            row.surfaces
                 .iter()
                 .copied()
-                .map(move |surface| (descriptor, surface))
+                .map(move |expectation| (row.descriptor, expectation))
         })
         .collect::<Vec<_>>();
     // A live `_shutdown` request must be last because an incorrect acceptance
@@ -1301,17 +1376,17 @@ async fn generated_matrix_exercises_only_declared_surfaces_and_checks_real_behav
 
     let mut failures = Vec::new();
     let mut exercised = 0;
-    for (descriptor, surface) in cases {
-        let observation = exercise_declared_surface(descriptor, surface, &mut fixture)
+    for (descriptor, expectation) in cases {
+        let observation = exercise_declared_surface(descriptor, expectation.surface, &mut fixture)
             .await
             .unwrap_or_else(|error| {
                 panic!(
                     "{F54_BLOCK_MARKER}: cannot exercise {} via {}: {error}",
-                    descriptor.name, surface
+                    descriptor.name, expectation.surface
                 )
             });
         exercised += 1;
-        record_matrix_failures(descriptor, surface, &observation, &mut failures);
+        record_matrix_failures(descriptor, expectation, &observation, &mut failures);
     }
 
     assert_eq!(
@@ -1325,6 +1400,82 @@ async fn generated_matrix_exercises_only_declared_surfaces_and_checks_real_behav
     assert!(
         failures.is_empty(),
         "{F54_RED_MARKER}: descriptor-driven read-server parity failures:\n{}",
+        failures.join("\n")
+    );
+}
+
+#[tokio::test]
+async fn control_descriptors_are_refused_without_side_effects() {
+    let descriptors = all_descriptors();
+    let matrix = descriptor_parity_matrix(&descriptors);
+    let control_rows = matrix
+        .into_iter()
+        .filter(|row| row.descriptor.capability == CapabilityClass::Control)
+        .collect::<Vec<_>>();
+    assert!(
+        !control_rows.is_empty(),
+        "{F54_RED_MARKER}: the F19 registry must declare Control descriptors"
+    );
+
+    for row in &control_rows {
+        let code = expected_refusal_code(row.descriptor);
+        assert_eq!(
+            expected_outcome(row.descriptor),
+            ExpectedOutcome::Refusal { code },
+            "{F54_RED_MARKER}: Control descriptor {} must be refusal-only",
+            row.descriptor.name
+        );
+        if row.descriptor.name == "set_workspace" {
+            assert_eq!(
+                code, F38_WORKSPACE_RETARGET_REFUSAL,
+                "{F54_RED_MARKER}: set_workspace must retain its retarget refusal code"
+            );
+        } else if row.descriptor.read_server_available {
+            assert_eq!(
+                code, F38_READ_SERVER_WRITE_CONTROL_REFUSAL,
+                "{F54_RED_MARKER}: read-server-available Control descriptors must use the \
+                 write/control refusal code"
+            );
+        }
+    }
+
+    let mut cases = control_rows
+        .iter()
+        .flat_map(|row| {
+            row.surfaces
+                .iter()
+                .copied()
+                .map(move |expectation| (row.descriptor, expectation))
+        })
+        .collect::<Vec<_>>();
+    // Keep `_shutdown` last in case the daemon incorrectly accepts it.
+    cases.sort_by_key(|(descriptor, _)| descriptor.name == "_shutdown");
+
+    let mut fixture = ReadServerFixture::new().await;
+    fixture
+        .ensure_daemon()
+        .await
+        .unwrap_or_else(|error| panic!("{F54_BLOCK_MARKER}: {error}"));
+    let mut failures = Vec::new();
+    for (descriptor, expectation) in cases {
+        let observation = exercise_declared_surface(descriptor, expectation.surface, &mut fixture)
+            .await
+            .unwrap_or_else(|error| {
+                panic!(
+                    "{F54_BLOCK_MARKER}: cannot exercise Control descriptor {} via {}: {error}",
+                    descriptor.name, expectation.surface
+                )
+            });
+        record_matrix_failures(descriptor, expectation, &observation, &mut failures);
+    }
+
+    fixture
+        .stop_daemon()
+        .await
+        .unwrap_or_else(|error| panic!("{F54_BLOCK_MARKER}: safe daemon cleanup failed: {error}"));
+    assert!(
+        failures.is_empty(),
+        "{F54_RED_MARKER}: Control descriptor refusal failures:\n{}",
         failures.join("\n")
     );
 }
