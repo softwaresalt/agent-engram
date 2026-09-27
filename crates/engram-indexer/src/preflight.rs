@@ -133,13 +133,29 @@ stage!(
 /// Performs the underlying verification for a preflight stage.
 pub trait Verifier {
     /// Verifies a stage using the shared deadline and expected generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VerificationError`] if the stage cannot be verified.
     fn verify(
         &mut self,
         stage: StageKind,
         deadline: Instant,
         expected_generation: &str,
-    ) -> Result<(), ()>;
+    ) -> Result<(), VerificationError>;
 }
+
+/// Error returned when a preflight stage cannot be verified.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VerificationError;
+
+impl std::fmt::Display for VerificationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("preflight verification failed")
+    }
+}
+
+impl std::error::Error for VerificationError {}
 
 /// Preflight state carrying the shared deadline and expected generation.
 #[derive(Debug)]
@@ -151,6 +167,7 @@ pub struct Preflight<S> {
 
 impl Preflight<Build> {
     /// Starts preflight with its single deadline and expected generation.
+    #[must_use]
     pub fn start(deadline: Instant, expected_generation: String) -> Self {
         Self {
             deadline,
@@ -165,6 +182,11 @@ impl<S: Stage> Preflight<S> {
     ///
     /// The stage fails if verification fails or if the shared deadline has
     /// expired before or during verification.
+    ///
+    /// # Errors
+    ///
+    /// Returns this stage's [`Failure`] if verification fails or the shared
+    /// deadline has expired.
     pub fn verify<V: Verifier>(self, verifier: &mut V) -> Result<Preflight<S::Next>, Failure> {
         if Instant::now() >= self.deadline {
             return Err(S::FAILURE);
@@ -172,7 +194,7 @@ impl<S: Stage> Preflight<S> {
 
         verifier
             .verify(S::KIND, self.deadline, &self.expected_generation)
-            .map_err(|()| S::FAILURE)?;
+            .map_err(|_| S::FAILURE)?;
 
         if Instant::now() >= self.deadline {
             return Err(S::FAILURE);
@@ -188,11 +210,13 @@ impl<S: Stage> Preflight<S> {
 
 impl Preflight<Succeeded> {
     /// Returns the deadline shared by all preflight stages.
+    #[must_use]
     pub fn deadline(&self) -> Instant {
         self.deadline
     }
 
     /// Returns the generation expected by all preflight stages.
+    #[must_use]
     pub fn expected_generation(&self) -> &str {
         &self.expected_generation
     }

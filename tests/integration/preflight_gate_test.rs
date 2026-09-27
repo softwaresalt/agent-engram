@@ -5,7 +5,7 @@ use std::time::Instant;
 #[path = "../../crates/engram-indexer/src/preflight.rs"]
 mod preflight;
 
-use preflight::{Build, Failure, Preflight, StageKind, Succeeded, Verifier};
+use preflight::{Build, Failure, Preflight, StageKind, Succeeded, VerificationError, Verifier};
 
 #[derive(Default)]
 struct RecordingVerifier {
@@ -19,11 +19,11 @@ impl Verifier for RecordingVerifier {
         stage: StageKind,
         deadline: Instant,
         expected_generation: &str,
-    ) -> Result<(), ()> {
+    ) -> Result<(), VerificationError> {
         self.calls
             .push((stage, deadline, expected_generation.to_owned()));
         if self.fail_at == Some(stage) {
-            Err(())
+            Err(VerificationError)
         } else {
             Ok(())
         }
