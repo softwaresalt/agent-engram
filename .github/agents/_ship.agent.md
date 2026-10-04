@@ -3,11 +3,11 @@ name: _Ship
 id: autoharness/pipeline/ship
 description: "Manages the backlog-to-shipped pipeline: harness generation, build execution, review, CI remediation, and PR lifecycle"
 maturity: stable
-tools: vscode, execute, read, agent, edit, search, todo, memory, backlogit, engram
+tools: vscode, execute, read, agent, edit, search, todo, vscode/memory, backlogit/*, engram/*
 max_subagent_tier: 2
-reasoning_effort: "high"
-model_provider: "anthropic"
-model_family: "claude-sonnet-5"
+reasoning_effort: "xhigh"
+model_provider: "openai"
+model_family: "gpt-6-luna"
 subagent_depth: 2
 ---
 
@@ -308,18 +308,21 @@ it halts and requests that Stage be run first.
 
 ### Step 2: Harness Generation (P-002 / P-004)
 
-Ensure every task in the target feature or chore has a passing test harness before any implementation begins. This step runs once, up front — not in a loop.
+Establish the route required by P-002/P-004 for every in-scope task before implementation. The code/test/config and other non-prose route is unchanged: require `harness-ready`, successful `cargo check --all-targets`, and true expected-failure RED tests before implementation. The only alternative is the strictly bounded docs-only `harness-verification-gated` route below; it is not a relaxation of code requirements.
 
 When the `agent-intercom` capability pack is installed, broadcast `[SHIP] Invoking harness-architect skill` before invoking the skill.
 
-1. List all tasks for the target feature or chore that are in `queued` status.
-2. Partition the task list:
-   * **Already harnessed**: tasks carrying the `harness-ready` label — skip these.
-   * **Needs harness**: tasks without the `harness-ready` label — scaffold these.
-3. If any tasks need harnesses, invoke the **harness-architect** skill for the batch.
-   * Require compilable but failing harnesses, structural stubs, and successful `cargo check --all-targets` verification after scaffolding.
-   * Keep harness commands associated with the affected backlog items so the build loop has a strict boundary.
-4. After scaffolding completes, confirm every queued task now carries the `harness-ready` label. If any task still lacks it, halt and report the gap rather than proceeding with a partial set.
+1. Establish the candidate task set. For a Stage-prepared shipment already claimed `active`, read `custom_fields.items`, filter by artifact type to task artifacts before reading task statuses, and consider both `queued` and already-`active` task members. Do not include the covering feature, `done`/archived members, or any task outside the manifest. For a non-shipment target, use its queued tasks as before. Missing/unreadable status or ambiguous artifact type fails closed.
+2. Classify each candidate from its durable `Owned files` declaration and inspect the paths/types/content:
+   * **Docs-only** means every declared owned path is exclusively prose Markdown under `docs/**`; declarations must be explicit. Any mixed scope, non-Markdown or non-prose content, `.github`, policy/configuration, tests, schemas, scripts, templates, build artifacts, or code/config/test path is not docs-only. Missing or ambiguous ownership never qualifies.
+   * Every other sufficiently understood task uses the code/non-prose route and must satisfy the normal `harness-ready` gate. An ownership ambiguity is a halt, not a docs-only inference.
+3. For a docs-only candidate, require a readable durable task/run verification plan recorded before docs implementation begins. The full plan and evidence belong in an official backlogit task/run comment or another Ship-owned execution record, not task planning fields. Ship may supplement existing verification text with a comment before implementation; that comment does not change scope, acceptance criteria, or file ownership. Record executable commands and manual gates separately: every executable command has an exact non-empty literal command, working directory, exact pass criteria, and result/evidence field; each manual gate names source and target paths, exact pass/fail criteria, and required evidence. Missing, empty, or ambiguous gates fail closed.
+4. Validate dispositions exactly:
+   * A docs-only task must carry `harness-verification-gated` and must not carry `harness-ready`.
+   * Every code/non-prose task must carry `harness-ready` and must not use the docs label as a substitute.
+   * For queued tasks lacking a valid matching disposition—including missing/conflicting labels or invalid/missing supporting evidence—invoke **harness-architect**. Ship records or supplements the docs verification plan in its official task/run comment or Ship-owned execution record before implementation; the architect validates it and may update only the route label after qualification. For code tasks, preserve the full compile/expected-failure RED process and leave only `harness-ready`. Reuse a valid existing RED harness; repair/rebuild only if its manifest is invalid.
+   * An already-active docs task may be qualified while still pre-implementation; do not require its route label to have been set when status first became active. Before qualification, verify each owned path is unchanged from `HEAD` in the current worktree, or that any existing delta is positively attributed to a recorded pre-existing baseline that predates docs implementation. An owned-path implementation delta without that positive provenance fails closed; do not retroactively qualify partial or completed docs work. Record the full verification plan before the first docs edit, then set only `harness-verification-gated`; after qualification, the architect may correct only the route label if needed. Never move an active task active again. The execution baseline is captured later at Step 4.1, after an active task's status is verified or a queued task is moved to active. Already-active code tasks retain the existing validation/reuse rules: if a valid RED harness is present, inspect its manifest and reuse it; do not regenerate it. Any other active-task ambiguity halts for operator disposition.
+5. After the architect returns, confirm every candidate has exactly its appropriate route plus valid supporting evidence: code tasks have the successful compile/expected-failure RED manifest; docs tasks have the readable pre-implementation verification plan. Any gap halts; do not proceed with a partial set.
 
 When the `backlogit` capability pack is installed and queue-aware operations are supported, prefer
 the queue operation to assemble the task set. When dependency operations are supported, verify the
@@ -352,16 +355,16 @@ Now that all tasks are harnessed, construct the execution queue:
    that Step 4 executes, so an `active` member of this derived set is never omitted from the ready queue,
    and a `pre_archived_skipped` / `already_done` member is never included in it merely because some other queued
    task elsewhere happens to share its label or status.
-2. List all tasks with `harness-ready` label and `queued` status for the target feature or chore. When
-   operating under a Stage-prepared shipment (item 1 above ran), replace this queued-only membership with item 1's
-   derived executable set: include every task in that set regardless of whether its status is `queued` or
-   `active`, and exclude any manifest task that item 1 classified as `pre_archived_skipped` or
-   `already_done` even if it would otherwise match `queued`/`active` elsewhere. Tasks outside
-   the shipment's manifest are never added by this substitution.
+2. For a non-shipment target, list queued tasks with their one appropriate route. Under a Stage-prepared shipment,
+   the manifest-bounded executable set is item 1's derived set, including both queued and already-active task
+   members. Include each member only when its ownership matches exactly one disposition: prose-only `docs/**`
+   Markdown with a qualifying pre-implementation record and `harness-verification-gated`, or any code/test/config
+   or other non-prose scope with `harness-ready`. A missing/mismatched/dual label or invalid verification record
+   halts. Exclude `pre_archived_skipped` and `already_done`; never add tasks outside the manifest.
 3. Sort the queue by dependency order (tasks with no unfinished dependencies first).
 4. If the queue is empty after harness generation, halt and report — there is nothing to build.
 
-When the `agent-intercom` capability pack is installed, broadcast `[SHIP] Pre-flight passed, ready queue: {count} tasks` with the count of queued items.
+When the `agent-intercom` capability pack is installed, broadcast `[SHIP] Pre-flight passed, ready queue: {count} tasks` with the count of executable tasks (queued plus already-active manifest members where applicable).
 
 ### Step 4: Execute Task Loop
 
@@ -369,14 +372,18 @@ For each task in the ready queue:
 
 #### Step 4.1: Claim Task
 
-Update task status to `active` using the backlog tool's move operation.
+Read the task's current status immediately before acting. If `queued`, update it to `active` using the backlog tool's move operation. If it is already `active` as a validated member of the active claimed shipment, verify and retain that state without issuing a duplicate active transition. Any other status halts.
+
+For a docs-only task, immediately after moving it to `active` or verifying its existing active status, capture and persist the task's execution baseline. Do this before any further task work, including Step 4.1a telemetry, pre-build knowledge reads, task-specific command execution, or documentation implementation. The baseline contains the current `HEAD` SHA and the complete workspace changed-path set (tracked staged/unstaged changes, every untracked path individually, and deletions), with status and content hash/type for existing changed files, including symlink targets; record index and worktree type/hash separately when their states differ, and retain the last available `HEAD`/index type and hash for deleted paths. Do not recursively hash clean, ignored, or build-output files outside the changed-path set; a status listing or `git diff` alone is insufficient, and no changed path may be blanket-excluded. This capture records the current execution reference; it does not establish provenance for pre-existing owned-path implementation deltas.
+
+For either a queued or already-active `harness-verification-gated` docs-only task, do not begin docs work until the plan is qualified. A route label need not have been set when a task first became active. Before qualification, verify the owned paths are unchanged from `HEAD` in the current worktree, unless every existing owned-path delta is positively attributed to a recorded pre-existing baseline that predates implementation; any unexplained owned-path implementation delta fails closed. Failure to establish qualification or capture/read the baseline halts before telemetry, reads, commands, or implementation.
 
 When the `agent-intercom` capability pack is installed, broadcast the task claim and current task ID.
 
 #### Step 4.1a: Begin Telemetry Context
 
-Immediately after claim and before Pre-build knowledge retrieval, build-feature delegation,
-implementation tool work, or review feedback, start a stable telemetry context:
+Immediately after claim (or active-status verification) and before Pre-build knowledge retrieval,
+build-feature delegation, implementation tool work, or review feedback, start a stable telemetry context:
 
 ```text
 autoharness telemetry begin --task-id {item_id} --backlog-item-id {item_id} \
@@ -421,19 +428,41 @@ When the `agent-intercom` capability pack is installed, broadcast `[SHIP] Invoki
 Invoke the **build-feature** skill with:
 
 * `task_id`: The current task ID
-* `harness_cmd`: The test command from the task's harness-ready metadata (e.g., `cargo dev-test --test {feature}_test`)
+* `route`: exactly `harness-ready` for code/non-prose work or `harness-verification-gated` for qualifying docs-only work
+* Code route only: `harness_cmd` from the task's harness-ready metadata (e.g., `cargo dev-test --test {feature}_test`)
+* Docs route only: the durable pre-implementation verification-record reference and the unchanged execution-baseline reference captured at Step 4.1
 
-The skill runs a 5-attempt harness loop: execute tests, capture errors, fix, repeat.
+For a docs route, Step 4.2 passes the exact unchanged execution-baseline reference captured and
+persisted at Step 4.1, along with the durable plan reference, to build-feature. Step 4.2 MUST NOT
+capture, refresh, or replace that baseline. Documentation edits and recorded verification commands
+may occur only after the Step 4.1 baseline has been captured.
+
+The code route runs the existing 5-attempt harness loop. The docs route runs every exact recorded command and every auditable manual gate, records results/evidence, and performs the baseline comparison; it creates no stubs and does not run the code harness loop.
 
 #### Step 4.3: Quality Gates
 
 After the build-feature skill reports success:
 
-1. **Lint**: `cargo clippy --all-targets -- -D warnings -D clippy::pedantic`
-2. **Format**: `cargo fmt --all -- --check`
-3. **Full Test Suite**: `cargo dev-test`
+* For every code/non-prose task, run the existing gates after that task; the targeted harness and full suite are never skipped or substituted:
+  1. **Lint**: `cargo clippy --all-targets -- -D warnings -D clippy::pedantic`
+  2. **Format**: `cargo fmt --all -- --check`
+  3. **Full Test Suite**: `cargo dev-test --no-fail-fast`
+  The required command runs every configured test target even after an earlier target fails. Plain `cargo dev-test` may stop at the first failing target, so that shortened run is diagnostic only and cannot support any task verdict. Do not use command-line filters, omit targets, or newly apply ignore/disable/suppression. Report pre-existing ignored tests as the harness reports them; a mapped pending-red test must actually execute and fail with its recorded marker. Its verdict is:
+  * `PASS` only when the command completes successfully with no failing tests, compile errors, or warnings.
+  * `EXPECTED_PENDING_RED` is a non-green, interim per-task verdict only. Ship may use it for a non-final code task only when **all** of these checks pass:
+    1. The current task's targeted harness is green, compilation succeeds, and lint and format pass.
+    2. The complete `cargo dev-test --no-fail-fast` run executes every configured target; the only non-green results are test failures, with no compile errors, warnings, runner errors, or other failures.
+    3. Every failed test maps unambiguously to its exact test name and observed expected marker in a previously recorded, compiling RED harness for a different task that is later in this shipment's dependency-resolved execution order. The record names that task ID, exact test name(s), marker(s), and owned test-file baseline before implementation. A generic `Worker` substring is not a sufficient match.
+    4. Each mapped task is still unstarted: its build-feature implementation has not begun, and every declared Owned file—including the RED test file—still matches its recorded pre-implementation content/type baseline. A shipment claim may make a task `active`; that status alone neither proves nor disproves that implementation has started. Ship must verify and record the baseline comparison before allowing the interim verdict.
+    5. Every failure in the full-suite output is accounted for exactly once by that mapping, with no unknown, changed, missing, or additional failing test or marker.
+    6. The task/run record preserves the exact full-suite failures, their task IDs and expected markers, the baseline evidence, and the planned resolution in the later task. Record the verdict as `EXPECTED_PENDING_RED`, never as `PASS` or “full suite green.”
+  Any unmet or unreadable condition is blocking; do not waive, suppress, disable, or edit a pending task's RED tests, and do not implement that task ahead of dependency order. The final code task and final task/PR readiness run have no pending-red allowance: `cargo dev-test --no-fail-fast` must be unequivocally green with no pending RED eligible.
+* For docs-only tasks, the build-feature report must show every recorded command and manual gate passed with
+  command/result/evidence recorded. Do not run the code harness loop or impose code-only gates as a substitute
+  for the task's recorded checks. Any failure is visibly blocking; a later authorized repair must preserve
+  the failure and rerun the entire recorded command/manual-gate set before success can be reported.
 
-If any gate fails, return to the build-feature skill for a fix iteration.
+An `EXPECTED_PENDING_RED` result is not a gate failure for the current non-final task once Ship has verified every condition above; it is also not a green suite. Unexpected in-scope failures return to build-feature for a fix iteration after P-021 scope classification. Out-of-scope failures follow Step 4.4a and must not be fixed in the current task. A docs-route failure remains blocking; do not treat it as a code-loop retry or proceed to completion without a full successful re-verification.
 
 When the `agent-engram` capability pack is installed, prefer `list_symbols`, `map_code`, or
 `impact_analysis` before broad file scans when diagnosing repeated failures or validating the blast
@@ -514,6 +543,22 @@ Both paths preserve identically: the mandatory capture-first ordering, the full 
 
 #### Step 4.5: Complete Task
 
+Before any commit or task-status transition to `done`, a docs-only task must pass a final scope gate against
+the same execution baseline (after any review feedback/fixes): compare the current complete changed-path
+set, statuses, and hashes/types (including distinct index/worktree states where they differ) with the
+captured snapshot, then classify every added, modified, renamed/type-changed, or deleted delta. Preserve
+unchanged pre-existing dirty entries as baseline state, not task changes. Confirm task-attributed
+implementation deltas are within the declared Owned files and remain prose Markdown under `docs/**`.
+Any task-attributed non-prose path newly added, modified, or deleted blocks completion. Any unexplained
+or unknown-provenance delta also fails closed and must be reported; any `HEAD` change since the baseline
+must be positively attributable to prior tasks in this same manifest and dependency order, or it fails
+closed. Do not blanket-ignore paths or assume an unrelated change is safe. Preserve the baseline,
+comparison, all command outputs/results, and separate executable-command and manual-gate evidence in the
+Ship-owned run/task record. Missing/unreadable records, any command failure, criteria mismatch, or missing
+evidence blocks completion and prevents `done`.
+For the docs route, commit only the verified task-owned prose changes; never stage unrelated or pre-existing
+worktree changes as part of that task.
+
 1. Commit changes with a conventional commit message
 2. If telemetry begin returned `status` `created` or `idempotent_begin` with an
    enabled `context_ref`, create a close-time epoch payload from the task roll-up
@@ -538,11 +583,26 @@ Both paths preserve identically: the mandatory capture-first ordering, the full 
    populated in the close payload) is reported as a task-loop diagnostic and the
    task still proceeds to completion without composition — telemetry never
    gates the lifecycle.
-3. Move the task to done by updating status to `done` using the backlog tool's complete operation
-4. If the `backlogit` capability pack is installed and commit-tracking is supported, associate the commit with the task
-5. Write a memory checkpoint to `docs/memory/`
-6. If the task required 3+ attempts, invoke the compound skill to capture learnings
-7. When the `continuous-learning` capability pack is installed, invoke the **observe** skill for any recurring patterns encountered during the task — repeated review findings, recurring build failures, operator corrections, or workarounds that kept appearing. Skip if the task was routine.
+3. **Docs-only final status guard**: immediately before the `done` transition,
+   repeat the changed-path-set comparison against the unchanged execution
+   baseline after the docs commit and telemetry close. Require the task commit's parent to be the captured baseline `HEAD`
+   or to a positively evidenced prior manifest-task commit in dependency
+   order; every intervening commit must be so accounted for, with no
+   out-of-manifest commit. The current task commit's complete diff must contain
+   only its declared prose-Markdown `docs/**` Owned files. Reconcile the
+   complete changed-path set, statuses, and hashes/types (including distinct
+   index/worktree states where they differ), and classify every delta against
+   the execution snapshot; unchanged pre-existing dirty entries remain baseline state.
+   Attribute bookkeeping/tool writes only when exact provenance is recorded,
+   never by blanket path exclusion. Any
+   task-attributed non-prose path, unowned docs change, unexplained delta,
+   unknown provenance, failed/missing verification result, or unreadable
+   evidence blocks and reports before `done`.
+4. Move the task to done by updating status to `done` using the backlog tool's complete operation
+5. If the `backlogit` capability pack is installed and commit-tracking is supported, associate the commit with the task
+6. Write a memory checkpoint to `docs/memory/`
+7. If the task required 3+ attempts, invoke the compound skill to capture learnings
+8. When the `continuous-learning` capability pack is installed, invoke the **observe** skill for any recurring patterns encountered during the task — repeated review findings, recurring build failures, operator corrections, or workarounds that kept appearing. Skip if the task was routine.
 
 If the `agent-intercom` capability pack is installed, broadcast task completion and any blocked / retry conditions.
 

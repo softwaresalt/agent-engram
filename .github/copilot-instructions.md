@@ -85,6 +85,7 @@ tokens proportional to file size.
 | `docs/closure/` | Review, runtime verification, and closure artifacts |
 | `docs/research/` | Graduated architecture and design rationale |
 | `docs/research/` | Product-oriented requirements |
+| `docs/operator-glossary.md` | Operator glossary. Add any new acronym or label used in reports, plans, or approval requests, and update entries when a process changes |
 
 ## Session Memory Requirements
 

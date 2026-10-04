@@ -297,6 +297,7 @@ This file is a map, not a manual. For deeper context, consult these sources:
 | Design decisions & rationale | `docs/research/` |
 | Product specifications | `docs/research/` |
 | Quality grades per domain | `docs/QUALITY_SCORE.md` |
+| Operator glossary (acronyms and labels in reports; agents MUST add new labels and update changed ones) | `docs/operator-glossary.md` |
 | External references | `docs/references/` |
 | Coding conventions | `.github/instructions/` |
 | Workflow policies | `.github/policies/workflow-policies.md` |
