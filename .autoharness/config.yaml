@@ -64,62 +64,45 @@ strict_safety:
 # Model routing preferences (map tiers to model identifiers and per-tier config)
 model_routing:
   tier1:
-    model: claude-haiku-4.5             # Fast/cheap: memory, docs, compaction
-    reasoning_effort: ""                # Leave empty to use model default
-    model_provider: "anthropic"         # e.g., openai, anthropic — leave empty for default
-    model_family: "claude-haiku-4.5"    # Resolved into Tier 1 agent frontmatter
-  tier2:
-    model: claude-sonnet-5              # Standard: orchestration, code, review
-    reasoning_effort: "high"
-    model_provider: "anthropic"
-    model_family: "claude-sonnet-5"
-  tier3:
-    model: claude-opus-5                # Frontier: planning, architecture, analysis
-    reasoning_effort: "high"
-    model_provider: "anthropic"
-    model_family: "claude-opus-5"
-  orchestrator:
-    model_family: "gpt-5.6-sol"         # Orchestrator model override
+    model: gpt-6-luna
     reasoning_effort: "xhigh"
-    model_provider: "openai"
-  # P-013.5: optional role routes for Stage/Ship invocation-time model routing.
-  # Absent/empty sub-fields fall back to tier3 (stage) / tier2 (ship) — do not
-  # remove this block to "disable" routing; leave sub-fields empty instead.
+    model_provider: "openai" # e.g., openai, anthropic — leave empty for default
+    model_family: "gpt-6-luna" # Resolved into Tier 1 agent frontmatter
+  tier2:
+    model: claude-sonnet-5.5              # Standard: orchestration, code, review (e.g., claude-sonnet-5)
+    reasoning_effort: "high"
+    model_provider: "anthropic"
+    model_family: "claude-sonnet-5.5"
+  tier3:
+    model: claude-opus-5.5              # Frontier: planning, architecture, analysis (e.g., claude-opus-5)
+    reasoning_effort: "high"
+    model_provider: "anthropic"
+    model_family: "claude-opus-5.5"
+  orchestrator:
+    model_family: "claude-opus-5.5"
+    model_provider: "anthropic"
+    reasoning_effort: "high"
+  # P-013.5: role routes — dogfood assignment (Stage -> claude-opus-5, Ship -> claude-sonnet-5)
   stage:
-    model_family: "claude-opus-5"        # Stage role route (frontier planning/analysis)
+    model_family: "claude-opus-5.5"             # Stage role route (falls back to tier3 when empty)
     model_provider: "anthropic"
     reasoning_effort: "high"
-    # F02FD596: nested per-role escalation override for Stage. Declared with a
-    # DISTINCT family from the Stage role route above so escalation is a real
-    # cross-provider second opinion rather than a same-route no-op
-    # (ESCALATION_DEGRADED). Takes precedence over the legacy flat
-    # model_routing.escalation below, which is therefore left empty (H2).
-    escalation:
-      model_family: "gpt-5.6-sol"
-      model_provider: "openai"
-      reasoning_effort: "xhigh"
   ship:
-    model_family: "claude-sonnet-5"      # Ship role route (standard build/review)
-    model_provider: "anthropic"
-    reasoning_effort: "high"
-    # F02FD596: nested per-role escalation override for Ship. Escalates from the
-    # tier2 role route above to the tier3 frontier model.
+    model_family: "gpt-6-luna"
+    model_provider: "openai"
+    reasoning_effort: "xhigh"
+  # P-013.6: explicit escalation route — distinct vendor/family from the
+  # Stage role route (claude-opus-5/anthropic, already == tier3) so an
+  # auto-escalation attempt is a genuine escalation, not a same-route no-op
+  # (ESCALATION_DEGRADED guard, 011-DL(b)/106-F).
     escalation:
-      model_family: "claude-opus-5"
+      model_family: "claude-sonnet-5.5"
       model_provider: "anthropic"
       reasoning_effort: "high"
-  # P-013.6: legacy flat escalation route.
-  # F02FD596 -- DEPRECATED-LEGACY: superseded by the nested per-role escalation
-  # blocks above. MUST remain empty while any nested <role>.escalation override
-  # is declared -- both-present is AMBIGUOUS and fails closed (H2).
-  escalation:
-    model_family: ""
-    model_provider: ""
-    reasoning_effort: ""
   anchor_review:
-    model_provider: "openai"             # Anchor reviewer provider
-    model_family: "gpt-5.6-sol"          # Anchor reviewer family
-    reasoning_effort: "xhigh"            # Leave empty to use model default
+    model_provider: "openai"       # Anchor reviewer provider (default: openai)
+    model_family: "gpt-6-sol"           # Anchor reviewer family (default: gpt-5.6-sol)
+    reasoning_effort: "high"  # Leave empty to use model default
 
 # AI CLI tool startup configuration
 # Resolves the copilot executable in the generated start.ps1 and start.sh scripts,
