@@ -106,8 +106,9 @@ step 5 closes the cycle `142.064a` → `142.063-T` → `142.066-T` → `142.064-
 * The 4 slot-table row for Slot-04a governs: after E5 and E1, `142.064a` depends on `142.062-T` only. Stage confirms it
   with `backlogit_get_dependencies`; any other predecessor is HALT `R15-DAG-ORDER Slot-04a <predecessor>`.
 
-This ruling resolves stash entry `EEF658F3`, which Copilot filed independently for the same cycle; its disposition
-cites this record.
+This ruling addresses the dependency-cycle finding in active stash entry `EEF658F3`, filed independently by Copilot.
+The stash entry remains active pending Stage's disposition; this record does not archive it. Stage may cite this ruling
+in its disposition.
 
 ## R-A3: `142.068-T` uses `workspace-status` (assembly step 6, 9.2)
 
