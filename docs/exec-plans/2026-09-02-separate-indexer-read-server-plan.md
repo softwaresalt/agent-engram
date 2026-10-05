@@ -2057,6 +2057,15 @@ changes.
     `get_retrieval_eval_report` stays MCP-only unless a separate CLI requirement
     is approved; `_health` stays direct-IPC-only. F54 generates its matrix from
     each descriptor's declared surfaces.
+    **Stage amendment 2026-09-24 (operator clarification):** the separate CLI
+    requirement now exists. Every user-facing tool must be callable via the CLI
+    with full MCP parity, so no user-facing tool is intentionally MCP-only. The
+    missing CLI surface for `get_retrieval_eval_report` (and the `git-graph`
+    tools `query_changes` and `index_git_history`) is a known gap. It is tracked
+    as follow-on work (stash `E06BABAD`, sequenced after 142-S) and is not in
+    this plan's roster. `_health` is an internal IPC method, not a user-facing
+    tool, and stays direct-IPC-only. F54 stays descriptor-driven, must not
+    hard-code any CLI absence, and adds no CLI command.
 11. **F46** also removes the retired test and module files. F47 serializes root
     `Cargo.toml` ownership before F13. F48 serializes
     `src/installer/mod.rs` ownership before F15.
