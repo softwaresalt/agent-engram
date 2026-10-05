@@ -2,7 +2,7 @@
 
 > **Status (2026-10-04, PR #410 review): historical checkpoint, superseded.** The "plan CLI parity before 142-S
 > continues" directive below was superseded the same day by the operator's Path S decision
-> (`docs/memory/2026-09-24-stage-path-s-handoff.md`), and 142-S itself is now abandoned at H3 under
+> (`docs/memory/2026-09-24-stage-path-s-handoff.md`), and 142-S itself (still active) is now planned to be abandoned at H3 under
 > `docs/exec-plans/2026-09-30-142-f-decomposition-plan.md` Revision 18. Do not resume from this checkpoint; see 035-D and
 > the parity plan's status note.
 

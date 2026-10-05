@@ -20,7 +20,7 @@ tags:
 > **Status (2026-10-04, PR #410 review): decided; parts superseded.** D1-A, D2-A, D4-A and D5-A stand. Superseded:
 > the invariant-6 ownership exception (retired by PA-7, 2026-09-29: PRE-3F owns its own test target, and only
 > `142.058-T` and its split family edit the F54 file, after PA-5); PA-1's admission to 142-S and the S1-S5 split (replaced
-> by one-task slots; 142-S is abandoned at H3); and the PA-6 hold (lifted 2026-10-04, OD-6). The current authority is
+> by one-task slots; 142-S, still active, is planned to be abandoned at H3); and the PA-6 hold (lifted 2026-10-04, OD-6). The current authority is
 > `docs/exec-plans/2026-09-30-142-f-decomposition-plan.md` Revision 18 (frozen).
 
 ## Problem Frame

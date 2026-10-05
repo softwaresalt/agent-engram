@@ -21,9 +21,10 @@ tags:
 ---
 
 > **Status (2026-10-04, PR #410 review): ordering gate needs re-sequencing.** The Path S gate below ("142-S ships
-> first") can no longer be met as written: 142-S never shipped and is abandoned at H3 (PS-5) under
-> `docs/exec-plans/2026-09-30-142-f-decomposition-plan.md` Revision 18, and its scope moved to one-task `142-F` slots.
-> Stage reading, for operator confirmation before parity planning resumes: Path S now means "after `142-F` closes
+> first") will not be met as written: 142-S has not shipped and is still active, and
+> `docs/exec-plans/2026-09-30-142-f-decomposition-plan.md` Revision 18 plans to abandon it at H3 (PS-5, after H1,
+> conditional on the probe) and move its scope to one-task `142-F` slots. Stage reading, for operator confirmation
+> before parity planning resumes: Path S is re-gated per Revision 18 to "after `142-F` closes
 > (CP-FINAL)". The parity requirement and Option A are unchanged.
 
 ## Problem Frame

@@ -2,7 +2,7 @@
 title: "Archive verifier read-before-close repair (142-F, separate unit after F50)"
 source: "docs/decisions/2026-09-25-archive-verifier-read-before-close-deliberation.md"
 parent_feature: "142-F"
-target_shipment: "Superseded: originally 142-S (PA1, never granted). Under the 142-F decomposition plan Revision 18 this task (142.060-T) is Slot-01, its own one-task shipment created at assembly and claimed first (OD-1, 2026-10-04); 142-S is abandoned at H3 (PS-5)"
+target_shipment: "Superseded: originally 142-S (PA1, never granted). Under the 142-F decomposition plan Revision 18 this task (142.060-T) is Slot-01, its own one-task shipment created at assembly and claimed first (OD-1, 2026-10-04); 142-S is still active and is planned to be abandoned at H3 (PS-5)"
 stash_refs: "4EE241DC (survivor); BE626470, F86074CD and 7 others archived as merged duplicates"
 date: "2026-09-25"
 ---
@@ -11,7 +11,7 @@ date: "2026-09-25"
 > files, test seam, scenarios, acceptance) remains the technical-design source for `142.060-T`. Everything tied to 142-S
 > is superseded by `docs/exec-plans/2026-09-30-142-f-decomposition-plan.md` Revision 18 (frozen): U1 is not the final
 > 142-S code task; it is Slot-01, a one-task shipment with no task predecessors (edge E11 removes its edges to
-> `142.054-T`-`142.058-T`); PA1, PA1b, PA1c and PA3 are moot (PA1 was never granted and 142-S is abandoned at H3); the
+> `142.054-T`-`142.058-T`); PA1, PA1b, PA1c and PA3 are moot (PA1 was never granted and 142-S, still active, is planned to be abandoned at H3); the
 > Step 4.3 and final readiness runs are `PASS` only, with no pending-red mapping to another task (decomposition plan
 > 9.1 U3). Scenario 3 was corrected on 2026-10-04 (see the scenario text).
 
@@ -304,7 +304,7 @@ unmapped again.
 **Validation window:** the 142-S PR CI run plus the next release-asset verification.
 
 **Unresolved operator decision that blocks safe execution:** PA1 authorization. *(Moot since 2026-10-04: PA1 was
-never granted; `142.060-T` ships as Slot-01 under the decomposition plan Revision 18, and 142-S is abandoned at H3.)*
+never granted; `142.060-T` ships as Slot-01 under the decomposition plan Revision 18, and 142-S, still active, is planned to be abandoned at H3.)*
 
 <!-- plan-review-attempt: 1 -->
 

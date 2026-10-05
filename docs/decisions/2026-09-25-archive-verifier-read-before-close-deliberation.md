@@ -19,7 +19,7 @@ tags:
 > **Status (2026-10-04, PR #410 review): route superseded.** Option A's "add the repair to active 142-S as its final
 > code task" (PA1) was never authorized. Under `docs/exec-plans/2026-09-30-142-f-decomposition-plan.md` Revision 18
 > (frozen), `142.060-T` is Slot-01, its own one-task shipment claimed first (OD-1, 2026-10-04), with no task
-> predecessors (E11), and 142-S is abandoned at H3. The root-cause analysis and repair design below still apply.
+> predecessors (E11), and 142-S (still active) is planned to be abandoned at H3. The root-cause analysis and repair design below still apply.
 
 ## Problem Frame
 

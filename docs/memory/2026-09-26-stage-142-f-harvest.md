@@ -216,7 +216,7 @@ PA-1; NOT granted):
 *(Historical, 2026-09-26; all superseded. PA-1 was granted on 2026-09-27 except "add everything to 142-S", which the
 operator replaced with a split; the supplemental NEW-1/NEW-3 phrase was granted; PA-5 was answered as OD-5 on
 2026-10-04 and is planned in PA5-P; PA-4 stays on hold. The current authority is
-`docs/exec-plans/2026-09-30-142-f-decomposition-plan.md` Revision 18 (frozen): one-task slots, 142-S abandoned at H3.)*
+`docs/exec-plans/2026-09-30-142-f-decomposition-plan.md` Revision 18 (frozen): one-task slots; 142-S, still active, is planned to be abandoned at H3.)*
 
 * PA-1 needs the verbatim phrase above. It bundles PA-2, PA-2b, and PA-3,
   and must be granted before PRE-1 (`142.061-T`) starts. Until then, the

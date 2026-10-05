@@ -17,7 +17,7 @@ consolidated_into: "docs/exec-plans/2026-09-30-142-f-decomposition-plan.md (Revi
 > **Status (2026-10-04, PR #410 review): SUPERSEDED.** This plan is history and a technical-design reference only.
 > `docs/exec-plans/2026-09-30-142-f-decomposition-plan.md` Revision 18 (frozen) is authoritative for shipment shape and
 > order, edges, landing, assembly, claim gates, closure and the cache rebuild; this plan is authoritative only at the
-> sections that document cites. S1-S5 were never created, 142-S is abandoned at H3 (PS-5), and R14.4 run point 3 is
+> sections that document cites. S1-S5 were never created, 142-S is still active and is planned to be abandoned at H3 (PS-5), and R14.4 run point 3 is
 > withdrawn (decomposition plan section 11). "Next step" and status lines below describe the state when each revision was
 > written.
 
