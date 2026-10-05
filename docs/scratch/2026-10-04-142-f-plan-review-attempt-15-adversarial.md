@@ -7,8 +7,6 @@ reviewers: 3 (Tier 1 gemini-3.7-flash, Tier 2 gpt-5.5, Tier 3 claude-opus-4.8), 
 verdict: FAIL
 ---
 
-# Attempt 15: multi-model adversarial review (Revision 17)
-
 ## Summary
 
 | Confidence | P0 | P1 | P2 | P3 |

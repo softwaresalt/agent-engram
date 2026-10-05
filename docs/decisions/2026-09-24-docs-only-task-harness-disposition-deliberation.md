@@ -18,6 +18,12 @@ tags:
   - "142-S-blocker"
 ---
 
+> **Status (2026-10-04, PR #410 review): installed.** The decided docs-only route (`harness-verification-gated`,
+> P-002/P-004 workflow-policies 1.25.0, Ship Step 2, build-feature and harness-architect skills) was installed in this
+> workspace by the operator's commit `f6f3171f` and reached `main` through H0 (PR #409, merge `7984f896`). The
+> "142-S blocker" framing below is historical; `142.059-T` and `142.074-T` use the route as docs-route slots under
+> `docs/exec-plans/2026-09-30-142-f-decomposition-plan.md` Revision 18.
+
 ## Problem Frame
 
 Shipment 142-S is halted before implementation. `.github/agents/_ship.agent.md`

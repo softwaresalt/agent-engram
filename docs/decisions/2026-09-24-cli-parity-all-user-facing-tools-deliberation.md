@@ -20,6 +20,12 @@ tags:
   - "operator-requirement"
 ---
 
+> **Status (2026-10-04, PR #410 review): ordering gate needs re-sequencing.** The Path S gate below ("142-S ships
+> first") can no longer be met as written: 142-S never shipped and is abandoned at H3 (PS-5) under
+> `docs/exec-plans/2026-09-30-142-f-decomposition-plan.md` Revision 18, and its scope moved to one-task `142-F` slots.
+> Stage reading, for operator confirmation before parity planning resumes: Path S now means "after `142-F` closes
+> (CP-FINAL)". The parity requirement and Option A are unchanged.
+
 ## Problem Frame
 
 On 2026-09-24 the operator stated the product intent explicitly. Every

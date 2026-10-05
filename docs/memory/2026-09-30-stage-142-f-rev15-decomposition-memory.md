@@ -68,6 +68,10 @@ config change. No build, no cache rebuild, no git mutation.
 
 ## Next step
 
+*(Historical, 2026-09-30. Attempt 14 ran and failed, Revisions 16-18 followed, and the plan is frozen at Revision 18;
+see the status line at the end of this file. This and the other "NEXT ACTION" lines below are completed context-handoff
+records, not open work.)*
+
 One fresh-session scoped review (attempt 14) of the new plan. Nine
 consecutive FAILs (attempts 5-13): the operator decides whether to run
 it.
@@ -94,7 +98,7 @@ Confirmed sound: DAG after E1-E5,E8 - D1..D21 valid topological order vs item_de
 
 Operator decisions needed: P1-4 (PA-6 lift for 060 / reorder), P1-5 (F52 fold or II deviation), P1-2 (abandon mechanism/probe), P1-3 (accept done-as-terminal + per-slot manual safe-close approvals), P1-6 (how planning artifacts reach main; disposition of unrelated uncommitted files), whether to run attempt 15 (circuit breaker: attempts 5-14 = ten consecutive FAILs).
 
-NEXT ACTION: append the `### Attempt 14: FAIL` record (personas table, P1-1..P1-6, P2 list, confirmed sound, disposition STOP, no-changes statement) + `<!-- plan-review-attempt: 14 -->` to end of docs\exec-plans\2026-09-30-142-f-decomposition-plan.md (also set frontmatter status to review-failed-attempt-14 only if citation-only is acceptable - prefer leaving frontmatter); then glossary row; then finalize this memory section; then report to user.
+NEXT ACTION (historical, DONE 2026-09-30): append the `### Attempt 14: FAIL` record (personas table, P1-1..P1-6, P2 list, confirmed sound, disposition STOP, no-changes statement) + `<!-- plan-review-attempt: 14 -->` to end of docs\exec-plans\2026-09-30-142-f-decomposition-plan.md (also set frontmatter status to review-failed-attempt-14 only if citation-only is acceptable - prefer leaving frontmatter); then glossary row; then finalize this memory section; then report to user.
 
 ## Revision 16 rewrite checkpoint (Stage, 2026-09-30 ~21:00, context handoff; AUTHORITATIVE)
 
@@ -113,7 +117,7 @@ B. Update this memory file frontmatter: status written-rev16-awaiting-operator (
 C. Verify: plan line count <=600, CRLF consistent; git status shows only docs changes (no backlog/source).
 D. Final report to user: files written, P1 closure map (plan section 18), open decisions OD-1..OD-7, blockers none; note circuit breaker (attempts 5-14 ten FAILs).
 
-STOP when A-D done. NEXT ACTION: do glossary byte-level python edit (A).
+STOP when A-D done. NEXT ACTION (historical, DONE 2026-09-30; see the DONE line below): do glossary byte-level python edit (A).
 
 DONE: A-C complete (2026-09-30, Stage follow-up session). Glossary: removed CG-T and D-slot rows; updated last_updated, pointer, R12, Revision 14 (CG-T retired note), CP-S5 (Slot-21), Revision 15, R15, CG-D, PS (now PS-1 to PS-11), CP-FINAL, FL-RED-HALT; added Attempt 14, Revision 16, Slot-01 to Slot-21, Finished slot, CG-B, Rollup guard, R16 stop messages, W1-W4, OD-1 to OD-7 (LF endings). Plan verified 585 lines, all CRLF. Only D (report) remained.
 

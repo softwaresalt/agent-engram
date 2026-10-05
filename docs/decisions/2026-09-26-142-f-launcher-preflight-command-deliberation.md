@@ -17,6 +17,12 @@ tags:
   - "p-021"
 ---
 
+> **Status (2026-10-04, PR #410 review): decided; parts superseded.** D1-A, D2-A, D4-A and D5-A stand. Superseded:
+> the invariant-6 ownership exception (retired by PA-7, 2026-09-29: PRE-3F owns its own test target, and only
+> `142.058-T` and its split family edit the F54 file, after PA-5); PA-1's admission to 142-S and the S1-S5 split (replaced
+> by one-task slots; 142-S is abandoned at H3); and the PA-6 hold (lifted 2026-10-04, OD-6). The current authority is
+> `docs/exec-plans/2026-09-30-142-f-decomposition-plan.md` Revision 18 (frozen).
+
 ## Problem Frame
 
 Active shipment 142-S is stalled at Ship Step 4.3 for F50 (`142.054-T`). Ship
@@ -557,6 +563,9 @@ D5 is the lineage for plan units **PRE-3F, PRE-3, PRE-4b, and PRE-4**:
 
 The PA-1 phrase also names the invariant-6 ownership exception that lets
 PRE-3F edit `142.058-T`'s harness within the PRE-3F diff contract.
+*(Retired by PA-7, 2026-09-29: the invariant-6 exception is never exercised.
+PRE-3F owns its own test target, and only `142.058-T` and its split family edit
+the F54 file, after PA-5. See the status note at the top of this record.)*
 
 ### A3.3: stash `EFE9190A` note on D5 (P-021 C5/C6)
 
@@ -621,7 +630,8 @@ hold 3".
   `142.058-T` on `142.066-T` and `142.065-T`; `142.055-T` and `142.057-T`
   on `142.073-T`), the invariant-6 exception (`142.063-T` may edit
   `tests/contract/read_server_cli_mcp_parity_test.rs` only within the
-  PRE-3F diff contract), PA-2 and PA-2b.
+  PRE-3F diff contract), PA-2 and PA-2b. *(The invariant-6 exception was
+  retired by PA-7 on 2026-09-29 and is never exercised.)*
 * **Supplemental phrase granted:** `142.069-T` and `142.071-T` depend on
   `142.054-T`.
 * **Modified, not granted as written:** PA-1's "add every harvested unit to

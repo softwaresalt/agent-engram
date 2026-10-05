@@ -9,9 +9,17 @@ related_tasks:
   - 142.058-T (F54, parity test)
   - 142.065-T (PRE-4b)
   - 142.066-T (PRE-4)
-status: awaiting-operator-decision
+status: decided
+decided_on: 2026-10-04
+decision_record: "docs/exec-plans/2026-09-30-142-f-decomposition-plan.md Revision 18, section 1.1 OD-5 (verbatim) and readings R-1, R-2; planning and harvest in PA5-P (section 7.6)"
 author: Stage
 ---
+
+> **Status (2026-10-04, PR #410 review): decided.** The operator answered OD-5 on 2026-10-04 12:32 -07:00: "Q1: Yes;
+> Q2: Yes; Q3: Yes, although that would seem to contradict the decision on Q1; PA-5 tasks can go under 142-F." Option
+> PA5-C is selected; the decomposition plan Revision 18 records the answer verbatim (section 1.1) with readings R-1 and
+> R-2, and Stage plans and harvests the PA-5 tasks in PA5-P (section 7.6) as Slot-19.k under `142-F`. The "awaiting
+> operator decision" wording below describes the state on 2026-09-27.
 
 # PA-5 deliberation: read-handler conversions needed by F54
 

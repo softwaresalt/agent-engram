@@ -2,10 +2,18 @@
 title: "Archive verifier read-before-close repair (142-F, separate unit after F50)"
 source: "docs/decisions/2026-09-25-archive-verifier-read-before-close-deliberation.md"
 parent_feature: "142-F"
-target_shipment: "142-S (pending explicit operator authorization to amend the active manifest)"
+target_shipment: "Superseded: originally 142-S (PA1, never granted). Under the 142-F decomposition plan Revision 18 this task (142.060-T) is Slot-01, its own one-task shipment created at assembly and claimed first (OD-1, 2026-10-04); 142-S is abandoned at H3 (PS-5)"
 stash_refs: "4EE241DC (survivor); BE626470, F86074CD and 7 others archived as merged duplicates"
 date: "2026-09-25"
 ---
+
+> **Status (2026-10-04, PR #410 review): sequencing and shipment sections superseded.** The unit design (U1, owned
+> files, test seam, scenarios, acceptance) remains the technical-design source for `142.060-T`. Everything tied to 142-S
+> is superseded by `docs/exec-plans/2026-09-30-142-f-decomposition-plan.md` Revision 18 (frozen): U1 is not the final
+> 142-S code task; it is Slot-01, a one-task shipment with no task predecessors (edge E11 removes its edges to
+> `142.054-T`-`142.058-T`); PA1, PA1b, PA1c and PA3 are moot (PA1 was never granted and 142-S is abandoned at H3); the
+> Step 4.3 and final readiness runs are `PASS` only, with no pending-red mapping to another task (decomposition plan
+> 9.1 U3). Scenario 3 was corrected on 2026-10-04 (see the scenario text).
 
 ## Problem Frame
 
@@ -96,14 +104,22 @@ This is a test-infrastructure (release smoke harness) defect. The product's MCP 
      * (c) writes `stack backtrace:` to stderr **and exits 10** → panic message.
      The current code checks the exit code before stderr, so (b) and (c) must exit 10.
      This is **not** a RED test. It must pass on the current code and after the repair.
-  3. **`archive_verifier_bounds_an_unresponsive_mcp_server`: guard, green before and after.** The fake
-     never answers id 2 and ignores EOF. It does a **bounded** sleep of about 90 seconds, which is longer
-     than the 45-second budget, so the current code also times out. The bound means no process is left
-     behind. Prefer `getattr(sys, "_base_executable", sys.executable)` for the fake interpreter. The harness sets `MCP_STDIO_TIMEOUT_SECONDS = 2`
-     through the globals seam; the current code ignores this, and its guard pass may take up to its
-     45-second budget. It asserts a `SmokeFailure` whose message contains either `hung after stdin closed`
-     or `response timeout before id 2`, and that the child process was reaped. After the fix, it also
-     asserts the guard finishes well under 45 seconds. This covers R4.
+  3. **`archive_verifier_bounds_an_unresponsive_mcp_server`: table-driven guard, green before and after.**
+     Two fake variants, each doing a **bounded** sleep of about 90 seconds, which is longer than the 45-second
+     budget, so the current code also times out: **(a) pre-id-2 hang:** the fake answers `initialize`, never
+     answers id 2, and ignores EOF; **(b) post-close hang:** the fake answers ids 1 and 2 in full, then ignores
+     EOF and keeps running. The bound means no process is left behind. Prefer
+     `getattr(sys, "_base_executable", sys.executable)` for the fake interpreter. The harness sets
+     `MCP_STDIO_TIMEOUT_SECONDS = 2` through the globals seam; the current code ignores this, so before the fix
+     each variant may take up to its 45-second budget. For each variant it asserts a `SmokeFailure` whose
+     message contains either `hung after stdin closed` or `response timeout before id 2`, that the child
+     process was reaped, and only a **loose** elapsed bound (under 75 seconds: the 45-second budget plus
+     margin), which holds both before and after the fix. It does **not** assert "well under 45 seconds": the
+     current code ignores the override, so that assertion would make this guard RED and contradict "green
+     before and after". Instead, the GREEN-phase run record states each variant's elapsed time with the
+     2-second override; after the fix both must finish in under 10 seconds, and a slower result is a defect
+     fixed in the same cycle. This covers R4. (Corrected 2026-10-04, PR #410 review: the earlier text asserted
+     "well under 45 seconds" inside a guard labeled green before and after, and had no post-close hang case.)
   * **Existing:** `archive_verifier_runs_the_unpacked_native_binary`, unchanged. On this Windows host it is
     currently a deterministic characterization RED: the 12,837-byte catalog exceeds the 8192 cutoff, and
     every 2026-09-24/25 run reproduced it. **Marker:**
@@ -119,7 +135,8 @@ This is a test-infrastructure (release smoke harness) defect. The product's MCP 
    stderr concurrently under one deadline, and never uses `select`.
 2. Scenario 1 is recorded RED (exact marker) before any verifier change, and is GREEN after it.
 3. Scenarios 2 and 3 pass both before and after the change. Exit-10, `panicked at`, `stack backtrace:` and
-   hang/timeout failures are all still detected.
+   hang/timeout failures (before id 2 and after stdin closes) are all still detected. After the change, the run
+   record shows both scenario 3 variants finishing in under 10 seconds with the 2-second override.
 4. `archive_verifier_runs_the_unpacked_native_binary` is GREEN on Windows. The ubuntu CI job (`ci.yml`,
    `cargo test --all-targets`) is GREEN for the same target, and it runs the native `--mcp` path on
    `x86_64-unknown-linux-gnu`.
@@ -286,7 +303,8 @@ unmapped again.
 
 **Validation window:** the 142-S PR CI run plus the next release-asset verification.
 
-**Unresolved operator decision that blocks safe execution:** PA1 authorization.
+**Unresolved operator decision that blocks safe execution:** PA1 authorization. *(Moot since 2026-10-04: PA1 was
+never granted; `142.060-T` ships as Slot-01 under the decomposition plan Revision 18, and 142-S is abandoned at H3.)*
 
 <!-- plan-review-attempt: 1 -->
 

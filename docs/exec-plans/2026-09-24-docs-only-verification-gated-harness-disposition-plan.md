@@ -9,7 +9,14 @@ revision: 3
 status: "review-failed-circuit-open"
 implementation_repo: "softwaresalt/autoharness (../autoharness, separate later session)"
 adoption_repo: "softwaresalt/agent-engram (this workspace, operator-owned install)"
+installed_by: "operator commit f6f3171f, landed on main through H0 (PR #409, merge 7984f896)"
 ---
+
+> **Status (2026-10-04, PR #410 review): superseded by the operator's install.** This plan's review circuit stayed open,
+> but the operator installed the docs-only route directly in this workspace (commit `f6f3171f`: P-002/P-004
+> workflow-policies 1.25.0, `_ship.agent.md` Step 2, build-feature and harness-architect skills), and it reached `main`
+> through H0 (PR #409, merge `7984f896`). Do not re-run review or harvest this plan for the engram install; the upstream
+> autoharness template channel remains the operator's to drive.
 
 ## Source and Approval
 

@@ -4,13 +4,22 @@ description: "Adds the missing process-boundary interface so start.ps1/start.sh 
 source: "docs/decisions/2026-09-26-142-f-launcher-preflight-command-deliberation.md"
 parent_plan: "docs/exec-plans/2026-09-02-separate-indexer-read-server-plan.md"
 feature: "142-F"
-shipment_context: "142-S (active; operator-approved to be abandoned and its tasks re-queued in a later session); remaining scope split into queued shipments S1-S4 per Revision 6 (created in a later session); S3 held under PA-6 (Revision 8)"
+shipment_context: "Historical (Revisions 6-14, superseded): 142-S (active; operator-approved to be abandoned and its tasks re-queued in a later session); remaining scope split into queued shipments S1-S4 per Revision 6 (never created); S3 held under PA-6 (Revision 8; lifted 2026-10-04 by OD-6)"
 stash_source: "03AA00A8, 49809128, 9B7EC1E4, 6C5DF765"
 follow_up_stash: "86F93068 (blocks F54 GREEN), 5AF5CD66, 23E287C6, F99C705E, 7BF90213"
 related_stash: "EFE9190A (overlaps PRE-4 and 86F93068), 4628001C (overlaps 86F93068); see Revision 5 duplicate-scan record"
 revision: 15
-consolidated_into: "docs/exec-plans/2026-09-30-142-f-decomposition-plan.md (Revision 16 is authoritative: one task per shipment in slots Slot-01 to Slot-21, task and shipment blocks edges plus queue_position, 142-S disposition through gated PRs, final per-task content requirements; authoritative for decomposition, landing, assembly, claim gates, closure and cache rebuild)"
+status: "superseded"
+superseded_by: "docs/exec-plans/2026-09-30-142-f-decomposition-plan.md (Revision 18, frozen 2026-10-04)"
+consolidated_into: "docs/exec-plans/2026-09-30-142-f-decomposition-plan.md (Revision 18, frozen 2026-10-04, is authoritative: one task per shipment in slots Slot-01 to Slot-21 with split and PA-5 slots, task and shipment blocks edges plus queue_position, 142-S disposition through gated PRs, final per-task content requirements; authoritative for decomposition, landing, assembly, claim gates, closure and cache rebuild)"
 ---
+
+> **Status (2026-10-04, PR #410 review): SUPERSEDED.** This plan is history and a technical-design reference only.
+> `docs/exec-plans/2026-09-30-142-f-decomposition-plan.md` Revision 18 (frozen) is authoritative for shipment shape and
+> order, edges, landing, assembly, claim gates, closure and the cache rebuild; this plan is authoritative only at the
+> sections that document cites. S1-S5 were never created, 142-S is abandoned at H3 (PS-5), and R14.4 run point 3 is
+> withdrawn (decomposition plan section 11). "Next step" and status lines below describe the state when each revision was
+> written.
 
 ## Problem Frame
 
@@ -4410,7 +4419,7 @@ Any other rebuild needs a new operator approval.
 | change_kind | file delete (local cache) and process stop (by PID) |
 | ActionRisk | destructive |
 | Approval | operator, 2026-09-29 21:00 -07:00 ("approve the cache rebuild"), scoped by R14.4 |
-| ActionResult | `approved`, not `applied`. Each run becomes `applied` only when steps 4-7 all pass. The run's time, stopped PIDs and results go in the session memory file. A halted run is `failed` and goes to the operator. |
+| ActionResult | `approved`, not `applied`. Each run becomes `applied` only when steps 4-7 all pass. The run's time, stopped PIDs and results go in the session memory file. A halted run is `failed` and goes to the operator. **Superseded (2026-10-04):** run point 3 was never approved and is withdrawn (Revision 15; attempt-13 P1-1); only run points 1-2 are `approved`, as restated in decomposition plan Revision 18 section 11. |
 | Rollback | None needed. The Markdown files are the source of truth, and the cache rebuilds from them. Stopped MCP servers are restarted by their client. |
 
 #### R14.5 P2-7: `RELAY_STAGES` holds the seven full `Failed` lines
@@ -4526,7 +4535,8 @@ mutation. **Next step:** one fresh-session scoped review of Revision 14.
 
 ### Revision 15: one task per shipment, in a separate decomposition plan
 
-**Revision 16 is authoritative.** On 2026-09-30, after review attempt 14
+**The decomposition plan is authoritative; it is now at Revision 18, frozen 2026-10-04** (this note was written at
+Revision 16). On 2026-09-30, after review attempt 14
 failed, `docs/exec-plans/2026-09-30-142-f-decomposition-plan.md` was
 rewritten in place as Revision 16. It replaces the Revision 15 content
 summarized below, and its section 9 states each task's final content in

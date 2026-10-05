@@ -6,7 +6,14 @@ plan: docs/exec-plans/2026-09-26-142-f-launcher-preflight-command-plan.md
 escalation_route: gpt-6-sol/openai/xhigh
 trigger: 3 consecutive plan-review FAILs (attempts 5-7)
 verdict: RESTRUCTURE
+disposition: "accepted and applied: operator granted PA-7 on 2026-09-29 14:55 -07:00; Revision 9 of the launcher plan restructured PRE-3F onto its own test target; later superseded by docs/exec-plans/2026-09-30-142-f-decomposition-plan.md (Revision 18, frozen)"
 ---
+
+> **Disposition (2026-10-04, PR #410 review): accepted and applied.** The operator granted PA-7 on 2026-09-29 14:55
+> -07:00 (T0 pushed under a parked name; PRE-3F owns its own test target; only `142.058-T` edits the F54 file, after
+> PA-5). Revision 9 of the launcher plan applied the restructure. The S3/S4 hold described below was lifted on
+> 2026-10-04 (OD-6), and S1-S5 were replaced by one-task slots; the current authority is
+> `docs/exec-plans/2026-09-30-142-f-decomposition-plan.md` Revision 18 (frozen).
 
 ## Executive summary
 

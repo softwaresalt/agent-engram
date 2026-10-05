@@ -3,7 +3,7 @@ title: "Backlog tool-surface selection: CLI as a first-class peer of MCP, and ho
 description: "P-021 C6 deliberation for deferred scope expansion DDA2506F: restore the hook-polling gate and remove any policy that blocks agents from choosing the official backlogit CLI instead of MCP"
 topic: "Operator request 2026-09-25: restore the hook-polling gate; no policy may block Ship from using the CLI instead of MCP at will"
 depth: "standard"
-decision_status: "decided-pending-operator-actions"
+decision_status: "decided (B1 applied by the operator; B2 upstream, operator-owned; B3 deferred)"
 promoted_to: "operator action (B1) + upstream autoharness template channel (B2); no engram Ship release unit this session"
 source_stash_ids:
   - "DDA2506F"
@@ -23,6 +23,11 @@ tags:
   - "cli-mcp-surface"
   - "hooks"
 ---
+
+> **Status (2026-10-04, PR #410 review): B1 applied.** The operator applied B1 (hook poll/ack `cli_command` mappings in
+> `.autoharness/backlog-registry.yaml`; see `docs/memory/2026-09-25-stage-dda2506f-checkpoint-resume-disposition.md`),
+> committed it in `f6f3171f`, and it reached `main` through H0 (PR #409, merge `7984f896`). B2 (upstream autoharness
+> template channel) is operator-owned and not verified here; B3 stays deferred until B2 merges upstream.
 
 ## Intake Record (P-021 C5/C6)
 

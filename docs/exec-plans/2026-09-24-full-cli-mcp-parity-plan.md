@@ -9,8 +9,14 @@ related_deliberation_id: "036-D"
 supersedes: "090.004-T"
 revision: 3
 status: "review-failed-circuit-open"
-execution_ordering: "path-s-after-142-s"
+execution_ordering: "path-s-after-142-s (stale: 142-S abandoned at H3; Stage reading pending operator confirmation: after 142-F closes, CP-FINAL)"
 ---
+
+> **Status (2026-10-04, PR #410 review): ordering gate needs re-sequencing.** "142-S ships first" can no longer be met:
+> 142-S never shipped and is abandoned at H3 (PS-5) under `docs/exec-plans/2026-09-30-142-f-decomposition-plan.md`
+> Revision 18, and its scope moved to one-task `142-F` slots. Stage reading, for operator confirmation: Path S now means
+> "after `142-F` closes (CP-FINAL)". This plan is still `review-failed-circuit-open` and not harvested; any further review
+> needs explicit operator authorization.
 
 ## Source and Approval
 
