@@ -5,7 +5,7 @@ agent: stage
 feature: 142-F
 plan: docs/exec-plans/2026-09-26-142-f-launcher-preflight-command-plan.md
 plan_review_attempt: 3
-outcome: PLAN_REVIEW_FAIL (attempt 3): circuit open; escalation compiled; handoff BLOCKED (engram unavailable)
+outcome: "PLAN_REVIEW_FAIL (attempt 3): circuit open; escalation compiled; handoff BLOCKED (engram unavailable)"
 harvested: false
 shipment_assembled: false
 supersedes: 2026-09-26-stage-142-f-attempt3-result-checkpoint.md
