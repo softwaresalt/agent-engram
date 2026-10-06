@@ -1,10 +1,23 @@
 ---
 title: "142-F Revision 18 execution rulings R-A6 to R-A8 (S-20 sizing and decoupling, 142.066-T CLI name)"
-description: "Operator rulings on HALT R17-SIZE-GATE 142.058a FL-share: count only authored or adapted harness lines against the 400-line bounds, and move the S-20 split from assembly to PA5-P"
-status: accepted
+description: "Operator rulings on HALT R17-SIZE-GATE 142.058a FL-share (R-A6, R-A7: count only authored or adapted harness lines against the 400-line bounds, and move the S-20 split from assembly to PA5-P), plus an Orchestrator-recorded R-A8 pending operator confirmation"
+status: mixed
 date: 2026-10-05
-decided_by: operator
-decided_at: "2026-10-05T22:58-07:00"
+decided_by: mixed
+rulings:
+  R-A6:
+    status: accepted
+    decided_by: operator
+    decided_at: "2026-10-05T22:58-07:00"
+  R-A7:
+    status: accepted
+    decided_by: operator
+    decided_at: "2026-10-05T22:58-07:00"
+  R-A8:
+    status: pending-operator-confirmation
+    decided_by: orchestrator
+    decided_at: "2026-10-06T00:45-07:00"
+    confirmation_point: "operator review of the 142-F assembly PR (#413); the operator may reverse it there"
 applies_to: "docs/exec-plans/2026-09-30-142-f-decomposition-plan.md (Revision 18, status frozen-rev18)"
 companion_record: "docs/decisions/2026-10-04-142-f-rev18-execution-rulings.md (R-A1 to R-A5, still in force)"
 supersedes_steps:
