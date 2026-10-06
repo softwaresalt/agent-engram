@@ -1,18 +1,18 @@
 ---
-title: "Stage 142-F landing step ASM (assembly) memory: steps 4-6 complete under R-A7"
+title: "Stage 142-F landing step ASM (assembly) memory: section 8 steps 1-10 complete, awaiting PR and operator merge"
 date: 2026-10-05
 agent: stage
 feature: "142-F"
 plan: "docs/exec-plans/2026-09-30-142-f-decomposition-plan.md"
 plan_revision: 18
-rulings: "docs/decisions/2026-10-04-142-f-rev18-execution-rulings.md (R-A1 to R-A5); docs/decisions/2026-10-05-142-f-s20-sizing-and-decoupling-rulings.md (R-A6, R-A7)"
+rulings: "docs/decisions/2026-10-04-142-f-rev18-execution-rulings.md (R-A1 to R-A5); docs/decisions/2026-10-05-142-f-s20-sizing-and-decoupling-rulings.md (R-A6, R-A7, R-A8)"
 landing_step: ASM
 branch: chore/stage-142-f-assembly
 base: "origin/main @ ce851761e887694cb18d2a45311c2af6e5890ae3 (PR #412, H3)"
 routed_model: "claude-opus-5.5 / anthropic / high"
-status: in-progress
-progress: "section 8 steps 1-9 PASS (step 6 close-out 26/26; step 7 24 shipments and 31 edges; step 8 R-A4 U7 7/7; step 9 old Constitution Check replaced by a pointer to section 13); step 10 not run"
-halt_token: "R17-SIZE-GATE 142.058a FL-share (resolved by operator options A and C, recorded as R-A6 and R-A7, 2026-10-05 22:58)"
+status: assembly-complete-awaiting-pr-and-merge
+progress: "section 8 steps 1-10 PASS (step 6 close-out 26/26; step 7 24 shipments and 31 edges; step 8 R-A4 U7 7/7; step 9 old Constitution Check replaced by a pointer to section 13; step 10 CG-Q 24/24); pre-PR self-review PASS (0 P0, 0 P1, 2 P2 fixed, 3 P3: 1 fixed, 2 no action); post-merge step 11 owed"
+halt_token: "none open (historical: R17-SIZE-GATE 142.058a FL-share, resolved by operator options A and C, recorded as R-A6 and R-A7, 2026-10-05 22:58)"
 halt_location: "plan section 8 step 4 (splits), S-20 pre-creation share measurement (plan 4.3 S-20, last sentence; 4.2 row 20a-20d)"
 copilot_session: a9421395-751d-42b5-9e69-6d40f356a110
 ---
@@ -21,6 +21,19 @@ copilot_session: a9421395-751d-42b5-9e69-6d40f356a110
 
 ## Outcome
 
+**Final status, 2026-10-06: assembly steps 4-10 are complete. The branch is
+waiting for its PR and the operator's merge (CG-M).** Section 8 steps 1-10 all
+passed on `chore/stage-142-f-assembly`, and the pre-PR self-review passed with
+no open P0 or P1 (see "Pre-PR self-review" below). The branch holds 24 one-task
+slot shipments, `143-S` to `166-S` (Slot-01 to Slot-19), each `queued`, with 31
+mirrored `blocks` edges and `custom_fields.queue_position` in the Markdown. The
+handoff map is in "Handoff map" below. The S-20 split and Slot-19.k, Slot-20a to
+Slot-20d and Slot-21 belong to PA5-P (R-A7). Nothing was pushed and no PR was
+opened; the Orchestrator does both. The cache rebuild and the other step-11
+actions run only after the merge (see "Post-merge step-11 actions still owed").
+
+### Outcome history (2026-10-05 halt, superseded)
+
 **Update 2026-10-06: step 4 resumed under R-A7 and PASSED** (see "Step 4,
 resumed" below). **Step 5 (edges) PASSED** the same day (see "Step 5, edges"
 below). The text that follows, down to the step 4 section, records the
@@ -28,13 +41,13 @@ original 2026-10-05 halt and is kept as history.
 
 Assembly ran section 8 steps 1-3 to completion. It stopped at step 4 with
 **HALT `R17-SIZE-GATE 142.058a FL-share`**, before any split task was created.
-Steps 4-10 did not run, so there are no new tasks, no edge changes, no content
-rewrites, no shipments, and no lift comments. The step-3 resets are committed
-on this branch. Nothing was pushed and no PR was opened. The cache rebuild was
-not run.
+Steps 4-10 did not run at that point, so there were no new tasks, no edge
+changes, no content rewrites, no shipments, and no lift comments. The step-3
+resets were committed on this branch. The cache rebuild was not run.
 
-**Do not push or open a PR from this branch until the operator rules on the
-HALT and Stage resumes assembly at step 4.**
+(Superseded: "Do not push or open a PR from this branch until the operator rules
+on the HALT and Stage resumes assembly at step 4." The operator ruled, R-A6 and
+R-A7, and steps 4-10 have since passed.)
 
 ## Session setup
 
@@ -814,20 +827,112 @@ was run.
 * **Diff:** 7 lines added and 16 removed, in the old plan only. CRLF line endings
   and the final newline were kept.
 
-### Step 10: not run (the Orchestrator sends it separately)
+### Step 10, verify shipments and members (CG-Q), 2026-10-06: PASS
 
-Notes for step 7 and later:
+Run on `chore/stage-142-f-assembly` from HEAD `c7ecd2f2`, backlogit CLI 1.11.0
+only, with no MCP and no `backlogit sync` of any kind. The scratch script
+`tmp/asm/s10/verify.py` (gitignored) did the following for each of the 24 slots,
+against the slot map in "Handoff map" below:
 
-* Step 7 creates Slot-01 to Slot-19 only (24 shipments). `142.059-T` already reads
+* `backlogit shipment get <S>`: `status` is `queued`; `custom_fields.items` is
+  exactly `[<task>]`; and `size_composition.members` has exactly one entry, that
+  task, with `artifact_type: task`.
+* `backlogit get <task> --json`: `artifact_type: task`, `status: queued`,
+  `parent_id: 142-F`.
+* The shipment Markdown frontmatter: `status: queued`, `custom_fields.items` is
+  `[<task>]`, and `custom_fields.queue_position` equals the slot's planned value
+  (10 to 190). The task Markdown reads `task` and `queued`.
+
+**Result: 24 of 24 OK, so `R15-SHIPMENT-SHAPE` was not raised.** Every slot has
+exactly one member, that member is the slot's mapped task and is `queued`, and
+every `queue_position` matches. No other open queue shipment holds a `142.0xx`
+task. `queue_position` is still in the Markdown only; the index gets it at run
+point 1 (step 11). The step 7 part C edge count was re-read from the Markdown:
+31 `dependencies` entries across `143-S` to `166-S`, every one inside the set.
+
+Earlier notes for step 7 and later (all done):
+
+* Step 7 created Slot-01 to Slot-19 only (24 shipments). `142.059-T` already reads
   "Shipment: Slot-21", but Slot-21 (and Slot-19.k, Slot-20a-20d) is created at PA5-P.
-* Step 8's `PA-6-LIFTED 2026-10-04 (OD-6)` goes in the Markdown history section (logs
-  are gitignored) of `142.055-T`, `142.056-T`, `142.057-T`, `142.060-T`,
-  `142.063-T`, `142.058-T` and `142.059-T`; every one of them now has a history
-  section. The R-A4 U7 check follows step 8.
+* Step 8's `PA-6-LIFTED 2026-10-04 (OD-6)` went into the Markdown history section
+  (logs are gitignored) of `142.055-T`, `142.056-T`, `142.057-T`, `142.060-T`,
+  `142.063-T`, `142.058-T` and `142.059-T`. The R-A4 U7 check passed after step 8.
 * `142.063-T`'s `references` frontmatter still lacks the escalation review (cited in
   the body); `142.074-T`'s title and references are unchanged frontmatter (batch 3).
 
-## Planned state for the resumed run (reference only; nothing applied)
+## Handoff map: slot → shipment → task (the handoff tokens for Ship)
+
+This is the map to publish at step 11, once the merge and run point 1 are done.
+Ship claims by shipment ID, in `queue_position` order, subject to the 31 mirrored
+`blocks` edges (step 7 part C).
+
+| Slot | Shipment | Task | Unit | queue_position |
+|---|---|---|---|---|
+| 01 | `143-S` | `142.060-T` | archive verifier | 10 |
+| 02a | `144-S` | `142.075-T` | PRE-1a | 20 |
+| 02b | `145-S` | `142.061-T` | PRE-1b | 21 |
+| 03 | `146-S` | `142.062-T` | PRE-2 | 30 |
+| 04a | `147-S` | `142.076-T` | PRE-3a | 40 |
+| 04b | `148-S` | `142.077-T` | PRE-3b | 41 |
+| 04c | `149-S` | `142.064-T` | PRE-3c | 42 |
+| 05 | `150-S` | `142.065-T` | PRE-4b | 50 |
+| 06 | `151-S` | `142.066-T` | PRE-4 | 60 |
+| 07 | `152-S` | `142.067-T` | PRE-5 | 70 |
+| 08 | `153-S` | `142.068-T` | PRE-6 | 80 |
+| 09a | `154-S` | `142.078-T` | F50a | 90 |
+| 09b | `155-S` | `142.079-T` | F50b | 91 |
+| 09c | `156-S` | `142.054-T` | F50c | 92 |
+| 10 | `157-S` | `142.069-T` | NEW-1 | 100 |
+| 11 | `158-S` | `142.070-T` | NEW-2 | 110 |
+| 12 | `159-S` | `142.071-T` | NEW-3 | 120 |
+| 13 | `160-S` | `142.072-T` | NEW-4 | 130 |
+| 14 | `161-S` | `142.073-T` | NEW-5 | 140 |
+| 15 | `162-S` | `142.074-T` | NEW-6 | 150 |
+| 16 | `163-S` | `142.055-T` | F51 | 160 |
+| 17 | `164-S` | `142.056-T` | F52 | 170 |
+| 18 | `165-S` | `142.057-T` | F53 | 180 |
+| 19 | `166-S` | `142.063-T` | PRE-3F | 190 |
+| 19.k | not created (PA5-P) | PA-5 tasks | PA-5 | 190 + k |
+| 20a-20c | not created (PA5-P, R-A7) | `142.058a` to `c` (not created) | F54 split | per PA5-P |
+| 20d | not created (PA5-P, R-A7) | `142.058-T` (queued, no shipment) | F54 | per PA5-P |
+| 21 | not created (PA5-P) | `142.059-T` (queued, no shipment) | F55 | per PA5-P |
+
+Nothing after Slot-19 can be claimed until the PA5-P PR merges, because no
+shipment exists for it.
+
+## PA5-P obligations carried from R-A7 (and plan 7.6)
+
+PA5-P is Stage's PA-5 planning and harvest (plan 7.6). Its staging PR follows
+this assembly merge and owes the following. Sources: R-A7 in
+`docs/decisions/2026-10-05-142-f-s20-sizing-and-decoupling-rulings.md`, and
+plan 7.6.
+
+1. **S-20 split** per plan 4.3 under R-A6, measured from `6d216d19`: create
+   `142.058a`, `142.058b` and `142.058c` (parent `142-F`) and rewrite
+   `142.058-T` to its share. The 400-line bounds count authored and adapted lines
+   only (R-A6).
+2. **SG-1 and acceptance-map checks** for the 058 family, with the same HALT
+   tokens as 4.3 (`R17-SIZE-GATE`, `R17-SPLIT-AC-UNMAPPED`).
+3. **Edges E3 and the 142.058 chain of E15** with the 5.1 checks: `058a` → 063
+   (E3), 066 and 065; `058b` → `058a`; `058c` → `058b`; `142.058-T` → `058c`.
+   Then the E6 edges (`142.058a` → each PA-5 sink), which follow the split.
+4. **Section 9 content**: the 9.2 content for `142.058a` to `c` and `142.058-T`,
+   plus U2 to U9 for all four. Today `142.058-T` holds only U1, the U7
+   STATUS-RESET line, `PA-6-LIFTED` and the R-A7 deferral line (step 6, limited
+   mode).
+5. **Shipments** Slot-19.k (one per PA-5 task, `queue_position` 190 + k),
+   Slot-20a to Slot-20d and Slot-21 (`142.059-T`), each a one-task shipment with
+   mirrored edges and `queue_position` (7.6). The PA-5 tasks are re-cut so that
+   none edits the F54 file (R-2) and PA5-T4 is split (SG-1).
+6. **No claim before merge**: no 142.058-family, `142.059-T` or PA-5 task can be
+   claimed until the PA5-P PR merges.
+7. **Ship at Slot-20a to Slot-20d** must read R-A6 and R-A7 alongside the task
+   text (the "How executors use this" section of the R-A7 record).
+
+## Planned state for the resumed run (reference only; superseded by the steps above)
+
+The 058a-c lines below were deferred to PA5-P by R-A7 and were not applied. The
+slot table below predates step 7; the real shipment IDs are in "Handoff map".
 
 Edges after step 5, as planned. `142.058-T` keeps its existing 066 and 065 edges,
 because 4.3 copies rather than moves:
@@ -839,7 +944,7 @@ because 4.3 copies rather than moves:
 * 058a → 063 (E3), 066, 065. 058b → 058a. 058c → 058b. 058 → 058c, 066, 065 (+ archived). 059 → 055, 057, 058, 025, 026.
 * Planned mirrored shipment edges among Slot-01 to Slot-19: 31.
 
-Slot to `queue_position` (shipment IDs are **not created**):
+Slot to `queue_position` (planned before step 7; the shipment IDs now exist, see "Handoff map"):
 
 | Slot | Task | queue_position | Slot | Task | queue_position |
 |---|---|---|---|---|---|
@@ -885,12 +990,64 @@ Notes for step 6 when it resumes:
 * Also already stashed: `7BF90213`, `5AF5CD66`, `23E287C6` and `F99C705E`.
 * `2D683B08` and `429B4886` (from H3) were not triaged; they're separate intake.
 
+## Pre-PR self-review (2026-10-06): PASS, no open P0 or P1
+
+Scope: `git diff origin/main...HEAD` (15 commits before this one, `30a7eae9` to
+`c7ecd2f2`; 60 files), from the PS-6 resets through step 9. Scratch script
+`tmp/asm/s10/selfreview.py` (gitignored); CLI only; no `backlogit sync`.
+
+| Check | Result |
+|---|---|
+| Frontmatter parses for every touched `.backlogit` file | PASS: 55 Markdown files (YAML, with `id`, `artifact_type`, `status` and `title` present, and `id` matching the file name) and 1 checkpoint JSON. The three touched `docs/` files also parse. |
+| No `.backlogit/.locks/` or `tmp/` content tracked | PASS: `git ls-files` holds neither, and neither appears in the diff. `.backlogit/.locks/` stays untracked and was never staged. |
+| U1 stale-text scan (description, acceptance-criteria, implementation-notes and verification; history and comments exempt; the unmarked leading description of the older tasks included) | PASS for all 26 tasks `142.054-T` to `142.079-T`. R-A4 exemption applied to `142.063-T`: 3 `F54 settle:` contract strings, no other `F54 settle`. No `pending-pa-1` label. Two subtask hits, P3-2 below. |
+| R-A7: no 058a, 058b or 058c task; no Slot-19.k, Slot-20 or Slot-21 shipment | PASS: no task or subtask title names 058a-c or F54a-c, no `142.08x-T` or `142.09x-T` exists, no shipment title names Slot-19.k, 20 or 21, and the highest shipment ID is `166-S`. |
+| `143-S` to `166-S` read `status: queued` | PASS, 24 of 24 (Markdown, and `shipment get` at step 10). |
+| `git diff --check` and commit trailers | PASS: no whitespace errors; all 15 commits carry both trailers. |
+| Memory doc internal consistency | Findings P2-2 and P3-1, fixed in this commit. |
+
+Findings:
+
+* **P2-1 (fixed): stale active Stage checkpoint in the diff.**
+  `.backlogit/checkpoints/checkpoint-20261006-012812.json` (added by `92c18f4f`,
+  this session's ID) still read `status: active` with phase
+  `asm-halted-step4-size-gate` and a `resume_hint` pointing at step 4. After the
+  merge, every Stage start would have found it as a recovery candidate and gone to
+  fail-closed operator selection on an out-of-date hint. Fix:
+  `backlogit checkpoint resolve checkpoint-20261006-012812.json` (owner-scoped:
+  same agent and session; no other checkpoint touched). It now reads
+  `status: resolved`. No new checkpoint was written; this memory doc is the
+  handoff.
+* **P2-2 (fixed): memory doc out of date.** The frontmatter `status` and
+  `progress`, the Outcome section ("Steps 4-10 did not run", "do not push"), the
+  draft PR summary ("S-02/S-04/S-09/S-20 splits", "rulings R-A1 to R-A5"), the
+  step-11 section ("wait until the HALT is resolved") and the planned slot table
+  ("shipment IDs are not created") contradicted the completed steps and R-A7.
+  All of these were updated, with the old text kept as history where it records
+  a decision.
+* **P3-1 (fixed):** the frontmatter `rulings` omitted R-A8. Added.
+* **P3-2 (open, no action): U1 token in two subtask records.** The
+  implementation notes of `142.054.002-ST` and `142.054.003-ST` read "PA-2b
+  guidance: F50 completion after PRE-6 (operator-granted 2026-09-27 with PA-1;
+  ...)". This is provenance, not PA-1 gating. The subtasks are records under
+  `142.054-T` that Stage closes through 10.1 after Slot-09c (step 4 note), so
+  they aren't Ship work and weren't in step 6's scope. Rewriting record text isn't
+  a mechanical fix, so it was left as written.
+* **P3-3 (open, no action): two body layouts.** The 21 pre-existing tasks keep
+  the description as unmarked leading body text, while the 5 new tasks
+  (`142.075-T` to `142.079-T`) use `<!-- BEGIN:description -->` markers. backlogit
+  reads both: the get-vs-Markdown checks at steps 2, 6 and 8 matched. This is
+  cosmetic.
+
+Severity counts: P0 0, P1 0, P2 2 (2 fixed), P3 3 (1 fixed, 2 open with no
+action needed).
+
 ## Commits on `chore/stage-142-f-assembly` (local only; not pushed)
 
-1. `chore(backlog): reset 142-F former 142-S members to queued (PS-6, R-A5)`.
+1. `chore(backlog): reset 142-F former 142-S members to queued (PS-6, R-A5)` (`30a7eae9`).
    It contains the 11 queue files.
-2. `docs(memory): record 142-F assembly halt at step 4 (R17-SIZE-GATE)`.
-   It contains this file.
+2. `docs(memory): record 142-F assembly halt at step 4 (R17-SIZE-GATE)` (`92c18f4f`).
+   It contains this file and the Stage checkpoint `checkpoint-20261006-012812.json`.
 3. `docs(adrs): record 142-F rulings R-A6 and R-A7 for S-20` and
    `docs(docs): log Stage subagent circuit break at 142-F assembly resume`
    (Orchestrator commits, up to `e7832c6c`).
@@ -909,43 +1066,67 @@ Notes for step 6 when it resumes:
    It contains the 6 batch-4 queue files and this file; step 6 is complete.
 11. Step 7, parts A to C (`b30ec3b8`, `27b817ea`, `1e5702e2`): the 24 slot shipments
    and their 31 mirrored edges.
-12. `chore(backlog): append PA-6 lift lines and replace old Constitution Check (assembly steps 8-9)`.
+12. `chore(backlog): append PA-6 lift lines and replace old Constitution Check (assembly steps 8-9)` (`c7ecd2f2`).
    It contains the 7 step-8 queue files, the old plan and this file.
+13. `docs(memory): finalize 142-F assembly record (step 10 and self-review)`.
+   It contains this file and the resolved Stage checkpoint (P2-1). Step 10 itself
+   changed no backlog file.
 
-## Draft PR (provisional; NOT ready; do not open until assembly completes)
+## Draft PR (final; the Orchestrator pushes and opens it)
 
 Title: `chore(backlog): assemble 142-F one-task slot shipments (Slot-01 to Slot-19)`
 
 ```markdown
 ## Summary
-142-F assembly (decomposition plan Revision 18, section 8, with rulings R-A1 to R-A5):
-PS-6 resets (with R-A5 subtasks), S-02/S-04/S-09/S-20 splits, edges E1-E15 (R-A2),
-section 9 content (R-A3, R-A4), 24 one-task slot shipments Slot-01 to Slot-19 with
-mirrored blocks edges and queue_position, PA-6-LIFTED comments, Constitution Check
-replaced by section 13. Stage memory: docs/memory/2026-10-05-stage-142-f-asm-memory.md.
+142-F assembly (decomposition plan Revision 18, section 8 steps 1-10, rulings R-A1 to R-A8):
+PS-6 resets (with R-A5 subtasks); S-02/S-04/S-09 splits into 142.075-T to 142.079-T
+(the S-20 split is deferred to PA5-P by R-A7); edges E1-E15 less E3 and the 058 chain
+(R-A2, R-A7); section 9 content for 26 tasks (R-A3, R-A4, R-A8; 142.058-T in R-A7
+limited mode); 24 one-task slot shipments 143-S to 166-S (Slot-01 to Slot-19) with 31
+mirrored blocks edges and queue_position; PA-6-LIFTED lines; the old Constitution Check
+replaced by a pointer to section 13. Step 10 (CG-Q) 24/24. Stage memory:
+docs/memory/2026-10-05-stage-142-f-asm-memory.md.
 
 ## Post-merge (plan 8 step 11)
 Cache rebuild run point 1 (section 11, careful mode), the 5.2 queue-order check,
 step 10 again under CG-S; the slot-to-shipment-ID map in Stage memory is the handoff.
 
 ## Local Review Readiness
-- Reviewed HEAD: <sha>
-- Outcome: <PASS | findings>
-- Blocking findings: <none | list>
+- Reviewed HEAD: c7ecd2f2 (plus the memory finalization commit)
+- Outcome: PASS (P0 0, P1 0, P2 2 fixed, P3 3: 1 fixed, 2 no action)
+- Blocking findings: none
 - Full local build: not applicable — backlog/docs-only
-- Follow-ups: <stash IDs or none>
+- Follow-ups: PA5-P staging PR (R-A7 obligations in Stage memory)
 ```
 
 ## Post-merge step-11 actions still owed
 
-All of these wait until the HALT is resolved and the assembly PR merges:
+All of these wait until the assembly PR merges (CG-M: Stage commits only, the
+operator merges). Run them on fetched, clean `main`:
 
-* Cache rebuild run point 1 (section 11, careful mode).
-* The 5.2 queue-order check (`backlogit queue view --type shipment --status queued`; a mismatch raises `R16-QUEUE-POSITION`).
-* Step 10 again under CG-S.
-* Publish the slot-to-shipment-ID map as the handoff tokens.
+1. Cache rebuild run point 1 (section 11, careful mode). Never a plain
+   `backlogit sync`.
+2. The 5.2 queue-order check (`backlogit queue view --type shipment --status
+   queued`): the order must follow `queue_position` 10 to 190 as in "Handoff map".
+   A mismatch raises `R16-QUEUE-POSITION`.
+3. Step 10 again under CG-S: each of `143-S` to `166-S` has one member, a task,
+   `queued`, matching the map. Anything else raises `R15-SHIPMENT-SHAPE <slot>
+   <found>`.
+4. Publish the slot-to-shipment-ID map ("Handoff map") in Stage memory as the
+   handoff tokens for Ship.
+
+Then PA5-P (plan 7.6), with the R-A7 obligations listed above.
 
 ## Next step
+
+**Final, 2026-10-06:** section 8 steps 1-10 and the pre-PR self-review are done.
+The Orchestrator pushes `chore/stage-142-f-assembly` and opens the PR; the
+operator merges it. After the merge, a Stage session runs the step-11 actions
+above on fetched, clean `main`, then PA5-P. Keep this worktree off `main` until
+the merge, so that no `backlogit sync` can union the queued resets with the
+`active` statuses still on `main` (CG-S caution, step 3).
+
+### Next-step history (superseded)
 
 The R17-SIZE-GATE halt is resolved (R-A6, R-A7), and steps 4 and 5 are done
 (see "Step 4, resumed" and "Step 5, edges" above). The next Stage invocation
