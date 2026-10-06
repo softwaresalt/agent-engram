@@ -369,7 +369,83 @@ task ID on the line, so a "Downstream" list must go on a separate line).
 exemption; its R9.6 "S4" wording is still rewritten in slot terms). `142.068-T`
 uses `engram --workspace <W> --json workspace-status`, never a bare `status` (R-A3).
 
-### Steps 6 (batches 2-4) to 10: not run (the Orchestrator sends each step separately)
+### Step 6, content, batch 2 of 4 (Slot-05 to Slot-09c), 2026-10-06: PASS
+
+Run on `chore/stage-142-f-assembly` from HEAD `a0546051`, backlogit CLI only, no
+`backlogit sync` of any kind. `pending-pa-1` was removed from `142.065-T` to
+`142.068-T` with `backlogit update <id> --labels preflight`. Each body was
+rewritten from a scratch draft spliced in after the frontmatter
+(`tmp/asm/b2/*.body.md` and `splice.py`, gitignored); the 054-family AC map
+tables were carried over byte for byte. Each task got a dated step-6 line in
+its Markdown history section (U1-exempt).
+
+| Slot | Task | Depends on (= `dep list`) | Route | Size, est. | Label removed | Check |
+|---|---|---|---|---|---|---|
+| 05 | `142.065-T` | `142.062-T`, `142.064-T` (E10) | (c) | S \| medium, 1.5 h | `pending-pa-1` | PASS |
+| 06 | `142.066-T` | `142.064-T`, `142.065-T` | (c) | S \| medium, 1.5 h | `pending-pa-1` | PASS |
+| 07 | `142.067-T` | `142.066-T` | (c) | S \| medium, 1.5 h | `pending-pa-1` | PASS |
+| 08 | `142.068-T` | `142.067-T` | (c) | S \| medium, 1.5 h | `pending-pa-1` | PASS |
+| 09a | `142.078-T` | `142.068-T` (E14) | (a-1) | S \| medium, 1.5 h | — | PASS |
+| 09b | `142.079-T` | `142.078-T` (E14) | (a-1) | S \| medium, 1.5 h | — | PASS |
+| 09c | `142.054-T` | `142.079-T` (E14), `142.068-T` + 12 archived `done` | (a-1) | S \| medium, 1.5 h | — | PASS |
+
+**Checks per task** (`tmp/asm/step6-check.ps1` through the batch-2 wrapper
+`tmp/asm/b2/check2.ps1`, both gitignored; every task was first run against its
+pre-rewrite text as a negative test, and each check fired): U2 (Shipment line,
+every "Depends on" line equal to `dep list`, 4.2 size and estimate), U3, U4 (the
+exact route (c) or (a-1) wording), U5, U6 (R12.3 line, no "Owned files"), U8,
+U9 (SB-1 quoted, limit (a) 2.25 h), the U1 scan, and the 9.2 strings:
+
+* `142.065-T`: the verbatim line "Consumer regression targets unchanged against
+  the PRE-3 RED-phase baseline. HALT if any goes RED."; verification step 3 is
+  consumer targets only; no `F54`, `PRE-3F` or `after-edit` in the checked text.
+* `142.066-T`: the inline R7.7 rule (F1/G1, snapshot 1, 250 ms, snapshot 2,
+  F2/G2; no IPC between the snapshots; snapshots and status compared separately;
+  25 ms re-poll, 30 s deadline, never pass on timeout); `= &[];` at Step 2, the
+  implementation adds `"get_workspace_statistics"`; the exact `assert!(...contains(...))`
+  statement; no `F54`, "final value" or `assert_eq!`. M9-M11 removed; the R7.8
+  three careful-mode runs added as an AC and verification step 3.
+* `142.067-T`: the R14.6 row (`probe_cli_read` with a nonexistent exe, `Spawn`,
+  then the `PREFLIGHT_READ.mcp_tool` membership assertion).
+* `142.068-T`: inline `structuredContent` extraction (M17) and
+  `engram --workspace <W> --json workspace-status` (R-A3); no bare `--json status`.
+* `142.078-T`, `142.079-T`, `142.054-T`: re-qualification on the slot's base
+  tree, parked `c269fa79`/`41dd5081` reference only, PA-2b real-chain RED is
+  `142.054-T`'s, and the `cargo test -p engram-indexer --all-targets --no-fail-fast`
+  and engram-indexer clippy gates with no pending-RED allowance. `142.079-T`'s
+  step-4 "(derived)" clippy criterion became that gate.
+* `142.054-T` U7: the STATUS-RESET line in A16 form is in its history section
+  (first line verbatim; base tree filled as Slot-09c; harness evidence
+  `c269fa79`, `41dd5081`; label `harness-ready` kept; subtasks `.001`-`.003-ST`).
+  No precedent existed (no Markdown or log line held one), so the A16 template
+  was filled from plan R11.2 and A16, and a separate step-6 history line says so.
+
+No `R16-CONTENT-CHECK`, no `R16-STALE-TEXT`. Rollup guard after every write:
+`142-F` `active` and each task `queued` in the index and the Markdown; no
+`R15-ROLLUP-DRIFT`. `backlogit get` body equals the Markdown for all seven.
+
+**Removed U1 text:** "OUTSIDE shipment 142-S; requires PA-1" (065-068); the
+"PA-1 proposes … edge" and "under PA-1 (proposed edge …)" lines (066, 068); the
+065 F54/after-edit-map clause (M7-M8); the 066 F54 rows (M9-M11) and the F54
+equivalence-RED note; the tag name `parked/142-s-split-0f2cca20` in `142.054-T`
+(now "the parked tag T0, plan 7.3"). "Owned files" became "Production files
+edited" (065, 067).
+
+**Notes for batches 3-4:**
+
+* R7.7's snapshot labels `S1`/`S2` hit the U1 `\bS[1-5]\b` scan, so `142.066-T`
+  writes them "filesystem snapshot 1/2"; the meaning is unchanged. Watch the same
+  regex in `142.063-T` (R9.6 "S4" wording) and in any quoted R-text.
+* The U1 scan is case-insensitive, so the tag name `parked/142-s-split-…` trips
+  `142-S`; write "the parked tag T0 (plan 7.3)".
+* Every "Depends on:" line must list every edge, including archived `done`
+  predecessors (`142.056-T`, `142.057-T` and `142.059-T` have archived ones).
+* Out of scope, not changed: `142.066-T` scenarios 2 and 3 still say the harness
+  sends `status` / `status` is accepted. The CLI has no `status` subcommand
+  (`workspace-status`, `src/bin/engram.rs` line 84). R-A3 covers `142.068-T`
+  only, so this is left for an Orchestrator ruling.
+
+### Steps 6 (batches 3-4) to 10: not run (the Orchestrator sends each step separately)
 
 ## Planned state for the resumed run (reference only; nothing applied)
 
@@ -444,6 +520,8 @@ Notes for step 6 when it resumes:
    It contains the 10 queue files with changed dependencies and this file.
 6. `chore(backlog): write section 9 content for Slot-01 to Slot-04c (assembly step 6, batch 1)`.
    It contains the 7 batch-1 queue files and this file.
+7. `chore(backlog): write section 9 content for Slot-05 to Slot-09c (assembly step 6, batch 2)`.
+   It contains the 7 batch-2 queue files and this file.
 
 ## Draft PR (provisional; NOT ready; do not open until assembly completes)
 
