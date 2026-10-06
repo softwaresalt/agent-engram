@@ -728,7 +728,49 @@ Notes for part C:
 * The 4.2 sizing table gives `142.071-T` "XS, 1 h", which is above the SG-1 XS bound of 0.5 h. The description copies
   the plan verbatim. The 1 h is still within 2 h, so the verdict stays OK.
 
-### Steps 7 (rest) to 10: not run (the Orchestrator sends each step separately)
+### Step 7, part C: mirrored shipment edges among Slot-01 to Slot-19 (2026-10-06): PASS
+
+Following plan 5.2, Stage read `backlogit dep list` on each of the 24 slot tasks. It kept every `blocks` edge X → Y
+where both ends are slot tasks and dropped the edges to archived tasks (`142.001-T`, `142.020-T` to `142.053-T` on
+`142.054-T`, and `142.001-T` on `142.056-T` and `142.057-T`). No slot task has an edge to `142.058-T`, `142.059-T` or a
+PA-5 task. That gives **31 edges**, the planned count. Each edge was added with the 1.11.0 CLI as `backlogit dep add
+<ship(X)> <ship(Y)> --type blocks` (`dep add <item-id> <depends-on>`, routed to AddShipmentBlock) and checked with
+`backlogit dep list <ship(X)>` straight after. All 31 checks passed. Before the run, no slot shipment had any edge in
+either direction.
+
+| Task edge | Shipment edge | Task edge | Shipment edge |
+|---|---|---|---|
+| 061 → 075 | `145-S` → `144-S` | 071 → 070 | `159-S` → `158-S` |
+| 062 → 061 | `146-S` → `145-S` | 071 → 054 | `159-S` → `156-S` |
+| 076 → 062 | `147-S` → `146-S` | 072 → 069 | `160-S` → `157-S` |
+| 077 → 076 | `148-S` → `147-S` | 073 → 072 | `161-S` → `160-S` |
+| 064 → 077 | `149-S` → `148-S` | 073 → 071 | `161-S` → `159-S` |
+| 065 → 062 | `150-S` → `146-S` | 074 → 073 | `162-S` → `161-S` |
+| 065 → 064 | `150-S` → `149-S` | 055 → 054 | `163-S` → `156-S` |
+| 066 → 064 | `151-S` → `149-S` | 055 → 073 | `163-S` → `161-S` |
+| 066 → 065 | `151-S` → `150-S` | 056 → 055 | `164-S` → `163-S` |
+| 067 → 066 | `152-S` → `151-S` | 057 → 054 | `165-S` → `156-S` |
+| 068 → 067 | `153-S` → `152-S` | 057 → 073 | `165-S` → `161-S` |
+| 078 → 068 | `154-S` → `153-S` | 063 → 062 | `166-S` → `146-S` |
+| 079 → 078 | `155-S` → `154-S` | 063 → 066 | `166-S` → `151-S` |
+| 054 → 079 | `156-S` → `155-S` | 063 → 060 | `166-S` → `143-S` |
+| 054 → 068 | `156-S` → `153-S` | | |
+| 069 → 054 | `157-S` → `156-S` | | |
+| 070 → 069 | `158-S` → `157-S` | | |
+
+The arrow means "depends on" (X is blocked by Y), as in `dep list`. Task numbers abbreviate `142.0NN-T`.
+
+* **Cycle check: PASS.** Stage re-read all shipment edges for `143-S` to `166-S` with `dep list` and got 31 `blocks`
+  edges, every one inside the set. A Kahn topological sort reached all 24 of 24 nodes, so there's no
+  `R15-DAG-CYCLE`. One valid order: 143 144 145 146 147 148 149 150 151 152 166 153 154 155 156 157 158 160 159 161 162
+  163 165 164.
+* **Files.** 22 shipment files changed (`145-S` to `166-S`; `143-S` and `144-S` have no predecessors), 53 lines added:
+  22 `dependencies:` keys and 31 entries. Nothing else changed; `custom_fields.queue_position` is still present in all 24.
+* **No sync was run**, step 8 and later weren't touched, and nothing was pushed. Each `dep add` took about 30 s on this
+  workspace, which is slow but didn't cause any errors.
+* Edges to Slot-19.k to Slot-21 (058, 059 and the PA-5 tasks) are added at PA5-P, once those slots exist.
+
+### Steps 8 to 10: not run (the Orchestrator sends each step separately)
 
 Notes for step 7 and later:
 
