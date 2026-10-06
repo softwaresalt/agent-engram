@@ -11,7 +11,7 @@ branch: chore/stage-142-f-assembly
 base: "origin/main @ ce851761e887694cb18d2a45311c2af6e5890ae3 (PR #412, H3)"
 routed_model: "claude-opus-5.5 / anthropic / high"
 status: in-progress
-progress: "section 8 steps 1-6 PASS (step 6 close-out 26/26); steps 7-10 not run"
+progress: "section 8 steps 1-9 PASS (step 6 close-out 26/26; step 7 24 shipments and 31 edges; step 8 R-A4 U7 7/7; step 9 old Constitution Check replaced by a pointer to section 13); step 10 not run"
 halt_token: "R17-SIZE-GATE 142.058a FL-share (resolved by operator options A and C, recorded as R-A6 and R-A7, 2026-10-05 22:58)"
 halt_location: "plan section 8 step 4 (splits), S-20 pre-creation share measurement (plan 4.3 S-20, last sentence; 4.2 row 20a-20d)"
 copilot_session: a9421395-751d-42b5-9e69-6d40f356a110
@@ -770,7 +770,51 @@ The arrow means "depends on" (X is blocked by Y), as in `dep list`. Task numbers
   workspace, which is slow but didn't cause any errors.
 * Edges to Slot-19.k to Slot-21 (058, 059 and the PA-5 tasks) are added at PA5-P, once those slots exist.
 
-### Steps 8 to 10: not run (the Orchestrator sends each step separately)
+### Step 8, lift comments (2026-10-06): PASS
+
+Stage appended one history line starting `PA-6-LIFTED 2026-10-04 (OD-6)` to the
+Markdown history section of `142.055-T`, `142.056-T`, `142.057-T`, `142.060-T`,
+`142.063-T`, `142.058-T` and `142.059-T`. Each line names the task's slot
+(16, 17, 18, 01, 19, 20d and 21) and plan 5.4, and says a later re-hold would be a
+separate `PA-6-REHOLD <reason>` line. The edits were made with the edit tool, one
+line before `<!-- END:history -->` in each file. Existing history lines were kept
+as written. Neither the Markdown nor the backlogit logs held any earlier hold
+comment for these seven tasks, so nothing else needed keeping. No `backlogit sync`
+was run.
+
+* **R-A4 U7 check: PASS.** All seven contain `PA-6-LIFTED 2026-10-04 (OD-6)`, and
+  `142.054-T` to `142.059-T` all still contain `STATUS-RESET`. No
+  `R16-CONTENT-CHECK <task> U7` was raised.
+* **Rollup guard: PASS.** `142-F` is `active` in both `backlogit get` and the
+  Markdown. All seven tasks are `queued` in both, and all 26 `142.0xx-T` queue
+  files read `queued`.
+* **`get` against the Markdown: MATCH.** For the seven tasks and `142-F`,
+  `backlogit get --json` gives the same status as the frontmatter and the same body
+  as the Markdown, including the new line.
+* **Diff:** 7 queue files, 1 line added each.
+
+### Step 9, Constitution Check (2026-10-06): PASS
+
+* **Target.** The old plan is the decomposition plan's `old_plan` frontmatter
+  value, `docs/exec-plans/2026-09-26-142-f-launcher-preflight-command-plan.md`. It
+  has one `## Constitution Check` section (line 6296). The brief's guess,
+  `docs/exec-plans/2026-09-02-separate-indexer-read-server-plan.md`, is a
+  different plan and was not touched. The target is unambiguous, so there was no
+  `R16-CONTENT-CHECK step9 target` halt.
+* **Form.** Step 9 says the section is "replaced by section 13", and section 13
+  says it "replaces the old plan's section". The decomposition plan is the single
+  current statement (section 1), so Stage replaced the old table with a pointer
+  rather than a second copy of section 13. The heading stays, and the 16-line table
+  (principle rows plus the Revision 6 to 9 rows) became two short paragraphs. They
+  name section 13 of the decomposition plan as the current Constitution Check and
+  give `09e436be` (on `main`) as the git location of the old table.
+* Section 13's heading says "at step 8", but section 8 numbers this step 9.
+  Stage applied the replacement at step 9 as the brief directed. The plan is frozen,
+  so the heading wasn't changed.
+* **Diff:** 7 lines added and 16 removed, in the old plan only. CRLF line endings
+  and the final newline were kept.
+
+### Step 10: not run (the Orchestrator sends it separately)
 
 Notes for step 7 and later:
 
@@ -863,6 +907,10 @@ Notes for step 6 when it resumes:
    It contains `142.066-T`, the 6 batch-3 queue files and this file.
 10. `chore(backlog): write section 9 content for Slot-16 to Slot-21 (assembly step 6, batch 4)`.
    It contains the 6 batch-4 queue files and this file; step 6 is complete.
+11. Step 7, parts A to C (`b30ec3b8`, `27b817ea`, `1e5702e2`): the 24 slot shipments
+   and their 31 mirrored edges.
+12. `chore(backlog): append PA-6 lift lines and replace old Constitution Check (assembly steps 8-9)`.
+   It contains the 7 step-8 queue files, the old plan and this file.
 
 ## Draft PR (provisional; NOT ready; do not open until assembly completes)
 
@@ -912,6 +960,10 @@ Update 2026-10-06 (later): step 6 batch 4 is done (`142.055-T` to `142.057-T`,
 `142.063-T`, `142.059-T`, and `142.058-T` in R-A7 limited mode), and the step-6
 close-out passed 26 of 26. The next Stage invocation runs section 8 step 7
 (shipments Slot-01 to Slot-19). Do not push or open the PR until steps 7-10 are done.
+
+Update 2026-10-06 (steps 8 and 9): step 7 is done, and steps 8 and 9 passed (see
+above). The next Stage invocation runs section 8 step 10 (verify each slot
+shipment and member, CG-Q). Do not push or open the PR until step 10 is done.
 
 ### Original next step (2026-10-05, superseded)
 
