@@ -318,7 +318,58 @@ open tasks and 31 at archived ones. Files changed: `142.054-T`, `142.060-T`,
 PA5-P adds them (R-A7). Any section 9 "Depends on" line for `142.058-T` or
 `142.063-T` that mentions `142.058a` describes a PA5-P edge, not a current one.
 
-### Steps 6-10: not run (step 6 onward pending; the Orchestrator sends each step separately)
+### Step 6, content, batch 1 of 4 (Slot-01 to Slot-04c), 2026-10-06: PASS
+
+Run on `chore/stage-142-f-assembly` from HEAD `dd6fedfd`, backlogit CLI only, no
+`backlogit sync` of any kind. Body text was rewritten with the edit tool;
+`pending-pa-1` was removed with `backlogit update <id> --labels preflight`, which
+changes only the label list and `updated_at`. Each task got a dated step-6 line
+in its Markdown history section (U1-exempt). `142.064-T`'s history line also
+records that its 2026-10-04 SUPERSEDED-body note no longer applies.
+
+| Slot | Task | Depends on (= `dep list`) | Route | Size, est. | Label removed | Check |
+|---|---|---|---|---|---|---|
+| 01 | `142.060-T` | none (E11) | (a-1) | S \| medium, 1.5 h | — | PASS |
+| 02a | `142.075-T` | none | (a-1) | S \| medium, 1 h | — | PASS |
+| 02b | `142.061-T` | `142.075-T` (E12) | (a-1) | S \| medium, 1 h | `pending-pa-1` | PASS |
+| 03 | `142.062-T` | `142.061-T` | (c) | S \| medium, 1.5 h | `pending-pa-1` | PASS |
+| 04a | `142.076-T` | `142.062-T` (E5) | (c) | S \| medium, 1.5 h | — | PASS |
+| 04b | `142.077-T` | `142.076-T` (E13) | (c) | S \| high, de-risked, 1.5 h | — | PASS |
+| 04c | `142.064-T` | `142.077-T` (E13) | (c) | S \| medium, 1.5 h | `pending-pa-1` | PASS |
+
+**Checks per task (scratch script `tmp/asm/step6-check.ps1`, gitignored):**
+U2 (the Shipment line, a "Depends on" line whose IDs equal `backlogit dep list`,
+the 4.2 size and estimate), U3, U4 (route form; the exact route (c) wording), U5,
+U6 (R12.3 line, no "Owned files"), U8 (merge commit and SHA), U9 (SB-1 quoted, with
+the slot's 1.5 × limit), and the 9.2 strings: `142.060-T` SEQUENCING, "only code
+task of its shipment", the Slot-01 PR residual-risk record and `a47b8aff` as
+reference; `142.076-T` "Depends on: PRE-2 (E5)"; `142.077-T` both gate accessors
+`pub`; all three S-04 tasks with no F54 ownership, own RED and comparison against
+`142.076-T`'s record; `142.064-T` three identical careful-mode runs of its own
+target, not F54 (M6, M15, R7.8; added as an AC and verification step 4). No
+`R16-CONTENT-CHECK`. The U1 scan (description, acceptance, notes and verification;
+history and comment sections exempt; the regexes passed a negative test) found
+nothing, so no `R16-STALE-TEXT`; the `pending-pa-1` label is gone from all seven.
+U7 STATUS-RESET doesn't apply to this batch (R-A4), and `PA-6-LIFTED` for
+`142.060-T` is step 8's. Rollup guard after every write: `142-F` `active` and each
+task `queued` in the index and the Markdown; no `R15-ROLLUP-DRIFT`. `backlogit get`
+body equals the Markdown body for all seven.
+
+**Removed U1 text:** `142.060-T` "final code task of 142-S … active shipment 142-S
+(plan PA1)", "opened forward after the F50 cycle", the 142-S PR residual-risk
+record and the "mapped pending-red … interim gate" risk line; `142.062-T`
+"OUTSIDE shipment 142-S: do not start until PA-1 is granted". "Owned files" in
+`142.060-T` and `142.062-T` became "Files edited" / "Production files edited" (U6).
+
+**Notes for batches 2-4:** `pending-pa-1` is still on `142.063-T` and `142.065-T` to
+`142.074-T`. Keep each "Depends on" line on its own line (the check takes every
+task ID on the line, so a "Downstream" list must go on a separate line).
+`142.055-T` to `142.059-T` need the STATUS-RESET line in their history section
+(U7, R-A4); `142.063-T` alone keeps the `F54 settle:` contract string (R-A4 U1
+exemption; its R9.6 "S4" wording is still rewritten in slot terms). `142.068-T`
+uses `engram --workspace <W> --json workspace-status`, never a bare `status` (R-A3).
+
+### Steps 6 (batches 2-4) to 10: not run (the Orchestrator sends each step separately)
 
 ## Planned state for the resumed run (reference only; nothing applied)
 
@@ -391,6 +442,8 @@ Notes for step 6 when it resumes:
    It contains the 5 new queue files, the 3 rewritten parents and this file.
 5. `chore(backlog): wire 142-F task edges (assembly step 5, R-A2, R-A7)`.
    It contains the 10 queue files with changed dependencies and this file.
+6. `chore(backlog): write section 9 content for Slot-01 to Slot-04c (assembly step 6, batch 1)`.
+   It contains the 7 batch-1 queue files and this file.
 
 ## Draft PR (provisional; NOT ready; do not open until assembly completes)
 
