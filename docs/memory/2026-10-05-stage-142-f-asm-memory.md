@@ -1,5 +1,5 @@
 ---
-title: "Stage 142-F landing step ASM (assembly) memory: steps 4-5 complete under R-A7"
+title: "Stage 142-F landing step ASM (assembly) memory: steps 4-6 complete under R-A7"
 date: 2026-10-05
 agent: stage
 feature: "142-F"
@@ -11,7 +11,7 @@ branch: chore/stage-142-f-assembly
 base: "origin/main @ ce851761e887694cb18d2a45311c2af6e5890ae3 (PR #412, H3)"
 routed_model: "claude-opus-5.5 / anthropic / high"
 status: in-progress
-progress: "section 8 steps 1-5 PASS; steps 6-10 not run"
+progress: "section 8 steps 1-6 PASS (step 6 close-out 26/26); steps 7-10 not run"
 halt_token: "R17-SIZE-GATE 142.058a FL-share (resolved by operator options A and C, recorded as R-A6 and R-A7, 2026-10-05 22:58)"
 halt_location: "plan section 8 step 4 (splits), S-20 pre-creation share measurement (plan 4.3 S-20, last sentence; 4.2 row 20a-20d)"
 copilot_session: a9421395-751d-42b5-9e69-6d40f356a110
@@ -552,8 +552,120 @@ unrecorded-edge and PA-1 notes (069 line 46, 071 line 45, 073 line 46); A22's
 * `142.056-T` (OD-3 B) needs the placeholder marker `Worker: 142.056-T` and HALT
   `R17-F52-NO-PLACEHOLDER`.
 * After batch 4, re-check `142.059-T` and the 058 family only in PA5-P (R-A7), not here.
+  (Corrected in batch 4: R-A7 gives `142.059-T` its full section 9 content at
+  assembly; only `142.058-T` is limited, and the 058a-c family doesn't exist yet.)
 
-### Steps 6 (batch 4) to 10: not run (the Orchestrator sends each step separately)
+### Step 6, content, batch 4 of 4 (Slot-16 to Slot-21, R-A7 limited 058), 2026-10-06: PASS
+
+Run on `chore/stage-142-f-assembly` from HEAD `d738dd26`, backlogit CLI only, no
+`backlogit sync` of any kind. Bodies of `142.055-T`, `142.056-T`, `142.057-T`,
+`142.063-T` and `142.059-T` were rewritten from scratch drafts spliced in after the
+frontmatter (`tmp/asm/b4/*.body.md`, `tmp/asm/b4/splice.py`, gitignored).
+`142.058-T` got three edit-tool changes only (R-A7). `142.063-T`: `pending-pa-1`
+removed with `backlogit update 142.063-T --labels preflight`, and its title set to
+R9.6's "PRE-3F: Add shared activation-settle barrier and positive witness target"
+with `backlogit update --title` (both change only that field and `updated_at`).
+None of the six had a history section except `142.063-T`; each now holds its
+dated step-6 line (U1-exempt), and 055-059 also hold the U7 STATUS-RESET line.
+
+| Slot | Task | Depends on (= `dep list`) | Route | Size, est. | U7 | Check |
+|---|---|---|---|---|---|---|
+| 16 | `142.055-T` | `142.054-T`, `142.073-T` | (a-1) | S \| medium, 1.5 h | STATUS-RESET (`1dfc1b5b`, `4995d681`) | PASS |
+| 17 | `142.056-T` | `142.055-T`, `142.001-T` (archived) | (c), own placeholder (OD-3 B) | M \| medium, 2 h | STATUS-RESET (`5760b948`) | PASS |
+| 18 | `142.057-T` | `142.054-T`, `142.073-T`, `142.001-T` (archived) | (a-1) | S \| low, 1.5 h | STATUS-RESET (`e24f5ae2`) | PASS |
+| 19 | `142.063-T` | `142.062-T`, `142.066-T` (E2), `142.060-T` (E8) | (c) | S \| medium, 2 h | not in U7's range | PASS |
+| (20d) | `142.058-T` | unchanged (17 edges incl. 066, 065 and archived) | — (PA5-P) | — (PA5-P) | STATUS-RESET (`7bd9e504`, `6d216d19`; subtasks `.002`, `.003-ST`) | LIMITED PASS (U1 + U7) |
+| 21 | `142.059-T` | `142.058-T`, `142.055-T`, `142.057-T`, `142.025-T`, `142.026-T` (last two archived) | docs | XS \| trivial, 0.5 h | STATUS-RESET (none; no parked commit) | PASS |
+
+**Checks per task** (`tmp/asm/step6-check.ps1` through the batch-4 wrapper
+`tmp/asm/b4/check4.ps1`, both gitignored; each task was first run against its
+pre-rewrite text as a negative test, and 4-37 checks fired per task): U2 (Shipment
+line, every "Depends on" line equal to `dep list`, 4.2 size and estimate), U3, U4
+(exact route (a-1), (c) or docs wording), U5, U6 (R12.3 line, no "Owned files"),
+U8, U9 (SB-1 quoted; limit (a) 2.25 h for 16 and 18, 3 h for 17 and 19, 0.75 h for
+21), U7 STATUS-RESET in A16 form (055-059, same regex as `142.054-T`), the U1 scan,
+a history-section check, and the 9.2 strings:
+
+* `142.055-T`: "This task owns the fail-open assertion rewrite in
+  `tests/contract/start_launcher_test.rs`" (W9 AC transfer, R11.6 P2-3, as an AC
+  too); fail-closed launcher scope only; route (a-1); parked `1dfc1b5b`,
+  `4995d681` reusable as its harness records.
+* `142.056-T`: one named placeholder with marker `Worker: 142.056-T` in `start.ps1`
+  or the test-support seam, placed by the harness-architect at Step 2; the matrix
+  (seven-stage table, spaced paths, unowned descendant) fails first against it;
+  build-feature replaces it; a Step 2 pass is characterization, not RED; HALT
+  `R17-F52-NO-PLACEHOLDER`; parked `5760b948` reference only; no transferred
+  fail-open criterion. Negative: the old AC4 and the `start_launcher_test.rs`
+  line-80/154 claim are gone.
+* `142.057-T`: F53 scope only; parked `e24f5ae2`.
+* `142.063-T`: the wholesale R9.6 text (description, AC1-AC8, notes, verification
+  1-3), own target `integration_read_server_activation_settle` (PA-7), no F54 file
+  edit, F54 barrier evidence from its own IC target only. R-A4: the two
+  `F54 settle:` contract strings (AC6, AC7) are the only `F54 settle` text, and the
+  wrapper exempts exactly those; "first code task of S4" became "Placement:
+  Slot-19 (one-task shipment)", "S4 base" became "the Slot-19 branch base".
+  Negative: no "first code task", group base, ownership exception, per-row
+  signature or `ensure_daemon` text; the title equals R9.6's.
+* `142.059-T`: F55 docs plus the moved "Superseded by 142-F" note (cites this plan
+  and `142.055-T`; guardrail 4 replaced by the fail-closed preflight; shared budget
+  and exact-child cleanup retained); route docs, `harness-verification-gated`; the
+  Shipment line reads Slot-21 and says PA5-P creates it.
+* `142.058-T` (R-A7 limited): U1 scan clean, STATUS-RESET present, and the notes
+  line "S-20 split, Slot-20 content and E3/E15 deferred to PA5-P (R-A7,
+  2026-10-05)" present in the implementation-notes section. U2-U6, U8, U9 and the
+  9.2 S-20 content are PA5-P's.
+
+No `R16-CONTENT-CHECK`, no `R16-STALE-TEXT`. Rollup guard after every write:
+`142-F` `active` and each task `queued` in the index and the Markdown; no
+`R15-ROLLUP-DRIFT`. `backlogit get` body equals the Markdown body exactly
+(normalized for CR and trim) for all six.
+
+**Removed U1 text:** the "with PA-1" provenance clause on the PA-2 contract (055,
+057); in `142.063-T` the whole old body (PA-1 gate and ownership exception, the
+per-row signature and after-edit maps, the pending-RED mapping, S-group wording,
+"OUTSIDE shipment 142-S"); in `142.058-T` "sequenced after 142-S" (now "sequenced
+after 142-F"). "Owned files" became "Files edited" (055, 056, 057, 059, 063).
+
+**Judgment calls (for operator review at PR):**
+
+* `142.063-T`: AC2's lint sentence reads as amended by R10.3 P2-5 (only `allow`,
+  `expect` and `warn` banned), and the notes list the R10.1/R10.3/R11 amendments
+  that R9.3 is read with; the R10.1 IC pending-RED allowance is stated as not
+  applying (U3). The size stays the 4.2 "S, 2 h", not R9.6's "M". The R9.6 T1-T18
+  disposition table stays in the old plan. R9.6's `references` addition (the
+  escalation review) is cited in the description instead, because the CLI has no
+  references flag.
+* `142.056-T`: "Downstream: none" (no task depends on it); the old note "reversed in
+  `contract_start_launcher`" is kept, re-attributed to F51's `1dfc1b5b` (R11.9 step 5).
+* STATUS-RESET fills: 055-057 and 059 have no subtasks ("Subtasks none ..."); 059's
+  commit list is "none: this task has no parked commit, plan 7.3"; 058's base tree
+  is "Slot-20d" (its 4.3 slot; the split is PA5-P's).
+
+### Step 6 close-out (all step-6 tasks), 2026-10-06: PASS
+
+`tmp/asm/b4/closeout.ps1` re-ran the step-6 checks over every step-6 task in the
+working tree after batch 4: batch 1 through a new wrapper `tmp/asm/b4/check1.ps1`
+(the batch-1 requirement set: U2-U6, U8, U9 and the 060/076/077/064 9.2 strings),
+batch 2 through `check2.ps1` (with `142.054-T`'s U7), batch 3 through `check3.ps1`
+plus the R-A8 check on `142.066-T`, and batch 4 through `check4.ps1`
+(`142.058-T` in R-A7 limited mode). Result: **26 of 26 PASS**, with no
+`R16-CONTENT-CHECK`, `R16-STALE-TEXT` or `R15-ROLLUP-DRIFT`, and no `pending-pa-1`
+label on any `142.0xx-T`. The range `142.054-T` to `142.079-T` holds 26 tasks (the
+brief said 27; there is no 27th step-6 task). U7's STATUS-RESET half is present on
+`142.054-T` to `142.059-T`; the `PA-6-LIFTED` half is step 8's (R-A4).
+
+### Steps 7 to 10: not run (the Orchestrator sends each step separately)
+
+Notes for step 7 and later:
+
+* Step 7 creates Slot-01 to Slot-19 only (24 shipments). `142.059-T` already reads
+  "Shipment: Slot-21", but Slot-21 (and Slot-19.k, Slot-20a-20d) is created at PA5-P.
+* Step 8's `PA-6-LIFTED 2026-10-04 (OD-6)` goes in the Markdown history section (logs
+  are gitignored) of `142.055-T`, `142.056-T`, `142.057-T`, `142.060-T`,
+  `142.063-T`, `142.058-T` and `142.059-T`; every one of them now has a history
+  section. The R-A4 U7 check follows step 8.
+* `142.063-T`'s `references` frontmatter still lacks the escalation review (cited in
+  the body); `142.074-T`'s title and references are unchanged frontmatter (batch 3).
 
 ## Planned state for the resumed run (reference only; nothing applied)
 
@@ -633,6 +745,8 @@ Notes for step 6 when it resumes:
 8. `docs(adrs): record 142-F ruling R-A8 for 142.066-T CLI name` (Orchestrator, `6818c6e9`).
 9. `chore(backlog): write section 9 content for Slot-10 to Slot-15 and apply R-A8 (assembly step 6, batch 3)`.
    It contains `142.066-T`, the 6 batch-3 queue files and this file.
+10. `chore(backlog): write section 9 content for Slot-16 to Slot-21 (assembly step 6, batch 4)`.
+   It contains the 6 batch-4 queue files and this file; step 6 is complete.
 
 ## Draft PR (provisional; NOT ready; do not open until assembly completes)
 
@@ -677,6 +791,11 @@ above. Do not push or open the PR until steps 6-10 are done.
 Update 2026-10-06: step 6 batches 1-3 are done (batch 3 also applied R-A8 to
 `142.066-T`). The next Stage invocation runs step 6 batch 4 (`142.055-T`,
 `142.056-T`, `142.057-T`, `142.063-T`).
+
+Update 2026-10-06 (later): step 6 batch 4 is done (`142.055-T` to `142.057-T`,
+`142.063-T`, `142.059-T`, and `142.058-T` in R-A7 limited mode), and the step-6
+close-out passed 26 of 26. The next Stage invocation runs section 8 step 7
+(shipments Slot-01 to Slot-19). Do not push or open the PR until steps 7-10 are done.
 
 ### Original next step (2026-10-05, superseded)
 
