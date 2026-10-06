@@ -443,9 +443,117 @@ edited" (065, 067).
 * Out of scope, not changed: `142.066-T` scenarios 2 and 3 still say the harness
   sends `status` / `status` is accepted. The CLI has no `status` subcommand
   (`workspace-status`, `src/bin/engram.rs` line 84). R-A3 covers `142.068-T`
-  only, so this is left for an Orchestrator ruling.
+  only, so this is left for an Orchestrator ruling. (Settled by R-A8; applied in
+  batch 3, below.)
 
-### Steps 6 (batches 3-4) to 10: not run (the Orchestrator sends each step separately)
+### Step 6, content, batch 3 of 4 (R-A8, Slot-10 to Slot-15), 2026-10-06: PASS
+
+Run on `chore/stage-142-f-assembly` from HEAD `6818c6e9`, backlogit CLI only, no
+`backlogit sync` of any kind. `pending-pa-1` was removed from `142.069-T` to
+`142.074-T` with `backlogit update <id> --labels ...`, which changes only the label
+list and `updated_at`. Each body was rewritten from a scratch draft spliced in after
+the frontmatter (`tmp/asm/b3/*.body.md`, `tmp/asm/b3/splice.py`, gitignored). None of
+the six had a history section, so each got a new one holding its dated step-6 line
+(U1-exempt).
+
+**R-A8 (`142.066-T`).** Scenario 2 now reads "the harness sends only `stats`,
+`workspace-status`, and `_health`", and scenario 3 reads "`daemon-status` and
+`workspace-status` are accepted". "status call 1/2" in the R7.7 rule and the
+`get_workspace_status` mentions are unchanged. A dated R-A8 line was added to its
+history section. Full re-check: the batch-2 checks (U1-U6, U8, U9, every 9.2 R7.7
+and constant string) PASS, plus an R-A8 check (no backticked bare `status` and no
+`--json status` in the checked text): PASS. Its `backlogit get` body equals the
+Markdown body.
+
+| Slot | Task | Depends on (= `dep list`) | Route | Size, est. | Labels | Check |
+|---|---|---|---|---|---|---|
+| 10 | `142.069-T` | `142.054-T` | (c) | S \| medium, 1.5 h | `pending-pa-1` removed | PASS |
+| 11 | `142.070-T` | `142.069-T` | (c) | S \| medium, 1.5 h | `pending-pa-1` removed | PASS |
+| 12 | `142.071-T` | `142.070-T`, `142.054-T` | (c) | XS \| medium, 1 h | `pending-pa-1` removed | PASS |
+| 13 | `142.072-T` | `142.069-T` | (c) | S \| medium, 1.5 h (at the limit) | `pending-pa-1` removed | PASS |
+| 14 | `142.073-T` | `142.072-T`, `142.071-T` | (c) | S \| medium, 1.5 h | `pending-pa-1` removed | PASS |
+| 15 | `142.074-T` | `142.073-T` | docs | XS \| trivial, 0.5 h | `pending-pa-1` removed; `harness-verification-gated` added | PASS |
+
+**Checks per task** (`tmp/asm/step6-check.ps1` through the batch-3 wrapper
+`tmp/asm/b3/check3.ps1`, both gitignored; each task was first run against its
+pre-rewrite text as a negative test, and 21-32 checks fired per task): U2, U3, U4
+(the exact route (c) wording plus the task's `Worker: <id>` marker; for `142.074-T`
+"Route: docs (plan section 4)" and `harness-verification-gated` in text and label),
+U5, U6, U8, U9 (limit (a): 2.25 h; 1.5 h for Slot-12; 0.75 h for Slot-15), the U1
+scan, a history-section check, and the 9.2 strings:
+
+* `142.069-T`: one crate-local test file under `crates/engram-indexer/tests/` using
+  only public `engram_indexer::preflight` and `::preflight_verdict` paths; no
+  `[[test]]` stanza, no `#[path]` include, no `allow`/`expect`/`warn` (A6-A8);
+  `cargo test -p engram-indexer --test <recorded name>`; the A20 test and clippy
+  gate; the line "- Scenario 3: `stage_name` is exhaustive and equals the seven F50
+  `Failure` variants." Negative: no F52, F53, `PreflightStage` or old target name.
+* `142.070-T`: the same crate-local public-API form with the three public paths and
+  no lint attribute (A9-A10); A20 gate.
+* `142.071-T`: `harness_cmd` `cargo test -p engram-indexer --test
+  preflight_entrypoint_test` with its expected count, and any other count, zero
+  included, is a HALT (LD3); A20 gate. Its placeholder is a `preflight` branch in
+  `main`; scenario 3 (legacy path) is recorded as characterization, with
+  `R12-ROUTE-C-HALT ... F3` as the fallback.
+* `142.072-T`: `pub const RELAY_STAGES: [&str; 7]` holding the seven full `Failed`
+  lines; `normalize_verdict` returns the element it equals and uses no other list
+  (A21, A22 rev. R14); the crate-local stage-set test proves two-way set equality
+  against the lines built from `stage_name(f)` (A11 rev. R14); the guard is a `match`
+  with no wildcard and distinct arm values (variant index 0-6 or `stage_name(f)`), or
+  a single or-pattern arm, so `clippy::match_same_arms` is clean; A12/A13 commands;
+  A20 test and clippy. Negative: no `#[allow`, no frozen/freeze/`R12.4` text, no
+  `#[path]`-include clause.
+* `142.073-T`: `Cli::command().debug_assert()` in the `#[cfg(test)]` module of
+  `src/bin/engram.rs` (existing `mod tests`, with `use clap::CommandFactory;`), not
+  under `tests/contract`, run by `cargo test --bin engram`; `unit_cli_parser`,
+  `integration_cli_e2e` and `contract_cli_tool_catalog_parity` kept (M13); A20 final
+  test and clippy. Negative: no `F54`, `read_server_cli_mcp_parity` or "per-case map".
+* `142.074-T`: docs-only, only `docs/cli-mcp-parity.md`; a line reading exactly
+  "Downstream: none". Negative: no "Superseded by 142-F" string and no compound-doc
+  path in the checked text.
+
+No `R16-CONTENT-CHECK`, no `R16-STALE-TEXT`. Rollup guard after every write: `142-F`
+`active` and each task `queued` in the index and the Markdown; no
+`R15-ROLLUP-DRIFT`. `backlogit get` body equals the Markdown body exactly
+(normalized for CR and trim) for all six and for `142.066-T`.
+
+**Removed U1 text:** "OUTSIDE shipment 142-S; requires PA-1" (all six); the
+unrecorded-edge and PA-1 notes (069 line 46, 071 line 45, 073 line 46); A22's
+"frozen under plan R12.4" sentence (not carried into 072). "Owned files" became
+"Production files edited" or "file edited" (U6). Other removed text: the root-test
+`#[path]` harness lines (069, 070, 072), `contract_read_server_cli_mcp_parity` and
+"per-case maps" (073, M13), and 074's compound-note scope line and AC (now
+`142.059-T`'s, plan 9.2).
+
+**Judgment calls (for operator review at PR):**
+
+* `142.074-T` got the label `harness-verification-gated` (plan section 4: docs-route
+  tasks are `harness-verification-gated`; `142.059-T` already has that label). Its
+  title still says "... and supersession note", and `references` still lists the
+  compound doc. Both are frontmatter, which step 6 doesn't rewrite; the body says
+  the note belongs to `142.059-T`.
+* Route (c) placeholders for 071 and 073 (R13.6 had no rows for them) are written as
+  a marker-bearing placeholder dispatch, with scenarios that pass at Step 2 recorded
+  as characterization and `R12-ROUTE-C-HALT <task> <tests> F3` as the fallback.
+* A20's "recorded pending RED" allowance was dropped from all five code tasks (U3).
+
+**Notes for batch 4 (`142.055-T`, `142.056-T`, `142.057-T`, `142.063-T`):**
+
+* Each of `142.055-T` to `142.057-T` needs the U7 STATUS-RESET line (A16 form) in
+  its history section; see `142.054-T` (batch 2) and `tmp/asm/b2/check2.ps1` for the
+  regex. `PA-6-LIFTED` is step 8's, not step 6's (R-A4).
+* "Depends on" must list archived edges: `142.056-T` → `142.055-T`, `142.001-T`;
+  `142.057-T` → `142.054-T`, `142.073-T`, `142.001-T`; `142.055-T` → `142.054-T`,
+  `142.073-T`; `142.063-T` → `142.062-T`, `142.066-T`, `142.060-T`.
+* `142.063-T` alone keeps the `F54 settle:` contract string (R-A4), but its R9.6 "S4"
+  wording must become slot terms (Slot-19). The checker's `F54 settle` regex will
+  fire on it, so batch 4's wrapper must exempt that string for `142.063-T` only.
+* `pending-pa-1` is still on `142.063-T` only (`142.055-T` to `142.057-T` don't have it).
+* `142.056-T` (OD-3 B) needs the placeholder marker `Worker: 142.056-T` and HALT
+  `R17-F52-NO-PLACEHOLDER`.
+* After batch 4, re-check `142.059-T` and the 058 family only in PA5-P (R-A7), not here.
+
+### Steps 6 (batch 4) to 10: not run (the Orchestrator sends each step separately)
 
 ## Planned state for the resumed run (reference only; nothing applied)
 
@@ -522,6 +630,9 @@ Notes for step 6 when it resumes:
    It contains the 7 batch-1 queue files and this file.
 7. `chore(backlog): write section 9 content for Slot-05 to Slot-09c (assembly step 6, batch 2)`.
    It contains the 7 batch-2 queue files and this file.
+8. `docs(adrs): record 142-F ruling R-A8 for 142.066-T CLI name` (Orchestrator, `6818c6e9`).
+9. `chore(backlog): write section 9 content for Slot-10 to Slot-15 and apply R-A8 (assembly step 6, batch 3)`.
+   It contains `142.066-T`, the 6 batch-3 queue files and this file.
 
 ## Draft PR (provisional; NOT ready; do not open until assembly completes)
 
@@ -562,6 +673,10 @@ The R17-SIZE-GATE halt is resolved (R-A6, R-A7), and steps 4 and 5 are done
 (see "Step 4, resumed" and "Step 5, edges" above). The next Stage invocation
 runs section 8 step 6 (section 9 content) on this branch, using the real IDs
 above. Do not push or open the PR until steps 6-10 are done.
+
+Update 2026-10-06: step 6 batches 1-3 are done (batch 3 also applied R-A8 to
+`142.066-T`). The next Stage invocation runs step 6 batch 4 (`142.055-T`,
+`142.056-T`, `142.057-T`, `142.063-T`).
 
 ### Original next step (2026-10-05, superseded)
 
