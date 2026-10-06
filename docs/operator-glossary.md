@@ -1,7 +1,7 @@
 ---
 title: "Operator glossary"
 description: "Plain-language meanings of the acronyms and labels that agents use in plans, status reports, and approval requests"
-last_updated: "2026-10-06T12:30-07:00"
+last_updated: "2026-10-06T15:55-07:00"
 ---
 
 This page explains the labels you see in agent status reports and approval
@@ -33,6 +33,7 @@ Agents (Orchestrator, Stage, and Ship) keep this page current:
 | **P-001, P-015, P-021, ...** | Numbered workflow policies, defined in `.github/policies/workflow-policies.md`. For example, P-001 allows only one release in progress at a time. |
 | **AC** | Acceptance criteria: the conditions a task must meet before it counts as done. |
 | **RED / GREEN** | Test-first terms. RED is a test written first that fails. GREEN means the code now makes it pass. |
+| **`dag-root` (shipment label)** | Marks a release that has no release before it in the dependency order, so it can start without waiting on another one. The pre-claim topology check needs either this label or a real "blocks" link to an earlier release. Without one of them, it stops with `UNSEQUENCED_SHIPMENT`. |
 | **Abandon (a shipment)** | Close a release permanently without shipping it. Nothing is deleted, and its tasks become free to join another release. It cannot be undone. |
 | **Return-blocked** | A backlog command that takes one task out of an in-progress release and marks that task "blocked". |
 | **ActionRisk (low / moderate / high / destructive)** | How risky a proposed step is. High means it cannot be undone. Destructive means it loses data. |
