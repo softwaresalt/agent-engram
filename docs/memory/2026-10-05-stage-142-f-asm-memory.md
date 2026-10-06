@@ -687,6 +687,47 @@ Notes for part B:
 * Part B starts at Slot-09a (`142.078-T`, 90), and the next shipment ID should be `154-S`.
 * `queue_position` lives only in the Markdown. The index won't have it until run point 1.
 
+### Step 7, part B: slot shipments Slot-09a to Slot-19 (2026-10-06)
+
+Part B used the same method as part A: CLI `backlogit shipment create --items <task> --priority high` in `queue_position`
+order, then `backlogit update <S> --section description=...`, and `custom_fields.queue_position` hand-written under
+`items`. No create was refused, so there was no `R15-SHIPMENT-SHAPE`. No shipment edges were added (part C), no
+`backlogit sync` was run, and Slot-19.k, Slot-20 and Slot-21 were not created (PA5-P).
+
+| Slot | Shipment | Task | queue_position |
+|---|---|---|---|
+| 09a | `154-S` | `142.078-T` | 90 |
+| 09b | `155-S` | `142.079-T` | 91 |
+| 09c | `156-S` | `142.054-T` | 92 |
+| 10 | `157-S` | `142.069-T` | 100 |
+| 11 | `158-S` | `142.070-T` | 110 |
+| 12 | `159-S` | `142.071-T` | 120 |
+| 13 | `160-S` | `142.072-T` | 130 |
+| 14 | `161-S` | `142.073-T` | 140 |
+| 15 | `162-S` | `142.074-T` | 150 |
+| 16 | `163-S` | `142.055-T` | 160 |
+| 17 | `164-S` | `142.056-T` | 170 |
+| 18 | `165-S` | `142.057-T` | 180 |
+| 19 | `166-S` | `142.063-T` | 190 |
+
+Verification: for all 13, `backlogit shipment get` shows `queued` with exactly one member, the expected task. The rollup
+guard passed: `142-F` is still `active` and all 13 tasks are still `queued`. The task Markdown was unchanged.
+
+The predecessors in each description come from `backlogit dep list`, read before creation, and match the section 4
+table, including the archived `done` edges on `142.054-T` (12) and on `142.056-T` and `142.057-T` (`142.001-T`). The T0
+locations follow 7.3 and each task's own wording: 09a-09c `c269fa79` and `41dd5081` (reference only:
+`crates/engram-indexer/src/{lib,preflight}.rs` and `tests/integration/preflight_gate_test.rs`); 16 `1dfc1b5b` and
+`4995d681` (reusable, `tests/contract/start_launcher_test.rs`); 17 `5760b948` (reference only,
+`tests/contract/start_launcher_failure_test.rs`); 18 `e24f5ae2` (reusable, `tests/contract/start_sh_launcher_test.rs`).
+All paths are on `parked/142-s-split-0f2cca20`.
+
+Notes for part C:
+
+* All 24 slot shipments Slot-01 to Slot-19 exist: `143-S` to `166-S`. Part C mirrors the task edges as 5.2 shipment
+  edges, using the two maps above.
+* The 4.2 sizing table gives `142.071-T` "XS, 1 h", which is above the SG-1 XS bound of 0.5 h. The description copies
+  the plan verbatim. The 1 h is still within 2 h, so the verdict stays OK.
+
 ### Steps 7 (rest) to 10: not run (the Orchestrator sends each step separately)
 
 Notes for step 7 and later:
