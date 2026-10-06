@@ -1,17 +1,18 @@
 ---
-title: "Stage 142-F landing step ASM (assembly) memory: halted at step 4"
+title: "Stage 142-F landing step ASM (assembly) memory: step 4 complete under R-A7"
 date: 2026-10-05
 agent: stage
 feature: "142-F"
 plan: "docs/exec-plans/2026-09-30-142-f-decomposition-plan.md"
 plan_revision: 18
-rulings: "docs/decisions/2026-10-04-142-f-rev18-execution-rulings.md (R-A1 to R-A5)"
+rulings: "docs/decisions/2026-10-04-142-f-rev18-execution-rulings.md (R-A1 to R-A5); docs/decisions/2026-10-05-142-f-s20-sizing-and-decoupling-rulings.md (R-A6, R-A7)"
 landing_step: ASM
 branch: chore/stage-142-f-assembly
 base: "origin/main @ ce851761e887694cb18d2a45311c2af6e5890ae3 (PR #412, H3)"
 routed_model: "claude-opus-5.5 / anthropic / high"
-status: halted
-halt_token: "R17-SIZE-GATE 142.058a FL-share"
+status: in-progress
+progress: "section 8 steps 1-4 PASS; steps 5-10 not run"
+halt_token: "R17-SIZE-GATE 142.058a FL-share (resolved by operator options A and C, recorded as R-A6 and R-A7, 2026-10-05 22:58)"
 halt_location: "plan section 8 step 4 (splits), S-20 pre-creation share measurement (plan 4.3 S-20, last sentence; 4.2 row 20a-20d)"
 copilot_session: a9421395-751d-42b5-9e69-6d40f356a110
 ---
@@ -19,6 +20,10 @@ copilot_session: a9421395-751d-42b5-9e69-6d40f356a110
 # Stage 142-F ASM: memory
 
 ## Outcome
+
+**Update 2026-10-06: step 4 resumed under R-A7 and PASSED** (see "Step 4,
+resumed" below). The text that follows, down to that section, records the
+original 2026-10-05 halt and is kept as history.
 
 Assembly ran section 8 steps 1-3 to completion. It stopped at step 4 with
 **HALT `R17-SIZE-GATE 142.058a FL-share`**, before any split task was created.
@@ -76,7 +81,124 @@ while `main`'s Markdown still says `active`. If this worktree switches to `main`
 and anything runs a plain `backlogit sync` before the assembly PR merges, the two
 diverge. Keep the worktree on this branch until assembly resumes.
 
-### Step 4, splits: HALT, no task created
+### Step 4, resumed 2026-10-06 under R-A7: PASS
+
+The operator chose options A and C (R-A6, R-A7, 2026-10-05 22:58). Under R-A7,
+step 4 creates only the S-02, S-04 and S-09 split tasks and rewrites only
+`142.061-T`, `142.064-T` and `142.054-T`. The S-20 split, `142.058a` to `c`, E3
+and the 142.058 chain of E15 move to PA5-P. `142.058-T` and its subtasks were
+not touched.
+
+**Pre-checks: PASS.** Branch `chore/stage-142-f-assembly` at HEAD `e7832c6c`.
+The tree was clean apart from the untracked `.backlogit/.locks/`, which was
+never staged. The 11 PS-6 resets still read `queued` in both `backlogit get`
+and the Markdown. Tooling: backlogit CLI only (no MCP), and no `backlogit sync`
+of any kind. `backlogit get` reads the Markdown body, so edits made with the
+edit tool are visible to `get`.
+
+**Placeholder → real ID map (the handoff for steps 5-8):**
+
+| Placeholder | Real ID | Slot | Title | Size \| Complexity |
+|---|---|---|---|---|
+| `142.061a` | `142.075-T` | 02a | PRE-1a: Add read-server layout, identity and generation-ID minting | S \| medium (1 h) |
+| — | `142.061-T` | 02b | PRE-1b: Build and seal candidate generation (PRE-1 close) | S \| medium (1 h) |
+| `142.064a` | `142.076-T` | 04a | PRE-3a: Replace read-server startup identity with read_server_layout | S \| medium (1.5 h) |
+| `142.064b` | `142.077-T` | 04b | PRE-3b: Add read-server gate slot, install before readiness, drive activation | S \| high, de-risked (1.5 h) |
+| — | `142.064-T` | 04c | PRE-3c: Retry transient same-revision activation and close PRE-3 | S \| medium (1.5 h) |
+| `142.054a` | `142.078-T` | 09a | F50a: Define typed preflight stages, transitions and mock harness | S \| medium (1.5 h) |
+| `142.054b` | `142.079-T` | 09b | F50b: Implement Build, Seal and Publish preflight stages | S \| medium (1.5 h) |
+| — | `142.054-T` | 09c | F50c: Implement preflight probe stages and real-chain cases | S \| medium (1.5 h) |
+
+Every new task has parent `142-F`, status `queued` and no dependencies. Each
+new task copies its parent's priority: medium for the PRE-1 and PRE-3 families,
+high for F50. The PRE tasks carry the label `preflight`. `pending-pa-1` was not
+copied, and `harness-ready` was not copied to F50a or F50b. Sizing is prose
+only, because `features.sizing` is absent. Each family task has its share in
+`description`, `acceptance-criteria` and `verification`, with the size, the
+SG-1 record, the HALT conditions and the full family AC map in
+`implementation-notes`. Each rewritten parent was retitled, and `142.061-T`,
+`142.064-T` and `142.054-T` got a history line recording the split.
+
+**SG-1 (4.1), re-run on each family task: all OK, no `R17-SIZE-GATE`.**
+
+| Task | Files | Fns | Scen. | Open ST | Est. | Verdict |
+|---|---|---|---|---|---|---|
+| `142.075-T` | 2 (+ `mod.rs` line, stanza) | 4 (const counted) | 1 | 0 | S, 1 h | OK |
+| `142.061-T` | 2 | 2 | 2 | 0 | S, 1 h | OK |
+| `142.076-T` | 2 (+ stanza) | 1-2 | 2 | 0 | S, 1.5 h | OK |
+| `142.077-T` | 2 + glue (`state.rs` slot) | 3 | 3 | 0 | S, 1.5 h | OK (high, de-risked: careful mode, own RED, recorded HALT) |
+| `142.064-T` | 2 | 1 | 2 | 0 | S, 1.5 h | OK |
+| `142.078-T` | 2 | 3 (est) | 3 | 0 | S, 1.5 h | OK |
+| `142.079-T` | 2 | 4 (est) | 3 | 0 | S, 1.5 h | OK |
+| `142.054-T` | 2 | 4 (est) | 3 | 0 | S, 1.5 h | OK |
+
+"Open ST 0" follows plan 4.2 and 10.1. The `142.064.00x-ST` and
+`142.054.00x-ST` subtasks stay as records under the parents, untouched. Stage
+closes them through 10.1 after Slot-04c and Slot-09c, so they aren't separate
+Ship work. Two counts differ from 4.2, and both still pass. For `142.075-T`, the
+`READ_SERVER_ACTIVATION_DEADLINE` const body was counted, giving 4 functions
+where 4.2 lists 3. For `142.061-T`, the harness file was counted, giving 2 files
+where 4.2 lists 1.
+
+**AC map checks (4.3, R-A4): PASS for all three families, with no
+`R17-SPLIT-AC-UNMAPPED` and no double mapping.** The check was a script against
+the AC and verification tags plus every task's map table; a negative test
+showed it catches both an unmapped item and a double mapping. Item inventories
+were confirmed against the bullet counts at `e7832c6c`.
+
+* **S-02:** 12 items. `142.075-T` has 4 (AC2-AC5) and `142.061-T` has 8.
+* **S-04:** 40 items. `142.076-T` has 10, `142.077-T` has 10, `142.064-T` has
+  12, and 8 are "moved to `142.058-T` per M-n". The moved items are M1-M5,
+  M6 (`.003-ST` closure, F54 part), M14 (the `.001-ST` F54 map) and M15 (the
+  scope and HALT-note text). Scenario 1, scenario 2 and the consumer-baseline
+  bullet are mapped by part (a/b/c), as the 4.3 S-04 wording requires.
+* **S-09:** 36 items. `142.078-T` has 16, `142.079-T` has 7 and `142.054-T`
+  has 13.
+
+**Edges: none written at step 4.** No family task needs a predecessor copy at
+creation:
+
+* `142.061-T` has no open predecessor.
+* `142.064-T`'s only open predecessor is `142.063-T`. E1 removes that edge, so
+  under R-A2 `142.076-T` copies nothing.
+* `142.054-T`'s only open predecessor is `142.068-T`; all its others are
+  archived. The 5.1 E14 row lists the copy itself, as "054a → 068", so step 5
+  adds it.
+
+**Rollup guard (10.3): PASS after every write.** `142-F` stayed `active`, and
+every family task and parent stayed `queued` in both the index and the
+Markdown. `R15-ROLLUP-DRIFT` was not raised. The dependency frontmatter of
+`142.064-T` (`142.063-T`) and `142.054-T` (13 dependencies) is unchanged.
+`backlogit get` matches the Markdown on title, body, parent and dependencies
+for all 8 items.
+
+**Step 5 needs to know (real IDs for E5, E1, E12-E14):**
+
+* E5 is `142.076-T` → `142.062-T`.
+* E1 removes both `142.064-T` → `142.063-T` and the R-A2 edge `142.076-T` →
+  `142.063-T`. The second edge doesn't exist, so that half is a no-op. Then
+  `get_dependencies` must show `142.062-T` only for `142.076-T`; anything else is
+  `R15-DAG-ORDER Slot-04a <predecessor>`.
+* E12 is `142.061-T` → `142.075-T`.
+* E13 is `142.077-T` → `142.076-T` and `142.064-T` → `142.077-T`.
+* E14 is `142.078-T` → `142.068-T`, `142.079-T` → `142.078-T` and `142.054-T` →
+  `142.079-T`.
+* E3 and the 142.058 chain of E15 are skipped (R-A7).
+
+**Step 6 needs to know:**
+
+* The split tasks hold their share text and AC maps, but not the full section 9
+  content (U2 Shipment and "Depends on" lines, U4, U8, U9, 9.2).
+* `pending-pa-1` is still on `142.061-T` and `142.064-T` (U1/T16). The new tasks
+  don't have it.
+* The map tables quote no U1-banned token. A scan of all 8 tasks, excluding
+  history sections, found only that `pending-pa-1` label.
+
+**Step 7 needs to know:** the Slot-02a, 04a, 04b, 09a and 09b shipments take
+`142.075-T`, `142.076-T`, `142.077-T`, `142.078-T` and `142.079-T`, at
+`queue_position` 20, 40, 41, 90 and 91.
+
+### Step 4, splits: HALT, no task created (2026-10-05, superseded above)
 
 **HALT `R17-SIZE-GATE 142.058a FL-share`**, raised before creation. Plan 4.3 S-20
 says "At the split, Stage measures each slot's share of the `6d216d19` body; a
@@ -145,7 +267,7 @@ provenance both need the same core, so option A or C would settle it too.
 S-09, the 4.2 SG-1 verdicts stand (OK). Under R-A2, `142.064a` doesn't copy the
 `142.064-T` → `142.063-T` edge. The planned post-step-5 DAG (below) has no cycle.
 
-### Steps 5-10: not run (blocked by the step-4 HALT)
+### Steps 5-10: not run (step 5 onward pending; the Orchestrator sends each step separately)
 
 ## Planned state for the resumed run (reference only; nothing applied)
 
@@ -211,6 +333,11 @@ Notes for step 6 when it resumes:
    It contains the 11 queue files.
 2. `docs(memory): record 142-F assembly halt at step 4 (R17-SIZE-GATE)`.
    It contains this file.
+3. `docs(adrs): record 142-F rulings R-A6 and R-A7 for S-20` and
+   `docs(docs): log Stage subagent circuit break at 142-F assembly resume`
+   (Orchestrator commits, up to `e7832c6c`).
+4. `chore(backlog): split 142-F tasks S-02, S-04 and S-09 (assembly step 4, R-A7)`.
+   It contains the 5 new queue files, the 3 rewritten parents and this file.
 
 ## Draft PR (provisional; NOT ready; do not open until assembly completes)
 
@@ -246,6 +373,13 @@ All of these wait until the HALT is resolved and the assembly PR merges:
 * Publish the slot-to-shipment-ID map as the handoff tokens.
 
 ## Next step
+
+The R17-SIZE-GATE halt is resolved (R-A6, R-A7), and step 4 is done (see
+"Step 4, resumed" above). The next Stage invocation runs section 8 step 5
+(edges) on this branch, using the real IDs above, with E3 and the 142.058 E15
+chain skipped. Do not push or open the PR until steps 5-10 are done.
+
+### Original next step (2026-10-05, superseded)
 
 The operator rules on `R17-SIZE-GATE 142.058a FL-share` (option A, B or C, or
 another choice). Then a Stage session resumes on this branch at section 8 step 4,
