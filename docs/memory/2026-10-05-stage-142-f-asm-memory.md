@@ -1,5 +1,5 @@
 ---
-title: "Stage 142-F landing step ASM (assembly) memory: step 4 complete under R-A7"
+title: "Stage 142-F landing step ASM (assembly) memory: steps 4-5 complete under R-A7"
 date: 2026-10-05
 agent: stage
 feature: "142-F"
@@ -11,7 +11,7 @@ branch: chore/stage-142-f-assembly
 base: "origin/main @ ce851761e887694cb18d2a45311c2af6e5890ae3 (PR #412, H3)"
 routed_model: "claude-opus-5.5 / anthropic / high"
 status: in-progress
-progress: "section 8 steps 1-4 PASS; steps 5-10 not run"
+progress: "section 8 steps 1-5 PASS; steps 6-10 not run"
 halt_token: "R17-SIZE-GATE 142.058a FL-share (resolved by operator options A and C, recorded as R-A6 and R-A7, 2026-10-05 22:58)"
 halt_location: "plan section 8 step 4 (splits), S-20 pre-creation share measurement (plan 4.3 S-20, last sentence; 4.2 row 20a-20d)"
 copilot_session: a9421395-751d-42b5-9e69-6d40f356a110
@@ -22,7 +22,8 @@ copilot_session: a9421395-751d-42b5-9e69-6d40f356a110
 ## Outcome
 
 **Update 2026-10-06: step 4 resumed under R-A7 and PASSED** (see "Step 4,
-resumed" below). The text that follows, down to that section, records the
+resumed" below). **Step 5 (edges) PASSED** the same day (see "Step 5, edges"
+below). The text that follows, down to the step 4 section, records the
 original 2026-10-05 halt and is kept as history.
 
 Assembly ran section 8 steps 1-3 to completion. It stopped at step 4 with
@@ -267,7 +268,57 @@ provenance both need the same core, so option A or C would settle it too.
 S-09, the 4.2 SG-1 verdicts stand (OK). Under R-A2, `142.064a` doesn't copy the
 `142.064-T` → `142.063-T` edge. The planned post-step-5 DAG (below) has no cycle.
 
-### Steps 5-10: not run (step 5 onward pending; the Orchestrator sends each step separately)
+### Step 5, edges, 2026-10-06 under R-A2 and R-A7: PASS
+
+Run on `chore/stage-142-f-assembly` from HEAD `5fde317b`, with the backlogit CLI
+1.11.0 only (`backlogit dep add|remove|list`, no MCP, no `backlogit sync` of any
+kind). Every edge is `--type blocks`. `dep add` and `dep remove` write the
+`dependencies` frontmatter of the item's Markdown file, so the edges are durable
+in the commit. Nothing else in the files changed.
+
+| Edge | Operation | Result |
+|---|---|---|
+| E5 | add `142.076-T` → `142.062-T` | added |
+| E1 | remove `142.064-T` → `142.063-T` | removed |
+| E1 (R-A2) | remove `142.076-T` → `142.063-T` | no-op: the edge never existed (the CLI reports "Removed" anyway; the file was unchanged) |
+| E2 | add `142.063-T` → `142.066-T` | added |
+| E3 | — | skipped (R-A7, moved to PA5-P) |
+| E11 | remove `142.060-T` → 054, 055, 056, 057, 058 | 5 removed; `142.060-T` has no dependencies |
+| E8 | add `142.063-T` → `142.060-T` | added |
+| E10 | add `142.065-T` → `142.064-T` | added |
+| E12 | add `142.061-T` → `142.075-T` | added |
+| E13 | add `142.077-T` → `142.076-T`, `142.064-T` → `142.077-T` | 2 added |
+| E14 | add `142.078-T` → `142.068-T`, `142.079-T` → `142.078-T`, `142.054-T` → `142.079-T` | 3 added |
+| E15 | — | 142.058 chain skipped (R-A7, moved to PA5-P) |
+
+**Checks after each edge: PASS.** `backlogit dep list` showed the expected
+dependency set after every write. After E5 and E1, `142.076-T` depends on
+`142.062-T` only, so there's no `R15-DAG-ORDER Slot-04a`. The rollup guard
+(10.3) re-read `142-F` and both endpoints of each edge in the index and the
+Markdown after every write. `142-F` stayed `active` and every task stayed
+`queued`, so `R15-ROLLUP-DRIFT` was not raised.
+
+**Full cycle check after the last edge: no cycle, no `R15-DAG-CYCLE`.** It ran
+a DFS over the Markdown `dependencies` of all 130 open queue items (90 edges
+between open items) and over the index edges of `142.054-T` to `142.079-T`.
+The index and the Markdown agree for all 26 tasks.
+
+**Planned-DAG comparison: match, no difference.** The final graph for
+`142.054-T` to `142.079-T` equals the planned post-step-5 DAG below with the
+058a-c lines removed. `142.058-T` keeps 066 and 065 plus its archived
+predecessors, and `142.059-T` keeps 055, 057, 058, 025 and 026.
+
+**Edge counts for `142.054-T` to `142.079-T`:** 63 before step 5, 10 added, 6
+removed (the R-A2 half of E1 was a no-op), 67 after. Of the 67, 36 point at
+open tasks and 31 at archived ones. Files changed: `142.054-T`, `142.060-T`,
+`142.061-T`, `142.063-T`, `142.064-T`, `142.065-T`, `142.076-T`, `142.077-T`,
+`142.078-T` and `142.079-T`.
+
+**Step 6 needs to know:** E3 and the 142.058 chain of E15 are not in the graph;
+PA5-P adds them (R-A7). Any section 9 "Depends on" line for `142.058-T` or
+`142.063-T` that mentions `142.058a` describes a PA5-P edge, not a current one.
+
+### Steps 6-10: not run (step 6 onward pending; the Orchestrator sends each step separately)
 
 ## Planned state for the resumed run (reference only; nothing applied)
 
@@ -338,6 +389,8 @@ Notes for step 6 when it resumes:
    (Orchestrator commits, up to `e7832c6c`).
 4. `chore(backlog): split 142-F tasks S-02, S-04 and S-09 (assembly step 4, R-A7)`.
    It contains the 5 new queue files, the 3 rewritten parents and this file.
+5. `chore(backlog): wire 142-F task edges (assembly step 5, R-A2, R-A7)`.
+   It contains the 10 queue files with changed dependencies and this file.
 
 ## Draft PR (provisional; NOT ready; do not open until assembly completes)
 
@@ -374,10 +427,10 @@ All of these wait until the HALT is resolved and the assembly PR merges:
 
 ## Next step
 
-The R17-SIZE-GATE halt is resolved (R-A6, R-A7), and step 4 is done (see
-"Step 4, resumed" above). The next Stage invocation runs section 8 step 5
-(edges) on this branch, using the real IDs above, with E3 and the 142.058 E15
-chain skipped. Do not push or open the PR until steps 5-10 are done.
+The R17-SIZE-GATE halt is resolved (R-A6, R-A7), and steps 4 and 5 are done
+(see "Step 4, resumed" and "Step 5, edges" above). The next Stage invocation
+runs section 8 step 6 (section 9 content) on this branch, using the real IDs
+above. Do not push or open the PR until steps 6-10 are done.
 
 ### Original next step (2026-10-05, superseded)
 
