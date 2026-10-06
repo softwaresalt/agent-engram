@@ -1,5 +1,5 @@
 ---
-title: "142-F Revision 18 execution rulings R-A6 and R-A7 (S-20 sizing and decoupling)"
+title: "142-F Revision 18 execution rulings R-A6 to R-A8 (S-20 sizing and decoupling, 142.066-T CLI name)"
 description: "Operator rulings on HALT R17-SIZE-GATE 142.058a FL-share: count only authored or adapted harness lines against the 400-line bounds, and move the S-20 split from assembly to PA5-P"
 status: accepted
 date: 2026-10-05
@@ -15,6 +15,7 @@ supersedes_steps:
   - "7.6 PA5-P (gains the S-20 split, E3, E15 and the 142.058 family content)"
   - "8 steps 4, 5 and 6 (142.058a-c, E3, E15 and the 142.058 family content leave assembly)"
   - "9.2 142.058a-c, 142.058-T (written at PA5-P)"
+  - "9.2 142.066-T (CLI command name, R-A8)"
 source_evidence: "docs/memory/2026-10-05-stage-142-f-asm-memory.md, step 4 HALT measurement of git show 6d216d19:tests/contract/read_server_cli_mcp_parity_test.rs (1,633 lines; about 1,145 lines of shared harness core)"
 related_halt: "R17-SIZE-GATE 142.058a FL-share"
 tags:
@@ -85,8 +86,23 @@ the Slot-01 to Slot-19 landing to the 058 sizing work.
 * No 142.058 family task can be claimed before the PA5-P PR merges, because no Slot-20 shipment exists until then.
   Moving the split later therefore costs no schedule.
 
+## R-A8: R-A3 also applies to `142.066-T` (assembly step 6)
+
+**Defect.** Stage found this during step 6, batch 2. `142.066-T` scenarios 2 and 3 name a CLI command `status`:
+"the harness sends only `stats`, `status`, and `_health`", and "`daemon-status` and `status` are accepted". Next to
+`stats` and `daemon-status`, these are CLI subcommand names. The binary has no `status` subcommand
+(`src/bin/engram.rs` declares `workspace-status` for `WorkspaceStatus`). This is the R-A3 defect in a second task.
+
+**Ruling.** In the `142.066-T` rewrite, the CLI name `status` becomes `workspace-status` in scenarios 2 and 3.
+Prose that means the `get_workspace_status` method, such as "status call 1" in the R7.7 rule, keeps its wording.
+The 9.2 content check for `142.066-T` fails (`R16-CONTENT-CHECK 142.066-T R-A8`) if a bare CLI `status` remains.
+
+This applies an operator-approved ruling (R-A3) to a second instance of the same defect. The Orchestrator recorded it
+to keep assembly moving. The operator can reverse it at the assembly PR review.
+
 ## Approval record
 
 | When (-07:00) | Who | Decision |
 |---|---|---|
 | 2026-10-05 22:58 | Operator | Chose options A and C for HALT `R17-SIZE-GATE 142.058a FL-share` (recorded here as R-A6 and R-A7) |
+| 2026-10-06 00:45 | Orchestrator | Recorded R-A8 under the R-A3 precedent; the operator can reverse it at PR review |
