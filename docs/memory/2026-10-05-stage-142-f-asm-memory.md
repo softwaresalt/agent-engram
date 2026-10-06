@@ -654,7 +654,40 @@ label on any `142.0xx-T`. The range `142.054-T` to `142.079-T` holds 26 tasks (t
 brief said 27; there is no 27th step-6 task). U7's STATUS-RESET half is present on
 `142.054-T` to `142.059-T`; the `PA-6-LIFTED` half is step 8's (R-A4).
 
-### Steps 7 to 10: not run (the Orchestrator sends each step separately)
+### Step 7, part A: slot shipments Slot-01 to Slot-08 (2026-10-06)
+
+The shipments were created with the CLI (`backlogit shipment create --items <task> --priority high`, 1.11.0, with no MCP)
+in `queue_position` order. Each description (slot, predecessors from `backlogit dep list`, 4.2 estimate, and the 7.3 T0
+location) was written with `backlogit update <S> --section description=...`. `custom_fields.queue_position` was then
+hand-written into each Markdown file under `items`. No create was refused, so `R15-SHIPMENT-SHAPE` was not raised. No
+shipment edges were added (that's part C), and no `backlogit sync` was run.
+
+| Slot | Shipment | Task | queue_position |
+|---|---|---|---|
+| 01 | `143-S` | `142.060-T` | 10 |
+| 02a | `144-S` | `142.075-T` | 20 |
+| 02b | `145-S` | `142.061-T` | 21 |
+| 03 | `146-S` | `142.062-T` | 30 |
+| 04a | `147-S` | `142.076-T` | 40 |
+| 04b | `148-S` | `142.077-T` | 41 |
+| 04c | `149-S` | `142.064-T` | 42 |
+| 05 | `150-S` | `142.065-T` | 50 |
+| 06 | `151-S` | `142.066-T` | 60 |
+| 07 | `152-S` | `142.067-T` | 70 |
+| 08 | `153-S` | `142.068-T` | 80 |
+
+Verification: for all 11, `backlogit shipment get` shows `queued` with exactly one member, the expected task. The rollup
+guard passed: `142-F` is still `active` and all 11 tasks are still `queued`. The task Markdown was unchanged.
+
+The task edges, read before creation, match the planned edges. Slot-01's T0 location is
+`parked/142-s-split-0f2cca20:tests/integration/release_archive_smoke_workflow_test.rs` (`a47b8aff`, reference only).
+
+Notes for part B:
+
+* Part B starts at Slot-09a (`142.078-T`, 90), and the next shipment ID should be `154-S`.
+* `queue_position` lives only in the Markdown. The index won't have it until run point 1.
+
+### Steps 7 (rest) to 10: not run (the Orchestrator sends each step separately)
 
 Notes for step 7 and later:
 
