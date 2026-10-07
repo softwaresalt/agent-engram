@@ -6,8 +6,8 @@ feature_id: "142-F"
 mode: post-merge
 date: 2026-10-07
 author: ship
-verdict: "BLOCKED — shipment safe-close and post-reconciliation passed, but the pre-PR lifecycle topology gate returned LIFECYCLE_NO_ACTIVE_SHIPMENT; closure PR was not created"
-closure_status: "BLOCKED"
+verdict: "READY — PR #415 merged at 7d56026631259b10a9b5b4b01a09dc4a7e0f6d37 under explicit operator approval; shipment 143-S manually safe-closed (targeted, non-cascading) with pre/post reconciliation PROCEED; the post-archive lifecycle topology result LIFECYCLE_NO_ACTIVE_SHIPMENT is expected after archive per Orchestrator disposition, and the ambient topology gate passed; 142-F remains active; the closure PR awaits separate operator approval"
+closure_status: "READY"
 releasability: "READY_WITH_CONDITIONS"
 compaction_status: "done"
 pr_number: 415
@@ -196,22 +196,33 @@ follow-up stash entries above are preserved for Stage and were not modified.
 
 ## Closure PR and approval boundary
 
-The pre-PR lifecycle topology gate was run on the closure branch after the
-143-S archive and returned exit code 1 with
-`LIFECYCLE_NO_ACTIVE_SHIPMENT` — “expected exactly one active shipment”
-(`active_shipment_ids: []`). The shipment is already correctly archived,
-so this gate result blocked PR creation. No closure PR was created and the
-closure branch was not pushed. Ship did not force, skip, or reinterpret the
-gate. The local archive and reconciliation work is committed, but the
-post-merge closure is blocked pending operator/Orchestrator disposition of
-the lifecycle-gate contract for an archived shipment.
+### Topology gate results
 
-PR #415's approval does not transfer to the closure PR. If a valid
-disposition permits PR creation, it remains docs/backlog-only, so its
-full-build evidence is `not applicable — docs/backlog-only`; local review
-readiness must cover its final HEAD and identify this record's follow-ups
-and the destructive archive action. Any closure-PR merge still requires
-separate explicit operator approval.
+| Check | Command | Result | Disposition |
+|---|---|---|---|
+| Lifecycle (agent mode) | `autoharness gate pipeline-topology --mode agent --shipment 143-S --phase lifecycle --json` | Exit 1, `LIFECYCLE_NO_ACTIVE_SHIPMENT`, “expected exactly one active shipment”, `active_shipment_ids: []` | Expected after archive. The agent lifecycle phase requires exactly one active shipment, and 143-S was correctly archived by safe-close. This is not a closure defect. |
+| Ambient (manual mode) | `autoharness gate pipeline-topology --mode manual --json` | Exit 0, “topology gate pass”, `active_shipment_ids: []`, `WORKTREE_TOPOLOGY_OK` (single implementation worktree), branch-ownership and readiness checks skipped because no ambient target exists | Applicable post-archive check. This is the same check CI runs. |
+
+The lifecycle result was recorded first, and
+Ship stopped for disposition without forcing, skipping, or reinterpreting
+the gate. The Orchestrator then ruled that `LIFECYCLE_NO_ACTIVE_SHIPMENT`
+is the expected, correct result after a safe-close archive, and that the
+ambient gate is the applicable post-archive topology check. Agent mode
+rejects `--phase ambient`, so manual mode is the only ambient path. The
+ambient gate was first run at closure HEAD `41bb80e8` as part of that
+disposition and passed. Ship re-ran it on the same HEAD during resumption,
+and it passed again with exit 0 and the same results.
+
+### Closure PR
+
+The closure PR is docs/backlog-only. Its full-build evidence is
+`not applicable — docs/backlog-only`. Its local review readiness block
+covers the final pushed HEAD and lists this record's six follow-ups.
+The destructive queue-record deletion is recorded in the strict-safety
+table above.
+
+PR #415's approval does not transfer to the closure PR. Merging the closure
+PR requires separate explicit operator approval (P-014).
 
 ## Compaction status
 
@@ -221,7 +232,7 @@ scan counted 272 memory files totaling 1,324,241 bytes. The two superseded
 [`docs/memory/compacted/2026-10-07-143-s-pr415-compacted.md`](../memory/compacted/2026-10-07-143-s-pr415-compacted.md);
 their originals were preserved under `docs/archive/memory/2026-10-07/`.
 The current closure-session note was retained for the topology-gate
-operator handoff, and no plan or recently created closure artifact was
+operator handoff (since resolved by the Orchestrator disposition above), and no plan or recently created closure artifact was
 compacted. The summary preserves the operator dispositions, safe-close
 rationale, archive and reconciliation evidence, six follow-up IDs, and the
 separate closure-PR approval boundary.
