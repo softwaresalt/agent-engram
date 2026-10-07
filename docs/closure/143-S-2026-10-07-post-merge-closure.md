@@ -188,11 +188,17 @@ entry was created as part of this closure.
 
 ## Source artifact cleanup
 
-This task-only shipment has no shipped top-level feature or chore member.
-The shared covering feature `142-F` remains active, and the task's source
-stash/deliberation references are not being retired as part of this shipment
-closure. No source stash or deliberation archival was performed. The six
-follow-up stash entries above are preserved for Stage and were not modified.
+- Archived stash (`source_stash_id`): `none`
+- Archived deliberations (`source_deliberation_id`): `none`
+- Skipped (already archived or not found): `none`
+
+This task-only shipment has no shipped top-level feature or chore member, so
+no `source_stash_id` or `source_deliberation_id` candidates exist for this
+closure. The lists above are empty because there was nothing to process, not
+because cleanup was left unfinished. The shared covering feature `142-F`
+remains active. Its source artifacts will be retired by the closure that
+ships `142-F`. The six follow-up stash entries above are preserved for Stage
+and were not modified.
 
 ## Closure PR and approval boundary
 

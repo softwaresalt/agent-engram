@@ -58,9 +58,10 @@ applicable post-archive check is the ambient gate
 exit 0 at closure HEAD `41bb80e8`, and Ship re-ran it on resume with the
 same result. The closure doc now records `closure_status: READY`.
 
-Next: push this branch, open the closure PR with its local review readiness
-block, complete the Copilot review loop, and stop before closure-PR merge
-for separate operator approval (P-014).
+Next: closure PR [#416](https://github.com/softwaresalt/agent-engram/pull/416)
+is already open. Do not recreate it. Continue its Copilot review loop on this
+branch, keep the readiness block's Reviewed HEAD equal to the final HEAD, and
+stop before merge. The closure PR needs separate operator approval (P-014).
 
 ## Compaction
 

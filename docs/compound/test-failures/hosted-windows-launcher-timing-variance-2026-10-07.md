@@ -10,7 +10,7 @@ severity: "low"
 message: "launcher_fails_open_to_copilot_within_one_prewarm_budget exceeded the hosted Windows 8-second budget once; same-HEAD rerun passed without code changes."
 file_path: "tests/contract/start_launcher_test.rs"
 citations:
-  - "docs/memory/2026-10-07/ship-143-s-pr415-session-notes.md"
+  - "docs/archive/memory/2026-10-07/ship-143-s-pr415-session-notes.md"
   - "docs/closure/143-S-2026-10-07-post-merge-closure.md"
   - "F58ECAA8"
 tags:
