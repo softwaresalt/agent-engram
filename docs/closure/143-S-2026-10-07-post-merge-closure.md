@@ -13,7 +13,7 @@ compaction_status: "done"
 pr_number: 415
 merge_commit: "7d56026631259b10a9b5b4b01a09dc4a7e0f6d37"
 head_commit_merged: "2b374ec792a02a2964fa9ea520e4242fd061bc1b"
-closure_pr_number: null
+closure_pr_number: 416
 closure_pr_merge_commit: null
 runtime_verification_report: null
 follow_up_stash:
@@ -215,7 +215,7 @@ and it passed again with exit 0 and the same results.
 
 ### Closure PR
 
-The closure PR is docs/backlog-only. Its full-build evidence is
+The closure PR is [#416](https://github.com/softwaresalt/agent-engram/pull/416). It is docs/backlog-only. Its full-build evidence is
 `not applicable — docs/backlog-only`. Its local review readiness block
 covers the final pushed HEAD and lists this record's six follow-ups.
 The destructive queue-record deletion is recorded in the strict-safety
