@@ -111,3 +111,28 @@ discovery candidate `4EE241DC` without reusing it.
 - The local readiness block in PR #415 was refreshed for this SHA and includes
   the 5 follow-up stash IDs. No merge was attempted and no merge approval was
   granted; Ship stops before merge. 143-S, 142.060-T, and 142-F remain active.
+
+## Final PR #415 state at 2257f913ffa6d04a233d3156c6b37657d81c4705
+
+- `2257f913ffa6d04a233d3156c6b37657d81c4705` contains only backlog, memory,
+  and checkpoint records after the verified production/test change.
+- The Ubuntu build job on this SHA passed all steps, including fmt, Clippy,
+  `cargo test --all-targets`, oracle-independence guard, and audit.
+- The Windows `start-launcher-windows` job initially failed only
+  `launcher_fails_open_to_copilot_within_one_prewarm_budget` at 8.727 seconds
+  against its 8-second limit. This matched existing stash `F58ECAA8` for the
+  same test and hosted-runner timing surface, so Ship reused it without edit
+  or duplicate capture. The failed job was rerun on the same HEAD without any
+  code changes and passed; all CI jobs are green.
+- Copilot review workflow `37589597126` submitted a `COMMENTED` review at
+  commit `2257f913ffa6d04a233d3156c6b37657d81c4705`. P-018 returned
+  `SATISFIED`; there are zero unresolved review threads and no requested
+  reviewers. The single valid prior finding is fixed, replied to, and resolved.
+- The final §1.9 query confirms the PR readiness block covers this exact HEAD,
+  reports `READY_WITH_FOLLOWUPS`, has `P0=0, P1=0`, lists follow-ups, and
+  includes successful full local build evidence. PR state: `OPEN`,
+  `mergeable_state=CLEAN`, `mergeable=MERGEABLE`.
+- Do not merge: there is no explicit operator merge approval. Leave one valid
+  active Ship checkpoint and preserve the feature branch while awaiting
+  approval. Keep shipment `143-S`, task `142.060-T`, and feature `142-F`
+  active.
