@@ -39,6 +39,207 @@ fn assert_marker_count(content: &str, marker: &str, expected: usize) {
     );
 }
 
+const MCP_FAKE_SERVER: &str = r#"import json
+import os
+import sys
+import threading
+import time
+
+mode = os.environ["ARCHIVE_MCP_FAKE_MODE"]
+
+def read_request_line():
+    content = bytearray()
+    while True:
+        byte = os.read(0, 1)
+        if not byte:
+            return None
+        if byte == b"\n":
+            return content.decode("utf-8")
+        content.extend(byte)
+
+requests = [json.loads(read_request_line()) for _ in range(3)]
+if mode == "unresponsive":
+    while True:
+        time.sleep(60)
+
+stdin_closed = threading.Event()
+
+def watch_stdin_close():
+    if not os.read(0, 1):
+        stdin_closed.set()
+
+watcher = threading.Thread(target=watch_stdin_close, daemon=True)
+watcher.start()
+closed_before_responses = stdin_closed.wait(0.2)
+if mode == "read-first" and closed_before_responses:
+    print("pending MCP output was discarded at stdin EOF", flush=True)
+    raise SystemExit(10)
+
+responses = [
+    {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+            "protocolVersion": "2025-11-25",
+            "serverInfo": {"name": "fake-mcp", "version": "1.0"},
+        },
+    },
+    {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {"tools": [{"name": "fake-tool"}]},
+    },
+]
+for response in responses:
+    print(json.dumps(response), flush=True)
+
+if mode == "exit3":
+    raise SystemExit(3)
+if mode == "panic":
+    sys.stderr.write("panicked at fake MCP server\n")
+    raise SystemExit(10)
+if mode == "backtrace":
+    sys.stderr.write("stack backtrace:\n  fake frame\n")
+    raise SystemExit(10)
+
+watcher.join(timeout=3)
+raise SystemExit(10)
+"#;
+
+const MCP_FAKE_RUNNER: &str = r#"import os
+import runpy
+import sys
+import threading
+import time
+from pathlib import Path
+
+verifier_path, server_path, temporary_path, exercise = sys.argv[1:5]
+module = runpy.run_path(verifier_path)
+verify_mcp_stdio = module["verify_mcp_stdio"]
+smoke_failure = module["SmokeFailure"]
+module_globals = verify_mcp_stdio.__globals__
+real_subprocess = module_globals["subprocess"]
+temporary = Path(temporary_path)
+
+class BoundedPipe:
+    def __init__(self, pipe, timeout):
+        self.pipe = pipe
+        self.timeout = timeout
+
+    def _read_with_timeout(self, method, *args, **kwargs):
+        result = []
+        failure = []
+        finished = threading.Event()
+
+        def read():
+            try:
+                result.append(method(*args, **kwargs))
+            except BaseException as error:
+                failure.append(error)
+            finally:
+                finished.set()
+
+        threading.Thread(target=read, daemon=True).start()
+        if not finished.wait(self.timeout):
+            raise real_subprocess.TimeoutExpired("fake MCP response", self.timeout)
+        if failure:
+            raise failure[0]
+        return result[0]
+
+    def readline(self, *args, **kwargs):
+        return self._read_with_timeout(self.pipe.readline, *args, **kwargs)
+
+    def read(self, *args, **kwargs):
+        return self._read_with_timeout(self.pipe.read, *args, **kwargs)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        line = self.readline()
+        if line == "":
+            raise StopIteration
+        return line
+
+    def __getattr__(self, name):
+        return getattr(self.pipe, name)
+
+class BoundedProcess:
+    def __init__(self, process, timeout):
+        self.process = process
+        self.timeout = timeout
+        self.stdout = BoundedPipe(process.stdout, timeout)
+
+    def communicate(self, input=None, timeout=None):
+        bounded_timeout = self.timeout if timeout is None else min(timeout, self.timeout)
+        return self.process.communicate(input=input, timeout=bounded_timeout)
+
+    def wait(self, timeout=None):
+        bounded_timeout = self.timeout if timeout is None else min(timeout, self.timeout)
+        return self.process.wait(timeout=bounded_timeout)
+
+    def __getattr__(self, name):
+        return getattr(self.process, name)
+
+class FakeSubprocess:
+    def __init__(self, mode):
+        self.mode = mode
+        self.children = []
+        self.timeout = 20.0 if mode == "unresponsive" else 60.0
+
+    def Popen(self, args, **kwargs):
+        environment = kwargs.get("env", os.environ).copy()
+        environment["ARCHIVE_MCP_FAKE_MODE"] = self.mode
+        kwargs["env"] = environment
+        rewritten_args = [sys.executable, server_path, *list(args)[1:]]
+        process = real_subprocess.Popen(rewritten_args, **kwargs)
+        bounded_process = BoundedProcess(process, self.timeout)
+        self.children.append(bounded_process)
+        return bounded_process
+
+    def __getattr__(self, name):
+        return getattr(real_subprocess, name)
+
+def run(mode):
+    fake_subprocess = FakeSubprocess(mode)
+    module_globals["subprocess"] = fake_subprocess
+    try:
+        verify_mcp_stdio(temporary / "engram", temporary / "work")
+    except smoke_failure as error:
+        return str(error), fake_subprocess
+    return None, fake_subprocess
+
+exec(exercise, globals(), globals())
+"#;
+
+fn run_archive_mcp_fixture(temporary: &TempDir, exercise: &str) -> Output {
+    run_archive_mcp_fixture_with_timeout(temporary, exercise, None)
+}
+
+fn run_archive_mcp_fixture_with_timeout(
+    temporary: &TempDir,
+    exercise: &str,
+    mcp_timeout_seconds: Option<&str>,
+) -> Output {
+    let server = temporary.path().join("fake-mcp-server.py");
+    fs::write(&server, MCP_FAKE_SERVER).expect("write fake MCP server");
+    let verifier = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/verify-release-archive.py");
+
+    let mut command = Command::new("python");
+    command
+        .args(["-c", MCP_FAKE_RUNNER])
+        .arg(verifier)
+        .arg(server)
+        .arg(temporary.path())
+        .arg(exercise);
+    if let Some(timeout_seconds) = mcp_timeout_seconds {
+        command.env("MCP_STDIO_TIMEOUT_SECONDS", timeout_seconds);
+    }
+    command
+        .output()
+        .unwrap_or_else(|error| panic!("failed to run fake MCP server contract: {error}"))
+}
+
 fn dedent(source: &str) -> String {
     let source = source.trim_matches('\n');
     let indentation = source
@@ -640,6 +841,73 @@ fn archive_verifier_runs_the_unpacked_native_binary() {
         assert!(!stdout.contains("MCP_STDIN_CLOSE_EXIT="));
     }
     assert!(stdout.contains("ARCHIVE_SMOKE=PASS"));
+}
+
+#[test]
+fn archive_verifier_reads_mcp_responses_before_closing_stdin() {
+    let temporary = TempDir::new().expect("create temporary MCP fixture directory");
+    let output = run_archive_mcp_fixture(
+        &temporary,
+        r#"
+failure, _ = run("read-first")
+assert failure is None, (
+    "expected MCP responses before stdin close, got verifier failure: " + str(failure)
+)
+"#,
+    );
+
+    assert_python_success(&output, "RED: F-ARCHIVE-U1 read-before-close");
+}
+
+#[test]
+fn archive_verifier_keeps_exit_and_stderr_checks_after_reading_first() {
+    let temporary = TempDir::new().expect("create temporary MCP fixture directory");
+    let output = run_archive_mcp_fixture(
+        &temporary,
+        r#"
+exit_failure, _ = run("exit3")
+assert exit_failure is not None, "classified process exit 3 was accepted"
+assert "expected classified admission exit 10" in exit_failure, exit_failure
+assert "got 3" in exit_failure, exit_failure
+
+panic_failure, _ = run("panic")
+assert panic_failure is not None and "panicked at" in panic_failure, panic_failure
+
+backtrace_failure, _ = run("backtrace")
+assert (
+    backtrace_failure is not None and "stack backtrace:" in backtrace_failure
+), backtrace_failure
+"#,
+    );
+
+    assert_python_success(&output, "MCP exit and panic stderr guard");
+}
+
+#[test]
+fn archive_verifier_uses_configured_deadline_and_reaps_an_unresponsive_server() {
+    let temporary = TempDir::new().expect("create temporary MCP fixture directory");
+    let output = run_archive_mcp_fixture_with_timeout(
+        &temporary,
+        r#"
+started = time.monotonic()
+failure, fake_subprocess = run("unresponsive")
+elapsed = time.monotonic() - started
+assert failure is not None, "unresponsive MCP server was accepted"
+assert (
+    "hung after stdin closed" in failure
+    or "response timeout before id 2" in failure
+), failure
+assert (
+    elapsed < fake_subprocess.timeout
+), f"configured MCP deadline did not beat the fixture watchdog: {elapsed:.3f}s"
+assert len(fake_subprocess.children) == 1, "fake MCP child was not captured"
+child = fake_subprocess.children[0]
+assert child.returncode is not None, "timed-out MCP child was not reaped"
+"#,
+        Some("1"),
+    );
+
+    assert_python_success(&output, "configured MCP deadline and child-reaping guard");
 }
 
 #[cfg(unix)]
