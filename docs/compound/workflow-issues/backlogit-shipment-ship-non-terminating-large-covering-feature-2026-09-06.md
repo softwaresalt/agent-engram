@@ -264,3 +264,20 @@ the eighth consecutive shipment (134-S, 135-S, 136-S, 137-S, 138-S,
 139-S, 140-S, 141-S — eight shipment IDs) to close under this same
 covering feature by skipping `shipment ship` entirely and going straight
 to manual safe-close.
+
+## Addendum (2026-10-07): reused for `143-S` without invoking `shipment ship`
+
+Shipment `143-S` had a task-only manifest containing `142.060-T` under the
+same shared covering feature `142-F`. The earlier direct move to `shipped`
+was rejected with `shipment_shipped_requires_envelope`; the cascade was
+not invoked because the manifest did not satisfy the P-015
+fully-covered-root exception. After the operator-approved merge of PR #415,
+Ship used the same targeted manual archive-file procedure:
+`.backlogit/archive/143-S.md` preserves the shipment record and
+`.backlogit/queue/143-S.md` was removed. Post-reconciliation returned
+`PROCEED`, and `142-F` remained active with its queue-file SHA-256
+unchanged (`42FCA67C1407641C8F3CF4752B3431D978290B1342614A831DF463B572181770`).
+The direct-transition rejection was already established for this shipment;
+this addendum is not a new observation of `shipment ship` non-termination.
+See `.backlogit/archive/143-S.md` and
+`docs/closure/143-S-2026-10-07-post-merge-closure.md`.

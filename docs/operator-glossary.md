@@ -1,7 +1,7 @@
 ---
 title: "Operator glossary"
 description: "Plain-language meanings of the acronyms and labels that agents use in plans, status reports, and approval requests"
-last_updated: "2026-10-06T15:55-07:00"
+last_updated: "2026-10-07T13:45-07:00"
 ---
 
 This page explains the labels you see in agent status reports and approval
@@ -39,6 +39,8 @@ Agents (Orchestrator, Stage, and Ship) keep this page current:
 | **ActionRisk (low / moderate / high / destructive)** | How risky a proposed step is. High means it cannot be undone. Destructive means it loses data. |
 | **Parked branch** | A git branch that is kept, unchanged and unpushed, only so its commits can be copied (cherry-picked) into other branches later. |
 | **Safe-close** | Formally closing a release that shipped only part of its feature, without marking the whole feature done. |
+| **`LIFECYCLE_NO_ACTIVE_SHIPMENT`** | The release-specific topology check found no release in progress. It needs exactly one. This is expected after a safe-close archives the release, because nothing is in progress anymore. In that case, the ambient topology check is the one that applies. |
+| **Ambient topology check** | The topology check that does not depend on a particular release (`autoharness gate pipeline-topology --mode manual`). It is the same check the repository's pre-commit and pre-push topology hook scripts run. It checks that at most one release is in progress and that no extra worktrees exist. When no release is in progress, it skips the branch and readiness checks. |
 | **Checkpoint** | A saved agent state that allows a session to resume after a crash. |
 | **Circuit breaker** | A stop rule that halts an agent after repeated failures (for example, three failed review attempts) until you decide what to do. |
 | **ESCALATION_DEGRADED** | An agent tried to hand a problem to a stronger model but could not deliver it, so it stopped and is waiting for you instead. |
