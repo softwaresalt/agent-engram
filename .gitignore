@@ -22,6 +22,7 @@ Thumbs.db
 *.pui
 *.sublime-workspace
 *.sublime-project
+.github/copilot/
 
 # Dev data directories for engram daemon debugging
 .engram-dev-data/
@@ -81,6 +82,7 @@ tmp/
 .backlogit/telemetry.jsonl
 .backlogit/telemetry-sessions.jsonl
 .backlogit/.telemetry-checkpoint.json
+.backlogit/.locks/
 
 # graphtor-docs — managed by graphtor-docs install
 .graphtor/
