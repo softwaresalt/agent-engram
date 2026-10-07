@@ -84,17 +84,30 @@ discovery candidate `4EE241DC` without reusing it.
   `2B0BF573` was inspected but not reused because it describes a different
   HCL test/failure. The task comment and PR residual-risk section cite
   `67B299C8`.
-- The full CI test result is not green, so PR #415 is not merge-ready. Do not
-  fix the HCL failure in this shipment and do not rerun the local full suite.
-- Copilot review has not appeared for the PR HEAD. Both documented
+- At that checkpoint, the full CI test result was not green, so PR #415 was
+  not merge-ready. Do not fix the HCL failure in this shipment and do not
+  rerun the local full suite.
+- At checkpoint `ec893e76`, Copilot review had not yet appeared for the PR
+  HEAD. Both documented
   `gh pr edit --add-reviewer` attempts were rejected (`'' not found`); the REST
   review-request endpoint returned HTTP 422 because the Copilot reviewer is
-  not a repository collaborator. `autoharness gate copilot-review 415
-  --repo softwaresalt/agent-engram --enforcement auto --max-wait 0 --json`
-  returned `WAITING_FOR_REVIEW`. The PR has no requested reviewers and zero
-  review threads. Requesting via an unsupported route or assigning the
-  Copilot coding agent was not attempted.
-- Merge state is `UNSTABLE`, mergeable is `MERGEABLE`; neither indicates a
-  passing test gate or authorizes merge. Do not merge. Await operator or
-  Stage disposition for the out-of-scope CI test and a supported way to request
-  Copilot review. Keep 143-S, 142.060-T, and 142-F active.
+  not a repository collaborator. Requesting via an unsupported route or
+  assigning the Copilot coding agent was not attempted.
+
+## Final current-head gate status (7cadadb68e86f3526b0fc3a904e287cd89331136)
+
+- The in-scope Copilot finding was fixed in
+  `7cadadb68e86f3526b0fc3a904e287cd89331136`, replied to with that SHA, and
+  thread `PRRT_kwDORJEduc6py6LG` was resolved after reply.
+- Copilot review workflow `37588162442` completed successfully, with a review
+  for the exact PR HEAD. The final P-018 gate returned `SATISFIED` at
+  `7cadadb68e86f3526b0fc3a904e287cd89331136`; no unresolved Copilot threads
+  remained and no reviewer was left requested.
+- Ubuntu CI run `37588156341` is green at the same SHA:
+  `build` SUCCESS (fmt, Clippy, test, oracle guard, and audit steps all
+  succeeded) and `start-launcher-windows` SUCCESS. This supersedes the earlier
+  red run on `4b49690c`; the out-of-scope HCL failure remains captured by
+  stash `67B299C8` for traceability.
+- The local readiness block in PR #415 was refreshed for this SHA and includes
+  the 5 follow-up stash IDs. No merge was attempted and no merge approval was
+  granted; Ship stops before merge. 143-S, 142.060-T, and 142-F remain active.
