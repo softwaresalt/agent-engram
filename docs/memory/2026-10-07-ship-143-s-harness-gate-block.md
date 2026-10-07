@@ -5,7 +5,7 @@ shipment: "143-S"
 feature: "142-F"
 task: "142.060-T"
 branch: "feat/143-s-142-f-slot-01-142-060-t-archive-verifier"
-status: "blocked-pre-build"
+status: "blocked-harness-precondition"
 ---
 
 ## State
@@ -75,3 +75,32 @@ HEAD readiness evidence, then resolve CI and Copilot review. Stop again before
 merge until explicit operator approval. The task record also requires carrying
 P-021 references `4EE241DC` and `BE626470` and residual risk `F1F3D9D7` into
 the eventual run/PR residual-risk record.
+
+## Resume attempt (2026-10-07)
+
+The operator explicitly authorized harness generation for active task
+`142.060-T`, including the two named RED scenarios and the two named green
+guards. Ship did not re-claim the shipment or task. The current task-owned
+paths remained unchanged from `HEAD`; task status and the sole
+`harness-ready` route label remained unchanged. The active queue contained
+only the shared covering feature `142-F`, task `142.060-T`, and shipment
+`143-S`.
+
+The intake metadata, reconciliation report, and prior checkpoint were committed
+as `e2171786` (`chore(backlog): record 143-S claim and intake`). The resumed
+session invoked the harness architect with the operator's authorized scope.
+The architect found the existing native-binary test but neither the required
+read-before-close scenario nor either named green guard test, then halted
+without editing files or running the targeted RED test. It reported
+`cargo check --all-targets` passing. Both harness file locks were released.
+
+No RED evidence or harness manifest entry was produced; no harness commit,
+build-feature implementation, format/clippy/full-test gate, local review, PR,
+CI, or Copilot review occurred. Ship stopped before implementation rather than
+claiming the absent guards were green. The remaining blocker is explicit
+operator disposition on whether to add the two missing green guard test bodies
+as part of the already-authorized harness record, or to proceed with the two
+RED scenarios while recording the guards as absent and unverified. Task
+`142.060-T` and shipment `143-S` remain active. Current branch:
+`feat/143-s-142-f-slot-01-142-060-t-archive-verifier`; HEAD before this
+checkpoint update was `e2171786`.
