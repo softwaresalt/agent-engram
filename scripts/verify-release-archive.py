@@ -5,14 +5,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 from pathlib import Path, PurePosixPath
+import queue
 import re
 import shutil
 import stat
 import subprocess
 import sys
 import tarfile
+import threading
+import time
 import zipfile
 
 
@@ -178,6 +182,14 @@ def response_with_id(responses: list[dict[str, object]], request_id: int) -> dic
 
 def verify_mcp_stdio(binary: Path, work_dir: Path) -> None:
     """Verify serve-first MCP behavior without a readiness-dependent gate."""
+    try:
+        timeout_seconds = float(os.environ.get("MCP_STDIO_TIMEOUT_SECONDS", "45"))
+    except ValueError as error:
+        raise SmokeFailure("MCP_STDIO_TIMEOUT_SECONDS must be a positive number") from error
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        raise SmokeFailure("MCP_STDIO_TIMEOUT_SECONDS must be a positive number")
+
+    deadline = time.monotonic() + timeout_seconds
     missing_workspace = work_dir / "intentionally-missing-workspace"
     requests = [
         {
@@ -213,16 +225,145 @@ def verify_mcp_stdio(binary: Path, work_dir: Path) -> None:
         stderr=subprocess.PIPE,
         text=True,
     )
-    try:
-        stdout, stderr = process.communicate(payload, timeout=45)
-    except subprocess.TimeoutExpired as error:
-        process.terminate()
+
+    responses: list[dict[str, object]] = []
+    response_ids: set[int] = set()
+    malformed_stdout: list[tuple[str, json.JSONDecodeError]] = []
+    stderr_lines: list[str] = []
+    reader_errors: list[tuple[str, Exception]] = []
+    reader_events: queue.Queue[tuple[str, Exception | None]] = queue.Queue()
+    reader_threads: list[threading.Thread] = []
+    stdin_closed = False
+
+    def read_stdout() -> None:
+        ready_sent = False
         try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=5)
-        raise SmokeFailure("MCP stdio process hung after stdin closed") from error
+            for line in process.stdout:
+                if not line.strip():
+                    continue
+                try:
+                    value = json.loads(line)
+                except json.JSONDecodeError as error:
+                    malformed_stdout.append((line, error))
+                    continue
+                if not isinstance(value, dict):
+                    continue
+                responses.append(value)
+                if value.get("id") == 1:
+                    response_ids.add(1)
+                elif value.get("id") == 2:
+                    response_ids.add(2)
+                if response_ids == {1, 2} and not ready_sent:
+                    reader_events.put(("responses_ready", None))
+                    ready_sent = True
+        except Exception as error:
+            reader_errors.append(("stdout", error))
+            reader_events.put(("stdout_error", error))
+        finally:
+            reader_events.put(("stdout_eof", None))
+
+    def read_stderr() -> None:
+        try:
+            for line in process.stderr:
+                stderr_lines.append(line)
+        except Exception as error:
+            reader_errors.append(("stderr", error))
+            reader_events.put(("stderr_error", error))
+        finally:
+            reader_events.put(("stderr_eof", None))
+
+    def terminate_and_reap() -> None:
+        if process.poll() is None:
+            try:
+                process.terminate()
+            except OSError:
+                if process.poll() is None:
+                    raise
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+    try:
+        for target, name in (
+            (read_stdout, "mcp-stdout-reader"),
+            (read_stderr, "mcp-stderr-reader"),
+        ):
+            reader = threading.Thread(target=target, name=name, daemon=True)
+            reader.start()
+            reader_threads.append(reader)
+
+        process.stdin.write(payload)
+        process.stdin.flush()
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise SmokeFailure("MCP stdio response timeout before id 2")
+            try:
+                event, detail = reader_events.get(timeout=remaining)
+            except queue.Empty as error:
+                raise SmokeFailure("MCP stdio response timeout before id 2") from error
+
+            if event == "responses_ready":
+                break
+            if event == "stdout_eof":
+                if malformed_stdout:
+                    line, error = malformed_stdout[0]
+                    raise SmokeFailure(
+                        f"non-JSON stdout from MCP stdio: {line}"
+                    ) from error
+                missing_id = next(
+                    request_id
+                    for request_id in (1, 2)
+                    if request_id not in response_ids
+                )
+                raise SmokeFailure(f"missing JSON-RPC response id {missing_id}")
+            if event == "stdout_error":
+                if isinstance(detail, subprocess.TimeoutExpired):
+                    raise SmokeFailure("MCP stdio response timeout before id 2") from detail
+                raise SmokeFailure(f"MCP stdio stdout reader failed: {detail}") from detail
+            if event == "stderr_error":
+                raise SmokeFailure(f"MCP stdio stderr reader failed: {detail}") from detail
+
+        try:
+            process.stdin.close()
+        except BrokenPipeError:
+            pass
+        finally:
+            stdin_closed = True
+
+        remaining = max(0.0, deadline - time.monotonic())
+        try:
+            process.wait(timeout=remaining)
+        except subprocess.TimeoutExpired as error:
+            raise SmokeFailure("MCP stdio process hung after stdin closed") from error
+
+        for reader in reader_threads:
+            remaining = max(0.0, deadline - time.monotonic())
+            reader.join(timeout=remaining)
+            if reader.is_alive():
+                raise SmokeFailure("MCP stdio process hung after stdin closed")
+        process.stdout.close()
+        process.stderr.close()
+    except BaseException:
+        try:
+            terminate_and_reap()
+        finally:
+            if not stdin_closed:
+                try:
+                    process.stdin.close()
+                except OSError:
+                    pass
+                stdin_closed = True
+            for reader in reader_threads:
+                reader.join(timeout=5)
+            if all(not reader.is_alive() for reader in reader_threads):
+                for stream in (process.stdout, process.stderr):
+                    try:
+                        stream.close()
+                    except OSError:
+                        pass
+        raise
 
     if process.returncode is None or process.returncode < 0:
         raise SmokeFailure(f"MCP stdio process terminated abnormally: {process.returncode}")
@@ -231,19 +372,16 @@ def verify_mcp_stdio(binary: Path, work_dir: Path) -> None:
             "MCP stdio smoke expected classified admission exit 10 for the "
             f"intentionally missing workspace, got {process.returncode}"
         )
+    stderr = "".join(stderr_lines)
     if "panicked at" in stderr or "stack backtrace:" in stderr:
         raise SmokeFailure(f"MCP stdio process panicked: {stderr.strip()}")
+    if reader_errors:
+        stream, error = reader_errors[0]
+        raise SmokeFailure(f"MCP stdio {stream} reader failed: {error}") from error
 
-    responses: list[dict[str, object]] = []
-    for line in stdout.splitlines():
-        if not line.strip():
-            continue
-        try:
-            value = json.loads(line)
-        except json.JSONDecodeError as error:
-            raise SmokeFailure(f"non-JSON stdout from MCP stdio: {line}") from error
-        if isinstance(value, dict):
-            responses.append(value)
+    if malformed_stdout:
+        line, error = malformed_stdout[0]
+        raise SmokeFailure(f"non-JSON stdout from MCP stdio: {line}") from error
 
     initialize = response_with_id(responses, 1)
     initialize_result = initialize.get("result")
