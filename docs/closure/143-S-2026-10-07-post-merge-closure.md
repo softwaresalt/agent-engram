@@ -6,8 +6,8 @@ feature_id: "142-F"
 mode: post-merge
 date: 2026-10-07
 author: ship
-verdict: "READY_WITH_CONDITIONS — PR #415 merged; targeted shipment safe-close and post-reconciliation passed; six non-blocking follow-ups remain for Stage; closure PR awaits separate operator approval"
-closure_status: "READY"
+verdict: "BLOCKED — shipment safe-close and post-reconciliation passed, but the pre-PR lifecycle topology gate returned LIFECYCLE_NO_ACTIVE_SHIPMENT; closure PR was not created"
+closure_status: "BLOCKED"
 releasability: "READY_WITH_CONDITIONS"
 compaction_status: "done"
 pr_number: 415
@@ -196,15 +196,22 @@ follow-up stash entries above are preserved for Stage and were not modified.
 
 ## Closure PR and approval boundary
 
-This report is part of the post-merge closure branch for shipment `143-S`.
-The closure PR is docs/backlog-only, so its full-build evidence is
-`not applicable — docs/backlog-only`; local review readiness must cover its
-final HEAD and identify this record's follow-ups and the destructive
-archive action.
+The pre-PR lifecycle topology gate was run on the closure branch after the
+143-S archive and returned exit code 1 with
+`LIFECYCLE_NO_ACTIVE_SHIPMENT` — “expected exactly one active shipment”
+(`active_shipment_ids: []`). The shipment is already correctly archived,
+so this gate result blocked PR creation. No closure PR was created and the
+closure branch was not pushed. Ship did not force, skip, or reinterpret the
+gate. The local archive and reconciliation work is committed, but the
+post-merge closure is blocked pending operator/Orchestrator disposition of
+the lifecycle-gate contract for an archived shipment.
 
-PR #415's approval does not transfer to the closure PR. Ship must stop with
-the closure PR open and remain on the `post-merge/` branch until the
-operator separately approves its merge.
+PR #415's approval does not transfer to the closure PR. If a valid
+disposition permits PR creation, it remains docs/backlog-only, so its
+full-build evidence is `not applicable — docs/backlog-only`; local review
+readiness must cover its final HEAD and identify this record's follow-ups
+and the destructive archive action. Any closure-PR merge still requires
+separate explicit operator approval.
 
 ## Compaction status
 
@@ -213,8 +220,8 @@ scan counted 272 memory files totaling 1,324,241 bytes. The two superseded
 143-S execution/blocked-closure notes (11,970 bytes) were consolidated into
 [`docs/memory/compacted/2026-10-07-143-s-pr415-compacted.md`](../memory/compacted/2026-10-07-143-s-pr415-compacted.md);
 their originals were preserved under `docs/archive/memory/2026-10-07/`.
-The current in-progress closure-session note was retained for the pending
-closure PR approval, and no plan or recently created closure artifact was
+The current closure-session note was retained for the topology-gate
+operator handoff, and no plan or recently created closure artifact was
 compacted. The summary preserves the operator dispositions, safe-close
 rationale, archive and reconciliation evidence, six follow-up IDs, and the
 separate closure-PR approval boundary.

@@ -2,8 +2,8 @@
 title: "Ship 143-S post-merge closure"
 date: 2026-10-07
 session_id: ship-143-s-postmerge-close-20261007
-phase: post-merge-closure
-status: in-progress
+phase: post-merge-closure-blocked
+status: awaiting-operator
 ---
 
 ## Restored state
@@ -46,16 +46,19 @@ merge approval are captured in
 
 ## Next steps and boundary
 
-Run markdown validation and report-only local review, commit and push the
-docs/backlog closure branch, create the closure PR, record its number, refresh
-the PR readiness block for the final HEAD, and complete the Copilot review
-loop. Stop with the closure PR open; its merge requires separate explicit
-operator approval.
+The pre-PR lifecycle topology gate blocked with
+`LIFECYCLE_NO_ACTIVE_SHIPMENT` after the correct manual archive moved 143-S
+out of active status. No closure PR was created and the branch was not
+pushed. Halt here and request operator/Orchestrator disposition of the
+gate-contract conflict. Do not force, skip, or reinterpret the gate. If a
+valid disposition permits PR creation, continue on this same branch, obtain
+a fresh local review, create/update the readiness block, complete the
+Copilot loop, and stop before closure-PR merge for separate operator
+approval.
 
 ## Compaction
 
 P-020 `compact-context --target all` completed. The superseded PR #415
 session notes and earlier blocked-closure note were summarized in
 `docs/memory/compacted/2026-10-07-143-s-pr415-compacted.md`; both originals
-were preserved in `docs/archive/memory/2026-10-07/`. This current closure
-note remains live while its PR awaits separate operator approval.
+were preserved in `docs/archive/memory/2026-10-07/`. This current closure note remains live for the gate-blocked operator handoff.
