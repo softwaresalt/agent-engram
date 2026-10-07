@@ -65,3 +65,36 @@ discovery candidate `4EE241DC` without reusing it.
    `SATISFIED`.
 4. Report the PR and all gate outcomes. Stop before merge; no merge approval
    has been granted in this session.
+
+## PR #415 CI and Copilot status
+
+- PR: https://github.com/softwaresalt/agent-engram/pull/415
+- The first PR CI run (`37585099238`) completed with:
+  - `build`: FAILURE. `cargo test --no-default-features --features
+    cozo-backend,embeddings --all-targets` failed only
+    `hcl_indexing_test::cold_start_lists_and_maps_all_three_hcl_aliases`;
+    expected `hcl.attribute.region` was still missing at timeout. The other
+    tests shown before that target passed.
+  - `start-launcher-windows`: SUCCESS.
+- This HCL cold-start/indexing failure is outside the archive-verifier C1
+  scope. Ship made no Rust/test changes and captured distinct P-021 follow-up
+  `67B299C8` for PR `#415`, with review-thread ID `N/A`. Its payload records
+  `DISCOVERY-STATUS: LOOKUP-UNAVAILABLE` because the registered backlogit
+  surfaces list only active stash entries, not archived stash; active candidate
+  `2B0BF573` was inspected but not reused because it describes a different
+  HCL test/failure. The task comment and PR residual-risk section cite
+  `67B299C8`.
+- The full CI test result is not green, so PR #415 is not merge-ready. Do not
+  fix the HCL failure in this shipment and do not rerun the local full suite.
+- Copilot review has not appeared for the PR HEAD. Both documented
+  `gh pr edit --add-reviewer` attempts were rejected (`'' not found`); the REST
+  review-request endpoint returned HTTP 422 because the Copilot reviewer is
+  not a repository collaborator. `autoharness gate copilot-review 415
+  --repo softwaresalt/agent-engram --enforcement auto --max-wait 0 --json`
+  returned `WAITING_FOR_REVIEW`. The PR has no requested reviewers and zero
+  review threads. Requesting via an unsupported route or assigning the
+  Copilot coding agent was not attempted.
+- Merge state is `UNSTABLE`, mergeable is `MERGEABLE`; neither indicates a
+  passing test gate or authorizes merge. Do not merge. Await operator or
+  Stage disposition for the out-of-scope CI test and a supported way to request
+  Copilot review. Keep 143-S, 142.060-T, and 142-F active.
