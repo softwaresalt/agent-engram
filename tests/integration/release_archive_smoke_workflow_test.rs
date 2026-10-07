@@ -110,6 +110,7 @@ const MCP_FAKE_RUNNER: &str = r#"import os
 import runpy
 import sys
 import threading
+import time
 from pathlib import Path
 
 verifier_path, server_path, temporary_path, exercise = sys.argv[1:5]
@@ -212,16 +213,29 @@ exec(exercise, globals(), globals())
 "#;
 
 fn run_archive_mcp_fixture(temporary: &TempDir, exercise: &str) -> Output {
+    run_archive_mcp_fixture_with_timeout(temporary, exercise, None)
+}
+
+fn run_archive_mcp_fixture_with_timeout(
+    temporary: &TempDir,
+    exercise: &str,
+    mcp_timeout_seconds: Option<&str>,
+) -> Output {
     let server = temporary.path().join("fake-mcp-server.py");
     fs::write(&server, MCP_FAKE_SERVER).expect("write fake MCP server");
     let verifier = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/verify-release-archive.py");
 
-    Command::new("python")
+    let mut command = Command::new("python");
+    command
         .args(["-c", MCP_FAKE_RUNNER])
         .arg(verifier)
         .arg(server)
         .arg(temporary.path())
-        .arg(exercise)
+        .arg(exercise);
+    if let Some(timeout_seconds) = mcp_timeout_seconds {
+        command.env("MCP_STDIO_TIMEOUT_SECONDS", timeout_seconds);
+    }
+    command
         .output()
         .unwrap_or_else(|error| panic!("failed to run fake MCP server contract: {error}"))
 }
@@ -870,24 +884,30 @@ assert (
 }
 
 #[test]
-fn archive_verifier_bounds_an_unresponsive_mcp_server() {
+fn archive_verifier_uses_configured_deadline_and_reaps_an_unresponsive_server() {
     let temporary = TempDir::new().expect("create temporary MCP fixture directory");
-    let output = run_archive_mcp_fixture(
+    let output = run_archive_mcp_fixture_with_timeout(
         &temporary,
         r#"
+started = time.monotonic()
 failure, fake_subprocess = run("unresponsive")
+elapsed = time.monotonic() - started
 assert failure is not None, "unresponsive MCP server was accepted"
 assert (
     "hung after stdin closed" in failure
     or "response timeout before id 2" in failure
 ), failure
+assert (
+    elapsed < fake_subprocess.timeout
+), f"configured MCP deadline did not beat the fixture watchdog: {elapsed:.3f}s"
 assert len(fake_subprocess.children) == 1, "fake MCP child was not captured"
 child = fake_subprocess.children[0]
 assert child.returncode is not None, "timed-out MCP child was not reaped"
 "#,
+        Some("1"),
     );
 
-    assert_python_success(&output, "bounded MCP server and child-reaping guard");
+    assert_python_success(&output, "configured MCP deadline and child-reaping guard");
 }
 
 #[cfg(unix)]
