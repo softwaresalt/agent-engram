@@ -207,7 +207,7 @@ and were not modified.
 | Check | Command | Result | Disposition |
 |---|---|---|---|
 | Lifecycle (agent mode) | `autoharness gate pipeline-topology --mode agent --shipment 143-S --phase lifecycle --json` | Exit 1, `LIFECYCLE_NO_ACTIVE_SHIPMENT`, “expected exactly one active shipment”, `active_shipment_ids: []` | Expected after archive. The agent lifecycle phase requires exactly one active shipment, and 143-S was correctly archived by safe-close. This is not a closure defect. |
-| Ambient (manual mode) | `autoharness gate pipeline-topology --mode manual --json` | Exit 0, “topology gate pass”, `active_shipment_ids: []`, `WORKTREE_TOPOLOGY_OK` (single implementation worktree), branch-ownership and readiness checks skipped because no ambient target exists | Applicable post-archive check. This is the same check CI runs. |
+| Ambient (manual mode) | `autoharness gate pipeline-topology --mode manual --json` | Exit 0, “topology gate pass”, `active_shipment_ids: []`, `WORKTREE_TOPOLOGY_OK` (single implementation worktree), branch-ownership and readiness checks skipped because no ambient target exists | Applicable post-archive check. It is the same ambient check the repository's pre-commit and pre-push topology hook scripts run. `.github/workflows/ci.yml` does not currently run a topology gate. |
 
 The lifecycle result was recorded first, and
 Ship stopped for disposition without forcing, skipping, or reinterpreting
