@@ -1,8 +1,8 @@
 # agent-engram Development Guidelines
 
-Last updated: 2026-05-11
+Last updated: 2026-10-24
 
-agent-engram is a local-first Model Context Protocol daemon providing code graph indexing, symbol navigation, and semantic search for AI coding assistants. It runs as a single Rust binary, persists state to .engram/ files via embedded SurrealDB, and communicates over IPC (named pipes on Windows, Unix domain sockets on Linux/macOS).
+agent-engram is a local-first Model Context Protocol daemon providing code graph indexing, symbol navigation, and semantic search for AI coding assistants. It runs as a single Rust binary, persists state to .engram/ files via embedded CozoDB, and communicates over IPC (named pipes on Windows, Unix domain sockets on Linux/macOS).
 
 ## Technology Stack
 
@@ -14,7 +14,7 @@ agent-engram is a local-first Model Context Protocol daemon providing code graph
 | Lint            | clippy                | `cargo clippy --all-targets -- -D warnings -D clippy::pedantic`                    |
 | Format          | rustfmt             | `cargo fmt --all`                  |
 | CI              | GitHub Actions           | CI runs on ubuntu-latest; release builds are cross-platform (Linux, Windows, macOS). Actions use @v4 tags (not SHA-pinned). cargo-audit runs with continue-on-error: true.                          |
-| SurrealDB (embedded) | `2` | Embedded graph database via kv-surrealkv feature |
+| CozoDB (embedded) | `0.7` | Embedded graph database via cozo-backend (SQLite storage + Datalog) |
 | tree-sitter | `0.25` | Multi-language code graph parsing |
 | rmcp | `1.1` | MCP SDK for JSON-RPC 2.0 / stdio transport |
 | tokio | `1` | Async runtime (full features) |
@@ -24,22 +24,25 @@ agent-engram is a local-first Model Context Protocol daemon providing code graph
 ## Project Structure
 
 ```text
-src/ (101 .rs files across 12 modules: bin, cli, config, daemon, db, errors, installer, models, server, services, shim, tools), tests/ (117 files: contract/28, integration/58, unit/30, helpers/1), docs/ (architecture, ADRs, compound learnings, exec-plans, research), .github/ (agents, skills, instructions, policies, prompts)
+src/ (149 .rs files across 12 modules: bin, cli, config, daemon, db, errors, installer, models, server, services, shim, tools), tests/ (270 files: contract/64, integration/140, unit/62, helpers/3), docs/ (architecture, ADRs, compound learnings, exec-plans, research), .github/ (agents, skills, instructions, policies, prompts)
 ```
 
 ## Commands
 
 ```bash
 cargo build              # Build
-cargo dev-test               # Run all tests
-cargo clippy --all-targets -- -D warnings -D clippy::pedantic               # Lint
-cargo fmt --all             # Format check
+cargo dev-test           # Run all tests
+cargo clippy --all-targets -- -D warnings -D clippy::pedantic  # Lint
+cargo fmt --all -- --check  # Format check
+```
+
+| Alias | Purpose |
+|---|---|
 | `cargo dev-test` | Run default test suite (dev workflow) |
 | `cargo ci` | Run all tests with all features (CI equivalent) |
 | `cargo lint` | Alias for clippy with pedantic warnings |
 | `cargo fmt-check` | Alias for format check |
 | `cargo audit` | Check for known vulnerabilities |
-```
 
 ## Code Style and Conventions
 
@@ -59,7 +62,7 @@ snake_case for functions and variables, PascalCase for types and traits, SCREAMI
 
 * TDD required: write tests first, verify they fail, then implement
 * Test tiers in `tests/` directory:
-Contract: MCP tool schema and error code verification (28 files). Integration: end-to-end flows with real DB/IPC (58 files). Unit: isolated logic and property-based tests via proptest (30 files).
+Contract: MCP tool schema and error code verification (64 files). Integration: end-to-end flows with real DB/IPC (140 files). Unit: isolated logic and property-based tests via proptest (62 files).
 
 ## Search Strategy
 
@@ -94,6 +97,7 @@ tokens proportional to file size.
 * For long sessions, save memory checkpoints after completing each phase or major task group.
 * Content to capture: task IDs completed, files modified, decisions and rationale, failed approaches, open questions, and next steps.
 * File convention: `docs/memory/{YYYY-MM-DD}/{descriptive-slug}-memory.md`
+* Memory date folders (`docs/memory/{YYYY-MM-DD}/`) use the UTC date, and all recorded dates and times are UTC (`Z`); see `.github/instructions/output-timestamps.instructions.md`.
 * After writing memory, invoke the **compact-context** skill to consolidate stale checkpoints and finalize decided-plans. This is a mandatory workflow step, not advisory.
 * If context has grown from loading multiple skill definitions mid-session, consider invoking **compact-context** proactively before hitting hard thresholds.
 
@@ -111,6 +115,7 @@ tokens proportional to file size.
 
 When the workspace enabled the `agent-engram` capability pack:
 
+* follow `.github/instructions/agent-engram.instructions.md`
 * verify the engram daemon / MCP surface is reachable before depending on indexed lookup
 * prefer engram tools for conceptual search, symbol discovery, call-graph lookup, impact analysis, and workspace-memory retrieval
 * verify the workspace binding state before relying on results; if the daemon auto-binds the workspace, prefer status checks over repeated rebinding
@@ -122,6 +127,7 @@ When the workspace enabled the `agent-engram` capability pack:
 
 When the workspace enabled the `backlogit` capability pack:
 
+* follow `.github/instructions/backlogit.instructions.md`
 * verify the backlogit MCP / CLI surface is reachable before depending on queue, dependency, memory, or traceability operations
 * prefer backlogit query operations for targeted state lookup instead of reading many backlog markdown files into context
 * use backlogit queue and dependency operations when available rather than inferring execution order from prose alone
@@ -129,20 +135,11 @@ When the workspace enabled the `backlogit` capability pack:
 * append significant task comments and associate commits with task IDs for execution traceability when those operations are available
 * if backlog content was edited outside the normal mutation flow, refresh the backlogit index before relying on query results
 
-### browser-verification
-
-When the workspace enabled the `browser-verification` capability pack:
-
-* verify the target server or preview environment is reachable before launching browser work
-* choose headed vs headless mode intentionally and record the reason
-* derive browser routes from changed pages, components, or affected user journeys
-* treat OAuth, email, SMS, payments, CAPTCHAs, or other external flows as explicit human checkpoints
-* carry browser findings into runtime verification and operational closure rather than leaving them as informal notes
-
 ### continuous-learning
 
 When the workspace enabled the `continuous-learning` capability pack:
 
+* follow `.github/instructions/continuous-learning.instructions.md`
 * store observation state under `.autoharness/continuous-learning/`
 * keep hook capture optional and environment-specific; manual capture is still valid
 * use `observe` to capture recurring workflow signals, `learn` to infer instincts, and `evolve` to promote mature patterns into `learned-*` artifacts

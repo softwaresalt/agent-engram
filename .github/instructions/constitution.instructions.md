@@ -98,6 +98,10 @@ or large blast radius, agents MUST switch into an explicit safety mode before pr
 * **Freeze-scope mode** — constrain work to a declared path or subsystem boundary
 * **Investigate-first mode** — gather evidence and causal understanding before proposing fixes
 
+When the `strict-safety` capability pack is installed, agents MUST also follow
+`.github/instructions/strict-safety.instructions.md` and record risky work using
+`ProposedAction`, `ActionRisk`, and `ActionResult` entries.
+
 **Rationale**: Guardrails are more reliable when they are interactive and legible. Safety modes
 translate policy into an operating posture that both the agent and the operator can reason about.
 
@@ -174,8 +178,8 @@ commit-traceability links and backlog commit associations.
 | Language        | Rust 2024                        |
 | Build           | `cargo build`                                              |
 | Test            | `cargo dev-test`                                               |
-| Lint            | `cargo clippy -- -D warnings -D clippy::pedantic`                                               |
-| Format          | `cargo fmt --all -- --check`                                             |
+| Lint            | `cargo clippy --all-targets -- -D warnings -D clippy::pedantic`                                               |
+| Format          | `cargo fmt --all`                                             |
 | CI              | GitHub Actions                                                  |
 | Error Handling  | Result<T, EngramError>                                                |
 | Documentation   | /// doc comment                                            |
@@ -197,13 +201,21 @@ cargo audit
    test harness before implementation begins.
 2. **Backlog-driven planning**: All task tracking MUST use the backlog system.
    Static markdown task lists outside `.backlogit/` are not permitted.
-3. **Branch per release unit**: Each feature or chore MUST be developed on a dedicated branch.
+3. **Single active implementation branch/worktree**: Each feature or chore MUST be
+   developed on one dedicated implementation branch in one active worktree. Agents
+   MUST NOT split implementation, backlog execution, PR preparation, or closure
+   across parallel branches or worktrees. The only exception is an explicit
+   Stage-owned, time-boxed spike/research worktree used for staging investigation;
+   that worktree MUST NOT perform implementation, template/source/config mutation,
+   shipment claim, PR preparation, or Ship execution.
 4. **Commit discipline**: Each commit MUST be coherent and buildable. Commit
    messages follow conventional commits format (`feat:`, `fix:`, `docs:`, `test:`).
 5. **No dead code**: Placeholder modules MUST be replaced or removed before a
    release unit is considered complete.
 6. **Operational closure**: Work is not complete at “green CI” if runtime validation,
-   monitoring setup, or release handoff remains unresolved.
+   monitoring setup, or release handoff remains unresolved. Required post-merge context
+   compaction (**P-020**) is part of the mandatory closure set: Ship MUST invoke the
+   compact-context skill at every post-merge closure.
 
 ### Task Granularity (NON-NEGOTIABLE)
 
@@ -264,11 +276,11 @@ with these principles.
 
 | Principle | Level | Enforcement Mechanism |
 |---|---|---|
-| I. Safety-First Language | MUST | CI quality gates (`cargo clippy -- -D warnings -D clippy::pedantic`, `cargo build`) |
+| I. Safety-First Language | MUST | CI quality gates (`cargo clippy --all-targets -- -D warnings -D clippy::pedantic`, `cargo build`) |
 | II. Test-First Development | NON-NEGOTIABLE | P-002/P-004 policies; harness-architect red phase; build-feature green phase |
 | III. Workspace Isolation | MUST | Agent runtime path resolution within workspace root |
 | IV. CLI Containment | NON-NEGOTIABLE | Agent runtime cwd boundary enforcement |
-| V. Structured Observability | MUST | Broadcasting, commit messages, structured reporting |
+| V. Structured Observability | MUST | Broadcasting, commit messages, structured reporting; P-020 post-merge compaction closure gate |
 | VI. Single Responsibility | SHOULD | Code review persona checks on dependency additions |
 | VII. Destructive Approval | NON-NEGOTIABLE | P-005 violation telemetry; strict-safety enforcement when enabled |
 | VIII. Safety Modes | MUST | safety-modes skill invocation; strict-safety decision gate when enabled |
@@ -276,7 +288,7 @@ with these principles.
 | X. Context Efficiency | SHOULD | Query-first data access patterns |
 
 For principles marked NON-NEGOTIABLE without runtime enforcement (II, IV),
-agents that observe violations MUST broadcast a P-005 event and halt rather
+agents that observe violations MUST report a P-005 event in the session output and halt rather
 than proceeding.
 
 - **Amendments**: Any change to this constitution MUST be documented
@@ -292,4 +304,4 @@ than proceeding.
   principle violated, the justification, and the simpler alternative that
   was rejected.
 
-**Version**: 1.0.0 | **Ratified**: 2026-05-11 | **Generated by**: autoharness
+**Version**: 1.1.0 | **Ratified**: 2026-10-24 | **Generated by**: autoharness

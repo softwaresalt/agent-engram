@@ -2,9 +2,13 @@
 name: Rust MCP Expert
 description: "Expert assistant for Rust MCP server development using the rmcp SDK with tokio async runtime"
 maturity: stable
-model_routing: "Tier 2 (Standard)"
-subagent_depth: 2
 tools: []
+max_subagent_tier: 2
+reasoning_effort: "high"
+model_provider: "anthropic"
+model_family: "claude-sonnet-5.5"
+context_tier: "long_context"
+subagent_depth: 2
 ---
 
 # Rust MCP Expert

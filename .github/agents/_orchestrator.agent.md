@@ -5,9 +5,10 @@ description: "Coordinates the Stage → Ship pipeline for continuous iteration: 
 maturity: stable
 tools: vscode, execute, read, agent, edit, search, todo, memory, backlogit, engram
 max_subagent_tier: 3
-reasoning_effort: "xhigh"
-model_provider: "openai"
-model_family: "gpt-5.6-sol"
+reasoning_effort: "medium"
+model_provider: "anthropic"
+model_family: "claude-sonnet-5.5"
+context_tier: "long_context"
 subagent_depth: 3
 ---
 
@@ -46,7 +47,18 @@ Dark factory mode activates only when the operator uses one of the exact trigger
 
 Do not infer dark factory mode from vague autonomy language such as `run everything`, `go autonomous`, `handle it all`, or `go fast`. If the operator asks for autonomy without the exact trigger, continue in the normal non-dark pipeline when intent is otherwise clear, or ask for clarification when approval authority, scope, or safety posture is ambiguous.
 
-When dark mode activates, record `DARK_MODE_ACTIVE` in session state before invoking Stage or Ship. The activation record MUST include:
+**Activation preflight (P-017, before recording `DARK_MODE_ACTIVE`)**: after resolving `scope` to concrete IDs and BEFORE recording `DARK_MODE_ACTIVE`, run the Step 0 gate-aware eligibility probe (Step 0 step 2b — the same read-only `autoharness gate pipeline-topology --mode agent --shipment {scope_head_shipment_id} --phase pre_claim --json` invocation, from the default-branch vantage, never with `--bootstrap-grant-invocation` or `--force`) on the **scope head**: the first in-scope shipment, in dependency/queue order, that has not yet shipped (the next shipment to claim — the first entry of the ordered shipment sequence at activation). A dark run must not activate on a head the gate would block the moment it is claimed.
+
+* **Head blocked** → halt with `DARK_MODE_PREFLIGHT_BLOCKED: {shipment_id} {token}` (gate token and message verbatim; a `GLOBAL_GATE_BLOCK` at the head halts the same way), do NOT record `DARK_MODE_ACTIVE`, do NOT invoke Stage or Ship, emit the block as an operator-visible session-output summary, and surface it to the operator. The preflight never applies a bootstrap grant — only Step 2a can — so a head reported with the `bootstrap grant present — evaluated only at Step 2a` annotation halts like any other blocked head; the operator can clear the block or route that shipment through a non-dark `ship {shipment_id}`, where Step 2a evaluates the grant.
+* **Head already `active`** (resuming a run) → the head is in flight, not a claim candidate, so it is not probed; record `head: active (resume)` in `preflight` and proceed. Ship's own gates govern the in-flight shipment.
+* **Head eligible** → proceed to record `DARK_MODE_ACTIVE`. Later in-scope shipments are classified informationally and never block activation: a shipment waiting only on unshipped predecessors that are all in scope — and none of which is itself `EXTERNAL_BLOCKER` (a sequencing wait, evaluated from its `blocks` edges because the gate by design blocks successors until their predecessor ships) — is reported `PENDING`, not blocked; a shipment blocked by anything outside the scope (an out-of-scope predecessor, an unattested predecessor closure condition, an external dependency, a gate token that is not an in-scope sequencing wait, or a chain through another `EXTERNAL_BLOCKER`) is listed as `EXTERNAL_BLOCKER: {shipment_id} {token}`.
+* **Record the outcome** in the optional activation-record field `preflight` (head result, `PENDING` shipment IDs, and `EXTERNAL_BLOCKER` entries) and include it in `DARK_MODE_SCOPE`. An absent `preflight` field means the preflight did not run; it is never read as a pass.
+* **Stash-only scope** (no shipment in scope yet, so there is no scope head) → `preflight: not_applicable (no shipment in scope)`; each shipment Stage later creates is gated by the normal Step 0 probe and Step 2a, never by this preflight.
+* **Gate not installed** → record `preflight: skipped (ELIGIBILITY_GATE_SKIPPED)` and proceed.
+
+The preflight is advisory and read-only: it consumes no bootstrap grant, claims nothing, and waives nothing. Step 2a's `pre_claim` re-check remains the binding claim authority.
+
+Only after the activation preflight above passes (the head is eligible or already `active`, or the preflight is not applicable or skipped), record `DARK_MODE_ACTIVE` in session state before invoking Stage or Ship. The activation record MUST include:
 
 | Field | Required Semantics |
 |---|---|
@@ -54,17 +66,18 @@ When dark mode activates, record `DARK_MODE_ACTIVE` in session state before invo
 | `merge_approval_pre_authorized` | Whether the operator has pre-authorized PR merge approval for this scope. If absent or ambiguous, set `false`. |
 | `admin_fallback_pre_authorized` | Whether the operator has explicitly authorized admin fallback for branch-protection review requirements. If absent or ambiguous, set `false`. |
 | `stop_conditions` | At minimum: P-001, P-009, P-014, P-016, P-017 violations; scope expansion; unavailable required tools; unresolved P0/P1 findings; failed required CI/checks; unsafe destructive action; ambiguous approval/admin authority. |
-| `visibility_mode` | Operator-visible reporting channel, plus degraded-visibility behavior when the intercom path is unavailable. |
+| `visibility_mode` | Operator-visible reporting channel (the session output and PR/closure summaries), plus the degraded-visibility behavior defined in P-017 when that reporting surface is unavailable. |
+| `preflight` (optional) | The activation preflight outcome described above: the scope-head result (or `head: active (resume)`), `PENDING` shipment IDs, `EXTERNAL_BLOCKER: {id} {token}` entries, or `not_applicable (no shipment in scope)` / `skipped (ELIGIBILITY_GATE_SKIPPED)`. Optional so earlier activation records stay valid; absent means the preflight did not run. |
 
 Dark mode does not change normal `run pipeline` behavior. It only changes autonomy and approval routing for the recorded scope, and it never permits Orchestrator to perform Stage or Ship work directly. Pass the `DARK_MODE_ACTIVE` record to Stage/Ship subagents as context so they can enforce the same scope and stop conditions.
 
 **P-021 non-bypass (see P-021's "Relationship to P-017" subsection)**: a `DARK_MODE_ACTIVE` activation record does not satisfy or waive P-021. `DARK_MODE_SCOPE` bounds which shipments run — it never authorizes expanding the scope of a shipment already in flight. When a deferred-expansion entry is captured during a dark run, the capture does NOT interrupt the run: the entry is captured (P-021 C2) and left for the next Stage triage cycle; it is never triaged or planned inside the dark run itself.
 
 At activation, emit `DARK_MODE_START` and `DARK_MODE_SCOPE` as operator-visible
-summaries containing the resolved scope, approval authority, admin fallback
-state, stop conditions, visibility mode, and excluded items. When
-`agent-intercom` is installed, broadcast these events with enough context for a
-remote operator to audit the run without reading the full chat transcript.
+session-output summaries containing the resolved scope, approval authority, admin
+fallback state, stop conditions, visibility mode, and excluded items, with enough
+context for an operator to audit the run without reading the full chat transcript
+(see the P-017 Dark Factory Visibility Protocol).
 
 For a **multi-shipment dark run**, `DARK_MODE_SCOPE` MUST record the **ordered
 shipment sequence** and its restart cursor — the ordered list, the last completed
@@ -184,7 +197,7 @@ Allow Stage planning to overlap Ship execution only when the overlap does not cr
 
 ### Step 0.0: Tool Availability Gate (P-012)
 
-Before any pipeline work begins, verify tool availability per P-012. Follow the same gate protocol as Stage and Ship: probe required tools, log `TOOL_OK`/`TOOL_DEGRADED`/`TOOL_UNAVAILABLE`, and halt on unavailable required tools with no fallback.
+Before any pipeline work begins, verify tool availability per P-012. Follow the same gate protocol as Stage and Ship: for each required backlog operation, choose any declared surface (MCP `mcp_tool` or CLI `cli_command`; every declared surface is an equal supported surface, tried without trying the other first), log `TOOL_OK: {operation} via {mcp|cli}`, log `TOOL_DEGRADED` naming the failed and selected surfaces when the selected surface fails and another declared surface works, and halt with `TOOL_UNAVAILABLE: {operation}` when no declared surface works. Never substitute an undeclared command or a filesystem or cache edit.
 
 ### Step 0.0b: Crash-Resumption Protocol (Checkpoint Recovery, P-001 role separation)
 
@@ -229,6 +242,20 @@ Gather the full current backlog state:
    `backlogit_list_shipments` filtered to `queued`
    - If found: record as `queued_shipments`.
 
+2b. **Gate-aware eligibility probe (read-only, advisory pre-filter)**: If the `pipeline-topology` gate is installed for this workspace, probe each **DAG-ready** candidate in `queued_shipments`. DAG-ready means the same dependency/queue-order source Step 2 uses (the queue-ordered ready-work listing plus the `blocks`-edge dependency query): every `blocks` predecessor of the candidate has shipped. A candidate with an unshipped predecessor (in flight, queued, or abandoned) is not DAG-ready and is not probed; a predecessor that shipped with an unsatisfied closure condition (for example one closed `READY_WITH_CONDITIONS`) does not exclude the candidate from probing — the probe reports it. Probe from the default-branch vantage, as step 2a does. For each DAG-ready candidate run:
+
+   `autoharness gate pipeline-topology --mode agent --shipment {candidate_shipment_id} --phase pre_claim --json`
+
+   Retain only the exit code, token, message, and blocking check `name` from the JSON result. This probe NEVER passes `--bootstrap-grant-invocation` and NEVER passes `--force`: it never applies or consumes a bootstrap grant (grant-file existence is noted for reporting only). Step 2 step 2a remains the ONLY Orchestrator bootstrap-grant consumption site. Classify each candidate:
+   * Exit 0 → `ELIGIBLE`.
+   * Exit 1 (`blocked`) or exit 2 (`invalid`) → `INELIGIBLE: {token}`, reporting the gate token and message verbatim (for example `PREDECESSOR_CLOSURE_INCOMPLETE`, which a predecessor that closed `READY_WITH_CONDITIONS` with an unsatisfied condition produces, or `PREDECESSOR_NOT_SHIPPED`). An exit 2 result with a parseable JSON result can carry no token: report `INELIGIBLE: GATE_INVALID` with the message verbatim; an exit 2 with no parseable JSON (for example a usage error) is `GATE_PROBE_ERROR`.
+   * Any other exit code, unparseable output, or a failure of the installed gate command → `INELIGIBLE: GATE_PROBE_ERROR` (fail closed; never read as "gate not installed").
+   * Every `INELIGIBLE` variant, including `GATE_PROBE_ERROR`, takes the suffix ` (bootstrap grant present — evaluated only at Step 2a)` when `.autoharness/bootstrap-grants/{candidate_shipment_id}.yaml` exists.
+   * **Workspace-global blockers**: when the blocking check does not depend on the candidate — `active_shipment_invariant` (a shipment is already active, as in planning-overlap mode), `detect_before_consistency`, `backlog_state`, `worktree_topology`, `worktree_cleanliness`, or `branch_ownership`, identified by the blocking entry's `name` in the JSON `checks` array (a `backlog_state` block whose message names one candidate's predecessor closure artifact is candidate-specific, not global) — report it ONCE as `GLOBAL_GATE_BLOCK: {token}` instead of repeating it per candidate, stop probing (the remaining candidates are left unevaluated rather than marked ineligible, because the same global block would only repeat), and surface it to the operator. The Orchestrator never remediates a global block itself: no worktree removal, stashing, branch switching, or `--force`.
+   * **Gate not installed** (bootstrap exemption, mirroring step 2a — the `autoharness gate pipeline-topology` command itself is absent from this workspace's toolchain): skip this sub-step, log `ELIGIBILITY_GATE_SKIPPED`, and leave the candidate list unfiltered.
+
+   This sub-step is read-only (no backlog, worktree, branch, or grant mutation; ordinary gate telemetry may still emit), so it is also safe under `assess state`. It is an advisory pre-filter, never the claim authority — a passing probe does not authorize routing, and step 2a still decides at claim time. A probe result is valid only for the current Step 0 pass; re-run it after any Stage, Ship, or operator action.
+
 3. Check stash for pending entries (entries not yet promoted to backlog):
    Read stash via the configured backlog tool (MCP or CLI) as declared in the backlog registry.
    If no backlog tool is registered, skip the stash check and proceed in manual/file-backed mode.
@@ -242,12 +269,14 @@ Gather the full current backlog state:
    ORCHESTRATOR STATE:
    - Active Ship work: {shipment_id or none}
    - Queued shipments: {count}
+   - Eligible shipments: {ids | none | ELIGIBILITY_GATE_SKIPPED}
+   - Gate-blocked shipments: {id: token, ... | none}
+   - Unevaluated shipments (after a GLOBAL_GATE_BLOCK): {ids | none}
+   - GLOBAL_GATE_BLOCK: {token | none}
    - Stash entries: {count}
    - Mode: {sequential | planning-overlap | dark-factory}
    - DARK_MODE_ACTIVE: {inactive | active(scope={ids})}
    ```
-
-When the `agent-intercom` capability pack is installed, broadcast the state summary.
 
 ### Step 1: Route to Stage (when stash entries exist and work is not yet planned)
 
@@ -256,7 +285,7 @@ When the `agent-intercom` capability pack is installed, broadcast the state summ
 **Skip if**: No stash entries remain.
 
 1. Confirm planning-overlap mode is safe: Stage must not mutate the active Ship shipment manifest, must not create/use a parallel implementation branch or worktree, and may only use the explicit Stage spike/research worktree exception.
-2. **Resolve Stage's routed model (P-013.5, NON-NEGOTIABLE)**: before invoking Stage, resolve `config.model_routing.stage`, falling back per sub-field to `config.model_routing.tier3` when the `stage` route or an individual sub-field is absent or empty. This is intent-directive resolution, not a baked `--model` CLI flag (Core Rule 3): declare the resolved `model_family`/`model_provider`/`reasoning_effort` as the invocation override when the runtime supports honoring a per-invocation model directive for the Stage subagent. If the runtime cannot honor a per-invocation override, emit `ROUTING_DEGRADED: Stage invocation could not honor resolved route {model_family}/{model_provider} — falling back to session default` and surface it to the operator — never silently invoke Stage on the current session model without declaring the resolved route and the degradation.
+2. **Resolve Stage's routed model (P-013.5, NON-NEGOTIABLE)**: **CLI-first**: run `autoharness routing resolve --workspace . --site stage --json`; when it runs, log `TOOL_OK: routing-resolver-cli` and declare the route it prints (exit `1` is not a failure: use the route and surface its `degraded` entries; exit `2` means the config is unresolved or invalid, so HALT this invocation, fail closed). Only when the `autoharness` executable is unavailable or the command cannot run, log `TOOL_DEGRADED: routing-resolver-cli` and resolve by the prose below. Before invoking Stage, resolve `config.model_routing.stage`, falling back per sub-field to `config.model_routing.tier3` when the `stage` route or an individual sub-field is absent or empty. This is intent-directive resolution, not a baked `--model` CLI flag (Core Rule 3): declare the resolved `model_family`/`model_provider`/`reasoning_effort`/`context_tier` as the invocation override when the runtime supports honoring a per-invocation model directive for the Stage subagent (`context_tier` resolves the same way per sub-field and is `default` when neither the role route nor `tier3` sets it). If the runtime cannot honor a per-invocation override, emit `ROUTING_DEGRADED: Stage invocation could not honor resolved route {model_family}/{model_provider} — falling back to session default` and surface it to the operator — never silently invoke Stage on the current session model without declaring the resolved route and the degradation. If the runtime cannot honor a non-`default` resolved `context_tier` for Stage, record `ROUTING_DEGRADED: context_tier` naming Stage and the resolved tier, and proceed at the default context without halting.
 3. Invoke the **Stage** subagent:
    * Pass the stash context, any operator-specified grouping preferences, and the resolved model-routing directive from step 2.
    * Stage's expected output: a `shipment_id` in `queued` status.
@@ -264,8 +293,6 @@ When the `agent-intercom` capability pack is installed, broadcast the state summ
 5. If Stage halts or fails:
    * Surface the failure to the operator with the Stage session summary.
    * Do not proceed to Ship routing until Stage completes or the operator resolves the issue.
-
-When the `agent-intercom` capability pack is installed, broadcast `[ORCHESTRATOR] Stage subagent invoked — routing stash entries to backlog` and `[ORCHESTRATOR] Stage complete: shipment {shipment_id} ready`.
 
 ### Step 1.5: Staging Artifact Merge Gate (NON-NEGOTIABLE)
 
@@ -294,8 +321,6 @@ After Stage completes and before routing to Ship, verify that all staging artifa
    - If the file exists: staging artifacts are confirmed on the remote. Proceed to Step 2.
    - If the file does not exist: halt with `STAGING_GATE_FAIL: shipment manifest {shipment_id} not found on origin/main`.
 
-When the `agent-intercom` capability pack is installed, broadcast `[ORCHESTRATOR] Staging artifacts verified on origin/main — Ship may proceed`.
-
 ### Step 2: Route to Ship (when a queued shipment is ready)
 
 **Trigger**: A `queued` shipment exists AND no active Ship shipment is blocking.
@@ -305,19 +330,33 @@ When the `agent-intercom` capability pack is installed, broadcast `[ORCHESTRATOR
 1. Select the next `queued` shipment by **queue ordering**, not priority alone:
    * **First-pass candidate source**: list the `queued` shipments in the backlog tool's **execution/queue order** — queue position first, then priority. This queue-ordered ready-work listing is tool-specific: backlogit provides it directly as `queue view` (registry `get_queue`); other backlog tools resolve their own queue/ordering capability. The plain `backlogit_list_shipments` enumeration used in Step 0 does **not** by itself guarantee queue-position order, so select with the tool's queue-ordered operation, not a bare shipment list. See the backlogit **Shipment Sequencing Protocol** for the concrete recipe (`queue view`, `item_deps`, `queue_position`, `dep add --type blocks`). Treat this as an ordering aid and first filter — **not** the sole eligibility authority.
    * **Constrain the candidate to the recorded scope**: in a multi-shipment dark run the candidate is the **next shipment ID in the P-017 `DARK_MODE_SCOPE` ordered cursor** (see P-017 in the workflow policies), not merely the global queue head. If the queue head is a different, out-of-scope shipment, **halt** rather than substitute it — silently claiming another queue head violates P-017's no-silent-scope-expansion rule.
-   * **Re-check eligibility before claim (explicit, required)**: before claiming, run an explicit dependency + status re-check — using the backlog tool's dependency query — confirming the candidate has **no unshipped blocking predecessor**. Do not rely on the ready-work listing alone — a stale or non-filtering listing could surface a successor early. This honors the Queue and Dependency Protocol ("Re-check unfinished dependencies before claiming") in the backlogit instructions. The queue query plus this re-check together make the dependency blocks-chain a self-enforcing sequence: a shipment is claimed only after its predecessor has shipped.
-   * **Precedence**: dependency (blocks) suppression is a **hard eligibility gate** — a `queued` shipment with an unshipped blocking predecessor is never eligible, regardless of its queue position; queue position only orders among the already-eligible shipments. When the two disagree, eligibility wins.
+   * **Re-check eligibility before claim (explicit, required)**: before claiming, run an explicit dependency + status re-check — using the backlog tool's dependency query — confirming the candidate has **no unshipped blocking predecessor**. Do not rely on the ready-work listing alone — a stale or non-filtering listing could surface a successor early. This honors the Queue and Dependency Protocol ("Re-check unfinished dependencies before claiming") in the backlogit instructions. The queue query plus this re-check together make the dependency blocks-chain a self-enforcing sequence: a shipment is claimed only after its predecessor has shipped. This re-check is diagnostic input to the authoritative decision, not itself the authorizing decision: when `.autoharness/bootstrap-grants/{candidate_shipment_id}.yaml` exists for a candidate this re-check would otherwise exclude, still carry the candidate forward to step 2a instead of filtering it out here — step 2a's `pre_claim` gate invocation is the ONLY site that can apply a matching grant to override a `PREDECESSOR_NOT_SHIPPED` verdict, so a grant can never be exercised if the candidate is excluded before reaching it.
+   * **Precedence**: dependency (blocks) suppression is a **hard eligibility gate in the absence of a bootstrap grant** — a `queued` shipment with an unshipped blocking predecessor and no existing bootstrap-grant file for it is never eligible, regardless of its queue position; queue position only orders among the already-eligible shipments. When the two disagree, eligibility wins. A candidate with an unshipped blocking predecessor but an existing `.autoharness/bootstrap-grants/{candidate_shipment_id}.yaml` file remains a selectable candidate specifically so it can reach step 2a, where the `pre_claim` gate — never this step-1 pre-filter — makes the authoritative, grant-aware eligibility decision.
+   * **Gate-blocked first-pass skip (advisory, from the Step 0 probe)**: when the Step 0 eligibility probe (Step 0 step 2b) classified a candidate `INELIGIBLE: {token}`, first-pass candidate selection skips that candidate and takes the next candidate in queue order that is not classified `INELIGIBLE`. Only a candidate explicitly classified `INELIGIBLE` is skipped; a candidate that was not probed (gate not installed, left unevaluated after a `GLOBAL_GATE_BLOCK`, not DAG-ready, created after the probe ran, or no Step 0 pass ran at all, as in `ship next` / `ship {id}`) is never skipped for want of a result — step 2a decides. Three carve-outs keep this pre-filter from becoming a second authority: (a) a candidate reported `INELIGIBLE: {token} (bootstrap grant present — evaluated only at Step 2a)` is NOT skipped — it stays selectable and carries forward to step 2a, the only site that can apply a grant; (b) while a `DARK_MODE_ACTIVE` run is in effect only in-scope shipments are selectable, and in a multi-shipment run the candidate is the next shipment in the `DARK_MODE_SCOPE` cursor, so a gate-blocked in-scope candidate is never substituted by another shipment — halt and report the gate token; (c) an operator-named `ship {id}` is never substituted — halt and report the gate token. When every candidate is classified `INELIGIBLE` and none carries the bootstrap-grant annotation, report the tokens and do not route. Carve-out (a) takes precedence over (c); in a dark run (b) applies even to a grant-annotated candidate, because the Step 3 cursor-advance check halts without a grant path. A reported `GLOBAL_GATE_BLOCK` is surfaced to the operator and does not pre-empt step 2a, which halts routing on the same token. This skip is advisory pre-filtering only: step 2a's `pre_claim` re-check still runs for the selected candidate and remains the sole claim authority.
    * **Scope-reconstruction caveat**: the ready-work listing selects the next **eligible** shipment only; it does not by itself reconstruct the full ordered sequence. Derive the complete ordered shipment list (the P-017 ordered scope and restart cursor) from queued shipments plus `blocks`-edge traversal — successors remain queued from creation and are suppressed by unfinished predecessors, not by a `blocked` shipment status filter. See the P-017 ordered `DARK_MODE_SCOPE` (recorded per the workflow policies) and the backlogit **Shipment Sequencing Protocol** for the derivation.
+   * **Authoritative sequencing contract**: `pre_claim` is the sole claim authority; `dag-readiness` is advisory and non-authorizing. Expect the gate's agent-observable output to carry predecessor provenance as exactly one of `explicit`, `declared_root`, `genesis`, or `unsequenced`. `explicit` derives only from explicit `blocks` DAG edges on the target shipment — numeric adjacency is retired from the claim path. `declared_root` derives only from an already-recorded `dag-root` label. `genesis` applies only when the candidate is the ONLY shipment record in the workspace, counting live and archived records together regardless of status. Any other shipment record disqualifies genesis, including one whose status the gate cannot classify; that still counts as an existing shipment record, so genesis fails closed. In any workspace with more than one shipment record, every intended root must carry `dag-root` explicitly; a second, third, or later-numbered edge-less shipment blocks as `unsequenced`, never as `genesis`. The live shipment status vocabulary for this gate is exactly `queued`, `active`, `shipped`, and `abandoned`; a live shipment record with `blocked` is malformed legacy data and fails closed at read time rather than deriving any sequencing state.
+   * **`UNSEQUENCED_SHIPMENT` remediation and migration path**: `UNSEQUENCED_SHIPMENT` means the candidate has no explicit `blocks` edge. The only remedies are to record the real `blocks` edge or declare the shipment a root. `dag-root` is a version-controlled, review-gated declaration recorded in backlog data inside the repository trust boundary — visible in diffs, attributable to a commit, and auditable after the fact — but it is not a mechanical permission check or a security boundary. Ship must not self-declare a root; applying `dag-root` is an operator/Stage act on backlog data. No agent may author, edit, extend, re-date, or create a bootstrap grant — grants are operator-authored and review-gated, and a self-authored grant is a self-authorized force / P-005/P-001 violation. For workspaces with previously implicit sequencing, run `autoharness gate pipeline-topology --phase audit_sequencing --json` as the migration path. That audit phase is a read-only report that may surface `raw_numeric_candidate_ids` as migration hints, but it performs no backlog mutation and no migration-state or ledger write. Ordinary observational `pipeline-topology` telemetry may still emit for the phase. The durable migration record is the version-controlled operator commit that adds the real `blocks` edges or `dag-root` labels, and a code-only rollback does not undo those already-committed backlog declarations.
 2. Enforce P-001/P-016: confirm no other top-level release unit is currently `Active`, no previously merged shipment is still awaiting required post-merge release closure, and no prohibited parallel implementation branch/worktree exists before routing a shipment to Ship. Required post-merge context compaction (**P-020**) is part of that closure set: because a shipment is no longer `Active` after archival, read the previously merged shipment's **operational-closure artifact** in `docs/closure/` and route the next shipment only when its **compaction status** is `done` (or the non-blocking `degraded`); a `pending`, unset, or missing compaction status is an incomplete post-merge closure that blocks routing until compaction completes. Stage-only planning overlap remains allowed while Ship is awaiting closure only if it does not create a parallel implementation branch/worktree; explicit Stage spike/research worktrees remain the only exception.
 2a. **TOPOLOGY_GATE: pre_claim (route-to-Ship eligibility, before invocation)**: If the `pipeline-topology` gate is
-    installed for this workspace, before invoking Ship in step 4, run
-    `autoharness gate pipeline-topology --mode agent --shipment {candidate_shipment_id} --phase pre_claim --json`
-    against the selected candidate shipment ID from step 1 (not a bare ambient/no-shipment call). Exit 0: proceed to
-    step 3/4. Exit 1 (`blocked`) or exit 2 (`invalid`): halt routing to Ship with the reported token/message rather
-    than invoking Ship against an ineligible candidate — never inferred, never fail-open. (Bootstrap exemption: while
+    installed for this workspace, before invoking Ship in step 4, this is the ONLY Orchestrator bootstrap-grant
+    consumption site. Reach it only from the contract-valid default-branch vantage for this route-to-Ship check:
+    `pre_claim` evaluates `branch_ownership` before `shipment_readiness` and short-circuits, so a `BRANCH_MISMATCH`
+    block from a wrong-branch vantage is never bootstrap-grant-eligible. Before invoking the gate, check for
+    `.autoharness/bootstrap-grants/{candidate_shipment_id}.yaml`.
+    * If no grant file exists: invoke exactly as today, with no bootstrap flag:
+      `autoharness gate pipeline-topology --mode agent --shipment {candidate_shipment_id} --phase pre_claim --json`
+    * If a grant file exists: invoke
+      `autoharness gate pipeline-topology --mode agent --shipment {candidate_shipment_id} --phase pre_claim --bootstrap-grant-invocation orchestrator_pre_route --json`
+      and let the CLI perform all matching. The Orchestrator MUST NOT pre-judge applicability, MUST NOT retry with a
+      different label, and MUST NOT substitute `--force`.
+    On exit 0, inspect the returned JSON `forced` field. `forced: false` is the ordinary native pass; proceed to step
+    3/4. `forced: true` means the grant matched and was consumed; log `BOOTSTRAP_GRANT_CONSUMED: {candidate_shipment_id} orchestrator_pre_route token={token} predecessor={predecessor} head={sha}`, surface the returned
+    `force_audit_log` path to the operator, and proceed. Exit 1 (`blocked`) or exit 2 (`invalid`): halt
+    routing to Ship with the reported token/message exactly as today. Grant absence and a present-but-non-matching
+    grant are indistinguishable in effect; both leave the normal halt untouched. (Bootstrap exemption: while
     `autoharness gate pipeline-topology` is not yet installed in this workspace, skip this sub-step; self-referential
     bootstrapping shipments that build the gate are not blocked by an as-yet-uninstalled gate.)
-3. **Resolve Ship's routed model (P-013.5, NON-NEGOTIABLE)**: before invoking Ship, resolve `config.model_routing.ship`, falling back per sub-field to `config.model_routing.tier2` when the `ship` route or an individual sub-field is absent or empty. This is intent-directive resolution, not a baked `--model` CLI flag (Core Rule 3): declare the resolved `model_family`/`model_provider`/`reasoning_effort` as the invocation override when the runtime supports honoring a per-invocation model directive for the Ship subagent. If the runtime cannot honor a per-invocation override, emit `ROUTING_DEGRADED: Ship invocation could not honor resolved route {model_family}/{model_provider} — falling back to session default` and surface it to the operator — never silently invoke Ship on the current session model without declaring the resolved route and the degradation.
+3. **Resolve Ship's routed model (P-013.5, NON-NEGOTIABLE)**: **CLI-first**: run `autoharness routing resolve --workspace . --site ship --json`; when it runs, log `TOOL_OK: routing-resolver-cli` and declare the route it prints (exit `1` is not a failure: use the route and surface its `degraded` entries; exit `2` means the config is unresolved or invalid, so HALT this invocation, fail closed). Only when the `autoharness` executable is unavailable or the command cannot run, log `TOOL_DEGRADED: routing-resolver-cli` and resolve by the prose below. Before invoking Ship, resolve `config.model_routing.ship`, falling back per sub-field to `config.model_routing.tier2` when the `ship` route or an individual sub-field is absent or empty. This is intent-directive resolution, not a baked `--model` CLI flag (Core Rule 3): declare the resolved `model_family`/`model_provider`/`reasoning_effort`/`context_tier` as the invocation override when the runtime supports honoring a per-invocation model directive for the Ship subagent (`context_tier` resolves the same way per sub-field and is `default` when neither the role route nor `tier2` sets it). If the runtime cannot honor a per-invocation override, emit `ROUTING_DEGRADED: Ship invocation could not honor resolved route {model_family}/{model_provider} — falling back to session default` and surface it to the operator — never silently invoke Ship on the current session model without declaring the resolved route and the degradation. If the runtime cannot honor a non-`default` resolved `context_tier` for Ship, record `ROUTING_DEGRADED: context_tier` naming Ship and the resolved tier, and proceed at the default context without halting.
 4. Invoke the **Ship** subagent:
    * Pass the `shipment_id` as the session scope, along with the resolved model-routing directive from step 3.
    * Ship's expected output: merged PR, archived shipment, and closure artifacts.
@@ -325,8 +364,6 @@ When the `agent-intercom` capability pack is installed, broadcast `[ORCHESTRATOR
 6. If Ship halts or fails:
    * Surface the failure to the operator with the Ship session summary and PR/CI state.
    * Do not claim or invoke a second shipment until the active one is resolved.
-
-When the `agent-intercom` capability pack is installed, broadcast `[ORCHESTRATOR] Ship subagent invoked — executing shipment {shipment_id}` and `[ORCHESTRATOR] Ship complete: shipment {shipment_id} merged at {sha}`.
 
 ### Step 3: Iteration Decision
 
@@ -340,10 +377,11 @@ After each Stage or Ship cycle, re-assess state (return to Step 0):
   this workspace, immediately after advancing the `DARK_MODE_SCOPE` cursor above and before returning to Step 2, run
   `autoharness gate pipeline-topology --mode agent --shipment {next_shipment_id} --phase pre_claim --json` against
   the newly-designated next-in-cursor shipment ID. Exit 0: proceed to Step 2. Exit 1/2: halt the cursor advance with
-  the reported token/message rather than re-entering Step 2 against an ineligible successor. (Bootstrap exemption
-  applies identically to step 2a above.)
-
-When the `agent-intercom` capability pack is installed, broadcast the iteration decision and reason.
+  the reported token/message rather than re-entering Step 2 against an ineligible successor. This cursor-advance
+  check evaluates `{next_shipment_id}`, a DIFFERENT shipment, and is NOT a bootstrap-grant consumption site: never
+  pass `--bootstrap-grant-invocation` here. A bootstrap grant exists only to reach a claim and is exhausted by that
+  claim; cursor advance, `post_claim`, `lifecycle`, and `ambient` phases remain unforced grant-free checks. (Bootstrap
+  exemption applies identically to step 2a above.)
 
 ### Step E1: Elective Agent Routing (operator-initiated)
 
@@ -353,15 +391,13 @@ When the `agent-intercom` capability pack is installed, broadcast the iteration 
 
 1. **Identify the target agent**: Match the operator's request to Auto-MergeInstall (install/discover) or Auto-Tune (tune/drift/maintenance).
 2. **Validate preconditions**:
-   - **No active Ship work**: Check for any shipment in `active` status. If an active shipment exists, broadcast the corresponding warning message from the Remote Operator Integration table (when `agent-intercom` is installed), then halt with: `ELECTIVE_BLOCKED: Cannot run {agent_name} while shipment {shipment_id} is active. Elective agents modify harness artifacts (templates, instructions, skills) that Ship may be actively building against. Complete or abandon the active shipment first.`
+   - **No active Ship work**: Check for any shipment in `active` status. If an active shipment exists, halt with: `ELECTIVE_BLOCKED: Cannot run {agent_name} while shipment {shipment_id} is active. Elective agents modify harness artifacts (templates, instructions, skills) that Ship may be actively building against. Complete or abandon the active shipment first.`
    - **Clean worktree**: Verify no uncommitted changes exist in the target workspace that could conflict with harness artifact modifications. If uncommitted changes are found, halt with: `ELECTIVE_BLOCKED: Cannot run {agent_name} with uncommitted changes in target workspace. Commit or stash changes before invoking elective agents.`
 3. **Invoke the elective agent** as a subagent:
    - Pass the operator's request context (target workspace path, any scope constraints).
    - The elective agent runs at depth 1 (same as Stage or Ship). Its skills run at depth 2. Any review personas run at depth 3.
 4. **Receive output and summarize**: Present the elective agent's results to the operator — installation summary, drift report, or tuning proposals.
 5. **Return to pipeline**: After the elective agent completes, return to Step 0 (State Assessment) if the operator wants to continue pipeline work, or end the session.
-
-When the `agent-intercom` capability pack is installed, broadcast `[ORCHESTRATOR] Elective agent {agent_name} invoked — {purpose}` and `[ORCHESTRATOR] Elective agent {agent_name} complete: {summary}`.
 
 ### Step 4: Summary
 
@@ -382,28 +418,6 @@ Present the session outcome:
 
 A stall occurs when the orchestrator loop completes an iteration and the stash, queued shipments, and active shipments are in the same state as the prior iteration.
 
-## Remote Operator Integration (agent-intercom)
-
-When the `agent-intercom` capability pack is installed:
-
-| When | Tool | Level | Message |
-|---|---|---|---|
-| Session start | `broadcast` | `info` | `[ORCHESTRATOR] Starting coordination session` |
-| State assessed | `broadcast` | `info` | `[ORCHESTRATOR] State: active={id or none}, queued={count}, stash={count}, mode={mode}` |
-| Stage routed | `broadcast` | `info` | `[ORCHESTRATOR] Stage subagent invoked — routing stash entries to backlog` |
-| Stage complete | `broadcast` | `success` | `[ORCHESTRATOR] Stage complete: shipment {shipment_id} ready` |
-| Stage failed | `broadcast` | `warning` | `[ORCHESTRATOR] Stage failed: {summary}` |
-| Ship routed | `broadcast` | `info` | `[ORCHESTRATOR] Ship subagent invoked — executing shipment {shipment_id}` |
-| Ship complete | `broadcast` | `success` | `[ORCHESTRATOR] Ship complete: shipment {shipment_id} merged at {sha}` |
-| Ship failed | `broadcast` | `warning` | `[ORCHESTRATOR] Ship failed: {summary}` |
-| Stall detected | `broadcast` | `warning` | `[ORCHESTRATOR] Stall detected — no progress in last iteration` |
-| Elective routed | `broadcast` | `info` | `[ORCHESTRATOR] Elective agent {agent_name} invoked — {purpose}` |
-| Elective complete | `broadcast` | `success` | `[ORCHESTRATOR] Elective agent {agent_name} complete: {summary}` |
-| Elective blocked | `broadcast` | `warning` | `[ORCHESTRATOR] Elective agent blocked: {reason}` |
-| Session complete | `broadcast` | `success` | `[ORCHESTRATOR] Session complete: {outcome}` |
-
-Use `transmit` when a Stage or Ship failure requires operator intervention before the orchestrator loop can continue.
-
 ## Model Routing
 
 This agent operates at **Tier 2 (Standard)** by default, but supports an independent model override via `config.model_routing.orchestrator`. When the override is set, the orchestrator runs on the specified model regardless of the tier2 default.
@@ -420,11 +434,12 @@ This agent operates at **Tier 2 (Standard)** by default, but supports an indepen
 
 **Cross-provider routing**: The orchestrator can run on a different provider (e.g., OpenAI GPT-5.4) while routing Stage and Ship to Anthropic models. This works when the environment supports the `model_family` and `model_provider` frontmatter fields and the operator's subscription includes both providers.
 
-**P-013.5 — Invocation-time enforcement (Stage/Ship role routes)**: Steps 1 and 2 above each contain an explicit routing directive: before invoking Stage or Ship, this agent resolves `config.model_routing.stage` / `config.model_routing.ship` (falling back per sub-field to `tier3` / `tier2` respectively when the role route or a sub-field is unset) and declares the resolved `model_family`/`model_provider`/`reasoning_effort` as the invocation override. This turns the routing mapping below from an informal per-session promise into an enforced, verifiable directive:
+**P-013.5 — Invocation-time enforcement (Stage/Ship role routes)**: Steps 1 and 2 above each contain an explicit routing directive: before invoking Stage or Ship, this agent resolves `config.model_routing.stage` / `config.model_routing.ship` (falling back per sub-field to `tier3` / `tier2` respectively when the role route or a sub-field is unset) and declares the resolved `model_family`/`model_provider`/`reasoning_effort`/`context_tier` as the invocation override. This turns the routing mapping below from an informal per-session promise into an enforced, verifiable directive:
 
 * **Resolve**: read the role route; apply tier fallback per unset sub-field.
 * **Declare**: pass the resolved fields as the invocation override when the runtime supports per-invocation model directives — never a baked provider-specific `--model` CLI flag (Core Rule 3).
 * **Degrade explicitly**: when the runtime cannot honor a per-invocation override, emit `ROUTING_DEGRADED` naming the subagent and the resolved route that could not be honored, and surface it to the operator — never silently fall back to the current session model without declaring the degradation.
+* **Context tier**: `context_tier` is a provider- and environment-agnostic capacity class (`default` or `long_context`). When the runtime cannot honor a non-`default` resolved tier, record `ROUTING_DEGRADED: context_tier` naming the subagent and proceed at the default context without halting. This applies to installed `tier-routed` agents only; plugin-distributed (`plugin-global`) agents carry no `context_tier` and run on the operator-selected session model.
 * **Propagate to inherited skills (P-013.5/H7)**: skills invoked by Stage/Ship at
   depth 2 have **no independent model binding** — the depth-1 override declared
   above already covers them, so there is nothing separate to "resolve" or
@@ -447,29 +462,27 @@ before any P-013.5 invocation-time resolution above is performed:
 1. **Re-read fresh**: read `.autoharness/config.yaml` directly from disk. Never
    reuse a value carried over in conversation context from a previous session,
    and never treat the frontmatter `model_family`/`model_provider`/
-   `reasoning_effort` baked into `.github/agents/*.agent.md` as the live source
+   `reasoning_effort`/`context_tier` baked into `.github/agents/*.agent.md` as the live source
    of truth — those frontmatter values are install-time DEFAULTS/documentation
    only (H8); the authoritative value is always this session's fresh config
    read.
 2. **Explicit fail-closed precheck, then schema-validate on reload (H6)**: before
    trusting any schema result, apply this precheck directly to the freshly-read
    config: if the file is missing, fails to parse, parses to an empty/falsy
-   document, or omits `schema_version`, treat reload as INVALID and go straight
-   to step 3 — do not proceed to route resolution. This precheck exists because
-   `autoharness verify-workspace` is a general cross-artifact compatibility
-   report, not a strict validation gate: by design (for its broader manifest/
-   config/profile compatibility-scan use, where it must tolerate legacy and
-   partially-populated installs) it skips schema validation entirely for an
-   empty/falsy config document and downgrades a missing `schema_version` to a
-   non-blocking compatibility warning rather than a hard failure. Relying on
-   its output alone would let exactly those two conditions slip past reload
-   silently, so H6 layers this stricter, reload-specific precheck on top of —
-   never in place of — `verify-workspace`'s own compatibility classification.
+   document, or omits `schema_version`, treat reload as INVALID (HALT) and go
+   straight to step 3 — do not proceed to route resolution. This precheck exists
+   because `autoharness verify-workspace` is a general cross-artifact
+   compatibility report, not a strict validation gate: by design it skips schema
+   validation for an empty/falsy config document and downgrades a missing
+   `schema_version` to a non-blocking compatibility warning rather than a hard
+   failure. Relying on its output alone would let those two conditions slip past
+   reload silently, so H6 layers this stricter precheck on top of — never in
+   place of — `verify-workspace`'s own compatibility classification.
    Only once the precheck passes, validate the config against the harness-config
-   schema before resolving any role or escalation route from it. Installed
+   schema version matching the document's own `schema_version` before resolving any role or escalation route from it. Installed
    target workspaces do not receive the engine's `schemas/` directory -- the
    schema lives in the autoharness installation
-   (`{autoharness_home}/schemas/harness-config.schema.json`, per Core Rule 3 and
+   (`{autoharness_home}/schemas/harness-config/<schema_version>.schema.json` for the document's own version; the root `harness-config.schema.json` tracks only the current version; per Core Rule 3 and
    `harness-architecture.instructions.md`), never assumed workspace-relative.
    Resolve `autoharness_home` via the same order used elsewhere in this agent
    (`AUTOHARNESS_HOME` env var → `autoharness home` CLI → the directory
@@ -513,24 +526,29 @@ each placeholder's source, default, and fallback):
 ```yaml
 model_routing:
   orchestrator:
-    model: "gpt-5.6-sol"
-    model_family: "gpt-5.6-sol"
-    model_provider: "openai"
-    reasoning_effort: "xhigh"
+    model: "claude-sonnet-5.5"
+    model_family: "claude-sonnet-5.5"
+    model_provider: "anthropic"
+    reasoning_effort: "medium"
+    context_tier: "long_context"
   tier2:
-    model: "claude-sonnet-5"
-    model_family: "claude-sonnet-5"
+    model: "claude-sonnet-5.5"
+    model_family: "claude-sonnet-5.5"
+    context_tier: "long_context"
   tier3:
-    model: "claude-opus-5"
-    model_family: "claude-opus-5"
+    model: "gemini-4-argon"
+    model_family: "gemini-4-argon"
+    context_tier: "long_context"
   stage:
-    model_family: ""
-    model_provider: ""
-    reasoning_effort: ""
+    model_family: "gemini-4-argon"
+    model_provider: "google"
+    reasoning_effort: "high"
+    context_tier: "long_context"
   ship:
-    model_family: ""
-    model_provider: ""
-    reasoning_effort: ""
+    model_family: "claude-sonnet-5.5"
+    model_provider: "anthropic"
+    reasoning_effort: "medium"
+    context_tier: "long_context"
 ```
 
 An installed workspace resolves each placeholder to concrete values (for

@@ -34,21 +34,11 @@ This is a leaf executor. No subagent spawning. Maximum depth: 0.
 | Variable | Purpose |
 |---|---|
 | `.github/**,.vscode/**,.copilot/**` | Glob patterns for agentic config files (e.g., `.github/**`, `.vscode/**`) |
-| `src/**` | Application source file patterns (e.g., `src/**/*.rs`) |
+| `src/**/*.rs` | Application source file patterns (e.g., `src/**/*.rs`) |
 | `Rust` | Primary language for pattern selection |
 | `docs/security` | Output directory for persisted reports (default: `docs/security`) |
-| `| Rule | Check | Scope |
-|---|---|---|
-| Terminal auto-approve patterns | `.vscode/settings.json` `chat.tools.terminal.autoApprove` must not include destructive commands | VS Code |
-| Hardcoded credentials | No API keys, tokens, or passwords in `.github/`, `.vscode/`, or instruction files | All |
-| Overly permissive allow-lists | `.github/copilot-instructions.md` and agent definitions must not blanket-approve dangerous operations | GitHub Copilot |
-| Unpinned secrets | Workflow secrets must use environment-scoped access, not repo-wide | GitHub Actions |
-| Debug endpoints | No debug or diagnostic endpoints exposed without authentication | Runtime |` | Per-environment config rule table |
-| `- **Injection**: Check for `unsafe` blocks, unchecked deserialization (`serde_json::from_str` on untrusted input without validation), SQL injection via raw SurrealDB queries
-- **Broken Auth**: Verify IPC transport validates caller identity, check lockfile permissions
-- **Sensitive Data Exposure**: Check for credentials or tokens in log output, verify tracing filters exclude sensitive fields
-- **Security Misconfiguration**: Verify daemon binds to `127.0.0.1` only, check feature flags do not accidentally expose debug endpoints
-- **Deserialization**: Verify all MCP tool input is validated before processing, check for unbounded deserialization of user-controlled data` | Language-specific OWASP detection patterns |
+| `no secrets or tokens committed to source or config; `.env*` files are gitignored; workspace-root path containment is enforced on every filesystem operation; MCP tool inputs are validated before use; IPC endpoints are restricted to the local user` | Per-environment config rule table |
+| `A01 broken access control (workspace isolation bypass), A03 injection (unsanitised query or path input), A05 security misconfiguration (permissive daemon or IPC defaults), A08 software and data integrity failures (unverified release assets), A09 logging failures (secrets in logs)` | Language-specific OWASP detection patterns |
 
 ## Workflow
 
@@ -61,7 +51,7 @@ This is a leaf executor. No subagent spawning. Maximum depth: 0.
 - `scope:full` — enumerate all surfaces
 
 1. Enumerate agentic config surfaces matching `.github/**,.vscode/**,.copilot/**`
-2. Enumerate application source files matching `src/**`
+2. Enumerate application source files matching `src/**/*.rs`
 3. Identify the primary language (`Rust`) and select corresponding OWASP patterns
 4. Record the audit scope, file counts, and entry points found
 
@@ -71,13 +61,7 @@ This is a leaf executor. No subagent spawning. Maximum depth: 0.
 
 Apply deterministic regex checks to config surfaces found in Phase 1. Findings in this tier are eligible for `mode:fix` auto-remediation.
 
-Rules from `| Rule | Check | Scope |
-|---|---|---|
-| Terminal auto-approve patterns | `.vscode/settings.json` `chat.tools.terminal.autoApprove` must not include destructive commands | VS Code |
-| Hardcoded credentials | No API keys, tokens, or passwords in `.github/`, `.vscode/`, or instruction files | All |
-| Overly permissive allow-lists | `.github/copilot-instructions.md` and agent definitions must not blanket-approve dangerous operations | GitHub Copilot |
-| Unpinned secrets | Workflow secrets must use environment-scoped access, not repo-wide | GitHub Actions |
-| Debug endpoints | No debug or diagnostic endpoints exposed without authentication | Runtime |`:
+Rules from `no secrets or tokens committed to source or config; `.env*` files are gitignored; workspace-root path containment is enforced on every filesystem operation; MCP tool inputs are validated before use; IPC endpoints are restricted to the local user`:
 
 * Hardcoded credential patterns (passwords, tokens, keys) in config files
 * Overly permissive tool allow-lists (e.g., `always: true` on destructive terminal commands)
@@ -104,11 +88,7 @@ Apply judgment: record findings with reasoning, not just pattern matches. These 
 
 **Skip condition**: Skip unless `scope:full`, `scope:owasp`, or `scope:<path>`.
 
-Scan source files matching `src/**` (or the specified path) using `- **Injection**: Check for `unsafe` blocks, unchecked deserialization (`serde_json::from_str` on untrusted input without validation), SQL injection via raw SurrealDB queries
-- **Broken Auth**: Verify IPC transport validates caller identity, check lockfile permissions
-- **Sensitive Data Exposure**: Check for credentials or tokens in log output, verify tracing filters exclude sensitive fields
-- **Security Misconfiguration**: Verify daemon binds to `127.0.0.1` only, check feature flags do not accidentally expose debug endpoints
-- **Deserialization**: Verify all MCP tool input is validated before processing, check for unbounded deserialization of user-controlled data`:
+Scan source files matching `src/**/*.rs` (or the specified path) using `A01 broken access control (workspace isolation bypass), A03 injection (unsanitised query or path input), A05 security misconfiguration (permissive daemon or IPC defaults), A08 software and data integrity failures (unverified release assets), A09 logging failures (secrets in logs)`:
 
 | Category | What to look for |
 |---|---|

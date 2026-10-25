@@ -28,25 +28,19 @@ request execution. It centralizes the PR control loop so higher-level
 agents can treat review, CI follow-up, and merge approval as one bounded
 workflow.
 
-## Agent-Intercom Communication
+## Session-Output Reports
 
-When the `agent-intercom` capability pack is installed, call `ping` at
-session start. If reachable, broadcast at every step. If unreachable,
-warn the operator that visibility is degraded and continue locally.
+Report these operator-visible outcomes in the session output; routine progress
+narration is not required:
 
-| Event | Level | Message prefix |
-|---|---|---|
-| Session start | info | `[PR-LIFECYCLE] Starting: branch={input.branch}` |
-| Branch pushed | info | `[PR-LIFECYCLE] Branch pushed: {branch}` |
-| PR created | info | `[PR-LIFECYCLE] PR created: {pr_url}` |
-| PR updated | info | `[PR-LIFECYCLE] PR updated: {pr_url}` |
-| Feedback received | info | `[PR-LIFECYCLE] Review feedback: {comment_count} comments` |
-| Fix applied | info | `[PR-LIFECYCLE] Fix applied for: {comment_summary}` |
-| CI failure | warning | `[PR-LIFECYCLE] CI failed — delegating to fix-ci` |
-| CI green | info | `[PR-LIFECYCLE] CI passing` |
-| Ready for merge | success | `[PR-LIFECYCLE] PR ready — awaiting user approval` |
-| Merged | success | `[PR-LIFECYCLE] Merged: {pr_url}` |
-| Blocked | warning | `[PR-LIFECYCLE] Blocked: {reason}` |
+* the PR URL when the PR is created or updated;
+* the review-feedback and CI outcomes that change the next step, including the
+  hand-off to `fix-ci` on a CI failure;
+* when Step 5b requires fresh operator approval, report `PR ready — awaiting user approval`
+  and STOP until the operator replies; when a validated `DARK_MODE_ACTIVE` record satisfies
+  approval under Step 5b, report the ready state as a status line and continue to Step 5c;
+* the merge result with the PR URL;
+* any blocking condition with its reason.
 
 ## Inputs
 
@@ -213,7 +207,7 @@ local review readiness verification defined in
    - **Check 5 (P-018, fail-closed)**: When Copilot review is engaged, run
      `autoharness gate copilot-review <pr_number> --repo softwaresalt/agent-engram --enforcement <mode>`
      and require a PASS verdict — a Copilot review for the current HEAD plus resolution of
-     every Copilot-authored thread. A `COPILOT_REVIEW_BLOCK`, timeout, or unverifiable
+     every Copilot-authored thread and disposition of every review-body finding. A `COPILOT_REVIEW_BLOCK`, timeout, or unverifiable
      result halts; `--admin` never bypasses it.
 3. If any check fails, **halt immediately**. Do not present the PR as
    merge-ready. Report the blocking condition to the operator.
@@ -224,9 +218,10 @@ local review readiness verification defined in
    `CHANGES_REQUESTED` reviews in the merge-readiness summary — these
    may independently block merge at the GitHub level.
 6. In dark mode, this local readiness gate is the authoritative merge-readiness
-   gate: unresolved local P0/P1 findings block, `READY_WITH_FOLLOWUPS` requires
-   explicit follow-up handling, and shadow-review unavailability does not block
-   unless elevated by the activation contract or operator.
+   gate for findings: unresolved local P0/P1 findings block, `READY_WITH_FOLLOWUPS`
+   requires explicit follow-up handling, and unengaged shadow-review unavailability
+   does not block unless elevated by the activation contract or operator. Once
+   Copilot review IS engaged on the PR, Check 5 (P-018) applies fail-closed.
 
 #### Step 5b: Present merge readiness
 
@@ -256,15 +251,16 @@ After receiving operator approval, or after confirming a valid
 `DARK_MODE_ACTIVE` approval record, and before executing any normal merge or
 admin fallback:
 
-1. Re-query the PR `headRefOid`.
-2. Confirm the `headRefOid` still matches the HEAD covered by the latest passed
+1. Re-run the P-018 copilot-review gate (`autoharness gate copilot-review <pr> --repo softwaresalt/agent-engram --enforcement <mode>`) unconditionally — a Copilot review can be dismissed or a thread reopened without advancing `headRefOid`.
+2. Re-query the PR `headRefOid`.
+3. Confirm the `headRefOid` still matches the HEAD covered by the latest passed
    §1.9 gate and the PR body's `Reviewed HEAD` value.
-3. If the branch advanced, the PR body reviewed SHA differs from `headRefOid`, or
+4. If the branch advanced, the PR body reviewed SHA differs from `headRefOid`, or
    the latest passed §1.9 gate covered a different SHA, re-run §1.9 in full
    before merge or fallback — the prior gate result is stale.
-4. If the branch HEAD and review state are unchanged from the §1.9 gate run,
+5. If the branch HEAD and review state are unchanged from the §1.9 gate run and P-018 passed,
    log `P-014 LAST-MILE CHECK PASSED: branch unchanged, local readiness still covers HEAD`.
-5. Execute the merge or admin fallback only after this check passes.
+6. Execute the merge or admin fallback only after this check passes.
 
 This last-mile check closes the race window between approval receipt and merge
 execution. It is a lightweight incremental query (not a full §1.9 re-run) when the
@@ -284,18 +280,22 @@ branch has not changed.
    * `CHECKS_BLOCK`
    * `MERGE_STRATEGY_BLOCK`
    * `MISSING_ADMIN_RIGHTS`
+   * `COPILOT_REVIEW_BLOCK`
    * `UNKNOWN_MERGE_BLOCK`
 5. In dark mode, admin fallback may be attempted only for branch-protection
    review/conversation blocks explicitly covered by `admin_fallback_pre_authorized`.
    Before fallback, run Step 5c's immediate `headRefOid` re-query/comparison and
-   re-confirm required checks, P-009 merge-commit strategy, P-016 topology, and
-   scope match.
+   re-confirm required checks, P-009 merge-commit strategy, P-016 topology, P-018
+   copilot-review gate, and scope match.
 6. Never use admin fallback for failed/pending/missing required checks, stale
-   local review readiness, unresolved local P0/P1 findings, squash/rebase-only
-   merge strategy, secrets-safety risk, scope mismatch, or unknown merge blocks.
+   local review readiness, unresolved local P0/P1 findings, a P-018
+   `COPILOT_REVIEW_BLOCK`, squash/rebase-only merge strategy, secrets-safety
+   risk, scope mismatch, or unknown merge blocks.
 7. Record every normal merge and admin fallback attempt in the PR summary or
-   merge evidence with state, reason, command/API used, and result. If fallback
-   fails because credentials lack bypass rights, halt with `MISSING_ADMIN_RIGHTS`.
+   merge evidence with state, reason, command/API used, and result; emit
+   `ADMIN_FALLBACK_ATTEMPTED` after any authorized fallback call and
+   `DARK_MODE_HALTED` for uncovered blocks. If fallback fails because
+   credentials lack bypass rights, halt with `MISSING_ADMIN_RIGHTS`.
 
 ### Step 6: Post-merge cleanup
 

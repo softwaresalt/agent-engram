@@ -1,4 +1,5 @@
 ---
+name: learn
 description: "Cluster observations in .autoharness/continuous-learning/ into reusable instincts with evidence and confidence"
 ---
 

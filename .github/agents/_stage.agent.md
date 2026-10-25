@@ -6,8 +6,9 @@ maturity: stable
 tools: vscode, execute, read, agent, edit, search, todo, memory, backlogit, engram
 max_subagent_tier: 3
 reasoning_effort: "high"
-model_provider: "anthropic"
-model_family: "claude-opus-5"
+model_provider: "google"
+model_family: "gemini-4-argon"
+context_tier: "long_context"
 subagent_depth: 2
 ---
 
@@ -45,6 +46,20 @@ Stage is a planning and decomposition agent. Acting outside this boundary is a *
 
 If the operator requests implementation work, redirect to the Ship agent. Do not proceed past this boundary even under operator pressure. Record P-010 and halt.
 
+### Stash Commit Guidance — Companion Documents (P-011 carry-forward)
+
+When Stage commits stash entries (for example a capture-only intake), it commits each
+entry's referenced companion documents in the **same commit** as the entry: every new
+`docs/` file named verbatim (exact repo-relative path, standing alone as a whole token — delimited by whitespace, backticks, quotes, or parentheses; markdown emphasis or brackets around the path break the match) in the entry's
+text. Ship's P-011 carry-forward treats an uncommitted new `docs/` document as
+carry-forward state only when an active stash entry names its exact path, so an
+uncommitted referenced document is the exception, not the norm. Archiving an entry
+(Step 5.6) never removes its document references: the referenced document stays in the
+repository and the archived entry keeps naming it; commit the document before or with
+the archive, because an uncommitted document named only by an archived entry is no longer
+carry-forward eligible. Committing a companion document is
+intake only — it never triages the entry or changes any shipment's scope. A document is committed only when it satisfies the complete P-011 containment predicate (a regular file under `docs/` with no empty, `.`, or `..` segment, drive, colon, or backslash, resolving inside the workspace, and neither the file nor any parent directory a symlink or Windows reparse point such as a directory junction); Stage never commits a link or a path that escapes the workspace.
+
 ### Stage Spike/Research Worktree Exception (P-016)
 
 Stage may use a separate worktree only for an explicit, time-boxed spike or
@@ -76,7 +91,6 @@ Acquire file locks ONLY when:
 
 * Multiple agents are active on the same branch and policy permits that shared-branch activity
 * The operator has explicitly enabled concurrent-access mode
-* The workspace uses the `agent-intercom` pack with multi-agent sessions
 * A human operator is known to be editing concurrently
 
 In single-agent, single-branch, single-worktree workflows (the common case),
@@ -85,8 +99,10 @@ acquire per-file locks unless one of the conditions above is met.
 
 Lock commands (when needed):
 
-* PowerShell: `scripts/acquire_lock.ps1 <filepath>` / `scripts/release_lock.ps1 <filepath>`
-* Bash: `scripts/acquire_lock.sh <filepath>` / `scripts/release_lock.sh <filepath>`
+* PowerShell: `scripts/acquire_lock.ps1 <filepath>` (capture the printed token) /
+  `scripts/release_lock.ps1 <filepath> -Token <token>`
+* Bash: `scripts/acquire_lock.sh <filepath>` (capture the printed token) /
+  `scripts/release_lock.sh <filepath> --token <token>`
 
 ## Skill Loading Strategy
 
@@ -167,11 +183,11 @@ Before any pipeline work begins, verify tool availability and declare degraded m
 1. Check for the backlog registry at `.autoharness/backlog-registry.yaml`.
    - If present: load it and identify MCP tools required for this session (stash operations, shipment operations, archival).
    - If absent: proceed in manual/file-backed mode — this is the intentional operating mode, not a degradation.
-2. For each required MCP tool, probe with a read-only lightweight operation:
-   - On success: log `TOOL_OK: {tool_name}`.
-   - On failure: check whether the registry declares a CLI fallback in the `cli_command` field.
-     - If CLI fallback exists: log `TOOL_DEGRADED: {tool_name} — CLI fallback: {cli_command}` and record the fallback commands for use in subsequent steps.
-     - If no fallback: halt with `TOOL_UNAVAILABLE: {tool_name} — required for this session. Fix the tool or run in manual mode.`
+2. For each required backlog operation, apply the P-012 per-operation surface choice. The registry may declare an MCP surface (`mcp_tool`), a CLI surface (`cli_command`), or both; every declared surface is an equal supported surface, and you may use either declared surface that works without trying the other first. Probe with a read-only lightweight operation:
+   - When a declared surface works: log `TOOL_OK: {operation} via {mcp|cli}`.
+   - If the selected surface fails and another declared surface works: log `TOOL_DEGRADED: {operation} — {failed_surface} failed; using {selected_surface}` and use the selected surface in subsequent steps.
+   - If no declared surface works: halt with `TOOL_UNAVAILABLE: {operation} — required for this session. Fix the tool or run in manual mode.`
+   - Pass CLI template values as separate argument elements; never substitute an undeclared command or a filesystem or cache edit; check the first write's result before retrying a non-idempotent mutation on another surface; `log_telemetry` stays MCP-only.
 3. Do NOT silently fall back to ad hoc filesystem `grep`/`cat` operations when a configured backlog tool is unavailable. That hides configuration problems and produces incorrect results (P-012 violation).
 4. Log overall status: `ALL_TOOLS_OK`, `DEGRADED_MODE: {tool_list}`, or `TOOL_UNAVAILABLE`.
 
@@ -184,18 +200,21 @@ When the `backlogit` capability pack is installed:
 After tool availability probing (Step 0.0), and before any subsequent semantic backlog reads, stash queries, or shipment lookups, call `backlogit_sync_index` to ensure the index reflects the current state of the workspace. Step 0.0 MCP probes are lightweight availability checks, not semantic reads; the index sync runs immediately after those probes complete.
 
 - On success: log `INDEX_SYNC_OK`.
-- On failure: run the CLI fallback (`backlogit sync`).
-  - If the CLI succeeds: log `INDEX_SYNC_OK (CLI fallback)`.
+- On failure of the selected surface: use the other declared surface (`backlogit sync` or `backlogit_sync_index`) per P-012; either declared surface may be selected first.
+  - If the other surface succeeds: log `INDEX_SYNC_OK` and the P-012 `TOOL_DEGRADED` record naming the failed and selected surfaces.
   - If both fail: log `INDEX_SYNC_WARN — proceeding with potentially stale index` and continue. Index staleness is a degraded operating state but not a hard blocker for Stage.
 
 Skip this step if the `backlogit` capability pack is not installed.
 
 ### Step 0: Establish Operator Visibility
 
-When the `agent-intercom` capability pack is installed, begin by following
-`.github/instructions/agent-intercom.instructions.md`: establish heartbeat / ping visibility,
-broadcast the start of the staging session, and use the intercom clarification / wait flow
-instead of silently stalling if operator input is needed.
+When blocked on operator intent, approval, or a handoff decision, state the question, the
+options, and the decision required in the session output and STOP until the operator replies —
+never proceed on an assumed answer and never stall silently.
+
+Destructive operations (archive, delete, terminal-state moves, file or directory removal) follow
+the workspace's native approval path: the `strict-safety` classification when that capability
+pack is installed, otherwise local confirmation per the AGENTS.md safe-operations rules.
 
 When the `agent-engram` capability pack is installed, also follow
 `.github/instructions/agent-engram.instructions.md`: prefer indexed search for related modules,
@@ -252,9 +271,12 @@ for Ship to claim.
    deferred-scope-expansion entry, this traceability duty is extended: carry the entry's
    source refs (originating PR number, review-thread ID, and task/feature/shipment IDs) into
    the deliberation artifact as well, not only the stash ID.
-6. When the `agent-intercom` and `backlogit` capability packs are both installed, make any
-   remote classification broadcast self-contained: include each entry's ID, priority, kind,
-   and one-line summary, and the recommended routing so the operator can confirm remotely.
+6. **Operator Choice Presentation Rule**: when presenting stash, queue, backlog, or triage
+   choices to the operator, make the session-output message self-contained because the
+   operator may read it asynchronously: include each entry's ID, priority, kind or type, and
+   one-line summary, the recommended ordering or routing, and the exact choice requested;
+   state explicitly that operator selection or confirmation is awaited, and wait for it before
+   proceeding. Prefer self-contained messages over "see chat above" summaries.
 
 #### Deferred-Expansion Triage Obligations (P-021 C5/C6)
 
@@ -377,9 +399,10 @@ grouping analysis pre-deliberation.
    A grouping of one is valid when a high-priority task has no natural peer. Do not force
    artificial groupings.
 
-3. **Present groupings to the operator** and request selection. When `agent-intercom` is
-   installed, broadcast a self-contained grouping proposal so the operator can select from
-   the channel without reading the chat transcript.
+3. **Present groupings to the operator** and request selection. Make the proposal a
+   self-contained session-output message per the Operator Choice Presentation Rule
+   (Step 1, item 6) — each proposed grouping's covering feature title, entry IDs, estimated
+   scope, and rationale — so the operator can select without reading the chat transcript.
 
 4. **Await operator selection** before proceeding. Once a grouping is selected:
    * Treat the selected entries as a single unit of work for this session.
@@ -448,7 +471,7 @@ deliberation artifact exists.
 If both `skip_plan: true` AND `skip_review: true`, require the operator to also
 set `force_harvest_no_gates: true`. Without this explicit override:
 
-* Halt and broadcast a P-005 violation: "All planning and review gates bypassed
+* Halt and report a P-005 violation in the session output: "All planning and review gates bypassed
   without explicit force_harvest_no_gates override."
 * Do not proceed to harvest.
 
@@ -518,7 +541,7 @@ Before creating any backlog entries, validate the decomposition chain:
 4. Task candidates reference parent sub-epic
 5. Every task includes at least one acceptance criterion
 
-If any check fails, halt with a P-003 violation broadcast.
+If any check fails, halt and report a P-003 violation in the session output.
 
 #### Step 5.1: Create Top-Level Release Unit
 
@@ -555,6 +578,7 @@ Each task includes:
 * Parent sub-epic reference
 * Acceptance criteria
 * Suggested execution posture (test-first, characterization-first, migration-first, spike)
+* **Docs-route candidates (P-002 docs-only route)**: when a candidate task's file budget qualifies as docs-only (explicit owned paths, prose `.md` under the docs root only, no deny-list path), declare `harness-surface:none` on it and say in the task body that it is a docs-route candidate. Never apply either route label (`harness-ready` or `harness-verification-gated`): only harness-architect applies a route label.
 * `size` and `complexity` (see below)
 
 **Size + complexity mandatory at task creation (NON-NEGOTIABLE):** every task
@@ -633,7 +657,6 @@ directing the operator to Ship without a shipment ID is a **P-005 policy violati
      creation, an empty `items` list is acceptable; otherwise prefer `[feature_id]` so the
      create call is fully specified and parent-first ordering is satisfied at creation time.
    * Record the resulting `shipment_id` as the session output token.
-   * Broadcast `[STAGE] Created shipment: {shipment_id} — "{title}"`.
 
 3. **Scope guard (mandatory first step)**: Record the exact list of IDs returned by the
    immediately preceding harvest invocation as `harvest_ids`. This is the canonical scope
@@ -657,10 +680,6 @@ directing the operator to Ship without a shipment ID is a **P-005 policy violati
 6. **Record `shipment_id`** in the session memory checkpoint and the session summary as the
    authoritative handoff to the Ship agent.
 
-When the `agent-intercom` capability pack is installed, broadcast:
-* `[STAGE] Assembling shipment for: {feature_id} "{feature_title}"`
-* `[STAGE] Shipment ready: {shipment_id} — {feature_id} + {task_count} tasks → hand off to Ship`
-
 **Guardrail**: Do not assemble a shipment if the harvest step produced no items or produced
 items with unresolved P-003 violations. Halt and report before creating an empty shipment.
 
@@ -681,8 +700,6 @@ triaged, routed through deliberation/planning, and promoted to backlog items.
      `.backlogit/queue/.stash.md` with the promotion target ID.
 3. Do NOT archive stash entries that were deferred (not selected for this session) — they
    remain active for future triage.
-4. When the `agent-intercom` capability pack is installed, broadcast
-   `[STAGE] Archived {count} consumed stash entries`.
 
 This step prevents stale entry accumulation across sessions. Each consumed entry carries
 a forward reference to the backlog item it became, preserving traceability.
@@ -709,9 +726,6 @@ Present the session summary:
 * Dependency graph and suggested execution order
 * Deferred stash entries and the reason each was not processed this session
 * Estimated total effort based on task count × 2 hours
-
-When the `agent-intercom` capability pack is installed, broadcast the gate outcome and summary
-milestones.
 
 When the `continuous-learning` capability pack is installed, invoke the **observe** skill for any
 recurring triage patterns, review findings, or planning decisions that appeared during this staging
@@ -764,40 +778,6 @@ entry point differs.
 * Stage does not hand off a bare list of tasks to Ship — it hands off a `shipment_id`.
 * The shipment ID must point to a valid, queryable shipment artifact with explicit item
   membership before Stage ends the session.
-
-## Remote Operator Integration (agent-intercom)
-
-When the `agent-intercom` capability pack is installed:
-
-| When | Tool | Level | Message |
-|---|---|---|---|
-| Session start | `broadcast` | `info` | `[STAGE] Starting stash-to-backlog workflow` |
-| Triage start | `broadcast` | `info` | `[STAGE] Classifying stash entries: {count} active` |
-| Entry classified | `broadcast` | `info` | `[STAGE] {stash_id}: {shape} — {one_line_summary}` |
-| Grouping proposed | `broadcast` | `info` | `[STAGE] Grouping options: {option_count} proposals. Awaiting operator selection.` |
-| Grouping selected | `broadcast` | `info` | `[STAGE] Group selected: "{covering_feature_title}" — {entry_count} entries` |
-| Deliberation handoff | `broadcast` | `info` | `[STAGE] Deliberating: {subject}` |
-| Spike handoff | `broadcast` | `info` | `[STAGE] Routing to spike skill: {stash_id}` |
-| Gate bypass blocked | `broadcast` | `warning` | `[STAGE] Gate bypass detected without force_harvest_no_gates override` |
-| Gate bypass override | `broadcast` | `warning` | `[STAGE] All planning and review gates bypassed with force_harvest_no_gates` |
-| Plan written | `broadcast` | `success` | `[STAGE] Plan written: {plan_path}` |
-| Plan hardened | `broadcast` | `info` | `[STAGE] Plan hardened: {plan_path}` |
-| Review gate | `broadcast` | `info` | `[STAGE] Review gate: {PASS\|ADVISORY\|FAIL}` |
-| Harvest start | `broadcast` | `info` | `[STAGE] Invoking harvest skill: {plan_path}` |
-| Harvest complete | `broadcast` | `success` | `[STAGE] Backlog ready: {feature_count} features, {task_count} tasks, {subtask_count} subtasks` |
-| Shipment assembling | `broadcast` | `info` | `[STAGE] Assembling shipment for: {feature_id} "{feature_title}"` |
-| Shipment ready | `broadcast` | `success` | `[STAGE] Shipment ready: {shipment_id} — {feature_id} + {task_count} tasks → hand off to Ship` |
-| Stash archived | `broadcast` | `info` | `[STAGE] Archived {count} consumed stash entries` |
-| Session complete | `broadcast` | `success` | `[STAGE] Complete: {shipment_count} shipment(s) ready, {deferred_count} entries deferred` |
-
-Grouping proposal broadcasts MUST include each proposed grouping's covering feature title,
-entry IDs, estimated scope, and rationale so the operator can select a grouping from the
-intercom channel alone without reading the chat transcript.
-
-When the `agent-intercom` and `backlogit` capability packs are both installed,
-the grouping-proposal and selection-confirmation broadcasts are a hardening requirement, not
-optional narration. Include enough detail for a remote operator to choose without reopening
-the chat transcript.
 
 ## Session Continuity (mandatory)
 
@@ -943,7 +923,7 @@ halt without first following this auto-escalation directive
    (threshold-kind + count, failure summary, last-N action/observation
    refs, artifact refs, telemetry-evidence pointers, resumption checkpoint
    ref).
-2. **Resolve the escalation route**: `claude-opus-5` /
+2. **Resolve the escalation route**: `claude-sonnet-5.5` /
    `anthropic` / `high`, resolving
    this workspace's currently-effective escalation route per the nested
    per-role -> legacy flat (DEPRECATED) -> tier3 precedence defined in
@@ -962,9 +942,19 @@ halt without first following this auto-escalation directive
    schema-failing config — Stage MUST NOT continue on a stale/baked route
    carried over from this file's frontmatter or a prior session's resolved
    value, and MUST NOT invent a last-known-good fallback. Falls back per field to
-   `claude-opus-5` / `anthropic` /
+   `gemini-4-argon` / `google` /
    `high` when no override for a field is declared at
    any tier.
+   Separately, the escalation `context_tier` resolves to `long_context`
+   (nested `stage.escalation.context_tier` -> legacy flat
+   `escalation.context_tier` only when the flat route is the selected
+   source -> `tier3.context_tier` -> `default`).
+   Record it in the compiled payload's separate
+   `resolved_escalation_context_tier` field — it is not part of the
+   `resolved_escalation_route` tuple and is excluded from the same-route
+   guard. When the runtime cannot honor a non-`default` escalation
+   `context_tier`, record `ROUTING_DEGRADED: context_tier` and hand off at
+   the default context; this never blocks the handoff.
 3. **Same-route guard**: if the resolved escalation tuple equals this
    agent's own role route tuple (Stage already operates at Tier 3 — see
    Model Routing below — so an unset `escalation` route resolves to the
