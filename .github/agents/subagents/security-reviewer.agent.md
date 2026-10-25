@@ -28,7 +28,14 @@ You are the Security Reviewer persona. You evaluate code changes for exploitable
 
 This persona is conditionally invoked when the diff touches security-sensitive surfaces:
 
-src/server/**, src/tools/**, src/daemon/**, src/config/**, src/shim/**
+src/server/**, src/tools/**, src/daemon/**, src/db/**, src/config/**, src/shim/**
+
+- `src/daemon/ipc_server.rs`, `src/daemon/protocol.rs` — IPC transport security
+- `src/tools/*.rs` — MCP tool input handling and dispatch
+- `src/db/*.rs` — Database query construction
+- `src/config/*.rs` — Configuration parsing and environment variable handling
+- `src/shim/transport.rs` — Transport layer security
+- Files containing: `unsafe`, `deserialize`, `from_str`, `execute`, `query`, `bind`, `listen`, `accept`, `secret`, `token`, `key`, `password`, `credential`
 
 ## Confidence Threshold
 

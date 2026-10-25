@@ -158,7 +158,7 @@ variables_used:
   CI_RUNNER_OS: "ubuntu-latest"
   CI_WORKFLOW_GLOB: "**/.github/workflows/*.yml"
   COMMIT_SCOPES: "agents, prompts, instructions, skills, templates, workflows, extension, scripts, docs, adrs, settings, build"
-  CONCURRENCY_PATTERNS: "thread, Mutex, channel, async, tokio"
+  CONCURRENCY_PATTERNS: "thread, Mutex, RwLock, channel, async, tokio, tokio::spawn, Arc<Mutex<T>>, Arc<RwLock<T>>, mpsc::channel, oneshot::channel, tokio::select!, async fn, .await, Send + Sync bounds, Semaphore, Notify"
   CONTINUOUS_LEARNING_CAPTURE_HOOKS: "false"
   CONTINUOUS_LEARNING_DIR: ".autoharness/continuous-learning"
   CONTINUOUS_LEARNING_ENVIRONMENT_ADAPTER: "none"
@@ -314,8 +314,21 @@ variables_used:
   REPO_OWNER: "softwaresalt"
   SECURITY_CONFIG_RULES: "no secrets or tokens committed to source or config; `.env*` files are gitignored; workspace-root path containment is enforced on every filesystem operation; MCP tool inputs are validated before use; IPC endpoints are restricted to the local user"
   SECURITY_OWASP_PATTERNS: "A01 broken access control (workspace isolation bypass), A03 injection (unsanitised query or path input), A05 security misconfiguration (permissive daemon or IPC defaults), A08 software and data integrity failures (unverified release assets), A09 logging failures (secrets in logs)"
-  SECURITY_REVIEW_PATTERNS: "src/server/**, src/tools/**, src/daemon/**, src/config/**, src/shim/**"
-  SECURITY_SCAN_PATTERNS: "src/**/*.rs, tests/**/*.rs, build.rs"
+  SECURITY_REVIEW_PATTERNS: "src/server/**, src/tools/**, src/daemon/**, src/db/**, src/config/**, src/shim/**
+
+- `src/daemon/ipc_server.rs`, `src/daemon/protocol.rs` — IPC transport security
+- `src/tools/*.rs` — MCP tool input handling and dispatch
+- `src/db/*.rs` — Database query construction
+- `src/config/*.rs` — Configuration parsing and environment variable handling
+- `src/shim/transport.rs` — Transport layer security
+- Files containing: `unsafe`, `deserialize`, `from_str`, `execute`, `query`, `bind`, `listen`, `accept`, `secret`, `token`, `key`, `password`, `credential`"
+  SECURITY_SCAN_PATTERNS: "src/**/*.rs, tests/**/*.rs, build.rs:
+- IPC transport authentication and authorization patterns in `src/daemon/` and `src/shim/`
+- File system access patterns in `src/services/` (path traversal and workspace-containment enforcement)
+- MCP tool input validation in `src/tools/` (parameter sanitization)
+- Database query construction in `src/db/` (injection prevention)
+- Configuration parsing in `src/config/` (environment variable injection)
+- Lockfile and pidfile security in `src/daemon/lockfile.rs`"
   SHIP_CONTEXT_TIER: "long_context"
   SHIP_ESCALATION_CONTEXT_TIER: "long_context"
   SHIP_ESCALATION_FAMILY: "claude-sonnet-5.5"
@@ -424,7 +437,7 @@ artifacts:
     artifact_type: "agent"
     primitive: 4
     template: "templates/agents/review/concurrency-reviewer.agent.md.tmpl"
-    checksum: "cb53ebf4f4eef13297a4e0e6394dae51af57da07f4af821383bf9e5ac1511e1c"
+    checksum: "9e5ca1eedb35e95321298fa4a57acb1c937c009c858ecebac36e25dc592d7074"
   - path: ".github/agents/subagents/constitution-reviewer.agent.md"
     artifact_type: "agent"
     primitive: 4
@@ -479,12 +492,12 @@ artifacts:
     artifact_type: "agent"
     primitive: 4
     template: "templates/agents/review/security-reviewer.agent.md.tmpl"
-    checksum: "4a7bcdc2c82057d1c928060363630bde30731099be736f6f6537276e589fd1b1"
+    checksum: "c6511d3cf45dad0ebd625fc40f515f7ad6ae6e5ab47698cbd047ec61bade700b"
   - path: ".github/agents/subagents/security-sentinel.agent.md"
     artifact_type: "agent"
     primitive: 4
     template: "templates/agents/security-sentinel.agent.md.tmpl"
-    checksum: "d6ecac879370517f16fb48ddbd28bc05e11eb373c55013c22bd54b72c0e6e5df"
+    checksum: "b5aebf6ef9e5a26da5bff12028f8ea8be919dfa1865f77b7dcbf7e87b8e05e55"
   - path: ".github/agents/subagents/template-integrity-reviewer.agent.md"
     artifact_type: "agent"
     primitive: 4
@@ -504,7 +517,7 @@ artifacts:
     artifact_type: "instruction"
     primitive: 1
     template: "templates/instructions/agent-engram.instructions.md.tmpl"
-    checksum: "24ab660df7815b9f3734e1e638382f3c93427ac94f4886ad2d0a12e16e9d522c"
+    checksum: "ce37ec2bca710f37bc3f35b83fbb3a501b8c45e1633e0532bc315b9f12c189dd"
   - path: ".github/instructions/architecture-doc.instructions.md"
     artifact_type: "instruction"
     primitive: 9
@@ -784,7 +797,7 @@ artifacts:
     artifact_type: "skill"
     primitive: 8
     template: "templates/skills/review/SKILL.md.tmpl"
-    checksum: "36ad46ffa28ed2d6d3512c8967a9128060d6f7e30af0730700619540c853ec5f"
+    checksum: "ce1aa547f5020198abd23ccceca078021580e8a4dd55713f268e39b2d5cb2272"
   - path: ".github/skills/runtime-verification/SKILL.md"
     artifact_type: "skill"
     primitive: 10

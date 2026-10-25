@@ -29,7 +29,7 @@ You are the Concurrency Reviewer persona. You evaluate code changes that involve
 
 This persona is conditionally invoked when the diff contains patterns suggesting concurrency:
 
-thread, Mutex, channel, async, tokio
+thread, Mutex, RwLock, channel, async, tokio, tokio::spawn, Arc<Mutex<T>>, Arc<RwLock<T>>, mpsc::channel, oneshot::channel, tokio::select!, async fn, .await, Send + Sync bounds, Semaphore, Notify
 
 ## Output Format
 

@@ -67,9 +67,9 @@ Prefer these before file-based fallback whenever the question is structural or c
 
 Use `query_graph` for structured, read-only graph traversal. Select the traversal with the `operation` parameter:
 
-* `neighborhood` — expand typed edges around a known node (`root`, `direction`, `max_depth`, `max_nodes`, `edge_types`). Prefer this when you have a specific starting node.
-* `find_path` — find a path between two nodes (`from`, `to`, plus the same bounds and `edge_types` filters).
-* `transitive_closure` — compute everything reachable from a node along the selected edge types (`root`, `direction`, `max_depth`, `max_nodes`, `edge_types`).
+* `neighborhood` — expand typed edges around a known node (`root`, `direction` [`both` | `outgoing` | `incoming`], `max_depth`, `max_nodes`, `edge_types`). Prefer this when you have a specific starting node.
+* `find_path` — find the shortest forward-only (outgoing-edge) path between two nodes (`from`, `to`, `max_depth`, `edge_types`; does not accept `direction` or `max_nodes`).
+* `transitive_closure` — compute everything reachable forward (along outgoing edges) from a node within the selected bounds (`root`, `max_depth`, `max_nodes`, `edge_types`; does not accept `direction`). For incoming reachability, use `neighborhood` with `direction: "incoming"` or `impact_analysis`.
 
 ## Fallback Protocol
 
