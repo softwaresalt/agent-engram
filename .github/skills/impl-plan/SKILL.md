@@ -1,4 +1,5 @@
 ---
+name: impl-plan
 description: "Transform feature or chore descriptions and requirements into structured implementation plans grounded in repo patterns and research"
 ---
 
@@ -8,11 +9,11 @@ Transform WHAT (requirements document) into HOW (implementation plan). Produces 
 
 ## When to Use
 
-Invoke when a deliberation outcome or spike findings document is ready for technical planning. The output feeds into `plan-harden` when the work is risky, then into the `plan-review` skill for validation before the stage agent harvests it into backlog work.
+Invoke when a deliberation outcome, brainstorm requirements document, or spike findings document is ready for technical planning. The output feeds into `plan-harden` when the work is risky, then into the `plan-review` skill for validation before the stage agent harvests it into backlog work.
 
 ## Inputs
 
-* `source`: (Required) Path to source document (`docs/decisions/{file}.md` for deliberation outcomes or spike findings).
+* `source`: (Required) Path to source document — `docs/decisions/{file}.md` for deliberation outcomes or spike findings, or `docs/research/{file}.md` for brainstorm requirements documents.
 
 ## Output
 
@@ -20,14 +21,14 @@ A plan file at `docs/exec-plans/{YYYY-MM-DD}-{slug}-plan.md`.
 
 ## Required Protocol
 
-When the `agent-intercom` capability pack is installed, follow
-`.github/instructions/agent-intercom.instructions.md`: establish heartbeat / ping visibility at the
-start of planning, broadcast major planning milestones, and use the intercom clarification flow
-when unresolved source ambiguity or planning trade-offs require operator input.
-
 When the `agent-engram` capability pack is installed, follow
 `.github/instructions/agent-engram.instructions.md`: verify the engram search surface before relying
 on indexed discovery, and prefer engram-first lookup while researching the codebase.
+
+When the `graphtor-docs` capability pack is installed, follow
+`.github/instructions/graphtor-docs.instructions.md`: prefer graphtor-docs indexed documentation
+retrieval for concept and API lookup before broad grep — Engram for code relationships,
+graphtor-docs for documentation and API questions.
 
 ### Phase 1: Understand the Source
 
@@ -49,6 +50,10 @@ Use workspace search tools to understand:
 When the `agent-engram` capability pack is installed, prefer `unified_search` for broad discovery,
 `list_symbols` for inventory, `map_code` for caller/callee context, and `impact_analysis` before
 manual caller tracing.
+
+When the `graphtor-docs` capability pack is installed, prefer `search_local_docs`,
+`search_semantic`, and `research_topic` for documentation, API, and concept lookup; reserve Engram
+for code relationships.
 
 ### Phase 3: Structure the Plan
 

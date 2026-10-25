@@ -1,4 +1,5 @@
 ---
+name: compact-context
 description: "Compact and consolidate memory, plan, and tracking artifacts into durable summaries in docs/ — mandatory workflow step, not advisory"
 ---
 
@@ -13,8 +14,19 @@ This skill is a **mandatory workflow step** invoked explicitly by the stage or s
 Invoke as part of the standard workflow:
 
 * **Stage or Ship agent**: When checkpoint count for a feature or chore exceeds 10 (mandatory trigger)
-* **Ship agent**: At batch completion (Step 5), after writing the session memory summary
+* **Ship agent**: At every post-merge closure (mandatory per-merge trigger — **P-020**), after writing the session memory summary
 * **Manual**: When `docs/memory/` file count > 40, total size > 500 KB, or the operator requests it
+
+> **Invocation is mandatory; candidate selection is threshold-gated.** P-020 mandates
+> that Ship **invokes** this skill at every post-merge closure. It does not mandate
+> heavy compaction: the **candidate selection** below stays threshold-gated
+> (`threshold_days`, `max_files`, `max_size_kb`; active checkpoints are never
+> compacted). One candidate is intended per merge — the just-closed release unit's
+> memory qualifies under the completed-work rule (Phase 2, "completed feature or
+> chore") — so the guaranteed call performs a **bounded, cheap Tier-1 consolidation**
+> of that fresh memory (the intended post-merge floor), degrading to a scan-only
+> no-op only when no completed-work memory exists and nothing else exceeds the
+> thresholds.
 
 ## Inputs
 
@@ -34,8 +46,6 @@ Invoke as part of the standard workflow:
 ## Required Protocol
 
 ### Phase 1: Assess
-
-> **Intercom**: When the `agent-intercom` capability pack is installed, broadcast `[COMPACT] Starting compaction: target={target}` before scanning.
 
 Scan the target directories:
 
@@ -64,9 +74,9 @@ Mark artifacts as compaction candidates if:
 * **Plans**: Feature or chore is complete AND plan has appended review content ready for consolidation
 * **Closure records**: Feature or chore is complete AND more than `threshold_days` old
 
-> **Intercom**: When the `agent-intercom` capability pack is installed, broadcast `[COMPACT] Candidates identified: {count} files` after candidate identification is complete.
-
 ### Phase 3: Compact
+
+The `{YYYY-MM-DD}` date in every compacted, decided-plan, and closure-summary filename below is the UTC date; see `.github/instructions/output-timestamps.instructions.md` for the full rule.
 
 **Memory compaction** (per-release-unit or per-date group):
 
@@ -91,15 +101,13 @@ Mark artifacts as compaction candidates if:
 
 ### Phase 4: Report
 
-Summarize:
+Summarize in the session output:
 
 * Files compacted: {{count}}
 * Space recovered: {{size_reduction}}
 * Active task checkpoints preserved: {{count}}
 * Plans consolidated into decided-plans: {{count}}
 * Closure records compacted: {{count}}
-
-> **Intercom**: When the `agent-intercom` capability pack is installed, broadcast `[COMPACT] Compacted {count} files, recovered {size_reduction}` after the summary is produced.
 
 ## Behavioral Constraints
 
@@ -108,17 +116,6 @@ Summarize:
 * Preserve the most recent checkpoint for each completed task
 * All archive operations maintain a traceable path from the compacted summary back to the original verbose artifacts
 * Decided-plans must preserve all final decisions and their rationale — compaction removes verbosity, not substance
-
-## Intercom Events
-
-When the `agent-intercom` capability pack is installed, broadcast the
-following events at the specified trigger points:
-
-| Event | Trigger | Broadcast format |
-|---|---|---|
-| `start` | Skill invoked (Phase 1 begin) | `[COMPACT] Starting compaction: target={target}` |
-| `candidates` | Phase 2 complete | `[COMPACT] Candidates identified: {count} files` |
-| `complete` | Phase 4 report produced | `[COMPACT] Compacted {count} files, recovered {size_reduction}` |
 
 ## Model Routing
 

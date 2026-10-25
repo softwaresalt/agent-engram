@@ -1,4 +1,5 @@
 ---
+name: operational-closure
 description: "Produce release-readiness, releasability evidence, monitoring, rollback, and feedback artifacts that close the loop after implementation and verification"
 ---
 
@@ -20,17 +21,19 @@ Invoke when a feature, fix, or risky change is ready to hand off into merge, dep
 
 ## Output
 
-* Closure artifact at `docs/closure/{YYYY-MM-DD}-{slug}-closure.md`
+* Closure artifact at `docs/closure/{shipment_id}-{feature_id}-post-merge-closure.md`
+  * **Required frontmatter keys**: `closure_status` (`READY`, `READY_WITH_CONDITIONS`, or `BLOCKED`) and `compaction_status` (`pending`, `done`, or `degraded`). New artifacts always write `compaction_status`; the legacy `compaction` alias is accepted on read only for already-committed history. Both keys are gate-relevant. The consumer's acceptance requirement, quoted from the closure-evidence contract: "a closure artifact is accepted only when its frontmatter carries a compaction_status (or legacy compaction) of done or degraded AND a closure_status of READY, or of READY_WITH_CONDITIONS with a non-empty conditions list in which every entry is a mapping with satisfied: true (the literal boolean) and a non-empty evidence reference".
+  * **Naming note**: the closure date is carried in frontmatter, never in the filename. Legacy date-prefixed names (`{YYYY-MM-DD}-{shipment_id}-{slug}-closure.md`) remain readable for already-committed history but are never written; recognition on read is not permission to write.
+  * **Close-path keys (192-F)**: `close_path` (`cascade` or `safe_close`) and `close_evidence`, the workspace-relative path `docs/closure/evidence/{shipment_id}-{feature_id}-close-evidence.json` that `build_evidence_path` builds for the shipment's `autoharness shipment cascade-close` evidence record (a fixed path, never derived from the closure directory). `close_path` is the record's selected close path: `cascade` after a mutating `cascade-close` exit 0, and `safe_close` after a `--classify-only` exit 3 followed by the safe-close steps. The evidence JSON is committed in the same commit as the closure artifact, and is never hand-edited. When the artifact also carries `merge_commit`, it must equal the record's `merge_commit_sha`. Both keys are gate-relevant: the closure-evidence gate checks them after the acceptance requirement and discoverability (`failed_check` `close_path` or `close_evidence`).
 * Structured releasability evidence summarizing whether the change is `READY`, `READY_WITH_CONDITIONS`, or `BLOCKED`
 * A **compaction status** field (`pending` → `done` / `degraded`) recording P-020 post-merge context compaction state
 * Follow-up tasks or compound-learnings triggers when needed
 
 ## Required Protocol
 
-When the `agent-intercom` capability pack is installed, follow
-`.github/instructions/agent-intercom.instructions.md`: broadcast closure readiness, blocked states,
-monitoring handoff details, and any rollback trigger that the operator should be aware of during
-the validation window.
+Report closure readiness, blocked states, monitoring handoff details, and any rollback
+trigger that the operator should be aware of during the validation window in the
+session output.
 
 When the `browser-verification` capability pack is installed, also follow
 `.github/instructions/browser-verification.instructions.md`: carry browser
@@ -55,7 +58,7 @@ Collect:
 
 * Summary of the change
 * CI status and unresolved review items
-* Runtime verification report or validator evidence (required when runtime surfaces were changed) — including verdict (`PASS`, `PASS WITH FOLLOW-UP`, `FAIL`, or `BLOCKED`), evidence, manual checkpoint evidence, and follow-up recommendations. The `runtime-verification` skill emits the spaced form `PASS WITH FOLLOW-UP`; where a machine-readable token is required, normalize it to `PASS_WITH_FOLLOW_UP`. The two spellings denote the same verdict. If verification was BLOCKED, record the blocked status and the missing prerequisite as a closure condition.
+* Runtime verification report or validator evidence (required when runtime surfaces were changed) — including verdict (`PASS`, `PASS_WITH_FOLLOW_UP`, `FAIL`, or `BLOCKED`), evidence, manual checkpoint evidence, and follow-up recommendations. If verification was BLOCKED, record the blocked status and the missing prerequisite as a closure condition.
 * Any risky actions that required approval, rollback planning, or explicit containment
 * Affected runtime surfaces
 * Deployment or release path, if applicable
@@ -79,17 +82,9 @@ The closure artifact MUST include:
 * **Rollback procedure** — the actual rollback or mitigation action to take when the trigger fires
 * **Validation window** — how long the change should be watched
 * **Owner** — who is responsible for observing or acting
+* **Source artifact cleanup** — the traceable record of which source artifacts feeding the shipped scope were retired. For every shipped top-level item (feature or chore), record the `custom_fields.source_stash_id` and `custom_fields.source_deliberation_id` values, each with its outcome. A `source_stash_id` outcome is one of: archived, skipped because it was already archived, skipped because it was not found, or `none` when the item declares no such field. A `source_deliberation_id` outcome is `none` when the item declares no such field; otherwise it is the report's literal outcome — `archived`, `already-archived`, `retained_read_error`, `retained_engine_unverified`, `retained_ambiguous`, `retained_live_status`, `retained_shared_reference`, or `retained_description_mention` — or `skipped_not_in_disposition_report` (the deliberation is absent from the report). The `source_deliberation_id` outcome and its `reason_code` (and `path`, when present) are copied from the shipment's `linked_deliberation_disposition` report (the `shipment-reconcile` Linked-Deliberation Disposition step, P-015 INV-12), never re-derived; a `skipped_not_in_disposition_report` outcome has no report entry, so its `reason_code` is recorded as absent — never invented — unless the close report's `unresolved_references` lists the ID, in which case that entry's `reason_code` is copied verbatim (an explicit manifest member is never listed there, H10); an unknown `reason_code` is recorded verbatim, and neither Ship nor the disposition step archives a `retained_*` or `skipped_not_in_disposition_report` deliberation (an explicit manifest member is archived by the close path itself, H10). Ship retires the source stash entries and records these outcomes (only the INV-12 disposition step archives a deliberation) against the backlog artifacts under `.backlogit/` during post-merge closure and reports the resulting IDs here, so this section — not the tool's own logs — is the closure artifact's system of record for source-artifact retirement.
 * **Compaction status (P-020)** — the post-merge context compaction state, one of `pending`, `done`, or `degraded`. operational-closure initializes this field to `pending` when it creates the closure artifact; the Ship post-merge closure finalizes it to `done` after compact-context completes, or `degraded` if compact-context was invoked but failed (non-blocking). Allowed transitions are `pending` → `done` and `pending` → `degraded` only. The Orchestrator's next-shipment routing (P-001 + P-020) treats `pending`, unset, or missing as an incomplete post-merge closure that blocks routing, and `done` or `degraded` as satisfied.
 * **Releasability evidence** — the final structured record showing which required evidence from `runtime_validation.releasability` is satisfied, conditional, or still blocked
-* **Source artifact cleanup** — the retirement record for the intake artifacts that fed the shipped scope. operational-closure creates this section as an empty placeholder; the Ship post-merge closure fills it in. For each shipped top-level item, Ship reads `custom_fields.source_stash_id` and `custom_fields.source_deliberation_id` from the backlog item, archives the referenced stash entry and deliberation artifact when they exist and are not already archived, and records the archived and skipped IDs here. This section — not the backlog tool's own state — is the traceable system of record for source-artifact retirement. When the `backlogit` capability pack is not installed, record `not applicable — no backlog tool` and leave the ID lists empty.
-
-  ```markdown
-  ## Source artifact cleanup
-
-  - Archived stash (`source_stash_id`): `<ids>` | `none`
-  - Archived deliberations (`source_deliberation_id`): `<ids>` | `none`
-  - Skipped (already archived or not found): `<ids>` | `none`
-  ```
 
 ### Step 3: Record Readiness Status
 
@@ -102,6 +97,68 @@ Return one of:
 The closure artifact is the canonical releasability evidence record. Do not
 collapse validator outcomes back into free-form prose after they have been
 structured.
+
+### Step 3a: Validate the Closure Artifact with the Closure-Evidence Gate
+
+Run the write-time closure-evidence gate against the artifact:
+
+```text
+autoharness gate closure-evidence --path docs/closure/{shipment_id}-{feature_id}-post-merge-closure.md --shipment {shipment_id} --json
+```
+
+* **Before every commit of the artifact**, including the first commit while
+  `compaction_status` is still `pending`: a `failed_check` of
+  `workspace_containment`, `input`, `filename`, or `discoverability` blocks the
+  commit. Fix the path, filename, or frontmatter syntax and re-run; never
+  rename the artifact to a legacy date-prefixed form. A `frontmatter_predicate`
+  failure is expected while `compaction_status` is `pending` or
+  `closure_status` is `BLOCKED`, and does not block committing that truthful
+  record. Because the gate stops at the first failed check, this run confirms
+  containment, readability, and the canonical filename; discoverability is
+  confirmed by the final run.
+* **Before the closure is declared complete**, after the compaction status is
+  finalized to `done` or `degraded`: the gate MUST exit `0` before the closure
+  is declared complete. Only an artifact that passes is predecessor-closure
+  evidence. A finalized `BLOCKED` closure (or a `READY_WITH_CONDITIONS` closure
+  with an unsatisfied condition) never passes: it may still be committed as a
+  truthful record when the gate's reported `failed_check` is
+  `frontmatter_predicate`, but the closure is not declared complete and the
+  successor shipment stays blocked, as intended.
+* **`close_path` and `close_evidence` (192-F)**: because the gate checks these
+  two keys only after the acceptance requirement and discoverability pass, the
+  final run is where a missing or invalid `close_path` (`failed_check`
+  `close_path`) or an absent, mismatched, or invalid evidence record
+  (`failed_check` `close_evidence`) surfaces. For `safe_close`, that check
+  includes re-reading every recorded observation-set entry at its recorded
+  path, location, and SHA-256. Either failure blocks declaring the closure
+  complete. Fix the frontmatter, or commit the evidence record the
+  `cascade-close` run wrote; never hand-edit the evidence record, and treat a
+  `close_evidence` failure against a record the close already wrote as an
+  operator-review HALT.
+* **Recovered evidence (211-F)**: when `cascade-close --recover` finalized the
+  record (`recovery.recovered: true`; mode `journal_complete`,
+  `journal_partial`, or `postconditions_only`), cite it as `close_evidence`
+  unmodified. The closure artifact's body states that the evidence was
+  recovered, the recovery mode, and which `recovery.facts` are `unknown`
+  (not observed). A recovered record is real, gate-valid evidence only when it
+  passes; a determinate recovery failure record (exit 5 or 6) is refused by the
+  gate, so closure is not declared complete on it. When closure runs in a
+  delegated subagent, the delegation names the exit 9 / `--poll` run mode and
+  the exit 7 `--recover --dry-run` routing from `shipment-reconcile`, and the
+  subagent never deletes the pair lock.
+* **Enforcement scope and pre-192-F closures**: the `close_path` and
+  `close_evidence` checks are enforced only at write time, by the
+  `cascade-close` command (which validates its `pre_close` record before
+  writing it) and by this gate run before the artifact is committed. The
+  `pipeline-topology` gate's predecessor-closure predicate does **not**
+  enforce them: it reads only `compaction_status` and `closure_status` (with
+  its `conditions`), never `close_path`, `close_evidence`, or the evidence
+  record, so a successor's `pre_claim` does not re-verify the close path and a
+  skipped gate run is not caught downstream. Closure artifacts committed
+  before 192-F carry neither key and no evidence record: they are not
+  expected to pass these checks, they remain predecessor-closure evidence for
+  the topology gate, and they must not be backfilled or given a fabricated
+  evidence record.
 
 ### Step 4: Feed Back into the Harness
 

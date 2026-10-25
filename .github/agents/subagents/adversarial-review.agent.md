@@ -1,14 +1,18 @@
 ---
 name: Adversarial Review
-description: "Multi-model parallel review using independent reviewer agents with different models, assembled into a consensus report with confidence-weighted findings and remediation queue"
+description: "Multi-model parallel review using independent reviewer agents with different models, assembled into a consensus report with confidence-weighted findings and remediation queue. Supports a first-class anchor reviewer route, alternate model providers (e.g., Gemini), and a post-remediation re-review phase."
 maturity: stable
 tools: read, agent, search, edit
-model_routing: "Tier 3 (Frontier)"  # DEPRECATED — use model_tier
-model_tier: 3
 max_subagent_tier: 1
 reasoning_effort: "high"
-model_provider: "anthropic"
-model_family: "claude-opus-4.6"
+model_provider: "google"
+model_family: "gemini-4-argon"
+context_tier: "long_context"
+alt_review_provider: "openai"
+alt_review_family: "gpt-5.6-sol"
+anchor_review_provider: "openai"
+anchor_review_family: "gpt-6.1-sol"
+anchor_review_reasoning_effort: "high"
 subagent_depth: 2
 ---
 
@@ -20,6 +24,10 @@ high-confidence findings; unique findings from a single model are preserved as
 low-confidence observations worth human attention. The result is a structured
 remediation queue with findings ordered by confidence × severity.
 
+After auto-fixes are applied, a post-remediation re-review phase re-dispatches the
+same reviewer pool over the fixed files to verify no new issues were introduced.
+Recursion is capped at 2 cycles to prevent infinite loops.
+
 ## Why Adversarial
 
 Different models have different blind spots. A finding that appears in all reviewer
@@ -27,6 +35,17 @@ outputs is almost certainly real. A finding that appears in only one model's out
 may be a false positive — or a subtle issue that only one model caught. The protocol
 preserves both signals with appropriate confidence labels, rather than losing unique
 findings or trusting any single model too much.
+
+Anchor Reviewer support (`openai` / `gpt-6.1-sol`)
+adds a first-class reviewer route, defaulting to OpenAI GPT-5.6 Sol where supported,
+without replacing Tier 1/2/3 diversity. If the anchor route cannot be dispatched,
+record a declared fallback and continue only when the remaining reviewer pool still
+satisfies the consensus minimum.
+
+Alternate model provider support (`openai` / `gpt-5.6-sol`)
+allows reviewer slots to be assigned to Gemini or other providers outside the standard
+tier routing set, ensuring reviewer diversity is not limited to a single provider's
+model family.
 
 ## When to Use
 
@@ -39,17 +58,35 @@ findings or trusting any single model too much.
 
 * `files`: (Required) Files or diff to review. Can be a list of paths, a git diff
   ref (e.g., `HEAD~1`), or a PR number.
-* `reviewers`: (Optional) Number of parallel reviewer instances. Default: 3.
-  Minimum: 2 (a single reviewer provides no consensus signal). Maximum: 5.
-* `models`: (Optional) Model tiers to use for each reviewer instance. Default:
-  one Tier 1, one Tier 2, one Tier 3 model — ensuring diversity across the
-  speed/quality spectrum. Specify as a list matching the `reviewers` count, or
-  leave unset to use the default tier distribution.
+* `reviewers`: (Optional) Total number of parallel reviewer instances, including
+  the Anchor Reviewer when the anchor route is dispatchable. Default: 4 with a
+  dispatchable anchor route (Anchor + Tier 1 + Tier 2 + Tier 3), otherwise 3
+  (Tier 1 + Tier 2 + Tier 3). Minimum: 2 (a single reviewer provides no
+  consensus signal). Maximum: 5.
+* `models`: (Optional) Model tiers/routes to use for each reviewer instance.
+  Specify a list matching the `reviewers` count, including `anchor_review` when
+  assigning an Anchor Reviewer slot. When unset, use the count-specific mapping
+  in Phase 1 so every accepted reviewer count has a deterministic slot map.
+* `alt_provider`: (Optional) Alternate model provider name (e.g., `google`).
+  Overrides `openai` for this invocation. When set, one reviewer
+  slot is assigned to the alternate provider.
+* `alt_family`: (Optional) Alternate model family (e.g., `gemini-2.5-flash`).
+  Overrides `gpt-5.6-sol` for this invocation. Paired with `alt_provider`.
+* `anchor_provider`: (Optional) Anchor reviewer provider. Overrides
+  `openai` for this invocation.
+* `anchor_family`: (Optional) Anchor reviewer model family. Overrides
+  `gpt-6.1-sol` for this invocation.
+* `anchor_reasoning_effort`: (Optional) Anchor reviewer reasoning effort.
+  Overrides `high`; empty means use the model
+  default.
 * `ruleset`: (Optional) Path to a ruleset file. Defaults to
   `.github/copilot-review-instructions.md` if present, otherwise uses the
   built-in harness review ruleset.
 * `output_mode`: (Optional) `consensus-only` (return only high-confidence findings)
   or `full` (default — return consensus + majority + unique with confidence labels).
+* `post_remediation_review`: (Optional, default `true`) Whether to run the
+  post-remediation re-review phase (Phase 7) after auto-fixes are applied. Set
+  to `false` to disable re-review and exit after the remediation plan.
 
 ## Output
 
@@ -57,13 +94,17 @@ findings or trusting any single model too much.
    These require mandatory remediation before merge.
 2. **Majority findings** (confidence: MEDIUM) — Flagged by more than half of agents.
    Require explicit acknowledgment (fix or defer with rationale).
-3. **Unique findings** (confidence: LOW) — Flagged by exactly one agent.
+3. **Plurality findings** (confidence: MEDIUM) — Flagged by more than one reviewer
+   but not by a strict majority, such as 2 of 4 reviewers. These are not consensus,
+   but they are stronger than unique observations and require explicit
+   acknowledgment.
+4. **Unique findings** (confidence: LOW) — Flagged by exactly one agent.
    Preserved as observations; human judgment required on whether to act.
-4. **Remediation plan** — Ordered action list combining all findings, sorted by
+5. **Remediation plan** — Ordered action list combining all findings, sorted by
    `confidence × severity`, with estimated action class (`safe_auto`, `gated_auto`,
    `manual`, `advisory`).
-5. **Bug/issue queue entries** — For each P0 and P1 finding, a structured work item
-   ready to create in the backlog using `backlogit add --type {type} --title {title}`.
+6. **Bug/issue queue entries** — For each P0 and P1 finding, a structured work item
+   ready to create in the backlog using `backlogit add --type {artifact_type} --title {title}`.
 
 Output file at `docs/closure/{YYYY-MM-DD}-{slug}-adversarial-review.md`.
 
@@ -73,12 +114,53 @@ Output file at `docs/closure/{YYYY-MM-DD}-{slug}-adversarial-review.md`.
 
 1. Resolve the file list or diff to review.
 2. Load the ruleset from the specified path or the default.
-3. Determine the reviewer count and model tier assignment:
-   * Default (3 reviewers): Reviewer-A = Tier 1 (fast/cheap), Reviewer-B = Tier 2
-     (standard), Reviewer-C = Tier 3 (frontier).
-   * For 4 reviewers: add a second Tier 2 with a different model identifier.
-   * For 5 reviewers: add Tier 1 and Tier 2 variants.
-4. Confirm with the operator if the review is interactive mode.
+3. Determine the reviewer count and model route assignment. The `reviewers`
+   value is the total number of slots; when the anchor route is dispatchable, the
+   Anchor Reviewer consumes one slot. Use these mappings unless `models` provides
+   an explicit list with the same count:
+
+   | Reviewer count | Anchor dispatchable mapping | Anchor unavailable mapping |
+   |---|---|---|
+   | 2 | Anchor Reviewer + Reviewer-C (Tier 3) | Reviewer-B (Tier 2) + Reviewer-C (Tier 3) |
+   | 3 | Anchor Reviewer + Reviewer-A (Tier 1) + Reviewer-C (Tier 3) | Reviewer-A (Tier 1) + Reviewer-B (Tier 2) + Reviewer-C (Tier 3) |
+   | 4 (default with anchor) | Anchor Reviewer + Reviewer-A (Tier 1) + Reviewer-B (Tier 2) + Reviewer-C (Tier 3) | Reviewer-A (Tier 1) + Reviewer-B (Tier 2) + Reviewer-C (Tier 3) + Reviewer-D (Tier 1/Tier 2 variant) |
+   | 5 | Anchor Reviewer + Reviewer-A (Tier 1) + Reviewer-B (Tier 2) + Reviewer-C (Tier 3) + Reviewer-D (Tier 1/Tier 2 variant) | Reviewer-A (Tier 1) + Reviewer-B (Tier 2) + Reviewer-C (Tier 3) + Reviewer-D (Tier 1/Tier 2 variant) + Reviewer-E (Tier 2/Tier 3 variant) |
+
+   Record a declared fallback for the Anchor Reviewer whenever the anchor route is
+   configured but unavailable.
+4. Apply anchor and alternate model provider assignments:
+   * Read `openai`, `gpt-6.1-sol`, and
+     `high` (or `anchor_provider`,
+     `anchor_family`, and `anchor_reasoning_effort` input overrides). If provider
+     and family are non-empty and dispatchable, launch the Anchor Reviewer as a
+     separate slot, pass the reasoning effort when non-empty, and identify it
+     separately in the report.
+   * Read `openai` and `gpt-5.6-sol` (or `alt_provider`
+     / `alt_family` input overrides).
+   * If both alternate values are non-empty: replace one non-anchor reviewer slot
+     with the alternate provider. Replace Reviewer-B (Tier 2 slot) by default to
+     maximize diversity while preserving Anchor, Tier 1, and Tier 3 coverage.
+   * Log the model route assignment table (see below), including declared fallback
+     if the Anchor Reviewer or alternate provider is unavailable.
+5. Confirm with the operator if the review is interactive mode.
+
+#### Model Route Assignment Table
+
+| Reviewer | Default Route | Default Model | With Alternate Provider |
+|---|---|---|---|
+| Anchor Reviewer | Anchor review route | `gpt-6.1-sol` via `openai` with `high` when non-empty | unchanged; if unavailable, declared fallback |
+| Reviewer-A | Tier 1 (fast/cheap) | `claude-haiku-5.5` | unchanged |
+| Reviewer-B | Tier 2 (standard) | `claude-sonnet-5.5` | `gpt-5.6-sol` via `openai` |
+| Reviewer-C | Tier 3 (frontier) | `gemini-4-argon` | unchanged |
+| Reviewer-D | Tier 1 or Tier 2 variant | different from A/B/C | unchanged |
+| Reviewer-E (5 reviewers without anchor) | Tier 2 or Tier 3 variant | different from A/B/C/D | unchanged |
+
+When `openai` or `gpt-6.1-sol` is empty or the
+route cannot be dispatched, all standard reviewer slots still use tier routing and
+the report records the Anchor Reviewer declared fallback. When
+`openai` is non-empty, Reviewer-B is routed to the alternate
+provider. This ensures reviewer diversity is not limited to a single provider's
+model family while keeping the Anchor Reviewer separate.
 
 ### Phase 2: Parallel Dispatch
 
@@ -86,8 +168,8 @@ Launch all reviewer agents **simultaneously** as parallel subagents. Each receiv
 
 * The same file list or diff
 * The same ruleset
-* Its assigned model tier instruction (prepend to the reviewer's system prompt:
-  "You are operating as a Tier N reviewer. Use concise, precise findings only.")
+* Its assigned model tier or Anchor Reviewer route instruction (prepend to the reviewer's system prompt:
+  "You are operating as the Anchor Reviewer or Tier N reviewer. Use concise, precise findings only.")
 * Instruction to return **structured JSON findings only** — no prose summaries
 
 Each reviewer produces a JSON array of findings:
@@ -112,10 +194,13 @@ Do not proceed to Phase 3 until all reviewer agents have returned results.
 Collect all finding arrays. For each unique finding (keyed by `file` + `line` + `rule`):
 
 1. Count how many reviewers flagged it (using fuzzy match on `file` + `line` ± 2 + same `rule`).
-2. Assign confidence tier:
-   * **HIGH**: Flagged by all `reviewers` agents
-   * **MEDIUM**: Flagged by majority (> reviewers / 2)
-   * **LOW**: Flagged by exactly one agent
+2. Assign confidence tier and report section so every agreement count from 1 to
+   `reviewers` is classified:
+   * **HIGH / Consensus section**: Flagged by all `reviewers` agents.
+   * **MEDIUM / Majority section**: Flagged by a strict majority (> reviewers / 2).
+   * **MEDIUM / Plurality section**: Flagged by more than one reviewer but not a
+     strict majority (for example, 2 of 4 reviewers).
+   * **LOW / Unique section**: Flagged by exactly one reviewer.
 3. For severity conflicts between reviewers, take the most conservative (highest severity).
 
 ### Phase 4: Order and Score
@@ -137,14 +222,15 @@ file path for deterministic output.
 |---|---|
 | HIGH confidence + CRITICAL severity | `safe_auto` (if deterministic fix exists) or `manual` |
 | HIGH confidence + MAJOR severity | `gated_auto` or `manual` |
-| MEDIUM confidence + CRITICAL/MAJOR | `gated_auto` — confirm before applying |
+| MEDIUM confidence + CRITICAL/MAJOR (majority or plurality) | `gated_auto` — confirm before applying |
 | LOW confidence + CRITICAL | `gated_auto` — unusual enough to flag despite single source |
 | Any + MINOR | `advisory` |
 
 ### Phase 6: Produce Output
 
-Assemble the output report with all four sections (consensus, majority, unique,
-remediation plan). For each P0 and P1 finding, produce a backlog work item entry:
+Assemble the output report with all five finding/remediation sections (consensus,
+majority, plurality, unique, remediation plan). For each P0 and P1 finding, produce
+a backlog work item entry:
 
 ```yaml
 type: bug
@@ -162,11 +248,45 @@ Write the output report to `docs/closure/{YYYY-MM-DD}-{slug}-adversarial-review.
 If in interactive mode, present the consensus findings and remediation plan to the
 operator for confirmation before creating any backlog items.
 
+If `post_remediation_review` is `true` (the default), apply all `safe_auto` fixes
+from the remediation plan and proceed to Phase 7.
+
+### Phase 7: Post-Remediation Re-Review
+
+After `safe_auto` fixes are applied in Phase 6, re-dispatch the same reviewer pool
+over the fixed files to verify no new issues were introduced. This phase prevents
+a fix in one location from inadvertently breaking a related invariant.
+
+**Recursion cap**: Maximum 2 re-review cycles (Phase 7 executes at most twice per
+invocation). Track the cycle count. When the cap is reached, note any remaining
+findings in the output report and halt the re-review loop — do not continue.
+
+**Re-review protocol**:
+
+1. Identify files modified by `safe_auto` fixes in the previous cycle.
+2. Re-dispatch all reviewer agents over those files only (not the full original scope).
+3. Aggregate and classify new findings per Phases 3–5.
+4. If new HIGH-confidence findings are introduced: add them to the remediation plan,
+   apply any new `safe_auto` entries, and increment the cycle counter.
+5. If the cycle counter reaches 2 and findings remain: record them as
+   `post_remediation_residual` in the output report. Do not apply further fixes.
+6. If no new findings: mark the post-remediation phase clean and finish.
+
+**Cycle tracking** in the output report:
+
+```yaml
+post_remediation:
+  cycles_run: {0|1|2}
+  cap_reached: {true|false}
+  residual_findings: {count}
+  status: "clean|residual_capped|skipped"
+```
+
 ## Subagent Depth
 
 Maximum 2 hops. This agent dispatches review skill instances (hop 1), which may invoke
-review persona subagents (hop 2). The consensus-assembly phase runs in this agent — no
-further delegation.
+review persona subagents (hop 2). The consensus-assembly phase and post-remediation
+re-review loop run in this agent — no further delegation.
 
 ## Quality Criteria
 
@@ -176,5 +296,16 @@ further delegation.
 * Every P0 finding, regardless of confidence, must appear in the remediation plan
 * The output file must be written even if all findings are advisory
 * If fewer than 2 reviewer instances return results, halt and report the failure
+* Post-remediation re-review runs when `post_remediation_review` is `true` and
+  `safe_auto` fixes were applied; it is skipped when no fixes were made
+* The recursion cap of 2 cycles is enforced — the agent MUST NOT recurse more than
+  twice regardless of remaining findings
+* When `openai` is set, the Anchor Reviewer must use that
+  provider's model family unless the provider is unavailable; if unavailable, log
+  the declared fallback separately and continue only when consensus minimums hold
+* When `openai` is set, at least one non-anchor reviewer must use the alternate
+  provider; failure to route when the provider and family are both configured and
+  reachable is a configuration error; if the provider is unreachable at runtime,
+  fall back to the Tier 2 standard model, log the fallback, and continue
 
 Generated by autoharness | Template: adversarial-review.agent.md.tmpl

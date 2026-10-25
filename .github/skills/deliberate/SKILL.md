@@ -1,4 +1,5 @@
 ---
+name: deliberate
 description: "Interactively deliberate on a request, feature, or chore — frame the problem, research options, compare trade-offs, and produce a decision artifact that links into the backlog queue"
 ---
 
@@ -10,9 +11,12 @@ options, recommendation, and backlog-link targets. The artifact feeds directly
 into `impl-plan` for technical planning or into the backlog queue as a stashed
 work item for future pursuit.
 
-This skill replaces the earlier `brainstorm` entry point with a richer protocol
-that adds explicit research synthesis, option comparison, and queue/stash
-linkage.
+This skill focuses on option selection and rationale: research synthesis, option
+comparison, and queue/stash linkage. It complements `brainstorm`, the front-door
+requirements-intake skill that shapes WHAT to build (stable requirements, success
+criteria, scope) before planning. Use `brainstorm` for requirements intake and
+`deliberate` for architectural, policy, or tooling trade-off decisions; either
+may hand off to `impl-plan`.
 
 ## When to Use
 
@@ -47,16 +51,16 @@ as its source document.
 
 ## Required Protocol
 
-When the `agent-intercom` capability pack is installed, follow
-`.github/instructions/agent-intercom.instructions.md`: establish heartbeat /
-ping visibility at the start of deliberation, broadcast major phase transitions,
-and use the intercom clarification flow when the operator needs to be consulted
-between phases.
-
 When the `agent-engram` capability pack is installed, follow
 `.github/instructions/agent-engram.instructions.md`: verify the engram search
 surface before relying on indexed discovery, and prefer engram-first lookup
 while researching the codebase.
+
+When the `graphtor-docs` capability pack is installed, follow
+`.github/instructions/graphtor-docs.instructions.md`: prefer graphtor-docs indexed
+documentation retrieval for concept, API, and prior-art documentation lookup before
+broad grep or web search. Use Engram for code relationships and graphtor-docs for
+documentation, API, and concept lookup.
 
 ### Phase 1: Frame the Problem
 
@@ -91,6 +95,11 @@ retrieval as mandatory pre-research context, not optional.
 When the `agent-engram` capability pack is installed, prefer `unified_search`
 for broad discovery, `list_symbols` for inventory, and `query_memory` for prior
 session context.
+
+When the `graphtor-docs` capability pack is installed, prefer `search_local_docs`,
+`search_semantic`, and `research_topic` for documentation, API, and concept lookup;
+reserve Engram for code relationships and graphtor-docs for documentation and API
+questions.
 
 #### Step 2.2: Investigate the Codebase
 

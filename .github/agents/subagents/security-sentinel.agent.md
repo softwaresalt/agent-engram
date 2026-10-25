@@ -3,12 +3,11 @@ name: Security Sentinel
 description: "User-invocable security audit agent. Performs comprehensive pre-deployment security audits with structured findings, risk matrix, and remediation roadmap."
 maturity: stable
 tools: read, search, terminal, edit
-model_routing: "Tier 3 (Frontier)"  # DEPRECATED — use model_tier
-model_tier: 3
 max_subagent_tier: 3
 reasoning_effort: "high"
-model_provider: "anthropic"
-model_family: "claude-opus-4.6"
+model_provider: "google"
+model_family: "gemini-4-argon"
+context_tier: "long_context"
 subagent_depth: 0
 ---
 
@@ -25,18 +24,13 @@ Invoke this agent before major releases, when security review is required, or wh
 The audit covers:
 
 * **Input Validation Analysis** — Identify unvalidated inputs entering the application from external sources
-* **Injection Risk Assessment** — SQL injection, XSS, command injection, template injection, LDAP injection patterns in `src/**`
+* **Injection Risk Assessment** — SQL injection, XSS, command injection, template injection, LDAP injection patterns in `src/**/*.rs`
 * **Authentication and Authorization Audit** — Access control gaps, broken authorization, privilege escalation paths
 * **Sensitive Data Exposure Scan** — PII, credentials, tokens, and financial data exposed via logs, APIs, or storage
 * **OWASP Top 10 Compliance** — Assess coverage across A01-A10 with language-specific patterns
 * **Third-Party Dependency Review** — Known vulnerable dependencies (if package manifest is present)
 
-Language-specific detection uses `- IPC transport authentication and authorization patterns in `src/daemon/` and `src/shim/`
-- File system access patterns in `src/services/` (path traversal prevention)
-- MCP tool input validation in `src/tools/` (parameter sanitization)
-- Database query construction in `src/db/` (injection prevention)
-- Configuration parsing in `src/config/` (environment variable injection)
-- Lockfile and pidfile security in `src/daemon/lockfile.rs``.
+Language-specific detection uses `src/**/*.rs, tests/**/*.rs, build.rs`.
 
 ## Invocation
 
@@ -58,13 +52,8 @@ Default scope when no argument is provided: `full`.
 
 ### Phase 2: Input Validation and Injection Analysis
 
-1. Scan source files matching `src/**` for unvalidated external inputs
-2. Apply injection detection patterns from `- IPC transport authentication and authorization patterns in `src/daemon/` and `src/shim/`
-- File system access patterns in `src/services/` (path traversal prevention)
-- MCP tool input validation in `src/tools/` (parameter sanitization)
-- Database query construction in `src/db/` (injection prevention)
-- Configuration parsing in `src/config/` (environment variable injection)
-- Lockfile and pidfile security in `src/daemon/lockfile.rs``
+1. Scan source files matching `src/**/*.rs` for unvalidated external inputs
+2. Apply injection detection patterns from `src/**/*.rs, tests/**/*.rs, build.rs`
 3. Check parameterized query usage vs. string-built queries in data access layers
 4. Check template rendering for user-controlled values
 5. Record findings with file, line, severity, and evidence
@@ -88,12 +77,7 @@ Default scope when no argument is provided: `full`.
 
 ### Phase 5: OWASP Top 10 Assessment
 
-Score the workspace against OWASP Top 10 categories using `- IPC transport authentication and authorization patterns in `src/daemon/` and `src/shim/`
-- File system access patterns in `src/services/` (path traversal prevention)
-- MCP tool input validation in `src/tools/` (parameter sanitization)
-- Database query construction in `src/db/` (injection prevention)
-- Configuration parsing in `src/config/` (environment variable injection)
-- Lockfile and pidfile security in `src/daemon/lockfile.rs``:
+Score the workspace against OWASP Top 10 categories using `src/**/*.rs, tests/**/*.rs, build.rs`:
 
 | Category | Check |
 |---|---|

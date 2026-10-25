@@ -4,9 +4,10 @@ description: "Reviews code changes for unnecessary complexity, coupling, dead pa
 maturity: stable
 tools: read, search
 max_subagent_tier: 1
-reasoning_effort: ""
+reasoning_effort: "xhigh"
 model_provider: "anthropic"
-model_family: "claude-haiku-4.5"
+model_family: "claude-haiku-5.5"
+context_tier: "long_context"
 subagent_depth: 0
 ---
 

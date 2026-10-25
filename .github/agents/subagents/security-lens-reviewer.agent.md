@@ -3,12 +3,11 @@ name: Security Lens Reviewer
 description: "Reviews implementation plans for security gaps: attack surface inventory, auth/authz gaps, data exposure, trust boundary violations, and secrets management"
 maturity: stable
 tools: read, search
-model_routing: "Tier 2 (Standard)"  # DEPRECATED — use model_tier
-model_tier: 2
 max_subagent_tier: 2
-reasoning_effort: "medium"
+reasoning_effort: "high"
 model_provider: "anthropic"
-model_family: "claude-sonnet-4.6"
+model_family: "claude-sonnet-5.5"
+context_tier: "long_context"
 subagent_depth: 0
 ---
 

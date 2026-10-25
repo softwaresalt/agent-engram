@@ -17,7 +17,7 @@ The primary table for all backlogit artifacts (features, tasks, subtasks, delibe
 |---|---|---|
 | `id` | TEXT PK | Hierarchical ID: `001-F`, `001.001-T`, `001.001.001-ST` |
 | `title` | TEXT | Artifact title |
-| `status` | TEXT | `queued`, `active`, `done`, `blocked`, `archived` |
+| `status` | TEXT | `queued`, `active`, `done`, `blocked` |
 | `artifact_type` | TEXT | `feature`, `task`, `subtask`, `deliberation`, `shipment` |
 | `parent_id` | TEXT | ID of the parent artifact (`NULL` for level-1) |
 | `sprint` | TEXT | Sprint ID (optional) |
@@ -303,10 +303,7 @@ WHERE link_type = 'duplicate_of'
 ORDER BY created_at DESC
 ```
 
-### List archived items (artifacts moved through full lifecycle)
-
-Items reach `archived` status after completing the `done` stage and being
-explicitly archived by an operator or agent workflow.
+### List archived items (artifacts moved through lifecycle)
 
 ```sql
 SELECT id, title, artifact_type, status, updated_at

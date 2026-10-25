@@ -3,12 +3,11 @@ name: Concurrency Reviewer
 description: "Reviews code changes involving concurrent or parallel execution patterns for safety and correctness"
 maturity: stable
 tools: read, search
-model_routing: "Tier 1 (Fast/Cheap)"  # DEPRECATED — use model_tier
-model_tier: 1
 max_subagent_tier: 1
-reasoning_effort: "low"
-model_provider: "openai"
-model_family: "gpt-5.4-mini"
+reasoning_effort: "xhigh"
+model_provider: "anthropic"
+model_family: "claude-haiku-5.5"
+context_tier: "long_context"
 subagent_depth: 0
 ---
 
@@ -30,7 +29,7 @@ You are the Concurrency Reviewer persona. You evaluate code changes that involve
 
 This persona is conditionally invoked when the diff contains patterns suggesting concurrency:
 
-tokio::spawn, Arc<Mutex<T>>, Arc<RwLock<T>>, mpsc::channel, oneshot::channel, tokio::select!, async fn, .await, Send + Sync bounds, Semaphore, Notify
+thread, Mutex, channel, async, tokio
 
 ## Output Format
 

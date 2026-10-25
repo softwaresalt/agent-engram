@@ -3,12 +3,11 @@ name: Agent-Native Parity Reviewer
 description: "Reviews agent-facing systems for parity between user workflows, agent workflows, context surfaces, and tool contracts"
 maturity: stable
 tools: read, search
-model_routing: "Tier 1 (Fast/Cheap)"  # DEPRECATED — use model_tier
-model_tier: 1
 max_subagent_tier: 1
-reasoning_effort: "low"
-model_provider: "openai"
-model_family: "gpt-5.4-mini"
+reasoning_effort: "xhigh"
+model_provider: "anthropic"
+model_family: "claude-haiku-5.5"
+context_tier: "long_context"
 subagent_depth: 0
 ---
 

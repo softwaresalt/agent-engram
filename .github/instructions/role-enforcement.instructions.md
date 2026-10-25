@@ -49,6 +49,15 @@ operations, git commands, build invocations, PR actions), the agent MUST:
      role boundaries because many state-mutating operations will not be
      explicitly enumerated. Fail-closed ensures that only explicitly permitted
      mutations proceed.
+   - **P-021 capture-only carve-out**: A capture-only stash write performed
+     under P-021 C2 (mandatory deferred-scope-expansion capture) matches the
+     acting agent's Allowed column via P-021 C5 (Ship's capture-only
+     carve-out) and does NOT trigger the fail-closed unclassified-mutation
+     halt above. This is an enumeration in the Allowed column, not a
+     weakening of fail-closed semantics. Any OTHER stash operation by Ship —
+     triage, prioritize, re-classify, edit, harvest, deliberate, or
+     discretionary removal/archival — remains a P-010 violation and MUST
+     halt.
 
 ## Session Start Reminder
 
@@ -61,8 +70,53 @@ long-running sessions where earlier instructions may have been evicted.
 
 All P-010 violations are first-class observability events:
 
-- Record the violation in session output.
-- If the workspace uses the `agent-intercom` capability pack, broadcast
-  the violation: `[P-010] {agent_name} role boundary violation: {operation}`.
+- Report the violation in the session output:
+  `[P-010] {agent_name} role boundary violation: {operation}`.
+- Record the violation as P-005 telemetry.
 - The violation does not require operator intervention to continue the session,
   but the forbidden operation MUST NOT be executed.
+
+## Skill-Delegation Model Inheritance (P-013.5)
+
+Skills are leaf executors: they do not declare their own `model_family` /
+`model_provider` / `reasoning_effort` frontmatter and they do not spawn
+subagents, subject to the Bounded One-Hop Review-Family Exception below. A skill invoked by an agent (Stage, Ship, Orchestrator, or an
+elective agent) runs **inside the invoking agent's already-routed session** —
+it inherits whatever model that agent resolved and declared per its own
+invocation directive (P-013.5). This applies uniformly when invoking agents
+**and** their skill workflows: the routing decision is made once, at
+agent-invocation time, not re-resolved per skill call.
+
+### Bounded One-Hop Review-Family Exception
+
+Skills are leaf executors by default: they do not spawn subagents. A skill qualifies for a BOUNDED, one-hop exception to this default IF AND ONLY IF its `SKILL.md` contains a `## Subagent Depth Constraint` section whose body states (i) a maximum spawn depth of exactly one hop, and (ii) that the subagents it spawns are themselves leaf executors that MUST NOT spawn any further subagents. Current qualifying members (`review`, `plan-review`) are EXAMPLES of skills meeting this property, never the definition of it — any skill whose `SKILL.md` carries a conforming `## Subagent Depth Constraint` section qualifies, and the exception is never special-cased to a fixed list of skill names.
+
+RESIDUAL LIMITATION: this exception's verifier checks DECLARATIONS IN SKILL TEXT; an agent that spawns a subagent at runtime without that spawn appearing declared in its `SKILL.md` is NOT detected by this check. Enforcement is at the DOCUMENT LAYER ONLY — this is a static text-conformance property, not a runtime spawn-time interception.
+
+Before invoking any skill, the invoking agent MUST confirm and propagate its
+own current routing state for the session — either "resolved" or explicitly
+"`ROUTING_DEGRADED`" — rather than requiring a non-degraded state as a
+precondition (a degraded session must still be able to invoke its skills; it
+just carries the degradation forward, per step 3 below):
+
+1. **Confirm own routing first.** If the agent's own model route was resolved
+   via an explicit invocation directive (Orchestrator Steps 1/2 for Stage/Ship;
+   an equivalent directive for elective agents) and no `ROUTING_DEGRADED`
+   condition was declared for this session, proceed — the skill inherits that
+   resolved session model with no further action.
+2. **Do not re-resolve per skill.** A skill is not a separate routing target;
+   introducing a per-skill `model_family` field would duplicate P-013.5 routing
+   at the wrong granularity and is explicitly out of scope (skills remain leaf
+   executors — see also P-013.4 tier annotation, which applies to agent
+   definitions only).
+3. **Carry a degraded state forward, do not clear it.** If the invoking agent's
+   own session is already in a `ROUTING_DEGRADED` state (its resolved role route
+   could not be honored by the runtime), that degradation applies to every skill
+   the agent invokes during the session. Do not silently treat a skill invocation
+   as a fresh, non-degraded routing context.
+
+**Rationale**: this closes the gap between "the desired role→model mapping
+exists in config" and "every unit of work — agent turn and skill call alike —
+actually runs on the resolved model." Cross-reference P-013.5 (invocation-time
+model-routing enforcement) in `workflow-policies.md` for the fail-closed
+verification and `ROUTING_DEGRADED` semantics this contract depends on.

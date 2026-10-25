@@ -1,8 +1,14 @@
 ---
 name: Rust Safety Reviewer
 description: "Reviews code changes for Rust safety compliance including unsafe code prevention, error handling patterns, and lifetime correctness"
-user-invocable: false
+maturity: stable
 tools: [read, search, 'engram/*']
+max_subagent_tier: 1
+reasoning_effort: "xhigh"
+model_provider: "anthropic"
+model_family: "claude-haiku-5.5"
+context_tier: "long_context"
+subagent_depth: 0
 ---
 
 # Rust Safety Reviewer

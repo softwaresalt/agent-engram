@@ -33,22 +33,6 @@ configuration — independent of the standard tier routing set.
 When these variables resolve to empty strings (no alternate model configured),
 the skill falls back to Tier 2 defaults.
 
-## Agent-Intercom Communication
-
-When the `agent-intercom` capability pack is installed, call `ping` at session start. If
-agent-intercom is reachable, broadcast at every step. If unreachable, warn that operator
-visibility is degraded. When the pack is not installed, report progress locally instead.
-
-| Event | Level | Message prefix |
-|---|---|---|
-| Doc review start | info | `[DOC-REVIEW] Starting {mode} review of {scope}` |
-| Scope analyzed | info | `[DOC-REVIEW] Scope: {file_count} docs, {check_count} checks` |
-| Check pass | info | `[DOC-REVIEW] Check passed: {check_name}` |
-| Check finding | warning | `[DOC-REVIEW] Finding ({severity}): {summary} in {file}` |
-| Autofix applied | info | `[DOC-REVIEW] Applied safe_auto fix: {summary}` |
-| Review written | success | `[DOC-REVIEW] Artifact: {file_path}` |
-| Review complete | success | `[DOC-REVIEW] Complete: {p0} P0, {p1} P1, {p2} P2, {p3} P3` |
-
 ## Subagent Depth Constraint
 
 This skill is a leaf executor. It MUST NOT spawn its own subagents.
@@ -90,15 +74,6 @@ Scan all Markdown and YAML files in scope for unresolved template variable
 patterns matching `\{\{[A-Z_][A-Z0-9_]*\}\}`. Any match in installed output
 files (not `.tmpl` source files) is a P0 finding.
 
-Exclude explanatory literals, not just fenced blocks. A match is **not** a
-finding when it is wrapped in inline code (`` `{{VARIABLE}}` ``), appears
-inside a fenced code block, or is otherwise quoted as an example of the
-template syntax itself — for example the retained prose reference in
-`.github/agents/_ship.agent.md`. Only bare, unquoted occurrences in rendered
-prose indicate a genuinely unresolved install variable. Cross-check against
-`autoharness verify-workspace`, which reports its own unresolved-placeholder
-count; a file that verify considers valid must not be blocked by this check.
-
 ```text
 Pattern: \{\{[A-Z_][A-Z0-9_]*\}\}
 Scope:    installed harness files (exclude *.tmpl, exclude .backlogit/)
@@ -114,9 +89,7 @@ For each file with a `---` frontmatter block:
 2. Parse the YAML. Any parse error is a P1 finding.
 3. Verify required keys are present per file type:
    * Agent files: `name`, `description`
-   * Skill files: `description` (a `name` key is optional; the workspace
-     prompt-builder contract requires only `description`, and managed skills
-     such as `operational-closure/SKILL.md` omit `name`)
+   * Skill files: `name`, `description`
    * Instruction files: `description`
    * Template files: at minimum `description` or `name`
 
@@ -210,7 +183,7 @@ verification pass
    * `.github/instructions/*.md`
    * `AGENTS.md`
    * `docs/**/*.md` (excluding `docs/archive/`)
-3. Announce scope size. Broadcast.
+3. Announce the scope size in the session output.
 
 ### Step 2: Select Review Model
 
@@ -225,7 +198,6 @@ verification pass
 Execute Checks 1–6 over the resolved scope. For each finding:
 
 1. Record: `{file, line, check_id, severity, message, action_class, fix_hint}`.
-2. Broadcast the finding at the appropriate level.
 
 ### Step 4: Apply Actions (mode-dependent)
 

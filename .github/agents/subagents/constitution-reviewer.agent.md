@@ -3,12 +3,11 @@ name: Constitution Reviewer
 description: "Reviews code changes for compliance with the workspace constitution — all principles mapped against each change"
 maturity: stable
 tools: read, search
-model_routing: "Tier 1 (Fast/Cheap)"  # DEPRECATED — use model_tier
-model_tier: 1
 max_subagent_tier: 1
-reasoning_effort: "low"
-model_provider: "openai"
-model_family: "gpt-5.4-mini"
+reasoning_effort: "xhigh"
+model_provider: "anthropic"
+model_family: "claude-haiku-5.5"
+context_tier: "long_context"
 subagent_depth: 0
 ---
 
@@ -29,6 +28,8 @@ Map each change against these constitutional principles:
 * **Principle VII**: Destructive command approval
 * **Principle VIII**: Explicit safety modes for elevated risk
 * **Principle IX**: Git-friendly persistence
+* **Principle X**: Agent context efficiency
+* **Principle XI (NON-NEGOTIABLE)**: Merge commit history preservation
 
 ## Output Format
 

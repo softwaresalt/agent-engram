@@ -1,7 +1,7 @@
 ---
 name: harness-architect
-description: "Prepares the required code RED harness or a verification-gated plan for strictly docs-only tasks"
-argument-hint: "feature=001-{SUFFIX_FEATURE} tasks=001.001-{SUFFIX_TASK},001.002-{SUFFIX_TASK}"
+description: "Scaffolds compilable but failing test harnesses for feature and chore tasks"
+argument-hint: "feature=001-{SUFFIX_FEATURE} tasks=001.001-{SUFFIX_TASK}"
 input:
   properties:
     feature:
@@ -9,167 +9,99 @@ input:
       description: "Feature or chore ID to scaffold harnesses for"
     tasks:
       type: string
-      description: "Comma-separated task IDs to prepare or validate (optional; ship supplies its manifest-bounded queued and already-active task set)"
+      description: "Exactly one current task ID, supplied by the caller (the actor never selects or claims backlog work)"
   required:
     - feature
+    - tasks
 ---
 
 # Harness Architect Skill
 
-## When to Use
-
-Use before implementation to prepare the applicable P-002/P-004 gate for
-queued work, or to validate/reuse an already-active task's existing valid
-gate. An already-active docs-only task may also be qualified if it is still
-pre-implementation and passes the owned-path and verification-plan checks.
-Code/non-prose work uses the existing RED harness; strictly qualifying docs-only
-work uses the separate pre-implementation verification-plan route.
+Scaffold a strict test harness for the current task of a feature or chore.
+The output must compile cleanly, fail for the intended not-yet-implemented
+behavior, and leave clear harness commands for downstream build execution.
 
 ## Purpose
 
-Prepare the P-002/P-004 gate for a feature's or chore's selected work items.
-Code/non-prose tasks retain a compiling, expected-failure RED harness. Strictly
-qualifying prose-only documentation tasks receive a durable
-`harness-verification-gated` plan instead; they get no test, stub, or invented
-RED phase.
-
-It stops before implementation and does not implement production logic or
-documentation.
-
-## Agent-Intercom Communication
-
-When the `agent-intercom` capability pack is installed, call `ping` at
-session start. If reachable, broadcast at every step. If unreachable,
-warn the operator that visibility is degraded and continue locally.
-
-| Event | Level | Message prefix |
-|---|---|---|
-| Session start | info | `[HARNESS] Starting: feature={input.feature}` |
-| Tasks loaded | info | `[HARNESS] Ready tasks: {task_count}` |
-| Codebase analyzed | info | `[HARNESS] Context gathered: {module_count} modules` |
-| Harness generated | info | `[HARNESS] Generated: {test_file} ({scenario_count} scenarios)` |
-| Compilation check | info | `[HARNESS] Compilation: {result}` |
-| Red phase check | info | `[HARNESS] Red phase: {result}` |
-| Label applied | success | `[HARNESS] harness-ready: {task_id}` |
-| Docs verification plan recorded | success | `[HARNESS] harness-verification-gated: {task_id}` |
-| Complete | success | `[HARNESS] Complete: {task_count} tasks harnessed` |
+Use this skill when a release unit needs executable test boundaries before
+implementation starts. The skill prepares the red phase and stops there. It
+does not implement production logic.
 
 ## Inputs
 
 * `${input:feature}`: (Required) Feature or chore ID such as `001-F`
-* `${input:tasks}`: (Optional) Comma-separated task IDs to prepare or validate.
-  When omitted, use the task set supplied by the caller under the feature. For a
-  shipment caller, this is already artifact-type-filtered and manifest-bounded.
-* For every task, load its durable `Owned files` declaration, status, labels,
-  and existing harness/verification records. Ship must pass active manifest
-  members as well as queued members; never re-claim an active task. Active code
-  tasks retain the validation/reuse-only rule. An active docs-only task may be
-  qualified while still pre-implementation under the same owned-path and
-  durable-plan checks as queued work; its route label need not date from when
-  the task first became active. Ship captures the current execution baseline at
-  Step 4.1 after verifying active status.
+* `${input:tasks}`: (Required) Exactly one current task ID under the
+  feature, supplied by the caller. See Step 1.
 
-## Output
+## Workflow
 
-* Code/non-prose queued task: valid `harness-ready` disposition plus the
-  compiling and expected-failure RED harness manifest.
-* Docs-only queued or already-active pre-implementation task: only
-  `harness-verification-gated`, with a durable pre-implementation
-  verification-plan reference and no code harness or RED test. Ship records
-  the plan in an official task/run comment or other Ship-owned execution
-  record; the architect may update only the route label after qualification.
-* Already-active task: no duplicate active transition or rebuild of an
-  existing valid RED harness. Active code tasks receive validation/reuse only.
-  An already-active docs-only task may receive
-  `harness-verification-gated` after successful pre-implementation
-  qualification; the report notes that Ship captures the current execution
-  baseline at Step 4.1 immediately after verifying active status, before
-  telemetry, pre-build reads, task verification commands, or docs edits. A
-  historical baseline from when the task first became active is not required.
+### Step 1: Select the current task
 
-## Required Protocol
+The actor operates on exactly one current task supplied by the caller
+(`${input:tasks}`). The actor never claims backlog work: it claims no
+shipment or task and changes no work-item status. Claiming stays with
+the caller.
 
-### Step 1: Load the selected task set
-
-1. Load the feature or chore and the exact caller-selected task set through
-   backlog query or queue operations. Preserve shipment manifest boundaries;
-   do not add unlisted descendants.
-2. If `${input:tasks}` is present, restrict the scope to that explicit
-   task set.
-3. Exclude blocked, done, archived, or otherwise ineligible work items.
-   Queued tasks may be prepared or have an invalid/missing route record
-   repaired. Never transition an already-active task's status or recreate a
-   valid RED harness. An already-active docs task may be qualified only while
-   still pre-implementation: do not require its route label to predate active
-   status; verify its owned paths are unchanged from `HEAD` in the
-   current worktree, or positively attribute every existing delta to a
-   recorded pre-existing baseline that predates docs implementation. An
-   unexplained owned-path delta, or implementation already in progress without
-   that positive attribution, fails closed; do not retroactively qualify
-   partial or completed docs work. Record the verification plan before the
-   first docs edit. Ship captures the execution baseline at Step 4.1
-   immediately after a queued task is moved to `active` or existing active
-   status is verified, before Step 4.1a telemetry, pre-build reads, task
-   verification commands, or docs implementation. Step 4.2 passes that
-   unchanged reference; it does not capture or replace it. The baseline is
-   `HEAD` SHA plus the complete workspace changed-path set
-   (tracked staged/unstaged, every untracked path individually, and deletions),
-   with status and
-   content hash/type for existing changed files, including symlink targets;
-   record index and worktree type/hash separately when their states differ.
-   Do not recursively hash clean, ignored, or build-output files. Capturing
-   this execution baseline does not provide provenance for existing
-   owned-path implementation deltas. After
-   successful docs qualification, correct only its route label if needed;
-   code-route conflicts or any other active-task ambiguity halt for
-   Ship/operator disposition.
-4. Preserve the work-item-to-task mapping so each harness can be traced
-   back to the correct backlog item.
+1. If `${input:tasks}` names no task, or more than one task, halt and
+   report. The actor never defaults to a ready-task set.
+2. Load the current task through the backlog tool's read operation and
+   confirm that it belongs to `${input:feature}`. If it does not, halt
+   and report.
+3. Preserve the work-item-to-task mapping so the harness can be traced
+   back to the current task.
 
 ### Step 2: Read task intent
 
-1. Read each selected task's title, description, acceptance criteria,
-   declared `Owned files`, labels/status, and existing harness or verification
-   records. Do not alter acceptance criteria or `Owned files`.
+1. Read the current task's title, description, acceptance criteria,
+   and file references.
 2. Pull in feature-level acceptance criteria when task text depends on
    broader feature behavior.
-3. Classify the verification route before writing:
-   * **Docs-only** qualifies only when every explicitly declared owned path is
-     prose Markdown under `docs/**`. Inspect path, file type, and content;
-     `.github`, policy/configuration, tests, schemas, scripts, templates,
-     build artifacts, code/config/test paths, mixed scope, non-prose Markdown,
-     missing ownership, or ambiguity disqualifies it. If ownership is
-     ambiguous, halt rather than infer docs-only.
-   * **Code/non-prose** is every other sufficiently understood scope and keeps
-     the existing `harness-ready` compile-and-RED requirements. Mixed docs and
-     code remains code/non-prose.
-4. For docs-only, inspect the durable task/run verification plan in an
-   official backlogit task/run comment or other Ship-owned execution record.
-   It must exist before implementation, be readable, and contain at least one
-   exact, non-empty executable command with working directory, exact pass
-   criteria, and a result/evidence field. Record executable commands
-   separately from manual gates; each manual gate names source and target
-   paths, exact pass/fail criteria, and required evidence. Do not describe a
-   prose cross-check as executable. If any gate is missing or ambiguous,
-   qualification fails. Ship owns creating or supplementing this record;
-   existing verification text may be supplemented by a comment before
-   implementation without changing task planning fields, scope, acceptance
-   criteria, or `Owned files`. The architect does not edit those fields and
-   may update only the route label after qualification. An active task does not
-   need a historical baseline from when it first became active; Ship captures
-   the current execution baseline at Step 4.1 after status verification and
-   before telemetry, pre-build reads, task verification commands, or docs
-   implementation.
-5. Translate code acceptance criteria into named test scenarios and identify
-   the correct module, test tier, and affected files for each code harness.
+3. Translate acceptance criteria into named test scenarios before writing
+   code.
+4. Identify the correct module, test tier, and affected files for each
+   harness.
 
 When the `agent-engram` capability pack is installed, prefer indexed
 symbol lookup and code-graph tools over broad grep when surveying
 existing modules, test patterns, and import paths.
 
+### Step 2a: Classify the route
+
+Before choosing a posture, classify the current task against the P-002 docs-only
+route rules (deliberation 042-DL):
+
+1. **Qualification**: the task declares explicit owned paths; every owned path
+   is a regular prose `.md` file under the configured docs root (normalized: no
+   traversal, drive, backslash, absolute path, symlink or reparse point); no
+   owned path is on the deny list (`.github/`, `.autoharness/`, the backlog
+   root, `templates/`, `schemas/`, `scripts/`, `src/`, `tests/`, or a policy,
+   config, schema, template, script, build or test artifact), which wins over
+   the docs root; and mixed scope disqualifies the whole task. Missing or
+   ambiguous ownership does not qualify the task and is never permission to use
+   the docs label. The route also requires backend support: the backlog tool
+   registry must declare `features.shipments: true` with a backlogit-style
+   shipment manifest (the completion checker reads the live shipment member
+   list); otherwise the task takes the code route unchanged.
+2. **Verification record**: validate the durable verification record on the
+   task. Each executable gate is listed separately from each manual gate; an
+   executable gate has an exact non-empty literal command, working directory,
+   exact pass criteria and a result field; a manual gate names source and target
+   paths, exact pass/fail criteria and required evidence; at least one
+   executable gate exists and it is the Markdown lint command over the owned
+   paths. A missing, empty, ambiguous or unreadable record halts and reports.
+3. **Route label**: when the task qualifies and the record is valid, the task
+   declares `harness-surface:none`; apply only the `harness-verification-gated`
+   label to the current task, using the backlog tool's update operation, and
+   skip Steps 3 to 6. Create no stub, test or RED evidence for it. Never apply
+   `harness-ready` to a docs-route task. The two labels are mutually exclusive
+   (never both). Never apply both labels; if the task already carries
+   `harness-ready`, halt and report.
+4. A task that does not qualify takes the code route unchanged: continue with
+   Step 3.
+
 ### Step 3: Determine execution posture
 
-For each task, select the appropriate harness strategy:
+For the current task, select the appropriate harness strategy:
 
 | Posture | When to use | Harness pattern |
 |---|---|---|
@@ -177,11 +109,15 @@ For each task, select the appropriate harness strategy:
 | **characterization-first** | Modifying existing behavior | Write tests that capture current behavior then modify |
 | **migration-first** | Moving code between modules | Write tests at the destination, verify source behavior |
 | **spike** | Exploratory with uncertain approach | Write minimal integration test, implement spike, expand tests |
-| **docs-verification-gated** | Strictly prose-only `docs/**` ownership with a qualifying pre-implementation evidence plan | Record and apply the docs verification gate; no test, stub, or RED phase |
 
-### Step 4: Prepare the route-specific gate
+In a characterization-first posture, the characterization tests are
+recorded outside the expected-RED roster: they pin current behavior, may
+pass, and are listed apart from the roster in the Step 6 evidence record
+(P-004). Tests for new or changed behavior remain roster tests, except
+structural tests that reach no stub, which stay outside the roster
+(Marker Convention, Step 5.2).
 
-#### Code/non-prose route (unchanged)
+### Step 4: Generate failing harness skeletons
 
 1. Create test files that express the task intent as compilable tests.
 2. Prefer table-driven or parameterized tests when the task describes
@@ -198,140 +134,145 @@ Write harness files into the module that matches the work item's scope:
 
 * **Unit harnesses**: colocated with the production code in the
   appropriate src/ subdirectory
-* **Integration harnesses**: in `tests/integration/` when the
+* **Integration harnesses**: in `tests//integration/` when the
   task spans modules or runtime boundaries
-* **Contract harnesses**: in `tests/contract/` when the task
+* **Contract harnesses**: in `tests//contract/` when the task
   defines API, CLI, or schema behavior
 
 Write companion stub files into the production module that the tests
 exercise. Do not place scaffolding in unrelated modules.
 
-#### Docs-only route
-
-1. Before any docs implementation, ensure Ship has recorded a durable,
-   readable verification plan in an official backlogit task/run comment or
-   other Ship-owned execution record. If absent or incomplete, return the
-   required plan details to Ship to record or supplement before implementation;
-   do not write task planning fields, scope, acceptance criteria, or `Owned
-   files`. Existing verification text may be supplemented by a comment before
-   implementation without changing those fields. Retain the stable reference
-   and preparation order.
-2. For every executable check, record the exact command as a literal command
-   (not explanatory prose), working directory, exact success/pass criteria,
-   and where stdout/stderr, exit status, and other required evidence will be
-   retained in that Ship-owned record. Keep executable commands separate from
-   manual gates. Require at least one non-empty, unambiguous executable
-   command; do not invent a weak token-presence or unrelated command merely to
-   qualify.
-3. For each manual gate, record source path(s), target path(s), exact
-   pass/fail criteria, and required evidence. Keep it explicitly labeled
-   **manual** and separate from executable commands.
-4. Validate that the complete declared ownership is only prose Markdown under
-   `docs/**`, and that the Ship-owned verification record is durable/readable.
-   If any criterion is absent or ambiguous, halt without a docs label.
-5. Apply only `harness-verification-gated` after qualification, for queued or
-   already-active pre-implementation work. Never apply `harness-ready`; do not
-   create a test, production stub, or RED test for this route.
-
 ### Step 5: Verify harness
 
 #### Step 5.1: Compilation check
 
-Code route only: run `cargo check --all-targets`. The harness MUST compile.
+Run `cargo check --all-targets` including tests. The harness MUST compile.
 
 If compilation fails, fix the harness until it compiles. Do not proceed
 with a non-compiling harness.
 
 #### Step 5.2: Red phase check
 
-Code route only: run `cargo dev-test` for the harness tests. ALL tests MUST fail with
-the expected failure marker (unimplemented!("Worker: ...")).
+Run `cargo dev-test` for the harness tests, invoking exactly the
+resolved test command with no runner substitution. EVERY generated
+harness test MUST be discovered AND MUST fail with its own expected failure marker
+(unimplemented!("Worker: ...")); evaluate each test individually rather
+than relying on an aggregate non-zero exit code.
 
-If any test passes (false positive) or fails with an unexpected error
-(compilation vs runtime), fix the harness.
+Here "every generated harness test" means every test in the current
+task's expected-RED roster, as P-004 defines it:
 
-Docs route: no compilation or RED phase is fabricated. Reconfirm that the
-pre-implementation record is durable/readable and all required command/manual
-gate fields qualify before applying the docs label.
+* **Roster**: The current task's expected-RED roster is the current
+  task's generated harness tests, excluding characterization tests.
+  Characterization tests are recorded separately, outside the roster,
+  and may pass. Structural tests that reach no stub are likewise outside
+  the roster (Marker Convention below). A task declaring
+  `harness-surface:none` has no roster and no RED obligation.
+  `harness-surface:none` is allowed only for a task whose file budget
+  contains no Python production module under `src/`; if the current task
+  declares it but its file budget contains one, halt and report without
+  applying `harness-ready`. A docs-route task (Step 2a) also declares
+  `harness-surface:none`; it never reaches this step.
+* **RED (R2)**: RED for a roster test is that test reported as `ERROR`
+  in the canonical command's output with its own unique
+  `NotImplementedError` marker. Attribution is roster-relative (R2):
+  each roster test is checked against the named `ERROR` set by its own
+  marker. A roster test absent from the named `ERROR` set, or named
+  with a different marker, is refused.
 
-### Step 6: Apply the matching disposition
+**Marker Convention** (P-004, stated verbatim from the governing plan,
+where FI-9 is the RED-evidence rule P-004 states and a Proof G case ID is
+that plan's test case identifier):
 
-For a queued code task, after both code checks pass (P-004 gate satisfied):
+Each task's `Marker` value is a **prefix**. Every roster test `t` has its
+own marker `<prefix>:<t>`, where `<t>` is its Proof G case ID or test
+method name. It reaches a RED-phase stub that raises exactly
+`NotImplementedError("<prefix>:<t>")`. The stub is either per behavior, or
+derives the suffix deterministically from the test's distinct request.
+The harness asserts the roster's markers are pairwise distinct, and the RED
+record maps each roster test to its marker. Two roster tests sharing one
+marker is a cross-test marker, which FI-9 refuses. Structural tests that
+reach no stub (API, docstring, schema parity, pinned hash, alias, audit)
+are recorded outside the roster, like characterization tests.
 
-1. Leave exactly the `harness-ready` route label using the backlog tool's
-   update operation; ensure `harness-verification-gated` is absent.
+The following outcomes are NEVER valid red-phase evidence for a roster
+test and MUST be treated as harness defects requiring a fix before
+proceeding:
+
+* **Zero-discovery**: the test command reports zero tests collected —
+  test discovery failed to find the harness at all.
+* **Wrong-reason failure**: a roster test fails for a reason other than
+  its own expected failure marker (a different exception type or
+  message).
+* **Marker-bearing `AssertionError`**: a roster test reported as a
+  failure whose `AssertionError` carries its marker is refused; RED
+  requires the test's own `NotImplementedError` marker reported as
+  `ERROR`.
+* **Cross-test marker**: two roster tests sharing one marker, or a
+  roster test credited with another test's marker, is refused.
+* **Collection/import/syntax failure**: the run aborts during
+  collection due to an import error, syntax error, or module-load
+  failure — this is not the same signal as a running test raising the
+  expected marker.
+* **Skip or expected-failure (xfail)**: a roster test reported as
+  skipped or marked expected-to-fail counts as no observation, not as red
+  evidence.
+* **Pass or unexpectedSuccess**: a roster test that passes outright, or is
+  reported as an `unexpectedSuccess` (an `expectedFailure`-decorated
+  test that unexpectedly succeeded), is a false positive -- the
+  harness does not yet exercise the not-yet-implemented behavior.
+
+If any roster test exhibits one of these outcomes, fix the harness until
+every roster test is discovered and is reported as `ERROR` with its own
+marker. Passing characterization tests are not harness defects.
+
+### Step 6: Apply harness-ready label to the current task
+
+`harness-ready` applies to the current task only. After both checks
+pass for the current task (P-004 gate satisfied):
+
+1. Apply the `harness-ready` label to the current task only, using the
+   backlog tool's update operation. Never label another task, the
+   parent feature, or a shipment.
 2. Add an implementation note with the harness command.
-3. Record the harness manifest: `Compilation: PASS`,
+3. Record the per-task harness-ready evidence record: the task ID, the
+   exact command run, its native exit code, each roster test's outcome
+   and marker, and the characterization tests, listed apart from the
+   roster together with any structural tests that reach no stub.
+4. Record the harness manifest: `Compilation: PASS`,
    `Red Phase: CONFIRMED`.
 
-For a queued docs-only task, after the pre-implementation plan has been
-recorded and validated:
+On the docs route (Step 2a) this step does not apply: the task receives
+`harness-verification-gated` instead, and no harness manifest or RED record is
+written for it.
 
-1. Apply only `harness-verification-gated`; ensure `harness-ready` is absent.
-2. Return the Ship-owned verification-plan reference, preparation time/order,
-   exact command(s), manual gate(s), and required evidence locations. Do not
-   modify task planning fields to store the plan.
-3. Do not implement the docs or report command/manual-gate execution as passed
-   here; build-feature executes them after implementation.
+## Completion Criteria
 
-For an already-active docs-only task that passes the same pre-implementation
-qualification, set only `harness-verification-gated` (correcting a conflicting
-route label if needed) and return the Ship-owned plan reference. Do not change
-task status or any other task field. A historical baseline from when the task
-first became active is not required; Ship captures the current execution
-baseline at Step 4.1 immediately after verifying active status, before
-telemetry, pre-build reads, task verification commands, or docs implementation.
-If implementation may already have started and cannot be positively attributed
-to a recorded pre-existing baseline, halt without retroactively qualifying it.
-Already-active code tasks remain validation/reuse-only.
+Code route (`harness-ready`):
 
-## Quality Criteria
-
-The code route is complete only when selected queued tasks have:
+The skill is complete only when the current task has:
 
 * harness files in the correct modules
 * structural stubs with intentional not-implemented behavior
 * a successful `cargo check --all-targets` result after scaffolding
-* all harness tests failing with the expected marker
+* every roster test reported as `ERROR` with its own marker, and its
+  characterization tests listed apart from the roster
 * clear mapping from backlog task to harness command
 
-The docs-only route is complete only when selected queued tasks and any
-already-active tasks qualified before implementation have:
-
-* explicit, exclusively prose-Markdown `docs/**` ownership validated
-* owned paths verified unchanged from `HEAD` in the current worktree, or
-  existing deltas positively attributed to a recorded pre-existing baseline
-* a durable, readable Ship-owned verification plan recorded before docs
-  implementation, with executable commands and manual gates separate, at
-  least one exact non-empty executable command, and auditable manual gates
-  where applicable
-* only `harness-verification-gated` applied, never `harness-ready`
-* no code harness, test, stub, or RED test created
-* the stable verification-plan reference and preparation order reported to
-  Ship; the execution baseline is captured at Step 4.1 immediately after the
-  queued task is moved to `active` or its existing active status is verified,
-  before telemetry, pre-build reads, task verification commands, or docs edits;
-  the Step 4.2 handoff passes the unchanged reference
-
-Already-active code tasks are complete for this skill only when their matching
-disposition and supporting records were already valid; reuse them without
-re-claiming or rebuilding. Already-active docs tasks may be qualified only
-while pre-implementation under the checks above.
+Docs route (Step 2a): the skill is complete when the current task has a valid
+qualification record and a valid verification record, `harness-surface:none`, and
+the exclusive `harness-verification-gated` label. The harness files, structural
+stubs, compilation result and roster `ERROR` evidence above do not apply.
 
 ## Guardrails
 
-* Do not implement production logic — code route stubs only.
-* Do not skip code-route compilation or RED verification.
-* Do not apply `harness-ready` until both code checks pass; docs-only tasks
-  receive only `harness-verification-gated` after qualification and never get
-  an invented RED test.
-* Do not qualify ambiguous/mixed ownership as docs-only.
-* Keep code test scenarios traceable to acceptance criteria and docs gates
-  traceable to their source/target, exact criteria, and evidence.
-* Do not edit task planning fields, scope, acceptance criteria, or file
-  ownership to record a docs plan; Ship stores the full plan and evidence in
-  an official task/run comment or other Ship-owned execution record. The
-  architect may update only the route label after qualification.
+* Do not implement production logic — stubs only.
+* Do not skip compilation verification.
+* Do not apply the harness-ready label until both compilation and red
+  phase checks pass.
+* Keep test scenarios traceable to acceptance criteria.
+* On the docs route create no stub, test or RED evidence, and never apply both
+  route labels.
 
 ## Model Routing
 

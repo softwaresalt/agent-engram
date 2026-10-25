@@ -6,7 +6,7 @@
 #
 # Schema: schemas/harness-config.schema.json
 
-schema_version: "1.1.0"
+schema_version: "1.3.0"
 
 # Installation preset: starter | standard | full
 preset: full
@@ -61,48 +61,56 @@ strict_safety:
   require_approval_for:
     - destructive
 
-# Model routing preferences (map tiers to model identifiers and per-tier config)
 model_routing:
   tier1:
-    model: gpt-6-luna
-    reasoning_effort: "xhigh"
-    model_provider: "openai" # e.g., openai, anthropic — leave empty for default
-    model_family: "gpt-6-luna" # Resolved into Tier 1 agent frontmatter
+    model: claude-haiku-5.5              # Fast/cheap: memory, docs, compaction (e.g., gpt-5.4-mini)
+    reasoning_effort: "xhigh"  # Leave empty to use model default
+    model_provider: "anthropic"       # e.g., openai, anthropic — leave empty for default
+    model_family: "claude-haiku-5.5"           # Resolved into Tier 1 agent frontmatter
+    context_tier: "long_context"        # context-capacity class (default | long_context)
   tier2:
     model: claude-sonnet-5.5              # Standard: orchestration, code, review (e.g., claude-sonnet-5)
     reasoning_effort: "high"
     model_provider: "anthropic"
     model_family: "claude-sonnet-5.5"
+    context_tier: "long_context"
   tier3:
-    model: claude-opus-5.5              # Frontier: planning, architecture, analysis (e.g., claude-opus-5)
+    model: gemini-4-argon              # Frontier: planning, architecture, analysis (e.g., claude-sonnet-5)
     reasoning_effort: "high"
-    model_provider: "anthropic"
-    model_family: "claude-opus-5.5"
+    model_provider: "google"
+    model_family: "gemini-4-argon"
+    context_tier: "long_context"
   orchestrator:
-    model_family: "claude-opus-5.5"
+    model_family: "claude-sonnet-5.5"             # Orchestrator model override
     model_provider: "anthropic"
-    reasoning_effort: "high"
-  # P-013.5: role routes — dogfood assignment (Stage -> claude-opus-5, Ship -> claude-sonnet-5)
+    reasoning_effort: "medium"
+    context_tier: "long_context"
   stage:
-    model_family: "claude-opus-5.5"             # Stage role route (falls back to tier3 when empty)
-    model_provider: "anthropic"
+    model_family: "gemini-4-argon"             # Stage role route (falls back to tier3 when empty)
+    model_provider: "google"
     reasoning_effort: "high"
-  ship:
-    model_family: "gpt-6-luna"
-    model_provider: "openai"
-    reasoning_effort: "xhigh"
-  # P-013.6: explicit escalation route — distinct vendor/family from the
-  # Stage role route (claude-opus-5/anthropic, already == tier3) so an
-  # auto-escalation attempt is a genuine escalation, not a same-route no-op
-  # (ESCALATION_DEGRADED guard, 011-DL(b)/106-F).
+    context_tier: "long_context"
     escalation:
       model_family: "claude-sonnet-5.5"
       model_provider: "anthropic"
       reasoning_effort: "high"
+      context_tier: "long_context"
+  ship:
+    model_family: "claude-sonnet-5.5"
+    model_provider: "anthropic"
+    reasoning_effort: "medium"
+    context_tier: "long_context"
+    escalation:
+      model_family: "claude-sonnet-5.5"
+      model_provider: "anthropic"
+      reasoning_effort: "high"
+      context_tier: "long_context"
   anchor_review:
-    model_provider: "openai"       # Anchor reviewer provider (default: openai)
-    model_family: "gpt-6-sol"           # Anchor reviewer family (default: gpt-5.6-sol)
-    reasoning_effort: "high"  # Leave empty to use model default
+    model_provider: "openai"
+    model_family: "gpt-6.1-sol"
+    reasoning_effort: "high"
+  routes: {}
+  bindings: {}
 
 # AI CLI tool startup configuration
 # Resolves the copilot executable in the generated start.ps1 and start.sh scripts,

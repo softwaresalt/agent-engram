@@ -1,4 +1,5 @@
 ---
+name: observe
 description: "Capture recurring workflow observations into .autoharness/continuous-learning/ without relying on environment-specific hooks"
 ---
 
