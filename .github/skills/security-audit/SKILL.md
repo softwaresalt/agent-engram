@@ -33,7 +33,7 @@ This is a leaf executor. No subagent spawning. Maximum depth: 0.
 
 | Variable | Purpose |
 |---|---|
-| `.github/**/*.md` | Glob patterns for agentic config files (e.g., `.github/**`, `.vscode/**`) |
+| `.github/**,.vscode/**,.copilot/**` | Glob patterns for agentic config files (e.g., `.github/**`, `.vscode/**`) |
 | `src/**/*.rs` | Application source file patterns (e.g., `src/**/*.rs`) |
 | `Rust` | Primary language for pattern selection |
 | `docs/security` | Output directory for persisted reports (default: `docs/security`) |
@@ -50,7 +50,7 @@ This is a leaf executor. No subagent spawning. Maximum depth: 0.
 - `scope:<path>` — enumerate only files under the specified path
 - `scope:full` — enumerate all surfaces
 
-1. Enumerate agentic config surfaces matching `.github/**/*.md`
+1. Enumerate agentic config surfaces matching `.github/**,.vscode/**,.copilot/**`
 2. Enumerate application source files matching `src/**/*.rs`
 3. Identify the primary language (`Rust`) and select corresponding OWASP patterns
 4. Record the audit scope, file counts, and entry points found

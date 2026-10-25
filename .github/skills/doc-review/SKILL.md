@@ -74,6 +74,16 @@ Scan all Markdown and YAML files in scope for unresolved template variable
 patterns matching `\{\{[A-Z_][A-Z0-9_]*\}\}`. Any match in installed output
 files (not `.tmpl` source files) is a P0 finding.
 
+Exclude explanatory literals, not just fenced blocks. A match is **not** a
+finding when it is wrapped in inline code (`` `{{VARIABLE}}` ``), appears
+inside a fenced code block, or is otherwise quoted as an example of the
+template syntax itself — for example the retained prose reference in
+`.github/agents/_ship.agent.md` or the fenced authoring template in
+`.github/skills/compound/SKILL.md`. Only bare, unquoted occurrences in rendered
+prose indicate a genuinely unresolved install variable. Cross-check against
+`autoharness verify-workspace`, which reports its own unresolved-placeholder
+count; a file that verify considers valid must not be blocked by this check.
+
 ```text
 Pattern: \{\{[A-Z_][A-Z0-9_]*\}\}
 Scope:    installed harness files (exclude *.tmpl, exclude .backlogit/)

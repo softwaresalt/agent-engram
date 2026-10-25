@@ -129,7 +129,7 @@ community_templates: []
 variables_used:
   ADDITIONAL_COMMANDS: "| `cargo dev-test` | Run default test suite (dev workflow) |\n| `cargo ci` | Run all tests with all features (CI equivalent) |\n| `cargo lint` | Alias for clippy with pedantic warnings |\n| `cargo fmt-check` | Alias for format check |\n| `cargo audit` | Check for known vulnerabilities |"
   ADDITIONAL_STACK_ROWS: ""
-  AGENTIC_CONFIG_GLOB: ".github/**/*.md"
+  AGENTIC_CONFIG_GLOB: ".github/**,.vscode/**,.copilot/**"
   ALT_DOC_REVIEW_FAMILY: "claude-sonnet-5"
   ALT_DOC_REVIEW_PROVIDER: "anthropic"
   ALT_REVIEW_FAMILY: "gpt-5.6-sol"
@@ -709,7 +709,7 @@ artifacts:
     artifact_type: "skill"
     primitive: 8
     template: "templates/skills/doc-review/SKILL.md.tmpl"
-    checksum: "cec69deddcc970fab99bb888f21c6f78cc8206f5de43efb828ef6b3b18660028"
+    checksum: "6cc8eecbdaa4df30300787588532080988f057079096aa081408a6a2447cd477"
   - path: ".github/skills/evolve/SKILL.md"
     artifact_type: "skill"
     primitive: 7
@@ -799,7 +799,7 @@ artifacts:
     artifact_type: "skill"
     primitive: 7
     template: "templates/skills/security-audit/SKILL.md.tmpl"
-    checksum: "2acfc84ea7e45fd4af5d35be0ced11799ed1a1d5028af100aa2440365788542a"
+    checksum: "2eeae74748e0c7f5073efe0c412804532b65b6a538e342cf5d186a021aebe49a"
   - path: ".github/skills/shipment-reconcile/SKILL.md"
     artifact_type: "skill"
     primitive: 8
