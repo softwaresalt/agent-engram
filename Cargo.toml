@@ -1265,6 +1265,10 @@ name = "integration_preflight_gate"
 path = "tests/integration/preflight_gate_test.rs"
 
 [[test]]
+name = "integration_candidate_generation_build"
+path = "tests/integration/candidate_generation_build_test.rs"
+
+[[test]]
 name = "contract_start_launcher_failure"
 path = "tests/contract/start_launcher_failure_test.rs"
 

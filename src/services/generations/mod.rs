@@ -5,6 +5,7 @@
 //! sibling generation services.
 
 mod activation;
+pub mod candidate_build;
 mod context;
 mod manifest;
 mod publish;
