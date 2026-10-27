@@ -142,6 +142,26 @@ async fn second_publish_and_store_containment() {
     assert!(matches!(err, CandidateBuildError::StoreAbsent), "{err:?}");
     assert!(!root.join(".engram").exists(), "nothing may be created");
 
+    // A generations root outside the workspace is rejected before creation.
+    let outside = TempDir::new().expect("outside dir");
+    let missing = outside.path().join("nested").join("generations");
+    let mut escaping = layout.clone();
+    escaping.generations_root = missing.clone();
+    let err = open_generation_store(&escaping, true).expect_err("outside root");
+    assert!(
+        matches!(err, CandidateBuildError::ContainmentEscape),
+        "{err:?}"
+    );
+    assert!(!missing.exists(), "outside directory must not be created");
+    assert!(!outside.path().join("nested").exists());
+    let mut dotdot = layout.clone();
+    dotdot.generations_root = root.join("..").join("escape-gen");
+    let err = open_generation_store(&dotdot, true).expect_err("dotdot root");
+    assert!(
+        matches!(err, CandidateBuildError::ContainmentEscape),
+        "{err:?}"
+    );
+
     // Second publish switches the activator.
     let store = open_generation_store(&layout, true).expect("open store");
     let first = build_and_seal(&layout, &store, "cand-pub-a").await;

@@ -413,6 +413,29 @@ fn within_root(child: &Path, root: &Path) -> Result<bool, CandidateBuildError> {
     Ok(normalize_canonical(child).starts_with(normalize_canonical(root)))
 }
 
+/// Validate, before anything is created, that the generations root would be
+/// created inside the workspace: no `..` component, and the deepest existing
+/// ancestor is an unlinked directory within the workspace.
+fn validate_store_destination(layout: &ReadServerLayout) -> Result<(), CandidateBuildError> {
+    let root = &layout.generations_root;
+    if root
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(CandidateBuildError::ContainmentEscape);
+    }
+    for ancestor in root.ancestors() {
+        if exists_without_link(ancestor)? {
+            return if within_root(ancestor, &layout.workspace)? {
+                Ok(())
+            } else {
+                Err(CandidateBuildError::ContainmentEscape)
+            };
+        }
+    }
+    Err(CandidateBuildError::ContainmentEscape)
+}
+
 /// Open the generation store for `layout`, creating it only when `create`.
 ///
 /// Rejects a symlinked or reparse-point `.engram`, generations root, or
@@ -437,6 +460,7 @@ pub fn open_generation_store(
         if !create {
             return Err(CandidateBuildError::StoreAbsent);
         }
+        validate_store_destination(layout)?;
         std::fs::create_dir_all(&layout.generations_root)
             .map_err(|e| io_error("create generations root", &e))?;
     }
