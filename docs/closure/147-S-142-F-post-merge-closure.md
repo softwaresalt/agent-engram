@@ -67,7 +67,7 @@ archived on the feature branch (`status: archived`, `archived_status: done`,
 Observed chronology (UTC, from file and evidence timestamps): pre-mode report 06:30:33,
 machine-written pre-close evidence snapshot 06:32:12 (`captured_at`; the first evidence run at
 06:30:24 was regenerated after the pre-mode report so the order matches the contract),
-shipment archive record 06:32:22, post-mode report 06:33:13. The shipment record was preserved
+shipment archive record 06:32:22, post-mode report 06:33:12. The shipment record was preserved
 in `.backlogit/archive/147-S.md` (`status: archived`, `archived_status: done`,
 `archived_from: .backlogit/queue/147-S.md`) and `.backlogit/queue/147-S.md` removed.
 `backlogit sync` succeeded; `142-F.md` SHA-256 before and after is
