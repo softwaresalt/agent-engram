@@ -442,6 +442,113 @@ async fn read_server_never_installs_late_after_a_startup_install_failure() {
     assert_daemon_answers(&daemon).await;
 }
 
+// ── PRE-3c (142.064-T) ──────────────────────────────────────────────────────
+
+/// Window within which a transiently failed revision must activate once its
+/// missing inventory file is restored (064-T `AC3b`).
+const TRANSIENT_RECOVERY_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Path of the sealed generation database of the only published generation.
+fn sealed_database(root: &Path, id: &str) -> PathBuf {
+    generations_root(root).join(id).join("engram.db")
+}
+
+/// RED-phase precondition [064.003-ST D1]: an inventory file that is absent
+/// is rated `Transient` by `classify`, so the retry scenario below really
+/// exercises the transient path and not a permanent rejection.
+#[tokio::test]
+async fn an_absent_inventory_file_is_classified_transient() {
+    use engram::services::generations::{GenerationActivator, RejectionClass, classify};
+
+    let (_guard, root) = git_fixture(Some("read_server"));
+    write_source(&root);
+    assert_eq!(publish_revision(&root, "cand-wire-class", false).await, 1);
+    let database = sealed_database(&root, "cand-wire-class");
+    fs::remove_file(&database).expect("remove sealed database");
+
+    let layout = read_server_layout(as_str(&root)).expect("layout");
+    let store = open_generation_store(&layout, false).expect("open store");
+    let activator = GenerationActivator::new(
+        store,
+        layout.runtime_root.clone(),
+        layout.expected_identity(),
+        layout.activation_deadline,
+    );
+    let error = activator
+        .activate_initial()
+        .await
+        .expect_err("activation must fail while the inventory file is absent");
+    assert_eq!(
+        classify(&error),
+        RejectionClass::Transient,
+        "absent inventory file must be transient: {error}"
+    );
+}
+
+/// Poll `get_workspace_status.generation` until `done` holds, failing with the
+/// `Worker: 142.064-T` marker when `timeout` elapses first.
+async fn wait_for_recovery(
+    daemon: &Daemon,
+    what: &str,
+    timeout: Duration,
+    done: impl Fn(&Value) -> bool,
+) -> Value {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let generation = generation_of(daemon).await;
+        if done(&generation) {
+            return generation;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "Worker: 142.064-T: timed out waiting for {what}; last generation: {generation}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// Scenario 2, transient step [064-T `AC3b`; 064.003-ST D1, D2].
+///
+/// The inventory file is absent at spawn (a transient rejection), then
+/// restored: the same revision must activate with no new revision published.
+#[tokio::test]
+async fn read_server_retries_a_transient_failure_of_the_same_revision() {
+    let (_guard, root) = git_fixture(Some("read_server"));
+    write_source(&root);
+    assert_eq!(
+        publish_revision(&root, "cand-wire-transient", false).await,
+        1
+    );
+    let database = sealed_database(&root, "cand-wire-transient");
+    let parked = database.with_extension("db.parked");
+    fs::rename(&database, &parked).expect("park sealed database");
+
+    let daemon = Daemon::spawn(&root).await;
+    let failed = wait_for_recovery(
+        &daemon,
+        "last_failed_revision == 1",
+        TRANSIENT_RECOVERY_TIMEOUT,
+        |g| g["last_failed_revision"].as_u64() == Some(1),
+    )
+    .await;
+    assert!(failed["active_revision"].is_null(), "{failed}");
+
+    fs::rename(&parked, &database).expect("restore sealed database");
+    let recovered = wait_for_recovery(
+        &daemon,
+        "active_revision == 1 after the inventory file is restored",
+        TRANSIENT_RECOVERY_TIMEOUT,
+        |g| g["active_revision"].as_u64() == Some(1),
+    )
+    .await;
+    assert_eq!(
+        recovered["active_revision"].as_u64(),
+        Some(1),
+        "no new revision is published: {recovered}"
+    );
+    assert_daemon_answers(&daemon).await;
+}
+
 /// Create a directory link (symlink, or junction on Windows). Returns `false`
 /// with a logged reason when the link cannot be created; callers must fail loudly.
 fn make_dir_link(link: &Path, target: &Path) -> bool {

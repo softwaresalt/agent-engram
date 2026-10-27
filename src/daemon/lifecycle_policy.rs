@@ -9,7 +9,7 @@ use std::sync::Arc;
 #[cfg(test)]
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, error, info, warn};
@@ -357,10 +357,68 @@ impl ProbeSlot {
     }
 }
 
+/// Transient same-revision retry state for the activation driver.
+///
+/// Tracks one revision at a time: the time of its first transient failure, the
+/// failure count (which drives the 100 ms-doubling, 2 s-capped backoff) and
+/// the earliest next attempt. Empty after a permanent rejection, so a
+/// permanently rejected revision is never re-attempted.
+#[derive(Default)]
+struct TransientRetry {
+    window: Option<TransientWindow>,
+}
+
+struct TransientWindow {
+    revision: GenerationRevision,
+    first_failure: Instant,
+    attempts: u32,
+    next_attempt: Instant,
+}
+
+impl TransientRetry {
+    /// Whether `revision` may be re-attempted `now`: it must be inside its
+    /// transient window (less than `deadline` since its first transient
+    /// failure) and past its backoff.
+    fn due(&self, revision: GenerationRevision, now: Instant, deadline: Duration) -> bool {
+        self.window.as_ref().is_some_and(|window| {
+            window.revision == revision
+                && now >= window.next_attempt
+                && now.saturating_duration_since(window.first_failure) < deadline
+        })
+    }
+
+    /// Record a transient failure of `revision` at `now`, schedule the next
+    /// attempt, and return the backoff so the driver loop can sleep exactly that
+    /// long instead of its own (possibly already capped) tick delay.
+    fn record_failure(&mut self, revision: GenerationRevision, now: Instant) -> Duration {
+        let (first_failure, attempts) = match &self.window {
+            Some(window) if window.revision == revision => {
+                (window.first_failure, window.attempts.saturating_add(1))
+            }
+            _ => (now, 1),
+        };
+        // `min(16)` keeps the shift in range; the cap is reached long before.
+        let backoff = DRIVER_BACKOFF_START
+            .saturating_mul(1_u32 << attempts.saturating_sub(1).min(16))
+            .min(DRIVER_BACKOFF_CAP);
+        self.window = Some(TransientWindow {
+            revision,
+            first_failure,
+            attempts,
+            next_attempt: now + backoff,
+        });
+        backoff
+    }
+}
+
 /// Background activation driver; never awaited by startup.
 ///
-/// Activates each newly published non-zero revision once, installing the gate
-/// late only when the generations root was absent at startup. Logs at `warn`
+/// Activates each newly published non-zero revision, installing the gate
+/// late only when the generations root was absent at startup. A revision whose
+/// attempt failed transiently (per `classify`) is re-attempted with a 100 ms
+/// doubling, 2 s capped backoff until `activation_deadline` has passed since
+/// its first transient failure; a permanent rejection is never re-attempted.
+/// Logs at `warn`
 /// once per distinct revision and error kind, without payloads. Exits on
 /// success or shutdown. A failed late install is retried on later ticks and
 /// logged once per distinct error kind.
@@ -375,6 +433,7 @@ async fn drive_generation_activation(
     let mut last_attempted: Option<GenerationRevision> = None;
     let mut last_logged: Option<(Option<GenerationRevision>, &'static str)> = None;
     let mut probe = ProbeSlot::default();
+    let mut retry = TransientRetry::default();
     loop {
         tokio::select! {
             _ = shutdown.changed() => return,
@@ -421,12 +480,21 @@ async fn drive_generation_activation(
             }
         };
         if last_attempted == Some(revision) {
-            continue;
+            // The same revision is re-attempted only inside its transient window.
+            if !retry.due(revision, Instant::now(), layout.activation_deadline) {
+                continue;
+            }
+        } else {
+            last_attempted = Some(revision);
+            retry = TransientRetry::default();
         }
-        last_attempted = Some(revision);
         match gate.run_initial_activation().await {
             Ok(_) => return,
             Err(error) => {
+                // Stamp the failure before the awaited recheck below, which can
+                // take up to `activation_deadline`; the transient window runs
+                // from the failure itself, not from the end of the recheck.
+                let failed_at = Instant::now();
                 // The activation reads the manifest itself, so a publication
                 // between the probe and that read may mean the failure belongs
                 // to a later revision; leave it unattributed so the newer
@@ -438,9 +506,17 @@ async fn drive_generation_activation(
                 if matches!(rechecked, Ok(Some(current)) if current != revision) {
                     continue;
                 }
-                let kind = match classify(&error) {
-                    RejectionClass::Permanent => "permanent",
-                    RejectionClass::Transient => "transient",
+                let class = classify(&error);
+                let kind = match class {
+                    RejectionClass::Permanent => {
+                        // Never re-attempted for the same revision (5C873386).
+                        retry = TransientRetry::default();
+                        "permanent"
+                    }
+                    RejectionClass::Transient => {
+                        delay = retry.record_failure(revision, failed_at);
+                        "transient"
+                    }
                 };
                 if last_logged != Some((Some(revision), kind)) {
                     warn!(
@@ -873,6 +949,41 @@ mod tests {
     use crate::config::StaleStrategy;
     use crate::models::config::DaemonMode;
     use crate::server::state::{RequestOutcome, WorkMask};
+
+    #[test]
+    fn transient_retry_follows_backoff_window_and_revision() {
+        let rev = |value| GenerationRevision::new(value);
+        let deadline = Duration::from_secs(60);
+        let start = Instant::now();
+        let mut retry = TransientRetry::default();
+
+        // Nothing recorded: no same-revision re-attempt is due.
+        assert!(!retry.due(rev(1), start, deadline));
+
+        // Backoff doubles from 100 ms and caps at 2 s.
+        let expected_ms = [100, 200, 400, 800, 1_600, 2_000, 2_000];
+        for ms in expected_ms {
+            let backoff = retry.record_failure(rev(1), start);
+            assert_eq!(backoff, Duration::from_millis(ms));
+        }
+
+        // Not due before the backoff elapses; due after; never for another revision.
+        assert!(!retry.due(rev(1), start + Duration::from_millis(1_999), deadline));
+        assert!(retry.due(rev(1), start + Duration::from_secs(2), deadline));
+        assert!(!retry.due(rev(2), start + Duration::from_secs(5), deadline));
+
+        // The window closes `deadline` after the FIRST failure, not the latest.
+        assert!(retry.due(rev(1), start + Duration::from_secs(59), deadline));
+        assert!(!retry.due(rev(1), start + deadline, deadline));
+
+        // A newer revision starts its own window and attempt count.
+        let backoff = retry.record_failure(rev(2), start + deadline);
+        assert_eq!(backoff, DRIVER_BACKOFF_START);
+
+        // A permanent rejection resets the state: nothing is ever due.
+        retry = TransientRetry::default();
+        assert!(!retry.due(rev(2), start + Duration::from_secs(5), deadline));
+    }
 
     #[cfg(unix)]
     #[test]
