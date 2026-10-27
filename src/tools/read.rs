@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 use tokio::sync::oneshot;
 
 use crate::db::connect_db;
+use crate::db::cozo_backend::CozoDb;
 use crate::db::queries::{CodeGraphQueries, FindPathResult, QueryGraphResult, SymbolFilter};
 use crate::errors::{CodeGraphError, EngramError, QueryError, SystemError, WorkspaceError};
 use crate::models::TraversalDirection;
@@ -103,9 +104,24 @@ async fn pinned_read_request_context(
     Ok(context)
 }
 
+/// Resolve the code-graph queries for an already-captured read context.
+///
+/// This is the one seam that picks the data source, so handlers never branch
+/// on daemon mode. A generation context is served from the opened
+/// generation's own database (a clone of the `DbInstance` shares its
+/// storage). `connect_db` is never called for it: that would open or
+/// bootstrap an empty managed-style database next to the runtime copy, which
+/// is the silent wrong-data path. There is no fallback to managed data.
+/// A managed context opens the managed database as before.
 async fn queries_from_read_context(
     context: &ReadRequestContext,
 ) -> Result<CodeGraphQueries, EngramError> {
+    if let Some(generation) = context.generation() {
+        let db = CozoDb {
+            inner: Arc::new(generation.opened_generation().db().clone()),
+        };
+        return Ok(CodeGraphQueries::new(db));
+    }
     let db = connect_db(context.data_dir(), context.branch()).await?;
     Ok(CodeGraphQueries::new(db))
 }
@@ -135,32 +151,37 @@ async fn queries_from_context(context: &DispatchSnapshot) -> Result<CodeGraphQue
 
 // ── Workspace statistics ─────────────────────────────────────────────────
 
-/// Context-aware statistics entry point (PRE-4b placeholder).
-///
-/// # Errors
-/// Always fails until `142.065-T` replaces this placeholder.
-pub async fn get_workspace_statistics_with_context(
-    _state: SharedState,
-    _params: Option<Value>,
-    _read_context: Option<&Arc<ReadRequestContext>>,
-) -> Result<Value, EngramError> {
-    Err(EngramError::System(SystemError::InvalidParams {
-        reason: "Worker: 142.065-T get_workspace_statistics_with_context is not implemented"
-            .to_owned(),
-    }))
-}
-
 /// Return aggregate code graph statistics for the current workspace.
 pub async fn get_workspace_statistics(
     state: SharedState,
+    params: Option<Value>,
+) -> Result<Value, EngramError> {
+    get_workspace_statistics_with_context(state, params, None).await
+}
+
+/// Return aggregate code graph statistics, serving the supplied read context.
+///
+/// `Some(context)` is used as-is, so a generation context is answered from
+/// its opened generation. `None` pins the managed state exactly as the
+/// two-argument wrapper always has.
+///
+/// # Errors
+/// Returns an error when no workspace is bound (managed path), the database
+/// cannot be opened, or the embedding or registry status cannot be read.
+pub async fn get_workspace_statistics_with_context(
+    state: SharedState,
     _params: Option<Value>,
+    read_context: Option<&Arc<ReadRequestContext>>,
 ) -> Result<Value, EngramError> {
     // Read-only: code graph counters may reflect partial data while indexing
     // is in progress, but returning potentially-incomplete statistics is
     // more useful than an IndexInProgress error. Callers can inspect
     // `scan_status.running` in workspace_status to detect mid-index state.
 
-    let context = pinned_read_request_context(&state, "get_workspace_statistics").await?;
+    let context = match read_context {
+        Some(context) => Arc::clone(context),
+        None => pinned_read_request_context(&state, "get_workspace_statistics").await?,
+    };
     let cg_queries = queries_from_read_context(context.as_ref()).await?;
 
     let code_files = cg_queries.count_code_files().await.unwrap_or(0);
