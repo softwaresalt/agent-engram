@@ -1,5 +1,5 @@
-//! Integration coverage for plan unit PRE-1a (142.075-T): read-server layout,
-//! identity spelling, and generation-ID minting.
+//! Integration coverage for plan unit PRE-1 (142.075-T scenario 1, 142.061-T
+//! scenarios 2 and 3): layout and minting, candidate build, and seal.
 
 #![forbid(unsafe_code)]
 
@@ -10,10 +10,13 @@ use std::time::{Duration, SystemTime};
 
 use engram::db::workspace::{canonicalize_workspace, workspace_hash};
 use engram::errors::WorkspaceError;
-use engram::services::generations::ExpectedIdentity;
+use engram::models::config::CodeGraphConfig;
 use engram::services::generations::candidate_build::{
-    READ_SERVER_ACTIVATION_DEADLINE, mint_generation_id, read_server_layout,
+    CandidateBuildError, READ_SERVER_ACTIVATION_DEADLINE, build_candidate_generation,
+    mint_generation_id, read_server_layout, seal_candidate_inventory,
 };
+use engram::services::generations::{ExpectedIdentity, GenerationId, GenerationStore, StoreError};
+use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
 fn spaced_dir() -> TempDir {
@@ -178,5 +181,130 @@ fn minted_ids_are_valid_distinct_and_not_runtime() {
     assert_eq!(
         first.as_str(),
         format!("preflight-1500-{}", std::process::id())
+    );
+}
+
+const SEEDED_MANIFEST: &[u8] = b"{\"seeded\":\"active-manifest\"}";
+
+/// Spaced git fixture with a two-function `lib.rs`, a created generations
+/// root, and a pre-seeded active manifest.
+fn build_fixture() -> (
+    TempDir,
+    PathBuf,
+    engram::services::generations::candidate_build::ReadServerLayout,
+    GenerationStore,
+) {
+    let (dir, root) = git_fixture(Some("ref: refs/heads/main\n"));
+    fs::create_dir_all(root.join("src")).expect("create src");
+    fs::write(
+        root.join("src").join("lib.rs"),
+        "pub fn alpha() -> u32 {\n    1\n}\n\npub fn beta() -> u32 {\n    2\n}\n",
+    )
+    .expect("write lib.rs");
+    let layout = read_server_layout(as_str(&root)).expect("layout");
+    fs::create_dir_all(&layout.generations_root).expect("create generations root");
+    let store = GenerationStore::new(&layout.generations_root).expect("store");
+    fs::write(store.active_manifest_path(), SEEDED_MANIFEST).expect("seed manifest");
+    (dir, root, layout, store)
+}
+
+fn function_count(db_path: &Path) -> i64 {
+    let db = cozo::DbInstance::new("sqlite", as_str(db_path), "").expect("open renamed db");
+    let rows = db
+        .run_script(
+            "?[count(id)] := *function_meta { id }",
+            BTreeMap::new(),
+            cozo::ScriptMutability::Immutable,
+        )
+        .expect("count script");
+    rows.rows[0][0].get_int().expect("integer count")
+}
+
+#[tokio::test]
+async fn build_renames_database_and_guards_reserved_and_repeat_ids() {
+    let (_dir, _root, layout, store) = build_fixture();
+    let config = CodeGraphConfig::default();
+    let id = GenerationId::new("cand-build-1").expect("id");
+
+    let built = build_candidate_generation(&layout, &store, &id, &config)
+        .await
+        .expect("build");
+
+    let candidate = layout.generations_root.join("cand-build-1");
+    let db_path = candidate.join("engram.db");
+    assert_eq!(built.id(), &id);
+    assert!(db_path.is_file(), "renamed database must exist");
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let sidecar = candidate.join(format!("engram.db{suffix}"));
+        assert!(!sidecar.exists(), "unexpected sidecar {suffix}");
+    }
+    assert_eq!(
+        fs::read(store.active_manifest_path()).expect("read manifest"),
+        SEEDED_MANIFEST,
+        "active manifest must be untouched"
+    );
+    assert_eq!(function_count(&db_path), 2, "data must survive the rename");
+
+    let first_bytes = fs::read(&db_path).expect("read db");
+    let err = build_candidate_generation(&layout, &store, &id, &config)
+        .await
+        .expect_err("rebuild must fail");
+    assert!(
+        matches!(
+            err,
+            CandidateBuildError::Store(StoreError::CandidateAlreadyExists { .. })
+        ),
+        "{err:?}"
+    );
+    assert_eq!(
+        fs::read(&db_path).expect("re-read db"),
+        first_bytes,
+        "first candidate must be intact"
+    );
+
+    let runtime = GenerationId::new("runtime").expect("runtime id");
+    let err = build_candidate_generation(&layout, &store, &runtime, &config)
+        .await
+        .expect_err("reserved id must fail");
+    assert!(
+        matches!(err, CandidateBuildError::ReservedGenerationId),
+        "{err:?}"
+    );
+    assert!(!layout.generations_root.join("runtime").exists());
+    let mixed = GenerationId::new("Runtime").expect("mixed-case id");
+    let err = build_candidate_generation(&layout, &store, &mixed, &config)
+        .await
+        .expect_err("case-aliased reserved id must fail");
+    assert!(
+        matches!(err, CandidateBuildError::ReservedGenerationId),
+        "{err:?}"
+    );
+}
+
+#[tokio::test]
+async fn seal_inventory_has_one_entry_with_independent_digest() {
+    let (_dir, _root, layout, store) = build_fixture();
+    let config = CodeGraphConfig::default();
+    let id = GenerationId::new("cand-seal-1").expect("id");
+
+    let built = build_candidate_generation(&layout, &store, &id, &config)
+        .await
+        .expect("build");
+    let db_path = built.database_path();
+    let sealed = seal_candidate_inventory(built).expect("seal");
+
+    assert_eq!(sealed.id(), &id);
+    let [entry] = sealed.inventory() else {
+        panic!("expected exactly one inventory entry");
+    };
+    assert_eq!(entry.path(), "cand-seal-1/engram.db");
+    let expected = hex::encode(Sha256::digest(fs::read(&db_path).expect("read db")));
+    assert_eq!(entry.sha256(), expected);
+    assert_eq!(entry.sha256().len(), 64);
+    assert!(
+        entry
+            .sha256()
+            .chars()
+            .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
     );
 }
