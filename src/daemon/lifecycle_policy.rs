@@ -282,11 +282,7 @@ fn probe_published_revision(
     if !target_is_file {
         return Err(unreadable);
     }
-    let file = std::fs::File::open(&path).map_err(|_| CandidateBuildError::ManifestUnreadable)?;
-    // Re-check on the opened handle so a swap after the pre-check is rejected.
-    if !file.metadata().is_ok_and(|meta| meta.is_file()) {
-        return Err(unreadable);
-    }
+    let file = open_regular_manifest(&path)?;
     let mut bytes = Vec::new();
     file.take(DRIVER_MAX_MANIFEST_BYTES.saturating_add(1))
         .read_to_end(&mut bytes)
@@ -297,6 +293,32 @@ fn probe_published_revision(
     let parsed: RevisionOnly =
         serde_json::from_slice(&bytes).map_err(|_| CandidateBuildError::ManifestUnreadable)?;
     Ok((parsed.revision.value() != 0).then_some(parsed.revision))
+}
+
+/// Opens the manifest without blocking and re-checks the opened handle.
+///
+/// On Unix the open uses `O_NONBLOCK` so a path swapped for a FIFO after the
+/// caller's pre-check cannot block waiting for a writer; the handle is then
+/// rejected unless it is a regular file.
+fn open_regular_manifest(path: &std::path::Path) -> Result<std::fs::File, CandidateBuildError> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use rustix::fs::OFlags;
+        use std::os::unix::fs::OpenOptionsExt as _;
+
+        let flags = i32::try_from(OFlags::NONBLOCK.bits())
+            .map_err(|_| CandidateBuildError::ManifestUnreadable)?;
+        options.custom_flags(flags);
+    }
+    let file = options
+        .open(path)
+        .map_err(|_| CandidateBuildError::ManifestUnreadable)?;
+    if !file.metadata().is_ok_and(|meta| meta.is_file()) {
+        return Err(CandidateBuildError::ManifestUnreadable);
+    }
+    Ok(file)
 }
 
 /// Holds at most one in-flight blocking probe across driver ticks.
@@ -851,6 +873,28 @@ mod tests {
     use crate::config::StaleStrategy;
     use crate::models::config::DaemonMode;
     use crate::server::state::{RequestOutcome, WorkMask};
+
+    #[cfg(unix)]
+    #[test]
+    fn manifest_open_rejects_fifo_without_blocking() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("active.json");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .expect("mkfifo spawn");
+        assert!(status.success());
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let probe_path = path.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(open_regular_manifest(&probe_path).is_err());
+        });
+        let rejected = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("open must not block on a FIFO");
+        assert!(rejected);
+    }
 
     fn coordinator_snapshot(
         workspace_id: &str,
