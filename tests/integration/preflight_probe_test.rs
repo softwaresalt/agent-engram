@@ -38,7 +38,7 @@ const JSON: &str = r#"{"result":{"code_files":1,"functions":2,"classes":0,"inter
 fn main() {
     let exe = std::env::current_exe().unwrap_or_default();
     let stem = exe.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    let forever = || loop { std::thread::sleep(Duration::from_secs(1)); };
+    let forever = || { std::thread::sleep(Duration::from_secs(60)); std::process::exit(0); };
     if std::env::var_os("GC_ROLE").is_some() { forever(); }
     let _ = std::fs::write(exe.with_extension("pid"), std::process::id().to_string());
     match stem.as_str() {
@@ -76,7 +76,12 @@ fn as_str(path: &Path) -> &str {
 /// Plan R13.6 F1: the first call of every test, a spawn failure by design.
 fn assert_spawn_failure(dir: &Path) {
     let missing = dir.join("no such dir").join("missing engram.exe");
-    let result = probe_cli_read(&missing, dir, &PREFLIGHT_READ, Duration::from_secs(5));
+    let result = probe_cli_read(
+        &missing,
+        dir,
+        &PREFLIGHT_READ,
+        Instant::now() + Duration::from_secs(5),
+    );
     assert!(
         matches!(result, Err(ProbeError::Spawn(_))),
         "a nonexistent exe must be Spawn: {result:?}"
@@ -241,7 +246,7 @@ async fn probe_reports_the_published_generation() {
         &root,
         &PREFLIGHT_READ,
         GENERATION,
-        Duration::from_secs(60),
+        Instant::now() + Duration::from_secs(60),
     )
     .expect("published generation must be observed");
 
@@ -249,7 +254,7 @@ async fn probe_reports_the_published_generation() {
         &engram_exe(),
         &root,
         &PREFLIGHT_READ,
-        Duration::from_secs(30),
+        Instant::now() + Duration::from_secs(30),
     )
     .expect("stats probe");
     assert!(report.accepted, "{report:?}");
@@ -260,8 +265,13 @@ async fn probe_reports_the_published_generation() {
         "{fingerprint}"
     );
 
-    let health = probe_cli_read(&engram_exe(), &root, &HEALTH_READ, Duration::from_secs(30))
-        .expect("health probe");
+    let health = probe_cli_read(
+        &engram_exe(),
+        &root,
+        &HEALTH_READ,
+        Instant::now() + Duration::from_secs(30),
+    )
+    .expect("health probe");
     assert!(health.accepted, "{health:?}");
 }
 
@@ -280,7 +290,7 @@ async fn wait_for_generation_distinguishes_expected_ids() {
         &root,
         &PREFLIGHT_READ,
         "cand-other",
-        deadline,
+        started + deadline,
     );
     assert!(
         matches!(result, Err(ProbeError::Mismatch | ProbeError::Deadline)),
@@ -292,14 +302,15 @@ async fn wait_for_generation_distinguishes_expected_ids() {
         started.elapsed()
     );
 
-    wait_for_generation(
+    let report = wait_for_generation(
         &engram_exe(),
         &root,
         &PREFLIGHT_READ,
         GENERATION,
-        Duration::from_secs(60),
+        Instant::now() + Duration::from_secs(60),
     )
     .expect("published id must succeed");
+    assert_eq!(report.generation_id.as_deref(), Some(GENERATION));
 }
 
 /// Scenario 3a: a hanging child is killed at the deadline.
@@ -309,7 +320,12 @@ fn hanging_child_is_killed_at_the_deadline() {
     assert_spawn_failure(dir.path());
     let exe = compile_fixture(dir.path(), "hang");
     let started = Instant::now();
-    let result = probe_cli_read(&exe, dir.path(), &PREFLIGHT_READ, Duration::from_secs(1));
+    let result = probe_cli_read(
+        &exe,
+        dir.path(),
+        &PREFLIGHT_READ,
+        Instant::now() + Duration::from_secs(1),
+    );
     assert!(matches!(result, Err(ProbeError::Deadline)), "{result:?}");
     assert!(started.elapsed() <= Duration::from_secs(1) + SLACK);
     assert_dead_soon(marker_pid(&exe, "pid"), "hanging child");
@@ -323,7 +339,7 @@ fn inherited_grandchild_does_not_delay_the_report() {
     let exe = compile_fixture(dir.path(), "grandchild");
     let deadline = Duration::from_secs(5);
     let started = Instant::now();
-    let result = probe_cli_read(&exe, dir.path(), &PREFLIGHT_READ, deadline);
+    let result = probe_cli_read(&exe, dir.path(), &PREFLIGHT_READ, started + deadline);
     let elapsed = started.elapsed();
     let grandchild = PidGuard(marker_pid(&exe, "gc"));
     let report = result.expect("report despite the inherited stdout");
@@ -341,7 +357,12 @@ fn oversize_output_is_typed_and_the_child_is_reaped() {
     let dir = spaced_dir();
     assert_spawn_failure(dir.path());
     let exe = compile_fixture(dir.path(), "big");
-    let result = probe_cli_read(&exe, dir.path(), &PREFLIGHT_READ, Duration::from_secs(20));
+    let result = probe_cli_read(
+        &exe,
+        dir.path(),
+        &PREFLIGHT_READ,
+        Instant::now() + Duration::from_secs(20),
+    );
     assert!(matches!(result, Err(ProbeError::Oversize)), "{result:?}");
     assert_dead_soon(marker_pid(&exe, "pid"), "oversize child");
 }
@@ -356,7 +377,7 @@ fn child_stderr_does_not_reach_the_caller() {
             Path::new(&fixture),
             dir.path(),
             &PREFLIGHT_READ,
-            Duration::from_secs(10),
+            Instant::now() + Duration::from_secs(10),
         )
         .expect("stderr fixture probe");
         assert_fixture_report(&report);

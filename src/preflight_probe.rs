@@ -133,9 +133,8 @@ fn run_bounded(
     engram: &Path,
     workspace: &Path,
     read: &ProbeRead,
-    deadline: Duration,
+    deadline: Instant,
 ) -> Result<BoundedOutput, ProbeError> {
-    let started = Instant::now();
     let mut child = Command::new(engram)
         .arg("--workspace")
         .arg(workspace)
@@ -169,7 +168,7 @@ fn run_bounded(
                 return Ok(BoundedOutput { stdout, status });
             }
         } else {
-            if started.elapsed() >= deadline {
+            if Instant::now() >= deadline {
                 kill_and_reap(&mut child);
                 return Err(ProbeError::Deadline);
             }
@@ -229,6 +228,8 @@ fn parse_report(stdout: &[u8]) -> Option<ProbeReport> {
 
 /// Run one bounded CLI read and parse its first JSON line.
 ///
+/// `deadline` is an absolute instant; the child is killed once it passes.
+///
 /// Typed-result precedence: `Spawn` > `Oversize` > `Deadline` > reader
 /// `ReadError` (reported as `Malformed("stdout_read")`) > parse. A parseable
 /// result report is `accepted: true` independent of the exit status by
@@ -248,7 +249,7 @@ pub fn probe_cli_read(
     engram: &Path,
     workspace: &Path,
     read: &ProbeRead,
-    deadline: Duration,
+    deadline: Instant,
 ) -> Result<ProbeReport, ProbeError> {
     let output = run_bounded(engram, workspace, read, deadline)?;
     if let Some(report) = parse_report(&output.stdout) {
@@ -261,7 +262,8 @@ pub fn probe_cli_read(
     }
 }
 
-/// Re-probe until the report's generation equals `expected` or the deadline.
+/// Re-probe until the report's generation equals `expected` or the absolute
+/// `deadline` instant passes; returns the matching report.
 ///
 /// Intended for reads that carry provenance (`PREFLIGHT_READ`); a read
 /// without a `generation_id` can never match.
@@ -275,20 +277,18 @@ pub fn wait_for_generation(
     workspace: &Path,
     read: &ProbeRead,
     expected: &str,
-    deadline: Duration,
-) -> Result<(), ProbeError> {
-    let started = Instant::now();
+    deadline: Instant,
+) -> Result<ProbeReport, ProbeError> {
     let mut backoff = BACKOFF_START;
     let mut saw_other = false;
     loop {
-        let remaining = deadline.saturating_sub(started.elapsed());
-        if remaining.is_zero() {
+        if Instant::now() >= deadline {
             break;
         }
-        match probe_cli_read(engram, workspace, read, remaining) {
+        match probe_cli_read(engram, workspace, read, deadline) {
             Ok(report) if report.accepted => {
                 if report.generation_id.as_deref() == Some(expected) {
-                    return Ok(());
+                    return Ok(report);
                 }
                 saw_other = true;
             }
@@ -296,7 +296,7 @@ pub fn wait_for_generation(
             Err(ProbeError::Deadline) => break,
             Err(other) => return Err(other),
         }
-        let remaining = deadline.saturating_sub(started.elapsed());
+        let remaining = deadline.saturating_duration_since(Instant::now());
         thread::sleep(backoff.min(remaining));
         backoff = (backoff * 2).min(BACKOFF_MAX);
     }
