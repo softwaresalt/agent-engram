@@ -3,7 +3,7 @@
 //! This is the single derivation of the read-server identity, generations
 //! root, runtime root, and activation deadline.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
 use super::{ExpectedIdentity, GenerationId, GenerationIdError};
@@ -47,7 +47,11 @@ impl ReadServerLayout {
 pub fn read_server_layout(workspace: &str) -> Result<ReadServerLayout, WorkspaceError> {
     // `canonicalize_workspace` reports a missing path as `NotGitRoot` (the
     // capability anchor fails first), so the missing case is classified here.
-    if !Path::new(workspace).exists() {
+    // Only a definite NotFound is classified here; other metadata errors
+    // (e.g. permissions) fall through to canonicalization.
+    if let Err(err) = std::fs::metadata(workspace)
+        && err.kind() == std::io::ErrorKind::NotFound
+    {
         return Err(WorkspaceError::NotFound {
             path: workspace.to_owned(),
         });
@@ -68,6 +72,10 @@ pub fn read_server_layout(workspace: &str) -> Result<ReadServerLayout, Workspace
 }
 
 /// Mint a pure `preflight-<unix_ms>-<pid>` generation ID.
+///
+/// A clock before the Unix epoch yields `0` for the millisecond component.
+/// Uniqueness within one process requires distinct timestamps: identical
+/// `(now, pid)` inputs always produce identical IDs.
 ///
 /// # Errors
 ///

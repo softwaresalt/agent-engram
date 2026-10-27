@@ -156,6 +156,14 @@ fn read_server_layout_signature_is_str_to_workspace_error() {
 }
 
 #[test]
+fn same_millisecond_and_pid_mint_identical_ids() {
+    let now = SystemTime::UNIX_EPOCH + Duration::from_millis(2_001);
+    let first = mint_generation_id(now).expect("first id");
+    let second = mint_generation_id(now).expect("second id");
+    assert_eq!(first, second);
+}
+
+#[test]
 fn minted_ids_are_valid_distinct_and_not_runtime() {
     let first = mint_generation_id(SystemTime::UNIX_EPOCH + Duration::from_millis(1_500))
         .expect("first id");
