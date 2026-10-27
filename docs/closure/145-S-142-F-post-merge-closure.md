@@ -6,7 +6,7 @@ feature_id: "142-F"
 mode: post-merge
 date: 2026-10-27
 author: ship
-verdict: "READY — PR #421 merged and 145-S safe-closed (non-cascading; 142-F unchanged); pre-close evidence captured via autoharness shipment cascade-close --classify-only (exit 3, SAFE_CLOSE, engine VERIFIED) before the queue record was removed"
+verdict: "READY (runtime probes unverified, tracked as stash 5B0C29C7) — PR #421 merged and 145-S safe-closed (non-cascading; 142-F unchanged); pre-close evidence captured via autoharness shipment cascade-close --classify-only (exit 3, SAFE_CLOSE, engine VERIFIED) before the queue record was removed"
 closure_status: "READY"
 releasability: "READY_WITH_CONDITIONS"
 compaction_status: "done"
@@ -23,6 +23,7 @@ follow_up_stash:
   - "2E381AFD"
   - "F03AAA77"
   - "420048FC"
+  - "5B0C29C7"
 blocking_stash: null
 shipment_record_status: "archived (archived_status: done) — targeted manual safe-close; see .backlogit/archive/145-S.md"
 pre_reconcile: ".backlogit/reconcile/145-S-pre-20261027T0335Z.md"
@@ -114,4 +115,6 @@ Shipped item `142.061-T` carried no `source_stash_id` or `source_deliberation_id
 * Stash `2E381AFD`: `.engram` exclusion hardening, orphan candidate cleanup, extra branch tests.
 * Stash `F03AAA77`: reject or report `IndexResult.errors` during candidate build.
 * Stash `420048FC`: stream the SHA-256 for large databases.
-* Re-run the `engram` CLI runtime probes once the daemon is Ready.
+* Stash `5B0C29C7`: re-run the `engram` CLI runtime probes once the daemon is Ready.
+* Stash `30B6579E` relates to the older stash `26CD3785` (same `GenerationIdError` adaptation topic); Stage to reconcile the two.
+* `closure_pr_number` and `closure_pr_merge_commit` are `null` in this record because it ships in the closure PR itself; they are recorded in the session summary.
