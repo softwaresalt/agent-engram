@@ -250,7 +250,9 @@ pub fn publish_generation_manifest(
     replace_manifest_atomically(&destination, &manifest_bytes)?;
     Ok(next)
 }
-fn read_current_manifest_revision(destination: &Path) -> Result<GenerationRevision, PublishError> {
+pub(crate) fn read_current_manifest_revision(
+    destination: &Path,
+) -> Result<GenerationRevision, PublishError> {
     match fs::read(destination) {
         Ok(bytes) => {
             let manifest: super::GenerationManifest =

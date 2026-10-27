@@ -7,13 +7,19 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+use chrono::Utc;
 use thiserror::Error;
 
+use super::publish::read_current_manifest_revision;
 use super::{
-    ExpectedIdentity, GenerationId, GenerationIdError, GenerationStore, IndexTargetKind,
-    ManifestFileDigest, PublishError, StoreError,
+    BranchIdentity, ExpectedIdentity, GenerationId, GenerationIdError, GenerationManifest,
+    GenerationProvenance, GenerationRevision, GenerationStore, IndexTargetKind, ManifestFileDigest,
+    PublishError, SUPPORTED_MANIFEST_SCHEMA_VERSION, SealedInventory, StoreError,
+    WorkspaceIdentity, publish_generation_manifest,
 };
-use crate::db::workspace::{canonicalize_workspace, resolve_git_branch, workspace_hash};
+use crate::db::workspace::{
+    canonicalize_workspace, normalize_canonical, resolve_git_branch, workspace_hash,
+};
 use crate::errors::{EngramError, WorkspaceError};
 use crate::models::config::CodeGraphConfig;
 use crate::services::code_graph::index_workspace;
@@ -367,6 +373,149 @@ pub fn seal_candidate_inventory(
         id: built.id,
         inventory: vec![entry],
     })
+}
+
+/// Whether `meta` describes a symlink or (on Windows) any reparse point.
+fn is_link(meta: &std::fs::Metadata) -> bool {
+    if meta.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        /// `FILE_ATTRIBUTE_REPARSE_POINT`: junctions and other reparse points.
+        const REPARSE_POINT: u32 = 0x400;
+        if meta.file_attributes() & REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+    false
+}
+
+/// Report whether `path` exists, failing with `ContainmentEscape` when it is
+/// a symlink or reparse point. Nothing is followed or created.
+fn exists_without_link(path: &Path) -> Result<bool, CandidateBuildError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if is_link(&meta) => Err(CandidateBuildError::ContainmentEscape),
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(io_error("inspect store path", &e)),
+    }
+}
+
+/// The single containment comparator: whether canonical `child` lies inside
+/// canonical `root`, both normalized so verbatim and plain forms agree.
+fn within_root(child: &Path, root: &Path) -> Result<bool, CandidateBuildError> {
+    let child =
+        std::fs::canonicalize(child).map_err(|e| io_error("canonicalize store path", &e))?;
+    let root =
+        std::fs::canonicalize(root).map_err(|e| io_error("canonicalize workspace root", &e))?;
+    Ok(normalize_canonical(child).starts_with(normalize_canonical(root)))
+}
+
+/// Validate, before anything is created, that the generations root would be
+/// created inside the workspace: no `..` component, and the deepest existing
+/// ancestor is an unlinked directory within the workspace.
+fn validate_store_destination(layout: &ReadServerLayout) -> Result<(), CandidateBuildError> {
+    let root = &layout.generations_root;
+    if root
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(CandidateBuildError::ContainmentEscape);
+    }
+    for ancestor in root.ancestors() {
+        if exists_without_link(ancestor)? {
+            return if within_root(ancestor, &layout.workspace)? {
+                Ok(())
+            } else {
+                Err(CandidateBuildError::ContainmentEscape)
+            };
+        }
+    }
+    Err(CandidateBuildError::ContainmentEscape)
+}
+
+/// Open the generation store for `layout`, creating it only when `create`.
+///
+/// Rejects a symlinked or reparse-point `.engram`, generations root, or
+/// runtime root before anything is created. With `create == false` a missing
+/// generations root yields [`CandidateBuildError::StoreAbsent`] and nothing
+/// is created.
+///
+/// # Errors
+///
+/// Returns [`CandidateBuildError::ContainmentEscape`] for a linked path or a
+/// store root outside the workspace, [`CandidateBuildError::StoreAbsent`] for
+/// a missing root without `create`, and [`CandidateBuildError::Io`] or
+/// [`CandidateBuildError::Store`] for filesystem or store failures.
+pub fn open_generation_store(
+    layout: &ReadServerLayout,
+    create: bool,
+) -> Result<GenerationStore, CandidateBuildError> {
+    exists_without_link(&layout.workspace.join(".engram"))?;
+    let root_exists = exists_without_link(&layout.generations_root)?;
+    exists_without_link(&layout.runtime_root)?;
+    if !root_exists {
+        if !create {
+            return Err(CandidateBuildError::StoreAbsent);
+        }
+        validate_store_destination(layout)?;
+        std::fs::create_dir_all(&layout.generations_root)
+            .map_err(|e| io_error("create generations root", &e))?;
+    }
+    let store = GenerationStore::new(&layout.generations_root)?;
+    if !within_root(store.root(), &layout.workspace)? {
+        return Err(CandidateBuildError::ContainmentEscape);
+    }
+    Ok(store)
+}
+
+/// Read the currently published revision (absent manifest is revision 0).
+///
+/// # Errors
+///
+/// Returns [`CandidateBuildError::Publish`] when the manifest exists but is
+/// unreadable or unparsable; it never reports revision 0 for such a manifest.
+pub fn current_published_revision(
+    store: &GenerationStore,
+) -> Result<GenerationRevision, CandidateBuildError> {
+    Ok(read_current_manifest_revision(
+        &store.active_manifest_path(),
+    )?)
+}
+
+/// Publish a sealed candidate as the next manifest revision.
+///
+/// The revision is `current + 1`; publication goes only through
+/// [`publish_generation_manifest`] and is never retried.
+///
+/// # Errors
+///
+/// Returns [`CandidateBuildError::RevisionOverflow`] when the next revision
+/// does not fit, or [`CandidateBuildError::Publish`] when the current
+/// manifest is unreadable or publication fails.
+pub fn publish_sealed_candidate(
+    layout: &ReadServerLayout,
+    store: &GenerationStore,
+    sealed: SealedCandidate,
+    producer: &str,
+) -> Result<GenerationRevision, CandidateBuildError> {
+    let next = current_published_revision(store)?
+        .value()
+        .checked_add(1)
+        .map(GenerationRevision::new)
+        .ok_or(CandidateBuildError::RevisionOverflow)?;
+    let manifest = GenerationManifest::new(
+        sealed.id,
+        next,
+        SUPPORTED_MANIFEST_SCHEMA_VERSION,
+        BranchIdentity::new(&layout.branch, None),
+        WorkspaceIdentity::new(&layout.workspace_id),
+        SealedInventory::new(sealed.inventory),
+        GenerationProvenance::new(producer, Utc::now()),
+    );
+    Ok(publish_generation_manifest(store, &manifest)?)
 }
 
 #[cfg(test)]
