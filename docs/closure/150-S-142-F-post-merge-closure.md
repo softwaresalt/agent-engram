@@ -83,8 +83,12 @@ PR #431 merged with a merge commit (P-009) at head `319cbd99` and merge SHA
   separate per-action G1 approval was obtained; this gap is stated here rather than treating merge
   pre-authorization as deletion approval. The operator may revoke or revisit it on review of this PR.
 * Preservation and rollback: the full queue record content is preserved verbatim in the archive copy
-  and in git history (the file was tracked on `main` at `b64e3d26`); `git checkout b64e3d26 --
-  .backlogit/queue/150-S.md` restores it.
+  and in git history (the file was tracked on `main` at `b64e3d26`). Recovery is operator-approved only
+  and must keep the shipment unique across backlog record directories: first copy
+  `.backlogit/archive/150-S.md` outside the backlog record directories as evidence, restore the original
+  active record with `git checkout b64e3d26 -- .backlogit/queue/150-S.md`, remove the archived twin
+  `.backlogit/archive/150-S.md`, verify exactly one `150-S` record exists, and only then run
+  `backlogit sync`.
 * ActionResult: queue record removed, `backlogit sync` succeeded, `backlogit shipment get 150-S` reports
   `status: archived`; no archive file was deleted.
 
