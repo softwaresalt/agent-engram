@@ -20,6 +20,7 @@ closure_pr_merge_commit: null
 runtime_verification_report: null
 follow_up_stash:
   - "6B3DD712"
+  - "D968583A"
 blocking_stash: null
 shipment_record_status: "archived (archived_status: done) - targeted manual safe-close; see .backlogit/archive/150-S.md"
 pre_reconcile: ".backlogit/reconcile/150-S-pre-20261027T2004Z.md"
@@ -72,6 +73,28 @@ PR #431 merged with a merge commit (P-009) at head `319cbd99` and merge SHA
   `42FCA67C1407641C8F3CF4752B3431D978290B1342614A831DF463B572181770` before and after close.
 * Post-reconcile report: `.backlogit/reconcile/150-S-post-20261027T2007Z.md`.
 
+## Destructive action record
+
+* ProposedAction: delete `.backlogit/queue/150-S.md` after authoring `.backlogit/archive/150-S.md`
+  (manual safe-close step).
+* ActionRisk: destructive (removes a tracked file from the working tree).
+* Approval: the Dark Factory activation contract for this run (`DARK_MODE_ACTIVE`, operator AFK)
+  explicitly directed this manual safe-close ordering, including removal of the queue record. No
+  separate per-action G1 approval was obtained; this gap is stated here rather than treating merge
+  pre-authorization as deletion approval. The operator may revoke or revisit it on review of this PR.
+* Preservation and rollback: the full queue record content is preserved verbatim in the archive copy
+  and in git history (the file was tracked on `main` at `b64e3d26`); `git checkout b64e3d26 --
+  .backlogit/queue/150-S.md` restores it.
+* ActionResult: queue record removed, `backlogit sync` succeeded, `backlogit shipment get 150-S` reports
+  `status: archived`; no archive file was deleted.
+
+## Evidence hash contract
+
+The 110 observation hashes in `docs/closure/evidence/150-S-142-F-close-evidence.json` were recorded on
+Windows against CRLF working-copy bytes and do not reproduce from an LF checkout. The pre-close hashes
+were not overwritten. This is a tooling contract gap outside this closure (P-021 C1) and is captured as
+deferred stash `D968583A`.
+
 ## Runtime verification
 
 The change touches the read-server statistics path. The detached daemon (PID 37676) answered `_health`
@@ -87,10 +110,10 @@ published on its own. The handoff below applies to the next release that carries
 
 | Evidence | Value |
 |---|---|
-| Unmet runtime evidence | A live `engram ... workspace-status` / `get_workspace_statistics` call against a Ready read-server daemon, showing `code_files` and `functions` from the active generation with `/provenance/generation_id` equal to the active revision. |
-| Healthy signal | A read-server daemon reaches `ready`; `get_workspace_statistics` returns `code_files` and `functions` matching the published generation and a `provenance.generation_id`; no new database files appear under the generation data directory after the call. |
+| Unmet runtime evidence | An explicit `get_workspace_statistics` call (MCP or direct IPC) against a Ready read-server daemon, showing `code_files` and `functions` from the active generation and `/provenance/generation_id` equal to the `generation_id` field of the active generation manifest. |
+| Healthy signal | A read-server daemon reaches `ready`; `get_workspace_statistics` returns `code_files` and `functions` matching the published generation and `provenance.generation_id` equal to the manifest `generation_id`; the daemon's `active_revision` (a numeric publication counter, checked separately) equals the manifest `revision`; no new database files appear under the generation data directory after the call. |
 | Failure signal | Statistics reporting `code_files == 0` with an active generation, missing `provenance`, new `.db` files appearing beside the generation, or `_health` stuck in `starting` longer than `activation_deadline` (60 s). |
-| Monitoring plan | Observe daemon logs per `docs/log-observation-guide.md`; re-run `engram --workspace <root> workspace-status` and `daemon-status` once the daemon is Ready (stash `6B3DD712`). |
+| Monitoring plan | Observe daemon logs per `docs/log-observation-guide.md`; use `workspace-status` and `daemon-status` only to establish readiness and the active revision (`get_workspace_status` counters use a separate `connect_db` path and do not exercise the pinned statistics handler), then run the explicit `get_workspace_statistics` call above once the daemon is Ready (stash `6B3DD712`). |
 | Owner | Release owner of the next tagged release; Stage owns stash `6B3DD712` triage. |
 | Validation window | The first successful read-server startup after the next release install, plus one restart and one revision publication. |
 | Rollback trigger | Any failure signal above that persists across one daemon restart. |
@@ -112,7 +135,9 @@ deliberation was archived; no `linked_deliberation_disposition` applies (manual 
 
 * Stash `6B3DD712` (existing): re-run the `engram` CLI runtime probes once a daemon is Ready; no
   duplicate was created.
-* No new P-021 deferred-scope-expansion stash entries were created.
+* Stash `D968583A` (new, low): evidence observation hashes are CRLF-based and do not reproduce from an
+  LF checkout (Copilot thread on PR #432).
+* No other new P-021 deferred-scope-expansion stash entries were created.
 * Residual P3: harden the scenario 3 `query_memory` comparison to assert `Ok`; recorded here only.
 * `closure_pr_number` and `closure_pr_merge_commit` are `null` in this record because it ships in the
   closure PR itself; they are recorded in the session summary.
