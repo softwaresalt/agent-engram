@@ -1253,6 +1253,10 @@ name = "integration_read_server_lifecycle"
 path = "tests/integration/read_server_lifecycle_test.rs"
 
 [[test]]
+name = "integration_read_server_generation_wiring"
+path = "tests/integration/read_server_generation_wiring_test.rs"
+
+[[test]]
 name = "integration_generation_observability"
 path = "tests/integration/generation_observability_test.rs"
 

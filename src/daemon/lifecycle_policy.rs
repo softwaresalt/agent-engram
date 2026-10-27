@@ -15,10 +15,7 @@ use tokio::sync::{mpsc, watch};
 use tracing::{debug, error, info, warn};
 
 use crate::daemon::ttl::TtlTimer;
-use crate::db::workspace::{
-    canonicalize_workspace, load_or_create_workspace_id, resolve_data_dir, resolve_git_branch,
-    workspace_hash,
-};
+use crate::db::workspace::{load_or_create_workspace_id, resolve_data_dir};
 use crate::errors::{EngramError, SystemError, WorkspaceError};
 use crate::models::WatcherEvent;
 use crate::models::config::{DaemonMode, WorkspaceConfig};
@@ -27,7 +24,7 @@ use crate::server::state::{
     OwnerPermit, SharedState, WorkspaceSnapshot,
 };
 use crate::services::config::parse_config;
-use crate::services::connection::validate_workspace_path;
+use crate::services::generations::candidate_build::read_server_layout;
 
 /// Record the daemon lifecycle start edge.
 ///
@@ -162,18 +159,16 @@ pub(crate) async fn run_read_server_startup(
     ttl: Arc<TtlTimer>,
     shutdown_tx: Arc<watch::Sender<bool>>,
 ) -> Result<(), EngramError> {
-    validate_workspace_path(&workspace)?;
-    let canonical = canonicalize_workspace(&workspace)?;
-    let workspace_uuid = load_or_create_workspace_id(&canonical)?;
-    let branch = resolve_git_branch(&canonical).unwrap_or_else(|_| "default".to_owned());
-    let data_dir = resolve_data_dir(&canonical);
-    let workspace_config = parse_config(&canonical)?;
+    let layout = read_server_layout(&workspace)?;
+    let workspace_uuid = load_or_create_workspace_id(&layout.workspace)?;
+    let data_dir = resolve_data_dir(&layout.workspace);
+    let workspace_config = parse_config(&layout.workspace)?;
     let snapshot = WorkspaceSnapshot {
-        workspace_id: workspace_hash(&canonical, &branch),
+        workspace_id: layout.workspace_id,
         workspace_uuid: workspace_uuid.to_string(),
-        branch,
+        branch: layout.branch,
         data_dir,
-        path: canonical.display().to_string(),
+        path: layout.workspace.display().to_string(),
         last_flush: None,
         stale_files: false,
         connection_count: state.active_connections(),
