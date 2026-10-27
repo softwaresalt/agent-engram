@@ -190,10 +190,12 @@ pub(crate) async fn run_read_server_startup(
     // The gate must be installed before readiness so the first `ready` already
     // reports generation observability. A root absent here may be installed
     // late by the driver; a root present here whose install fails is final.
-    let root_present =
-        std::fs::symlink_metadata(&layout.generations_root).is_ok_and(|metadata| metadata.is_dir());
+    let absent_at_startup = matches!(
+        std::fs::symlink_metadata(&layout.generations_root),
+        Err(ref error) if error.kind() == std::io::ErrorKind::NotFound
+    );
     let mut start_driver = true;
-    if root_present && let Err(error) = install_generation_gate(&state, &layout).await {
+    if !absent_at_startup && let Err(error) = install_generation_gate(&state, &layout).await {
         warn!(%error, "read-server generation gate install failed; no later install will be attempted");
         start_driver = false;
     }
@@ -208,6 +210,7 @@ pub(crate) async fn run_read_server_startup(
         tokio::spawn(drive_generation_activation(
             Arc::clone(&state),
             layout,
+            absent_at_startup,
             shutdown_tx.subscribe(),
         ));
     }
@@ -260,13 +263,16 @@ fn published_revision_for_driver(
 /// Activates each newly published non-zero revision once, installing the gate
 /// late only when the generations root was absent at startup. Logs at `warn`
 /// once per distinct revision and error kind, without payloads. Exits on
-/// success or shutdown.
+/// success or shutdown. A failed late install is retried on later ticks and
+/// logged once per distinct error kind.
 async fn drive_generation_activation(
     state: SharedState,
     layout: ReadServerLayout,
+    absent_at_startup: bool,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let mut delay = DRIVER_BACKOFF_START;
+    let mut last_install_error: Option<std::mem::Discriminant<CandidateBuildError>> = None;
     let mut last_attempted: Option<GenerationRevision> = None;
     let mut last_logged: Option<(Option<GenerationRevision>, &'static str)> = None;
     loop {
@@ -282,12 +288,16 @@ async fn drive_generation_activation(
         let gate = if let Some(gate) = state.read_server_gate().await {
             gate
         } else {
-            if std::fs::symlink_metadata(&layout.generations_root).is_err() {
+            if !absent_at_startup || std::fs::symlink_metadata(&layout.generations_root).is_err() {
                 continue;
             }
             if let Err(error) = install_generation_gate(&state, &layout).await {
-                warn!(%error, "read-server late generation gate install failed; giving up");
-                return;
+                let kind = std::mem::discriminant(&error);
+                if last_install_error != Some(kind) {
+                    warn!(%error, "read-server late generation gate install failed; will retry");
+                    last_install_error = Some(kind);
+                }
+                continue;
             }
             let Some(gate) = state.read_server_gate().await else {
                 return;

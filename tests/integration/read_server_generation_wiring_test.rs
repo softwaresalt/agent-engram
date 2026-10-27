@@ -417,9 +417,10 @@ async fn read_server_never_installs_late_after_a_startup_install_failure() {
     fs::create_dir_all(generations_root(&root)).expect("create root");
     let outside = guard.path().join("outside");
     fs::create_dir_all(&outside).expect("create outside");
-    if !make_dir_link(&runtime, &outside) {
-        return;
-    }
+    assert!(
+        make_dir_link(&runtime, &outside),
+        "cannot create the runtime directory link; this test cannot exercise the startup install failure"
+    );
 
     let daemon = Daemon::spawn(&root).await;
     assert!(
@@ -439,7 +440,7 @@ async fn read_server_never_installs_late_after_a_startup_install_failure() {
 }
 
 /// Create a directory link (symlink, or junction on Windows). Returns `false`
-/// with a logged reason when the link cannot be created.
+/// with a logged reason when the link cannot be created; callers must fail loudly.
 fn make_dir_link(link: &Path, target: &Path) -> bool {
     #[cfg(windows)]
     {
