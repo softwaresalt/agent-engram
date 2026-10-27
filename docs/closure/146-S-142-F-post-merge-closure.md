@@ -22,8 +22,8 @@ follow_up_stash:
   - "6B3DD712"
 blocking_stash: null
 shipment_record_status: "archived (archived_status: done) — targeted manual safe-close; see .backlogit/archive/146-S.md"
-pre_reconcile: ".backlogit/reconcile/146-S-pre-20261027T0500Z.md"
-post_reconcile: ".backlogit/reconcile/146-S-post-20261027T0510Z.md"
+pre_reconcile: ".backlogit/reconcile/146-S-pre-20261027T0510Z.md"
+post_reconcile: ".backlogit/reconcile/146-S-post-20261027T0511Z.md"
 ---
 
 ## Summary
@@ -62,8 +62,17 @@ by `autoharness shipment cascade-close --classify-only` while `.backlogit/queue/
 `status: active` (exit 3, `SAFE_CLOSE`, engine `VERIFIED`, `phase_written: pre_close`), before the
 manual close. `close_path: safe_close`.
 
-`142.062-T` was archived with `archived_status: done` on the feature branch
-(`.backlogit/archive/142.062-T.md`). The shipment record was preserved in
+`142.062-T` was moved to `done` on the feature branch, which left it archive-resident with
+`status: done` and no `archived_status`. Copilot review of the closure PR caught that this was not a
+completed archive; `backlogit archive 142.062-T` was then run on the closure branch and
+`.backlogit/archive/142.062-T.md` now has `status: archived`, `archived_status: done`,
+`archived_from: .backlogit/queue/142.062-T.md`.
+
+Observed chronology (UTC, from file and evidence timestamps; the first authored timestamps were
+placeholders and were corrected from execution evidence): pre-mode report 05:10:59, machine-written
+pre-close evidence snapshot 05:11:10 (`captured_at`), shipment archive record 05:11:28, post-mode
+report 05:11:55, task archive completion 05:25. The pre-close evidence therefore preceded the
+close. The generated evidence snapshot was not altered. The shipment record was preserved in
 `.backlogit/archive/146-S.md` (`status: archived`, `archived_status: done`,
 `archived_from: .backlogit/queue/146-S.md`) and `.backlogit/queue/146-S.md` removed.
 `backlogit sync` succeeded; `142-F.md` SHA-256 before and after is
