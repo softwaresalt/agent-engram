@@ -6,22 +6,22 @@ feature_id: "142-F"
 mode: post-merge
 date: 2026-10-27
 author: ship
-verdict: "BLOCKED — PR #418 merged and 144-S safe-closed (non-cascading; 142-F unchanged), but the mandatory closure-evidence gate fails on close_evidence and cannot be satisfied after archival; operator remediation tracked by stash 871A8430"
-closure_status: "BLOCKED"
+verdict: "READY — PR #418 merged and 144-S safe-closed (non-cascading; 142-F unchanged); pre-close evidence captured via autoharness shipment cascade-close --classify-only (exit 3, SAFE_CLOSE, engine VERIFIED) and passes the closure-evidence gate"
+closure_status: "READY"
 releasability: "READY_WITH_CONDITIONS"
 compaction_status: "done"
 close_path: "safe_close"
-close_evidence: null
+close_evidence: "docs/closure/evidence/144-S-142-F-close-evidence.json"
 pr_number: 418
 merge_commit: "1182373757b017398c5fba651a1af2494805b819"
 head_commit_merged: "1a5d9d7777a6add10f29c5afaef95776b9795e38"
 closure_pr_number: 419
-closure_pr_merge_commit: null
+closure_pr_merge_commit: "f2eeb39a9cab4c5b3de0806a25676f45f08f529b"
 runtime_verification_report: null
 follow_up_stash:
   - "26CD3785"
   - "871A8430"
-blocking_stash: "871A8430"
+blocking_stash: null
 shipment_record_status: "archived (archived_status: done) — targeted manual safe-close; see .backlogit/archive/144-S.md"
 pre_reconcile: ".backlogit/reconcile/144-S-pre-20261027T0140Z.md"
 post_reconcile: ".backlogit/reconcile/144-S-post-20261027T0150Z.md"
@@ -54,11 +54,14 @@ The `142.061-T` (Slot-02b) items were not implemented.
 
 `142-F` is a shared covering feature outside the task-only manifest, so the cascade was not
 used and `backlogit shipment ship` was never invoked (P-015). `close_path: safe_close`; no
-`cascade-close --classify-only` evidence record was produced (manual procedure as in 141-S/143-S),
-so `close_evidence` is null. Known gate limitation: `autoharness gate closure-evidence` fails
-`close_evidence` for this record, and `autoharness shipment cascade-close --classify-only` cannot
-produce an after-the-fact verdict record once a shipment is archived (exit 2). The record was
-deliberately not forged; the manual pre/post reconciliation reports are the evidence of record.
+`cascade-close --classify-only` evidence record was produced at the time (manual procedure as in 141-S/143-S).
+`--classify-only` is non-mutating, so the cascade was still never run. The evidence was captured afterwards by
+the closure-repair PR and is a reconstruction of the pre-close state, not a contemporaneous capture: `.backlogit/queue/144-S.md` was temporarily restored from
+merge commit `1182373757b017398c5fba651a1af2494805b819`, `autoharness shipment cascade-close --classify-only`
+was run (exit 3, `SAFE_CLOSE`, engine `VERIFIED`, `phase_written: pre_close`), and the final safe-closed
+`.backlogit/` state was restored. `close_evidence` is
+`docs/closure/evidence/144-S-142-F-close-evidence.json` and the closure-evidence gate passes. The earlier
+BLOCKED status (stash `871A8430`) is superseded; that stash entry is obsolete and left for Stage to archive.
 
 `142.075-T` was archived with `status: done` by `backlogit move --status done` before the merge
 (`.backlogit/archive/142.075-T.md`). The shipment record was preserved in
@@ -90,8 +93,7 @@ applicable (manual close).
 
 ## Follow-ups
 
-* Stash `871A8430` (blocking, requires deliberation): closure-evidence gate cannot be satisfied for a
-  manually safe-closed partial-feature shipment; after remediation, flip `closure_status` to `READY`.
+* Stash `871A8430`: obsolete (superseded by the evidence capture above); Stage to archive.
 * Stash `26CD3785` (DEFERRED SCOPE EXPANSION): plan cites the wrong `lifecycle_policy.rs` path; plan
   assumes `NotFound` for a missing path (needed an explicit pre-check); `142.061-T` must adapt
   `mint_generation_id`'s `GenerationIdError` to `CandidateBuildError`.
