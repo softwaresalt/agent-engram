@@ -15,7 +15,7 @@ close_evidence: null
 pr_number: 418
 merge_commit: "1182373757b017398c5fba651a1af2494805b819"
 head_commit_merged: "1a5d9d7777a6add10f29c5afaef95776b9795e38"
-closure_pr_number: null
+closure_pr_number: 419
 closure_pr_merge_commit: null
 runtime_verification_report: null
 follow_up_stash:
