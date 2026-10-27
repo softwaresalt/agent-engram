@@ -11,7 +11,7 @@ closure_status: "READY"
 releasability: "READY_WITH_CONDITIONS"
 compaction_status: "done"
 close_path: "safe_close"
-close_evidence: ".backlogit/reconcile/144-S-pre-20261027T0140Z.md"
+close_evidence: null
 pr_number: 418
 merge_commit: "1182373757b017398c5fba651a1af2494805b819"
 head_commit_merged: "1a5d9d7777a6add10f29c5afaef95776b9795e38"
