@@ -271,6 +271,14 @@ async fn build_renames_database_and_guards_reserved_and_repeat_ids() {
         "{err:?}"
     );
     assert!(!layout.generations_root.join("runtime").exists());
+    let mixed = GenerationId::new("Runtime").expect("mixed-case id");
+    let err = build_candidate_generation(&layout, &store, &mixed, &config)
+        .await
+        .expect_err("case-aliased reserved id must fail");
+    assert!(
+        matches!(err, CandidateBuildError::ReservedGenerationId),
+        "{err:?}"
+    );
 }
 
 #[tokio::test]

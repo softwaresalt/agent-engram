@@ -58,7 +58,7 @@ pub enum CandidateBuildError {
     #[error("publication revision overflow")]
     RevisionOverflow,
     /// Indexing into the candidate failed.
-    #[error("candidate indexing failed: {0}")]
+    #[error("candidate indexing failed")]
     Index(#[source] EngramError),
     /// A generation-store operation failed.
     #[error(transparent)]
@@ -242,6 +242,25 @@ fn find_databases(dir: &Path) -> Result<Vec<PathBuf>, CandidateBuildError> {
     Ok(found)
 }
 
+/// Locate the single `engram.db` under `<candidate>/cozo/`.
+///
+/// A missing `cozo/` directory counts as zero databases.
+fn locate_database(candidate: &Path) -> Result<PathBuf, CandidateBuildError> {
+    let cozo = candidate.join("cozo");
+    let databases = match find_databases(&cozo) {
+        Ok(found) => found,
+        Err(CandidateBuildError::Io {
+            kind: std::io::ErrorKind::NotFound,
+            ..
+        }) if !cozo.exists() => Vec::new(),
+        Err(other) => return Err(other),
+    };
+    match databases.as_slice() {
+        [only] => Ok(only.clone()),
+        other => Err(CandidateBuildError::DatabaseNotFound { count: other.len() }),
+    }
+}
+
 /// Fail when any `-wal`, `-shm`, or `-journal` sidecar exists beside `database`.
 ///
 /// The runtime-copy open path deletes stale sidecars, so un-checkpointed WAL
@@ -312,14 +331,14 @@ pub async fn build_candidate_generation(
         .await
         .map_err(CandidateBuildError::Index)?;
 
-    let databases = find_databases(&candidate.join("cozo"))?;
-    let [database] = databases.as_slice() else {
-        return Err(CandidateBuildError::DatabaseNotFound {
-            count: databases.len(),
-        });
-    };
-    reject_sidecars(database)?;
-    rename_with_retry(database, &candidate.join(DATABASE_FILE_NAME)).await?;
+    let database = locate_database(&candidate)?;
+    reject_sidecars(&database)?;
+    // `index_workspace` has returned, so its database handle is closed and no
+    // late writer can create a sidecar between this check and the rename.
+    // A failure after sealing leaves the partial candidate directory in
+    // place; production mints a fresh ID per attempt and cleanup is the
+    // caller's concern (plan PRE-2/PRE-3).
+    rename_with_retry(&database, &candidate.join(DATABASE_FILE_NAME)).await?;
 
     Ok(BuiltCandidate {
         id: id.clone(),
@@ -336,12 +355,12 @@ pub fn seal_candidate_inventory(
     built: BuiltCandidate,
 ) -> Result<SealedCandidate, CandidateBuildError> {
     let database = built.database_path();
+    // Open first so a failure reports the real I/O kind; the hash error
+    // itself embeds a path and is deliberately discarded.
+    std::fs::File::open(&database).map_err(|e| io_error("open database for hashing", &e))?;
     let digest = compute_file_hash(&database).map_err(|_| CandidateBuildError::Io {
         op: "hash database",
-        // The hashing error embeds a path; only the I/O kind is kept.
-        kind: std::fs::metadata(&database)
-            .err()
-            .map_or(std::io::ErrorKind::Other, |e| e.kind()),
+        kind: std::io::ErrorKind::Other,
     })?;
     let entry = ManifestFileDigest::new(format!("{}/{DATABASE_FILE_NAME}", built.id), digest);
     Ok(SealedCandidate {
@@ -373,6 +392,29 @@ mod tests {
         std::fs::create_dir_all(&b).expect("mkdir b");
         std::fs::write(b.join("engram.db"), b"x").expect("write b");
         assert_eq!(find_databases(dir.path()).expect("scan").len(), 2);
+    }
+
+    #[test]
+    fn locate_database_maps_missing_and_ambiguous_to_database_not_found() {
+        let dir = temp();
+        let err = locate_database(dir.path()).expect_err("no cozo dir");
+        assert!(
+            matches!(err, CandidateBuildError::DatabaseNotFound { count: 0 }),
+            "{err:?}"
+        );
+
+        let cozo = dir.path().join("cozo");
+        std::fs::create_dir_all(cozo.join("one")).expect("mkdir one");
+        std::fs::write(cozo.join("one").join("engram.db"), b"x").expect("write one");
+        assert!(locate_database(dir.path()).is_ok());
+
+        std::fs::create_dir_all(cozo.join("two")).expect("mkdir two");
+        std::fs::write(cozo.join("two").join("engram.db"), b"x").expect("write two");
+        let err = locate_database(dir.path()).expect_err("two databases");
+        assert!(
+            matches!(err, CandidateBuildError::DatabaseNotFound { count: 2 }),
+            "{err:?}"
+        );
     }
 
     #[test]
