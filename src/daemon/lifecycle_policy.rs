@@ -14,6 +14,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, error, info, warn};
 
+use crate::daemon::startup_activation::ReadServerStartupGate;
 use crate::daemon::ttl::TtlTimer;
 use crate::db::workspace::{load_or_create_workspace_id, resolve_data_dir};
 use crate::errors::{EngramError, SystemError, WorkspaceError};
@@ -25,7 +26,11 @@ use crate::server::state::{
 };
 use crate::services::config::parse_config;
 use crate::services::generations::candidate_build::{
-    CandidateBuildError, ReadServerLayout, read_server_layout,
+    CandidateBuildError, ReadServerLayout, current_published_revision, open_generation_store,
+    read_server_layout,
+};
+use crate::services::generations::{
+    GenerationActivator, GenerationRevision, RejectionClass, classify,
 };
 
 /// Record the daemon lifecycle start edge.
@@ -166,9 +171,9 @@ pub(crate) async fn run_read_server_startup(
     let data_dir = resolve_data_dir(&layout.workspace);
     let workspace_config = parse_config(&layout.workspace)?;
     let snapshot = WorkspaceSnapshot {
-        workspace_id: layout.workspace_id,
+        workspace_id: layout.workspace_id.clone(),
         workspace_uuid: workspace_uuid.to_string(),
-        branch: layout.branch,
+        branch: layout.branch.clone(),
         data_dir,
         path: layout.workspace.display().to_string(),
         last_flush: None,
@@ -181,12 +186,31 @@ pub(crate) async fn run_read_server_startup(
         .publish_workspace_generation_guarded(&publication, snapshot, Some(workspace_config))
         .await
         .map_err(map_publication_error)?;
+
+    // The gate must be installed before readiness so the first `ready` already
+    // reports generation observability. A root absent here may be installed
+    // late by the driver; a root present here whose install fails is final.
+    let root_present =
+        std::fs::symlink_metadata(&layout.generations_root).is_ok_and(|metadata| metadata.is_dir());
+    let mut start_driver = true;
+    if root_present && let Err(error) = install_generation_gate(&state, &layout).await {
+        warn!(%error, "read-server generation gate install failed; no later install will be attempted");
+        start_driver = false;
+    }
     let _ = state.set_hydration_ready_for_generation(generation);
 
     info!(
         generation,
         "read-server lifecycle published startup binding without managed hydration"
     );
+
+    if start_driver {
+        tokio::spawn(drive_generation_activation(
+            Arc::clone(&state),
+            layout,
+            shutdown_tx.subscribe(),
+        ));
+    }
 
     ttl.reset();
     let ttl_task = Arc::clone(&ttl);
@@ -196,21 +220,113 @@ pub(crate) async fn run_read_server_startup(
     Ok(())
 }
 
-#[allow(dead_code)]
+/// Backoff start for the activation driver.
+const DRIVER_BACKOFF_START: Duration = Duration::from_millis(100);
+/// Backoff cap for the activation driver.
+const DRIVER_BACKOFF_CAP: Duration = Duration::from_secs(2);
+
+/// Open the store and install the activator and startup gate on `state`.
+///
+/// Reads no manifest and never awaits activation.
 async fn install_generation_gate(
-    _state: &SharedState,
-    _layout: &ReadServerLayout,
+    state: &SharedState,
+    layout: &ReadServerLayout,
 ) -> Result<(), CandidateBuildError> {
-    todo!("Worker: 142.077-T install_generation_gate")
+    let store = open_generation_store(layout, false)?;
+    let activator = Arc::new(GenerationActivator::new(
+        store,
+        layout.runtime_root.clone(),
+        layout.expected_identity(),
+        layout.activation_deadline,
+    ));
+    let gate = Arc::new(ReadServerStartupGate::new(Arc::clone(&activator)));
+    gate.socket_bound().await;
+    state.set_generation_activator(Some(activator)).await;
+    state.set_read_server_gate(Some(gate)).await;
+    Ok(())
 }
 
-#[allow(dead_code)]
+/// Read the published revision; `None` when nothing is published or readable.
+fn published_revision_for_driver(
+    layout: &ReadServerLayout,
+) -> Result<Option<GenerationRevision>, CandidateBuildError> {
+    let store = open_generation_store(layout, false)?;
+    let revision = current_published_revision(&store)?;
+    Ok((revision.value() != 0).then_some(revision))
+}
+
+/// Background activation driver; never awaited by startup.
+///
+/// Activates each newly published non-zero revision once, installing the gate
+/// late only when the generations root was absent at startup. Logs at `warn`
+/// once per distinct revision and error kind, without payloads. Exits on
+/// success or shutdown.
 async fn drive_generation_activation(
-    _state: SharedState,
-    _layout: ReadServerLayout,
-    _shutdown: watch::Receiver<bool>,
+    state: SharedState,
+    layout: ReadServerLayout,
+    mut shutdown: watch::Receiver<bool>,
 ) {
-    todo!("Worker: 142.077-T drive_generation_activation")
+    let mut delay = DRIVER_BACKOFF_START;
+    let mut last_attempted: Option<GenerationRevision> = None;
+    let mut last_logged: Option<(Option<GenerationRevision>, &'static str)> = None;
+    loop {
+        tokio::select! {
+            _ = shutdown.changed() => return,
+            () = tokio::time::sleep(delay) => {}
+        }
+        if *shutdown.borrow() {
+            return;
+        }
+        delay = (delay * 2).min(DRIVER_BACKOFF_CAP);
+
+        let gate = if let Some(gate) = state.read_server_gate().await {
+            gate
+        } else {
+            if std::fs::symlink_metadata(&layout.generations_root).is_err() {
+                continue;
+            }
+            if let Err(error) = install_generation_gate(&state, &layout).await {
+                warn!(%error, "read-server late generation gate install failed; giving up");
+                return;
+            }
+            let Some(gate) = state.read_server_gate().await else {
+                return;
+            };
+            gate
+        };
+
+        let revision = match published_revision_for_driver(&layout) {
+            Ok(Some(revision)) => revision,
+            Ok(None) => continue,
+            Err(error) => {
+                if last_logged != Some((None, "published-revision")) {
+                    warn!(%error, "read-server driver cannot read the published revision");
+                    last_logged = Some((None, "published-revision"));
+                }
+                continue;
+            }
+        };
+        if last_attempted == Some(revision) {
+            continue;
+        }
+        last_attempted = Some(revision);
+        match gate.run_initial_activation().await {
+            Ok(_) => return,
+            Err(error) => {
+                let kind = match classify(&error) {
+                    RejectionClass::Permanent => "permanent",
+                    RejectionClass::Transient => "transient",
+                };
+                if last_logged != Some((Some(revision), kind)) {
+                    warn!(
+                        revision = revision.value(),
+                        kind, "read-server generation activation failed"
+                    );
+                    last_logged = Some((Some(revision), kind));
+                }
+            }
+        }
+    }
 }
 
 /// Return `true` when the authoritative daemon mode permits watcher registration.

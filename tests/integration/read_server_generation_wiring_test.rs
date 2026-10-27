@@ -263,6 +263,14 @@ async fn publish_revision(root: &Path, id: &str, tamper: bool) -> u64 {
         .value()
 }
 
+fn snapshot_if_present(dir: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
+    if dir.exists() {
+        snapshot(dir)
+    } else {
+        BTreeMap::new()
+    }
+}
+
 fn generations_root(root: &Path) -> PathBuf {
     root.join(".engram").join("generations")
 }
@@ -296,7 +304,7 @@ async fn assert_daemon_answers(daemon: &Daemon) {
     );
 }
 
-/// Scenario 1, activation part [064-T AC2a].
+/// Scenario 1, activation part [064-T `AC2a`].
 #[tokio::test]
 async fn read_server_activates_a_published_revision_at_first_ready() {
     let (_guard, root) = git_fixture(Some("read_server"));
@@ -316,7 +324,7 @@ async fn read_server_activates_a_published_revision_at_first_ready() {
     assert_daemon_answers(&daemon).await;
 }
 
-/// Scenario 2, no generations root [064-T AC3a].
+/// Scenario 2, no generations root [064-T `AC3a`].
 #[tokio::test]
 async fn read_server_without_a_root_stays_ready_and_creates_nothing() {
     let (_guard, root) = git_fixture(Some("read_server"));
@@ -331,7 +339,7 @@ async fn read_server_without_a_root_stays_ready_and_creates_nothing() {
     assert_daemon_answers(&daemon).await;
 }
 
-/// Scenario 2, empty root through valid revision 2 [064-T AC3a].
+/// Scenario 2, empty root through valid revision 2 [064-T `AC3a`].
 #[tokio::test]
 async fn read_server_progresses_from_empty_root_to_a_valid_revision() {
     let (_guard, root) = git_fixture(Some("read_server"));
@@ -364,13 +372,13 @@ async fn read_server_progresses_from_empty_root_to_a_valid_revision() {
         g["last_failed_revision"].as_u64() == Some(1)
     })
     .await;
-    let runtime = snapshot(&generations_root(&root).join("runtime"));
+    let runtime = snapshot_if_present(&generations_root(&root).join("runtime"));
     tokio::time::sleep(QUIET_WINDOW).await;
     let still = generation_of(&daemon).await;
     assert_eq!(still["last_failed_revision"].as_u64(), Some(1), "{still}");
     assert!(still["active_revision"].is_null(), "{still}");
     assert_eq!(
-        snapshot(&generations_root(&root).join("runtime")),
+        snapshot_if_present(&generations_root(&root).join("runtime")),
         runtime,
         "rejected revision is never re-attempted"
     );
