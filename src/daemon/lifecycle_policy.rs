@@ -491,6 +491,10 @@ async fn drive_generation_activation(
         match gate.run_initial_activation().await {
             Ok(_) => return,
             Err(error) => {
+                // Stamp the failure before the awaited recheck below, which can
+                // take up to `activation_deadline`; the transient window runs
+                // from the failure itself, not from the end of the recheck.
+                let failed_at = Instant::now();
                 // The activation reads the manifest itself, so a publication
                 // between the probe and that read may mean the failure belongs
                 // to a later revision; leave it unattributed so the newer
@@ -510,7 +514,7 @@ async fn drive_generation_activation(
                         "permanent"
                     }
                     RejectionClass::Transient => {
-                        delay = retry.record_failure(revision, Instant::now());
+                        delay = retry.record_failure(revision, failed_at);
                         "transient"
                     }
                 };
