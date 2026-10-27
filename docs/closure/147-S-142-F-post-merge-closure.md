@@ -90,6 +90,23 @@ prerequisite, recorded rather than faked. Behavior was instead verified by the r
 `integration_read_server_generation_wiring` and consumer targets. Releasability:
 `READY_WITH_CONDITIONS` (live probes unverified).
 
+## Monitoring and rollback handoff
+
+This slice is not a release: it changes only the internal source of read-server startup
+identity and is not tagged or published on its own. The handoff below applies to the next
+release that carries it.
+
+| Evidence | Value |
+|---|---|
+| Unmet runtime evidence | Live `engram` CLI probes (`daemon-status`, `workspace-status`) against a Ready daemon on this branch. The daemon stayed `starting` and no probe ran. |
+| Healthy signal | A read-server daemon reaches `ready`; `get_health_report` reports a `workspace_id` equal to `workspace_hash(canonical workspace, branch)` (asserted by `integration_read_server_generation_wiring`). |
+| Failure signal | A read-server daemon stuck in `starting`, `engram daemon` exiting non-zero on a valid Git workspace, or a `workspace_id` mismatch after restart. |
+| Monitoring plan | Observe daemon logs per `docs/log-observation-guide.md`; re-run the probes with `engram --workspace <root> daemon-status` once the daemon is Ready (stash `6B3DD712`). |
+| Owner | Release owner of the next tagged release; Stage owns stash `6B3DD712` triage. |
+| Validation window | The first successful read-server startup after the next release install, plus one restart. |
+| Rollback trigger | Any failure signal above that persists across one daemon restart. |
+| Rollback procedure | Reinstall the prior GitHub Release asset and flush regenerated `.engram/` state; revert merge commit `a00a71bed94629eef44f478434083b77075b3070` if the change is unreleased. |
+
 ## Source artifact cleanup
 
 Shipped item `142.076-T` carried no `source_stash_id` or `source_deliberation_id`. No stash or
