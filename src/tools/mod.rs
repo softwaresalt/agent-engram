@@ -473,7 +473,9 @@ pub async fn dispatch_with_read_context(
         }
         "flush_state" => write::flush_state(state.clone(), params).await,
         "query_memory" => read::query_memory(state.clone(), params).await,
-        "get_workspace_statistics" => read::get_workspace_statistics(state.clone(), params).await,
+        "get_workspace_statistics" => {
+            read::get_workspace_statistics_with_context(state.clone(), params, read_context).await
+        }
         "index_workspace" => write::index_workspace(state.clone(), params).await,
         "sync_workspace" => write::sync_workspace(state.clone(), params).await,
         "map_code" => read::map_code(state.clone(), params).await,
