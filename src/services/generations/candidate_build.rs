@@ -3,10 +3,11 @@
 //! This is the single derivation of the read-server identity, generations
 //! root, runtime root, and activation deadline.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use super::{ExpectedIdentity, GenerationId, GenerationIdError};
+use crate::db::workspace::{canonicalize_workspace, resolve_git_branch, workspace_hash};
 use crate::errors::WorkspaceError;
 
 /// Deadline for read-server generation activation.
@@ -34,7 +35,7 @@ impl ReadServerLayout {
     /// Identity activation must match, built from the layout's own fields.
     #[must_use]
     pub fn expected_identity(&self) -> ExpectedIdentity {
-        unimplemented!("Worker: expected_identity")
+        ExpectedIdentity::new(self.branch.clone(), self.workspace_id.clone())
     }
 }
 
@@ -44,8 +45,26 @@ impl ReadServerLayout {
 ///
 /// Returns [`WorkspaceError`] from workspace canonicalization.
 pub fn read_server_layout(workspace: &str) -> Result<ReadServerLayout, WorkspaceError> {
-    let _ = workspace;
-    unimplemented!("Worker: read_server_layout")
+    // `canonicalize_workspace` reports a missing path as `NotGitRoot` (the
+    // capability anchor fails first), so the missing case is classified here.
+    if !Path::new(workspace).exists() {
+        return Err(WorkspaceError::NotFound {
+            path: workspace.to_owned(),
+        });
+    }
+    let workspace = canonicalize_workspace(workspace)?;
+    let branch = resolve_git_branch(&workspace).unwrap_or_else(|_| "default".to_owned());
+    let workspace_id = workspace_hash(&workspace, &branch);
+    let generations_root = workspace.join(".engram").join("generations");
+    let runtime_root = generations_root.join("runtime");
+    Ok(ReadServerLayout {
+        workspace,
+        branch,
+        workspace_id,
+        generations_root,
+        runtime_root,
+        activation_deadline: READ_SERVER_ACTIVATION_DEADLINE,
+    })
 }
 
 /// Mint a pure `preflight-<unix_ms>-<pid>` generation ID.
@@ -54,6 +73,8 @@ pub fn read_server_layout(workspace: &str) -> Result<ReadServerLayout, Workspace
 ///
 /// Returns [`GenerationIdError`] if the minted value fails validation.
 pub fn mint_generation_id(now: SystemTime) -> Result<GenerationId, GenerationIdError> {
-    let _ = now;
-    unimplemented!("Worker: mint_generation_id")
+    let unix_ms = now
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis());
+    GenerationId::new(format!("preflight-{unix_ms}-{}", std::process::id()))
 }

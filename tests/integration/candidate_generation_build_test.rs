@@ -157,9 +157,9 @@ fn read_server_layout_signature_is_str_to_workspace_error() {
 
 #[test]
 fn minted_ids_are_valid_distinct_and_not_runtime() {
-    let first = mint_generation_id(SystemTime::UNIX_EPOCH + Duration::from_millis(1_000))
+    let first = mint_generation_id(SystemTime::UNIX_EPOCH + Duration::from_millis(1_500))
         .expect("first id");
-    let second = mint_generation_id(SystemTime::UNIX_EPOCH + Duration::from_millis(1_001))
+    let second = mint_generation_id(SystemTime::UNIX_EPOCH + Duration::from_millis(1_501))
         .expect("second id");
 
     assert_ne!(first, second);
@@ -169,6 +169,6 @@ fn minted_ids_are_valid_distinct_and_not_runtime() {
     }
     assert_eq!(
         first.as_str(),
-        format!("preflight-1000-{}", std::process::id())
+        format!("preflight-1500-{}", std::process::id())
     );
 }
