@@ -55,7 +55,8 @@ The `142.061-T` (Slot-02b) items were not implemented.
 `142-F` is a shared covering feature outside the task-only manifest, so the cascade was not
 used and `backlogit shipment ship` was never invoked (P-015). `close_path: safe_close`; no
 `cascade-close --classify-only` evidence record was produced at the time (manual procedure as in 141-S/143-S).
-It was captured afterwards by the closure-repair PR: `.backlogit/queue/144-S.md` was temporarily restored from
+`--classify-only` is non-mutating, so the cascade was still never run. The evidence was captured afterwards by
+the closure-repair PR and is a reconstruction of the pre-close state, not a contemporaneous capture: `.backlogit/queue/144-S.md` was temporarily restored from
 merge commit `1182373757b017398c5fba651a1af2494805b819`, `autoharness shipment cascade-close --classify-only`
 was run (exit 3, `SAFE_CLOSE`, engine `VERIFIED`, `phase_written: pre_close`), and the final safe-closed
 `.backlogit/` state was restored. `close_evidence` is
