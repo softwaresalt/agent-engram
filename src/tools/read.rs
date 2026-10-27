@@ -135,6 +135,21 @@ async fn queries_from_context(context: &DispatchSnapshot) -> Result<CodeGraphQue
 
 // ── Workspace statistics ─────────────────────────────────────────────────
 
+/// Context-aware statistics entry point (PRE-4b placeholder).
+///
+/// # Errors
+/// Always fails until `142.065-T` replaces this placeholder.
+pub async fn get_workspace_statistics_with_context(
+    _state: SharedState,
+    _params: Option<Value>,
+    _read_context: Option<&Arc<ReadRequestContext>>,
+) -> Result<Value, EngramError> {
+    Err(EngramError::System(SystemError::InvalidParams {
+        reason: "Worker: 142.065-T get_workspace_statistics_with_context is not implemented"
+            .to_owned(),
+    }))
+}
+
 /// Return aggregate code graph statistics for the current workspace.
 pub async fn get_workspace_statistics(
     state: SharedState,
