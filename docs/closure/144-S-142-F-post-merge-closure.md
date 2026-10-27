@@ -6,8 +6,8 @@ feature_id: "142-F"
 mode: post-merge
 date: 2026-10-27
 author: ship
-verdict: "READY — PR #418 merged at 1182373757b017398c5fba651a1af2494805b819 under DARK_MODE_MERGE_AUTHORIZED; shipment 144-S manually safe-closed (targeted, non-cascading); 142-F remains active and byte-identical"
-closure_status: "READY"
+verdict: "BLOCKED — PR #418 merged and 144-S safe-closed (non-cascading; 142-F unchanged), but the mandatory closure-evidence gate fails on close_evidence and cannot be satisfied after archival; operator remediation tracked by stash 871A8430"
+closure_status: "BLOCKED"
 releasability: "READY_WITH_CONDITIONS"
 compaction_status: "done"
 close_path: "safe_close"
@@ -20,7 +20,8 @@ closure_pr_merge_commit: null
 runtime_verification_report: null
 follow_up_stash:
   - "26CD3785"
-blocking_stash: null
+  - "871A8430"
+blocking_stash: "871A8430"
 shipment_record_status: "archived (archived_status: done) — targeted manual safe-close; see .backlogit/archive/144-S.md"
 pre_reconcile: ".backlogit/reconcile/144-S-pre-20261027T0140Z.md"
 post_reconcile: ".backlogit/reconcile/144-S-post-20261027T0150Z.md"
@@ -89,6 +90,8 @@ applicable (manual close).
 
 ## Follow-ups
 
+* Stash `871A8430` (blocking, requires deliberation): closure-evidence gate cannot be satisfied for a
+  manually safe-closed partial-feature shipment; after remediation, flip `closure_status` to `READY`.
 * Stash `26CD3785` (DEFERRED SCOPE EXPANSION): plan cites the wrong `lifecycle_policy.rs` path; plan
   assumes `NotFound` for a missing path (needed an explicit pre-check); `142.061-T` must adapt
   `mint_generation_id`'s `GenerationIdError` to `CandidateBuildError`.
