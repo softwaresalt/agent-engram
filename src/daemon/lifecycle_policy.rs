@@ -162,6 +162,9 @@ pub(crate) async fn run_read_server_startup(
     ttl: Arc<TtlTimer>,
     shutdown_tx: Arc<watch::Sender<bool>>,
 ) -> Result<(), EngramError> {
+    // Worker: 142.076-T (RED placeholder): identity is not yet sourced from
+    // `read_server_layout`; the sentinel below is replaced by that task.
+    const IDENTITY_PLACEHOLDER: &str = "Worker: 142.076-T";
     validate_workspace_path(&workspace)?;
     let canonical = canonicalize_workspace(&workspace)?;
     let workspace_uuid = load_or_create_workspace_id(&canonical)?;
@@ -169,7 +172,10 @@ pub(crate) async fn run_read_server_startup(
     let data_dir = resolve_data_dir(&canonical);
     let workspace_config = parse_config(&canonical)?;
     let snapshot = WorkspaceSnapshot {
-        workspace_id: workspace_hash(&canonical, &branch),
+        workspace_id: format!(
+            "{IDENTITY_PLACEHOLDER}:{}",
+            workspace_hash(&canonical, &branch)
+        ),
         workspace_uuid: workspace_uuid.to_string(),
         branch,
         data_dir,
