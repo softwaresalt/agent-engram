@@ -1,7 +1,8 @@
-//! Read-server layout, identity, and generation-ID minting for preflight.
+//! Read-server layout, identity, generation-ID minting, and candidate build.
 //!
 //! This is the single derivation of the read-server identity, generations
-//! root, runtime root, and activation deadline.
+//! root, runtime root, and activation deadline. It also builds a candidate
+//! generation (`<root>/<id>/engram.db`) and seals its one-entry inventory.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -201,6 +202,9 @@ const DATABASE_FILE_NAME: &str = "engram.db";
 /// Sidecar suffixes that must not exist beside the database before rename.
 const SIDECAR_SUFFIXES: [&str; 3] = ["-wal", "-shm", "-journal"];
 /// Raw Windows `ERROR_SHARING_VIOLATION`, the only retryable rename error.
+///
+/// On Unix, raw error 32 is `EPIPE`, which `rename` never returns, so the
+/// retry branch is inert there.
 const SHARING_VIOLATION_OS_ERROR: i32 = 32;
 /// Maximum rename attempts before [`CandidateBuildError::RenameBusy`].
 const RENAME_MAX_ATTEMPTS: u32 = 20;
@@ -344,4 +348,68 @@ pub fn seal_candidate_inventory(
         id: built.id,
         inventory: vec![entry],
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp() -> tempfile::TempDir {
+        tempfile::tempdir().expect("tempdir")
+    }
+
+    #[test]
+    fn find_databases_reports_zero_one_and_many() {
+        let dir = temp();
+        assert!(find_databases(dir.path()).expect("scan").is_empty());
+
+        let a = dir.path().join("a");
+        std::fs::create_dir_all(&a).expect("mkdir a");
+        std::fs::write(a.join("engram.db"), b"x").expect("write a");
+        std::fs::write(a.join("engram.db.lock"), b"x").expect("write lock");
+        assert_eq!(find_databases(dir.path()).expect("scan").len(), 1);
+
+        let b = dir.path().join("b");
+        std::fs::create_dir_all(&b).expect("mkdir b");
+        std::fs::write(b.join("engram.db"), b"x").expect("write b");
+        assert_eq!(find_databases(dir.path()).expect("scan").len(), 2);
+    }
+
+    #[test]
+    fn reject_sidecars_flags_each_suffix() {
+        for suffix in SIDECAR_SUFFIXES {
+            let dir = temp();
+            let db = dir.path().join("engram.db");
+            std::fs::write(&db, b"x").expect("write db");
+            assert!(reject_sidecars(&db).is_ok());
+            std::fs::write(dir.path().join(format!("engram.db{suffix}")), b"x")
+                .expect("write sidecar");
+            assert!(matches!(
+                reject_sidecars(&db),
+                Err(CandidateBuildError::UncheckpointedSidecar)
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn rename_with_retry_moves_file_and_surfaces_other_errors() {
+        let dir = temp();
+        let from = dir.path().join("from.db");
+        let to = dir.path().join("to.db");
+        std::fs::write(&from, b"x").expect("write from");
+        rename_with_retry(&from, &to).await.expect("rename");
+        assert!(to.is_file() && !from.exists());
+
+        let err = rename_with_retry(&from, &to).await.expect_err("missing");
+        assert!(
+            matches!(
+                err,
+                CandidateBuildError::Io {
+                    op: "rename database",
+                    kind: std::io::ErrorKind::NotFound
+                }
+            ),
+            "{err:?}"
+        );
+    }
 }
