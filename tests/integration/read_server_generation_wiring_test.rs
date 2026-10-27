@@ -428,6 +428,9 @@ async fn read_server_never_installs_late_after_a_startup_install_failure() {
         "install failure leaves no gate"
     );
 
+    #[cfg(unix)]
+    fs::remove_file(&runtime).expect("remove link");
+    #[cfg(windows)]
     fs::remove_dir(&runtime).expect("remove link");
     assert_eq!(publish_revision(&root, "cand-wire-final", false).await, 1);
     tokio::time::sleep(QUIET_WINDOW).await;
@@ -452,7 +455,7 @@ fn make_dir_link(link: &Path, target: &Path) -> bool {
         {
             Ok(out) if out.status.success() => true,
             other => {
-                eprintln!("skip: mklink /J failed: {other:?}");
+                eprintln!("mklink /J failed: {other:?}");
                 false
             }
         }
@@ -462,7 +465,7 @@ fn make_dir_link(link: &Path, target: &Path) -> bool {
         match std::os::unix::fs::symlink(target, link) {
             Ok(()) => true,
             Err(e) => {
-                eprintln!("skip: symlink failed: {e}");
+                eprintln!("symlink failed: {e}");
                 false
             }
         }

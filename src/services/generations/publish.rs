@@ -253,7 +253,7 @@ pub fn publish_generation_manifest(
 pub(crate) fn read_current_manifest_revision(
     destination: &Path,
 ) -> Result<GenerationRevision, PublishError> {
-    match fs::read(destination) {
+    match read_manifest_capped(destination) {
         Ok(bytes) => {
             let manifest: super::GenerationManifest =
                 serde_json::from_slice(&bytes).map_err(|source| {
@@ -270,6 +270,23 @@ pub(crate) fn read_current_manifest_revision(
             reason: source.to_string(),
         }),
     }
+}
+/// Read the manifest at `path`, refusing more than the activator's manifest size limit.
+fn read_manifest_capped(path: &Path) -> io::Result<Vec<u8>> {
+    use std::io::Read as _;
+
+    let limit = super::activation::MAX_MANIFEST_BYTES;
+    let mut bytes = Vec::new();
+    fs::File::open(path)?
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > limit {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "active manifest exceeds the size limit",
+        ));
+    }
+    Ok(bytes)
 }
 /// Validate that `attempted` advances strictly beyond `current`.
 ///

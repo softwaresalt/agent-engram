@@ -250,11 +250,32 @@ async fn install_generation_gate(
 }
 
 /// Read the published revision; `None` when nothing is published or readable.
-fn published_revision_for_driver(
+///
+/// The size-capped manifest read runs on a blocking thread under the layout's
+/// activation deadline so a stalled filesystem cannot wedge the driver.
+async fn published_revision_for_driver(
     layout: &ReadServerLayout,
 ) -> Result<Option<GenerationRevision>, CandidateBuildError> {
-    let store = open_generation_store(layout, false)?;
-    let revision = current_published_revision(&store)?;
+    let probe_layout = layout.clone();
+    let probe = tokio::task::spawn_blocking(move || {
+        let store = open_generation_store(&probe_layout, false)?;
+        current_published_revision(&store)
+    });
+    let revision = match tokio::time::timeout(layout.activation_deadline, probe).await {
+        Ok(Ok(result)) => result?,
+        Ok(Err(_)) => {
+            return Err(CandidateBuildError::Io {
+                op: "probe published revision",
+                kind: std::io::ErrorKind::Other,
+            });
+        }
+        Err(_) => {
+            return Err(CandidateBuildError::Io {
+                op: "probe published revision",
+                kind: std::io::ErrorKind::TimedOut,
+            });
+        }
+    };
     Ok((revision.value() != 0).then_some(revision))
 }
 
@@ -305,7 +326,7 @@ async fn drive_generation_activation(
             gate
         };
 
-        let revision = match published_revision_for_driver(&layout) {
+        let revision = match published_revision_for_driver(&layout).await {
             Ok(Some(revision)) => revision,
             Ok(None) => continue,
             Err(error) => {
@@ -323,6 +344,16 @@ async fn drive_generation_activation(
         match gate.run_initial_activation().await {
             Ok(_) => return,
             Err(error) => {
+                // The activation reads the manifest itself, so a publication
+                // between the probe and that read may mean the failure belongs
+                // to a later revision; leave it unattributed so the newer
+                // revision gets its own attempt and log entry.
+                if matches!(
+                    published_revision_for_driver(&layout).await,
+                    Ok(Some(current)) if current != revision
+                ) {
+                    continue;
+                }
                 let kind = match classify(&error) {
                     RejectionClass::Permanent => "permanent",
                     RejectionClass::Transient => "transient",
