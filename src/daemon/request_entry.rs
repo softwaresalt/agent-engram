@@ -13,6 +13,7 @@ use crate::daemon::protocol::{HealthCheckResult, IpcRequest, IpcResponse};
 use crate::daemon::startup_activation::ReadServerStartupGate;
 use crate::daemon::{error_transport, startup_activation};
 use crate::errors::{ActivationError, EngramError, ReadServerRefusalError};
+use crate::models::config::DaemonMode;
 use crate::server::state::{AppState, ReadRequestContext, SharedState};
 use crate::shim::version::{ENGRAM_BUILD_HASH, ENGRAM_PROTOCOL_VERSION};
 use crate::tools;
@@ -21,7 +22,7 @@ use crate::tools::capabilities::{self, CapabilityClass, InputOwnership};
 /// Read methods whose handler is pinned to a request-entry generation context
 /// (plan unit PRE-4, 142.066-T). A method joins only in the change that
 /// converts its handler.
-pub const GENERATION_PINNED_READS: &[&str] = &[];
+pub const GENERATION_PINNED_READS: &[&str] = &["get_workspace_statistics"];
 
 /// A decoded IPC request frame awaiting admission.
 pub type Frame = IpcRequest;
@@ -304,6 +305,41 @@ pub async fn process_request(line: &str, state: &SharedState) -> (IpcResponse, b
                 ),
                 true,
             )
+        }
+        method
+            if state.mode() == DaemonMode::ReadServer
+                && GENERATION_PINNED_READS.contains(&method) =>
+        {
+            // Generation-pinned reads acquire their context here, at request
+            // entry, and nowhere else (PRE-4, stash 6C5DF765).
+            let Some(gate) = state.read_server_gate().await else {
+                return (
+                    refusal(
+                        &request,
+                        EngramError::Activation(ActivationError::GenerationNotYetActivated {
+                            generation_id: "<no generation gate installed>".to_owned(),
+                        }),
+                    ),
+                    false,
+                );
+            };
+            match admit_read(&gate, &request).await {
+                ReadAdmission::Admitted(context) => (
+                    match tools::dispatch_with_read_context(
+                        Arc::clone(state),
+                        method,
+                        request.params,
+                        Some(&context),
+                    )
+                    .await
+                    {
+                        Ok(result) => IpcResponse::success(id, result),
+                        Err(e) => error_transport::to_response(id, e),
+                    },
+                    false,
+                ),
+                ReadAdmission::Refused(response) => (*response, false),
+            }
         }
         method => (
             match tools::dispatch(Arc::clone(state), method, request.params).await {
