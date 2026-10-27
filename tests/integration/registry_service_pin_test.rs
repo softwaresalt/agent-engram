@@ -157,7 +157,12 @@ fn registry_service_reads_through_the_caller_pinned_context() {
         .join("tools")
         .join("read.rs");
     let read_source = fs::read_to_string(read_source_path).expect("read src/tools/read.rs");
-    let read_body = named_function_body(&read_source, "get_workspace_statistics");
+    let wrapper_body = named_function_body(&read_source, "get_workspace_statistics(");
+    assert!(
+        wrapper_body.contains("get_workspace_statistics_with_context("),
+        "get_workspace_statistics must delegate to get_workspace_statistics_with_context"
+    );
+    let read_body = named_function_body(&read_source, "get_workspace_statistics_with_context");
     assert!(
         read_body.contains("pinned_read_request_context("),
         "get_workspace_statistics must pin one ReadRequestContext before delegating to the registry service"
