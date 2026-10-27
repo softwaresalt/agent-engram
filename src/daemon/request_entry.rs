@@ -18,6 +18,11 @@ use crate::shim::version::{ENGRAM_BUILD_HASH, ENGRAM_PROTOCOL_VERSION};
 use crate::tools;
 use crate::tools::capabilities::{self, CapabilityClass, InputOwnership};
 
+/// Read methods whose handler is pinned to a request-entry generation context
+/// (plan unit PRE-4, 142.066-T). A method joins only in the change that
+/// converts its handler.
+pub const GENERATION_PINNED_READS: &[&str] = &[];
+
 /// A decoded IPC request frame awaiting admission.
 pub type Frame = IpcRequest;
 

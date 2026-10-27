@@ -29,7 +29,8 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use engram::daemon::ipc_server::ipc_endpoint;
-use engram::daemon::protocol::IpcRequest;
+use engram::daemon::protocol::{IpcRequest, IpcResponse};
+use engram::daemon::request_entry::GENERATION_PINNED_READS;
 use engram::db::workspace::{canonicalize_workspace, workspace_hash};
 use engram::models::config::CodeGraphConfig;
 use engram::services::generations::GenerationId;
@@ -134,6 +135,36 @@ impl Daemon {
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
         daemon
+    }
+
+    /// Send `method` and return the raw response, errors included.
+    async fn raw(&self, method: &str) -> IpcResponse {
+        let request = IpcRequest {
+            jsonrpc: "2.0".to_owned(),
+            id: Some(Value::Number(1.into())),
+            method: method.to_owned(),
+            params: None,
+        };
+        send_request(&self.endpoint, &request, IPC_TIMEOUT)
+            .await
+            .expect("IPC request must succeed")
+    }
+
+    /// `get_workspace_status` result, or `None` on any IPC or domain error.
+    async fn try_status(&self) -> Option<Value> {
+        let request = IpcRequest {
+            jsonrpc: "2.0".to_owned(),
+            id: Some(Value::Number(1.into())),
+            method: "get_workspace_status".to_owned(),
+            params: None,
+        };
+        let response = send_request(&self.endpoint, &request, IPC_TIMEOUT)
+            .await
+            .ok()?;
+        if response.error.is_some() {
+            return None;
+        }
+        response.result
     }
 
     async fn call(&self, method: &str) -> Value {
@@ -576,5 +607,301 @@ fn make_dir_link(link: &Path, target: &Path) -> bool {
                 false
             }
         }
+    }
+}
+
+// ── PRE-4 (142.066-T) ───────────────────────────────────────────────────────
+
+/// A filesystem snapshot entry: kind and length (or a recorded metadata error).
+type FsSnapshot = BTreeMap<PathBuf, (String, u64)>;
+
+/// Run `engram --workspace <root> --json <args>`; return exit code and the
+/// parsed stdout envelope (`Value::Null` when stdout is not JSON).
+async fn run_cli(root: &Path, args: &[&str]) -> (i32, Value) {
+    let output = tokio::time::timeout(
+        IPC_TIMEOUT * 2,
+        Command::new(env!("CARGO_BIN_EXE_engram"))
+            .args(["--workspace", as_str(root), "--json"])
+            .args(args)
+            .env_remove("ENGRAM_DATA_DIR")
+            .env_remove("ENGRAM_DIRECT")
+            .env_remove("ENGRAM_WORKSPACE")
+            .stdin(Stdio::null())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .expect("engram CLI timed out")
+    .expect("engram CLI must execute");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let envelope = serde_json::from_str::<Value>(stdout.trim())
+        .or_else(|_| serde_json::from_str::<Value>(stdout.trim().lines().last().unwrap_or("")))
+        .unwrap_or(Value::Null);
+    (output.status.code().unwrap_or(-1), envelope)
+}
+
+fn write_second_source(root: &Path) {
+    fs::write(
+        root.join("src").join("extra.rs"),
+        "pub fn gamma() -> u32 {\n    3\n}\n",
+    )
+    .expect("write extra.rs");
+}
+
+fn fs_walk(base: &Path, dir: &Path, out: &mut FsSnapshot) {
+    let rel = |path: &Path| path.strip_prefix(base).unwrap_or(path).to_path_buf();
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) => {
+            out.insert(
+                rel(dir),
+                (format!("read_dir_error:{:?}", error.raw_os_error()), 0),
+            );
+            return;
+        }
+    };
+    for entry in entries {
+        let path = match entry {
+            Ok(entry) => entry.path(),
+            Err(error) => {
+                out.insert(
+                    rel(dir).join("<entry>"),
+                    (format!("entry_error:{:?}", error.raw_os_error()), 0),
+                );
+                continue;
+            }
+        };
+        // Metadata only: no content read, so a Windows sharing violation
+        // (error 33) on a live `.db` is recorded, never skipped.
+        match fs::symlink_metadata(&path) {
+            Ok(meta) => {
+                let kind = if meta.is_dir() {
+                    "dir"
+                } else if meta.is_file() {
+                    "file"
+                } else {
+                    "other"
+                };
+                out.insert(rel(&path), (kind.to_owned(), meta.len()));
+                if meta.is_dir() {
+                    fs_walk(base, &path, out);
+                }
+            }
+            Err(error) => {
+                out.insert(
+                    rel(&path),
+                    (format!("metadata_error:{:?}", error.raw_os_error()), 0),
+                );
+            }
+        }
+    }
+}
+
+/// Every entry's relative path, kind and length under `root`.
+fn fs_snapshot(root: &Path) -> FsSnapshot {
+    let mut out = BTreeMap::new();
+    fs_walk(root, root, &mut out);
+    out
+}
+
+/// F: the (`path`, `branch`, `db_path`, `generation`) tuple of one status response.
+fn binding_fingerprint(status: &Value) -> Value {
+    serde_json::json!([
+        status["path"],
+        status["branch"],
+        status["db_path"],
+        status["generation"]
+    ])
+}
+
+/// Wait for the R7.7 two-observation settled state at revision 2.
+async fn settle_at_revision_2(daemon: &Daemon, root: &Path) {
+    let deadline = tokio::time::Instant::now() + ACTIVATION_TIMEOUT;
+    let mut last = (Value::Null, Value::Null);
+    loop {
+        if let Some(status1) = daemon.try_status().await {
+            let snapshot1 = fs_snapshot(root);
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            let snapshot2 = fs_snapshot(root);
+            if let Some(status2) = daemon.try_status().await {
+                let (g1, g2) = (&status1["generation"], &status2["generation"]);
+                last = (g1.clone(), g2.clone());
+                let at_two = |g: &Value| {
+                    g["active_revision"].as_u64() == Some(2)
+                        && g["published_revision"].as_u64() == Some(2)
+                };
+                if at_two(g1)
+                    && at_two(g2)
+                    && snapshot1 == snapshot2
+                    && binding_fingerprint(&status1) == binding_fingerprint(&status2)
+                {
+                    return;
+                }
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "Worker: 142.066-T: revision 2 never settled; last G1: {}, last G2: {}",
+            last.0,
+            last.1
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// Scenario 1: a real CLI `stats` read is pinned to the published generation.
+#[tokio::test]
+async fn pinned_stats_read_reports_provenance_and_counts() {
+    assert!(
+        GENERATION_PINNED_READS.contains(&"get_workspace_statistics"),
+        "Worker: 142.066-T GENERATION_PINNED_READS"
+    );
+    let (_guard, root) = git_fixture(Some("read_server"));
+    write_source(&root);
+    assert_eq!(publish_revision(&root, "cand-pin-1", false).await, 1);
+
+    let daemon = Daemon::spawn(&root).await;
+    wait_for_generation(&daemon, "active_revision == 1", |g| {
+        g["active_revision"].as_u64() == Some(1)
+    })
+    .await;
+
+    let (code, envelope) = run_cli(&root, &["stats"]).await;
+    assert_eq!(code, 0, "stats must exit 0: {envelope}");
+    let result = &envelope["result"];
+    assert_eq!(
+        result
+            .pointer("/provenance/generation_id")
+            .and_then(Value::as_str),
+        Some("cand-pin-1"),
+        "provenance generation id: {envelope}"
+    );
+    assert_eq!(result["code_files"].as_u64(), Some(1), "{envelope}");
+}
+
+/// Scenario 2: reconciliation at request entry picks up revision 2 and
+/// quiesces afterwards.
+#[tokio::test]
+async fn pinned_stats_read_follows_reconciliation_to_revision_2() {
+    assert!(
+        GENERATION_PINNED_READS.contains(&"get_workspace_statistics"),
+        "Worker: 142.066-T GENERATION_PINNED_READS"
+    );
+    // Static check: no descriptor declares a generation-control method.
+    for descriptor in engram::tools::capabilities::all_descriptors() {
+        let name = descriptor.name.to_ascii_lowercase();
+        assert!(
+            !["generation", "publish", "activate", "reconcile"]
+                .iter()
+                .any(|word| name.contains(word)),
+            "descriptor {name} declares a generation-control method"
+        );
+    }
+
+    let (_guard, root) = git_fixture(Some("read_server"));
+    write_source(&root);
+    assert_eq!(publish_revision(&root, "cand-pin-1", false).await, 1);
+    let daemon = Daemon::spawn(&root).await;
+    wait_for_generation(&daemon, "active_revision == 1", |g| {
+        g["active_revision"].as_u64() == Some(1)
+    })
+    .await;
+
+    write_second_source(&root);
+    assert_eq!(publish_revision(&root, "cand-pin-2", false).await, 2);
+
+    // Bounded re-probing: 50 ms doubling to 500 ms, 30 s limit.
+    let deadline = tokio::time::Instant::now() + ACTIVATION_TIMEOUT;
+    let mut delay = Duration::from_millis(50);
+    loop {
+        let (code, envelope) = run_cli(&root, &["stats"]).await;
+        let result = &envelope["result"];
+        if code == 0
+            && result
+                .pointer("/provenance/generation_id")
+                .and_then(Value::as_str)
+                == Some("cand-pin-2")
+            && result["code_files"].as_u64() == Some(2)
+        {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "Worker: 142.066-T: revision 2 never observed through stats; last: {envelope}"
+        );
+        tokio::time::sleep(delay).await;
+        delay = (delay * 2).min(Duration::from_millis(500));
+    }
+
+    settle_at_revision_2(&daemon, &root).await;
+
+    // Quiescence: warm-up read, then reads change nothing.
+    let (code, _) = run_cli(&root, &["stats"]).await;
+    assert_eq!(code, 0, "warm-up stats");
+    let status_before = daemon.try_status().await.expect("status before");
+    let fingerprint_before = binding_fingerprint(&status_before);
+    let snapshot_before = fs_snapshot(&root);
+    for _ in 0..3 {
+        let (code, _) = run_cli(&root, &["stats"]).await;
+        assert_eq!(code, 0, "quiescence stats");
+    }
+    tokio::time::sleep(QUIET_WINDOW).await;
+    let status_after = daemon.try_status().await.expect("status after");
+    assert_eq!(
+        binding_fingerprint(&status_after),
+        fingerprint_before,
+        "binding fingerprint unchanged by pinned reads"
+    );
+    assert_eq!(
+        fs_snapshot(&root),
+        snapshot_before,
+        "filesystem unchanged by pinned reads"
+    );
+}
+
+/// Scenario 3: regression witness.
+#[tokio::test]
+async fn pinned_read_refusal_and_unpinned_paths_are_unchanged() {
+    assert!(
+        GENERATION_PINNED_READS.contains(&"get_workspace_statistics"),
+        "Worker: 142.066-T GENERATION_PINNED_READS"
+    );
+    // Read-server daemon with no generations root: typed refusal for `stats`.
+    let (_guard, root) = git_fixture(Some("read_server"));
+    let daemon = Daemon::spawn(&root).await;
+    let response = daemon.raw("get_workspace_statistics").await;
+    let error = response.error.expect("stats must be refused");
+    assert_eq!(
+        error.data.as_ref().and_then(|d| d["engram_code"].as_u64()),
+        Some(17_001),
+        "typed not-yet-activated code: {error:?}"
+    );
+    for method in ["get_daemon_status", "get_workspace_status"] {
+        let response = daemon.raw(method).await;
+        assert!(response.error.is_none(), "{method} accepted: {response:?}");
+        let result = response.result.unwrap_or(Value::Null);
+        assert!(
+            result.get("provenance").is_none(),
+            "{method} carries no provenance: {result}"
+        );
+    }
+    assert!(check_health(&daemon.endpoint).await, "_health stays ready");
+
+    // Managed mode: `stats` is unchanged and carries no provenance.
+    let (_managed_guard, managed_root) = git_fixture(None);
+    let managed = Daemon::spawn(&managed_root).await;
+    let response = managed.raw("get_workspace_statistics").await;
+    if let Some(result) = &response.result {
+        assert!(
+            result.get("provenance").is_none(),
+            "managed stats carries no provenance: {result}"
+        );
+    }
+    if let Some(error) = &response.error {
+        assert_ne!(
+            error.data.as_ref().and_then(|d| d["engram_code"].as_u64()),
+            Some(17_001),
+            "managed stats is never refused as not-yet-activated: {error:?}"
+        );
     }
 }
