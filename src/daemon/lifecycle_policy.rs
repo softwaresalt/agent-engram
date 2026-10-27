@@ -24,7 +24,9 @@ use crate::server::state::{
     OwnerPermit, SharedState, WorkspaceSnapshot,
 };
 use crate::services::config::parse_config;
-use crate::services::generations::candidate_build::read_server_layout;
+use crate::services::generations::candidate_build::{
+    CandidateBuildError, ReadServerLayout, read_server_layout,
+};
 
 /// Record the daemon lifecycle start edge.
 ///
@@ -192,6 +194,23 @@ pub(crate) async fn run_read_server_startup(
         ttl_task.run_until_expired(shutdown_tx).await;
     });
     Ok(())
+}
+
+#[allow(dead_code)]
+async fn install_generation_gate(
+    _state: &SharedState,
+    _layout: &ReadServerLayout,
+) -> Result<(), CandidateBuildError> {
+    todo!("Worker: 142.077-T install_generation_gate")
+}
+
+#[allow(dead_code)]
+async fn drive_generation_activation(
+    _state: SharedState,
+    _layout: ReadServerLayout,
+    _shutdown: watch::Receiver<bool>,
+) {
+    todo!("Worker: 142.077-T drive_generation_activation")
 }
 
 /// Return `true` when the authoritative daemon mode permits watcher registration.

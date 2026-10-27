@@ -37,6 +37,7 @@ use tokio::sync::futures::OwnedNotified;
 use tokio::sync::{Notify, RwLock, watch};
 
 use crate::config::StaleStrategy;
+use crate::daemon::startup_activation::ReadServerStartupGate;
 use crate::errors::WorkspaceError;
 use crate::models::config::{DaemonMode, WorkspaceConfig};
 use crate::models::health::ScanProgress;
@@ -1165,6 +1166,7 @@ pub struct AppState {
     /// modes within one process lifetime.
     mode: DaemonMode,
     generation_activator: RwLock<Option<Arc<GenerationActivator>>>,
+    read_server_gate: RwLock<Option<Arc<ReadServerStartupGate>>>,
 }
 
 /// Exclusive ownership of an identity-changing workspace publication.
@@ -1211,6 +1213,7 @@ impl AppState {
             hydration_ready: AtomicBool::new(false),
             mode,
             generation_activator: RwLock::new(None),
+            read_server_gate: RwLock::new(None),
         }
     }
 
@@ -1748,6 +1751,18 @@ impl AppState {
 
     pub(crate) async fn generation_activator(&self) -> Option<Arc<GenerationActivator>> {
         self.generation_activator.read().await.clone()
+    }
+
+    /// Register or clear the read-server startup gate that drives activation.
+    #[doc(hidden)]
+    pub async fn set_read_server_gate(&self, gate: Option<Arc<ReadServerStartupGate>>) {
+        *self.read_server_gate.write().await = gate;
+    }
+
+    /// The installed read-server startup gate, if any.
+    #[doc(hidden)]
+    pub async fn read_server_gate(&self) -> Option<Arc<ReadServerStartupGate>> {
+        self.read_server_gate.read().await.clone()
     }
 
     /// Increment the watcher-event counter and record the current UTC timestamp.
