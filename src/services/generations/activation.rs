@@ -1478,7 +1478,7 @@ fn resolve_and_open(
 /// the deadline alone. 1 MiB matches the bound already used for a
 /// similarly-purposed manifest read in
 /// [`crate::services::code_graph::discover_workspace_crates_from_reader`].
-pub(crate) const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
+const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 
 /// Build the typed out-of-bounds error for a manifest exceeding
 /// [`MAX_MANIFEST_BYTES`].

@@ -26,8 +26,7 @@ use crate::server::state::{
 };
 use crate::services::config::parse_config;
 use crate::services::generations::candidate_build::{
-    CandidateBuildError, ReadServerLayout, current_published_revision, open_generation_store,
-    read_server_layout,
+    CandidateBuildError, ReadServerLayout, open_generation_store, read_server_layout,
 };
 use crate::services::generations::{
     GenerationActivator, GenerationRevision, RejectionClass, classify,
@@ -228,6 +227,9 @@ const DRIVER_BACKOFF_START: Duration = Duration::from_millis(100);
 /// Backoff cap for the activation driver.
 const DRIVER_BACKOFF_CAP: Duration = Duration::from_secs(2);
 
+/// Size cap for the driver's manifest probe (1 MiB, matching the activator's bound).
+const DRIVER_MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
+
 /// Open the store and install the activator and startup gate on `state`.
 ///
 /// Reads no manifest and never awaits activation.
@@ -251,32 +253,86 @@ async fn install_generation_gate(
 
 /// Read the published revision; `None` when nothing is published or readable.
 ///
-/// The size-capped manifest read runs on a blocking thread under the layout's
-/// activation deadline so a stalled filesystem cannot wedge the driver.
-async fn published_revision_for_driver(
+/// Opens only a regular manifest file and reads at most
+/// [`DRIVER_MAX_MANIFEST_BYTES`] of it; only the revision is parsed. Kept
+/// separate from the publisher's reader so publication behavior is unchanged.
+fn probe_published_revision(
     layout: &ReadServerLayout,
 ) -> Result<Option<GenerationRevision>, CandidateBuildError> {
-    let probe_layout = layout.clone();
-    let probe = tokio::task::spawn_blocking(move || {
-        let store = open_generation_store(&probe_layout, false)?;
-        current_published_revision(&store)
-    });
-    let revision = match tokio::time::timeout(layout.activation_deadline, probe).await {
-        Ok(Ok(result)) => result?,
-        Ok(Err(_)) => {
-            return Err(CandidateBuildError::Io {
-                op: "probe published revision",
-                kind: std::io::ErrorKind::Other,
-            });
-        }
-        Err(_) => {
-            return Err(CandidateBuildError::Io {
+    use std::io::Read as _;
+
+    #[derive(serde::Deserialize)]
+    struct RevisionOnly {
+        revision: GenerationRevision,
+    }
+
+    let unreadable = CandidateBuildError::ManifestUnreadable;
+    let store = open_generation_store(layout, false)?;
+    let path = store.active_manifest_path();
+    let link_meta = match std::fs::symlink_metadata(&path) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(unreadable),
+    };
+    let target_is_file = if link_meta.file_type().is_symlink() {
+        std::fs::metadata(&path).is_ok_and(|meta| meta.is_file())
+    } else {
+        link_meta.is_file()
+    };
+    if !target_is_file {
+        return Err(unreadable);
+    }
+    let file = std::fs::File::open(&path).map_err(|_| CandidateBuildError::ManifestUnreadable)?;
+    // Re-check on the opened handle so a swap after the pre-check is rejected.
+    if !file.metadata().is_ok_and(|meta| meta.is_file()) {
+        return Err(unreadable);
+    }
+    let mut bytes = Vec::new();
+    file.take(DRIVER_MAX_MANIFEST_BYTES.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|_| CandidateBuildError::ManifestUnreadable)?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > DRIVER_MAX_MANIFEST_BYTES {
+        return Err(unreadable);
+    }
+    let parsed: RevisionOnly =
+        serde_json::from_slice(&bytes).map_err(|_| CandidateBuildError::ManifestUnreadable)?;
+    Ok((parsed.revision.value() != 0).then_some(parsed.revision))
+}
+
+/// Holds at most one in-flight blocking probe across driver ticks.
+///
+/// `spawn_blocking` work cannot be cancelled by a timeout, so a probe that
+/// outlives the deadline is retained and polled again rather than replaced.
+#[derive(Default)]
+struct ProbeSlot {
+    in_flight:
+        Option<tokio::task::JoinHandle<Result<Option<GenerationRevision>, CandidateBuildError>>>,
+}
+
+impl ProbeSlot {
+    /// Wait up to the activation deadline for the (possibly retained) probe.
+    async fn poll(
+        &mut self,
+        layout: &ReadServerLayout,
+    ) -> Result<Option<GenerationRevision>, CandidateBuildError> {
+        let handle = self.in_flight.get_or_insert_with(|| {
+            let probe_layout = layout.clone();
+            tokio::task::spawn_blocking(move || probe_published_revision(&probe_layout))
+        });
+        match tokio::time::timeout(layout.activation_deadline, &mut *handle).await {
+            Ok(joined) => {
+                self.in_flight = None;
+                joined.map_err(|_| CandidateBuildError::Io {
+                    op: "probe published revision",
+                    kind: std::io::ErrorKind::Other,
+                })?
+            }
+            Err(_) => Err(CandidateBuildError::Io {
                 op: "probe published revision",
                 kind: std::io::ErrorKind::TimedOut,
-            });
+            }),
         }
-    };
-    Ok((revision.value() != 0).then_some(revision))
+    }
 }
 
 /// Background activation driver; never awaited by startup.
@@ -296,6 +352,7 @@ async fn drive_generation_activation(
     let mut last_install_error: Option<std::mem::Discriminant<CandidateBuildError>> = None;
     let mut last_attempted: Option<GenerationRevision> = None;
     let mut last_logged: Option<(Option<GenerationRevision>, &'static str)> = None;
+    let mut probe = ProbeSlot::default();
     loop {
         tokio::select! {
             _ = shutdown.changed() => return,
@@ -326,7 +383,11 @@ async fn drive_generation_activation(
             gate
         };
 
-        let revision = match published_revision_for_driver(&layout).await {
+        let probed = tokio::select! {
+            _ = shutdown.changed() => return,
+            result = probe.poll(&layout) => result,
+        };
+        let revision = match probed {
             Ok(Some(revision)) => revision,
             Ok(None) => continue,
             Err(error) => {
@@ -348,10 +409,11 @@ async fn drive_generation_activation(
                 // between the probe and that read may mean the failure belongs
                 // to a later revision; leave it unattributed so the newer
                 // revision gets its own attempt and log entry.
-                if matches!(
-                    published_revision_for_driver(&layout).await,
-                    Ok(Some(current)) if current != revision
-                ) {
+                let rechecked = tokio::select! {
+                    _ = shutdown.changed() => return,
+                    result = probe.poll(&layout) => result,
+                };
+                if matches!(rechecked, Ok(Some(current)) if current != revision) {
                     continue;
                 }
                 let kind = match classify(&error) {
