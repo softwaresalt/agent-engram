@@ -3,7 +3,7 @@
 //! Synchronous, bounded child I/O: a capped reader thread feeds the owner
 //! loop, which keys on the CLI child's exit and never joins the reader.
 
-use std::io::Read;
+use std::io::{self, Read};
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -91,7 +91,8 @@ struct BoundedOutput {
 fn spawn_reader(stdout: impl Read + Send + 'static) -> Receiver<ReaderMsg> {
     let (tx, rx) = mpsc::channel();
     // The handle is dropped on purpose: a grandchild holding the pipe open
-    // must never block the owner.
+    // must never block the owner. Tradeoff: such a detached reader thread can
+    // stay blocked (leaked) until the grandchild closes the pipe or exits.
     drop(thread::spawn(move || {
         let mut capped = stdout.take(OUTPUT_CAP as u64 + 1);
         let mut buf = [0_u8; 8192];
@@ -99,6 +100,7 @@ fn spawn_reader(stdout: impl Read + Send + 'static) -> Receiver<ReaderMsg> {
             let msg = match capped.read(&mut buf) {
                 Ok(0) => ReaderMsg::Eof,
                 Ok(n) => ReaderMsg::Chunk(buf[..n].to_vec()),
+                Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
                 Err(_) => ReaderMsg::ReadError,
             };
             let last = !matches!(msg, ReaderMsg::Chunk(_));
@@ -227,6 +229,18 @@ fn parse_report(stdout: &[u8]) -> Option<ProbeReport> {
 
 /// Run one bounded CLI read and parse its first JSON line.
 ///
+/// Typed-result precedence: `Spawn` > `Oversize` > `Deadline` > reader
+/// `ReadError` (reported as `Malformed("stdout_read")`) > parse. A parseable
+/// result report is `accepted: true` independent of the exit status by
+/// design; an `error` JSON object is `accepted: false` and never `Exit`.
+/// Only unparseable output maps to `Malformed`/`Exit`.
+///
+/// The child inherits the caller environment, so callers must not set
+/// `ENGRAM_DIRECT`, `ENGRAM_DATA_DIR`, or `ENGRAM_WORKSPACE`.
+///
+/// The stdout reader runs on a detached thread; a grandchild that keeps the
+/// pipe open can leave that thread blocked after this function returns.
+///
 /// # Errors
 ///
 /// Returns a [`ProbeError`] per the typed-result precedence.
@@ -248,6 +262,9 @@ pub fn probe_cli_read(
 }
 
 /// Re-probe until the report's generation equals `expected` or the deadline.
+///
+/// Intended for reads that carry provenance (`PREFLIGHT_READ`); a read
+/// without a `generation_id` can never match.
 ///
 /// # Errors
 ///
