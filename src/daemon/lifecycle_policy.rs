@@ -14,6 +14,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, error, info, warn};
 
+use crate::daemon::startup_activation::ReadServerStartupGate;
 use crate::daemon::ttl::TtlTimer;
 use crate::db::workspace::{load_or_create_workspace_id, resolve_data_dir};
 use crate::errors::{EngramError, SystemError, WorkspaceError};
@@ -24,7 +25,12 @@ use crate::server::state::{
     OwnerPermit, SharedState, WorkspaceSnapshot,
 };
 use crate::services::config::parse_config;
-use crate::services::generations::candidate_build::read_server_layout;
+use crate::services::generations::candidate_build::{
+    CandidateBuildError, ReadServerLayout, open_generation_store, read_server_layout,
+};
+use crate::services::generations::{
+    GenerationActivator, GenerationRevision, RejectionClass, classify,
+};
 
 /// Record the daemon lifecycle start edge.
 ///
@@ -164,9 +170,9 @@ pub(crate) async fn run_read_server_startup(
     let data_dir = resolve_data_dir(&layout.workspace);
     let workspace_config = parse_config(&layout.workspace)?;
     let snapshot = WorkspaceSnapshot {
-        workspace_id: layout.workspace_id,
+        workspace_id: layout.workspace_id.clone(),
         workspace_uuid: workspace_uuid.to_string(),
-        branch: layout.branch,
+        branch: layout.branch.clone(),
         data_dir,
         path: layout.workspace.display().to_string(),
         last_flush: None,
@@ -179,6 +185,19 @@ pub(crate) async fn run_read_server_startup(
         .publish_workspace_generation_guarded(&publication, snapshot, Some(workspace_config))
         .await
         .map_err(map_publication_error)?;
+
+    // The gate must be installed before readiness so the first `ready` already
+    // reports generation observability. A root absent here may be installed
+    // late by the driver; a root present here whose install fails is final.
+    let absent_at_startup = matches!(
+        std::fs::symlink_metadata(&layout.generations_root),
+        Err(ref error) if error.kind() == std::io::ErrorKind::NotFound
+    );
+    let mut start_driver = true;
+    if !absent_at_startup && let Err(error) = install_generation_gate(&state, &layout).await {
+        warn!(%error, "read-server generation gate install failed; no later install will be attempted");
+        start_driver = false;
+    }
     let _ = state.set_hydration_ready_for_generation(generation);
 
     info!(
@@ -186,12 +205,253 @@ pub(crate) async fn run_read_server_startup(
         "read-server lifecycle published startup binding without managed hydration"
     );
 
+    if start_driver {
+        tokio::spawn(drive_generation_activation(
+            Arc::clone(&state),
+            layout,
+            absent_at_startup,
+            shutdown_tx.subscribe(),
+        ));
+    }
+
     ttl.reset();
     let ttl_task = Arc::clone(&ttl);
     tokio::spawn(async move {
         ttl_task.run_until_expired(shutdown_tx).await;
     });
     Ok(())
+}
+
+/// Backoff start for the activation driver.
+const DRIVER_BACKOFF_START: Duration = Duration::from_millis(100);
+/// Backoff cap for the activation driver.
+const DRIVER_BACKOFF_CAP: Duration = Duration::from_secs(2);
+
+/// Size cap for the driver's manifest probe (1 MiB, matching the activator's bound).
+const DRIVER_MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
+
+/// Open the store and install the activator and startup gate on `state`.
+///
+/// Reads no manifest and never awaits activation.
+async fn install_generation_gate(
+    state: &SharedState,
+    layout: &ReadServerLayout,
+) -> Result<(), CandidateBuildError> {
+    let store = open_generation_store(layout, false)?;
+    let activator = Arc::new(GenerationActivator::new(
+        store,
+        layout.runtime_root.clone(),
+        layout.expected_identity(),
+        layout.activation_deadline,
+    ));
+    let gate = Arc::new(ReadServerStartupGate::new(Arc::clone(&activator)));
+    gate.socket_bound().await;
+    state.set_generation_activator(Some(activator)).await;
+    state.set_read_server_gate(Some(gate)).await;
+    Ok(())
+}
+
+/// Read the published revision; `None` when nothing is published or readable.
+///
+/// Opens only a regular manifest file and reads at most
+/// [`DRIVER_MAX_MANIFEST_BYTES`] of it; only the revision is parsed. Kept
+/// separate from the publisher's reader so publication behavior is unchanged.
+fn probe_published_revision(
+    layout: &ReadServerLayout,
+) -> Result<Option<GenerationRevision>, CandidateBuildError> {
+    use std::io::Read as _;
+
+    #[derive(serde::Deserialize)]
+    struct RevisionOnly {
+        revision: GenerationRevision,
+    }
+
+    let unreadable = CandidateBuildError::ManifestUnreadable;
+    let store = open_generation_store(layout, false)?;
+    let path = store.active_manifest_path();
+    let link_meta = match std::fs::symlink_metadata(&path) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(unreadable),
+    };
+    let target_is_file = if link_meta.file_type().is_symlink() {
+        std::fs::metadata(&path).is_ok_and(|meta| meta.is_file())
+    } else {
+        link_meta.is_file()
+    };
+    if !target_is_file {
+        return Err(unreadable);
+    }
+    let file = open_regular_manifest(&path)?;
+    let mut bytes = Vec::new();
+    file.take(DRIVER_MAX_MANIFEST_BYTES.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|_| CandidateBuildError::ManifestUnreadable)?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > DRIVER_MAX_MANIFEST_BYTES {
+        return Err(unreadable);
+    }
+    let parsed: RevisionOnly =
+        serde_json::from_slice(&bytes).map_err(|_| CandidateBuildError::ManifestUnreadable)?;
+    Ok((parsed.revision.value() != 0).then_some(parsed.revision))
+}
+
+/// Opens the manifest without blocking and re-checks the opened handle.
+///
+/// On Unix the open uses `O_NONBLOCK` so a path swapped for a FIFO after the
+/// caller's pre-check cannot block waiting for a writer; the handle is then
+/// rejected unless it is a regular file.
+fn open_regular_manifest(path: &std::path::Path) -> Result<std::fs::File, CandidateBuildError> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use rustix::fs::OFlags;
+        use std::os::unix::fs::OpenOptionsExt as _;
+
+        let flags = i32::try_from(OFlags::NONBLOCK.bits())
+            .map_err(|_| CandidateBuildError::ManifestUnreadable)?;
+        options.custom_flags(flags);
+    }
+    let file = options
+        .open(path)
+        .map_err(|_| CandidateBuildError::ManifestUnreadable)?;
+    if !file.metadata().is_ok_and(|meta| meta.is_file()) {
+        return Err(CandidateBuildError::ManifestUnreadable);
+    }
+    Ok(file)
+}
+
+/// Holds at most one in-flight blocking probe across driver ticks.
+///
+/// `spawn_blocking` work cannot be cancelled by a timeout, so a probe that
+/// outlives the deadline is retained and polled again rather than replaced.
+#[derive(Default)]
+struct ProbeSlot {
+    in_flight:
+        Option<tokio::task::JoinHandle<Result<Option<GenerationRevision>, CandidateBuildError>>>,
+}
+
+impl ProbeSlot {
+    /// Wait up to the activation deadline for the (possibly retained) probe.
+    async fn poll(
+        &mut self,
+        layout: &ReadServerLayout,
+    ) -> Result<Option<GenerationRevision>, CandidateBuildError> {
+        let handle = self.in_flight.get_or_insert_with(|| {
+            let probe_layout = layout.clone();
+            tokio::task::spawn_blocking(move || probe_published_revision(&probe_layout))
+        });
+        match tokio::time::timeout(layout.activation_deadline, &mut *handle).await {
+            Ok(joined) => {
+                self.in_flight = None;
+                joined.map_err(|_| CandidateBuildError::Io {
+                    op: "probe published revision",
+                    kind: std::io::ErrorKind::Other,
+                })?
+            }
+            Err(_) => Err(CandidateBuildError::Io {
+                op: "probe published revision",
+                kind: std::io::ErrorKind::TimedOut,
+            }),
+        }
+    }
+}
+
+/// Background activation driver; never awaited by startup.
+///
+/// Activates each newly published non-zero revision once, installing the gate
+/// late only when the generations root was absent at startup. Logs at `warn`
+/// once per distinct revision and error kind, without payloads. Exits on
+/// success or shutdown. A failed late install is retried on later ticks and
+/// logged once per distinct error kind.
+async fn drive_generation_activation(
+    state: SharedState,
+    layout: ReadServerLayout,
+    absent_at_startup: bool,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    let mut delay = DRIVER_BACKOFF_START;
+    let mut last_install_error: Option<std::mem::Discriminant<CandidateBuildError>> = None;
+    let mut last_attempted: Option<GenerationRevision> = None;
+    let mut last_logged: Option<(Option<GenerationRevision>, &'static str)> = None;
+    let mut probe = ProbeSlot::default();
+    loop {
+        tokio::select! {
+            _ = shutdown.changed() => return,
+            () = tokio::time::sleep(delay) => {}
+        }
+        if *shutdown.borrow() {
+            return;
+        }
+        delay = (delay * 2).min(DRIVER_BACKOFF_CAP);
+
+        let gate = if let Some(gate) = state.read_server_gate().await {
+            gate
+        } else {
+            if !absent_at_startup || std::fs::symlink_metadata(&layout.generations_root).is_err() {
+                continue;
+            }
+            if let Err(error) = install_generation_gate(&state, &layout).await {
+                let kind = std::mem::discriminant(&error);
+                if last_install_error != Some(kind) {
+                    warn!(%error, "read-server late generation gate install failed; will retry");
+                    last_install_error = Some(kind);
+                }
+                continue;
+            }
+            let Some(gate) = state.read_server_gate().await else {
+                return;
+            };
+            gate
+        };
+
+        let probed = tokio::select! {
+            _ = shutdown.changed() => return,
+            result = probe.poll(&layout) => result,
+        };
+        let revision = match probed {
+            Ok(Some(revision)) => revision,
+            Ok(None) => continue,
+            Err(error) => {
+                if last_logged != Some((None, "published-revision")) {
+                    warn!(%error, "read-server driver cannot read the published revision");
+                    last_logged = Some((None, "published-revision"));
+                }
+                continue;
+            }
+        };
+        if last_attempted == Some(revision) {
+            continue;
+        }
+        last_attempted = Some(revision);
+        match gate.run_initial_activation().await {
+            Ok(_) => return,
+            Err(error) => {
+                // The activation reads the manifest itself, so a publication
+                // between the probe and that read may mean the failure belongs
+                // to a later revision; leave it unattributed so the newer
+                // revision gets its own attempt and log entry.
+                let rechecked = tokio::select! {
+                    _ = shutdown.changed() => return,
+                    result = probe.poll(&layout) => result,
+                };
+                if matches!(rechecked, Ok(Some(current)) if current != revision) {
+                    continue;
+                }
+                let kind = match classify(&error) {
+                    RejectionClass::Permanent => "permanent",
+                    RejectionClass::Transient => "transient",
+                };
+                if last_logged != Some((Some(revision), kind)) {
+                    warn!(
+                        revision = revision.value(),
+                        kind, "read-server generation activation failed"
+                    );
+                    last_logged = Some((Some(revision), kind));
+                }
+            }
+        }
+    }
 }
 
 /// Return `true` when the authoritative daemon mode permits watcher registration.
@@ -613,6 +873,28 @@ mod tests {
     use crate::config::StaleStrategy;
     use crate::models::config::DaemonMode;
     use crate::server::state::{RequestOutcome, WorkMask};
+
+    #[cfg(unix)]
+    #[test]
+    fn manifest_open_rejects_fifo_without_blocking() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("active.json");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .expect("mkfifo spawn");
+        assert!(status.success());
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let probe_path = path.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(open_regular_manifest(&probe_path).is_err());
+        });
+        let rejected = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("open must not block on a FIFO");
+        assert!(rejected);
+    }
 
     fn coordinator_snapshot(
         workspace_id: &str,
