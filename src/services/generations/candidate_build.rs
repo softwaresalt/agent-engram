@@ -10,8 +10,8 @@ use std::time::{Duration, SystemTime};
 use thiserror::Error;
 
 use super::{
-    ExpectedIdentity, GenerationId, GenerationIdError, GenerationStore, IndexTargetKind,
-    ManifestFileDigest, PublishError, StoreError,
+    ExpectedIdentity, GenerationId, GenerationIdError, GenerationRevision, GenerationStore,
+    IndexTargetKind, ManifestFileDigest, PublishError, StoreError,
 };
 use crate::db::workspace::{canonicalize_workspace, resolve_git_branch, workspace_hash};
 use crate::errors::{EngramError, WorkspaceError};
@@ -367,6 +367,55 @@ pub fn seal_candidate_inventory(
         id: built.id,
         inventory: vec![entry],
     })
+}
+
+/// Open the generation store for `layout`, creating it only when `create`.
+///
+/// # Errors
+///
+/// Returns [`CandidateBuildError`] when the store cannot be opened.
+///
+/// # Panics
+///
+/// Always panics until `142.062-T` replaces this placeholder.
+pub fn open_generation_store(
+    _layout: &ReadServerLayout,
+    _create: bool,
+) -> Result<GenerationStore, CandidateBuildError> {
+    unimplemented!("Worker: 142.062-T open_generation_store placeholder")
+}
+
+/// Read the currently published revision (absent manifest is revision 0).
+///
+/// # Errors
+///
+/// Returns [`CandidateBuildError`] when the manifest cannot be read.
+///
+/// # Panics
+///
+/// Always panics until `142.062-T` replaces this placeholder.
+pub fn current_published_revision(
+    _store: &GenerationStore,
+) -> Result<GenerationRevision, CandidateBuildError> {
+    unimplemented!("Worker: 142.062-T current_published_revision placeholder")
+}
+
+/// Publish a sealed candidate as the next manifest revision.
+///
+/// # Errors
+///
+/// Returns [`CandidateBuildError`] when publication fails.
+///
+/// # Panics
+///
+/// Always panics until `142.062-T` replaces this placeholder.
+pub fn publish_sealed_candidate(
+    _layout: &ReadServerLayout,
+    _store: &GenerationStore,
+    _sealed: SealedCandidate,
+    _producer: &str,
+) -> Result<GenerationRevision, CandidateBuildError> {
+    unimplemented!("Worker: 142.062-T publish_sealed_candidate placeholder")
 }
 
 #[cfg(test)]
