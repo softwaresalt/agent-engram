@@ -14,6 +14,7 @@
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -47,7 +48,7 @@ fn write_config(root: &Path, mode: Option<&str>) {
     fs::create_dir_all(&engram_dir).expect("create .engram");
     let mut config = String::from("log_level = \"debug\"\n");
     if let Some(mode) = mode {
-        config.push_str(&format!("mode = \"{mode}\"\n"));
+        writeln!(config, "mode = \"{mode}\"").expect("write mode");
     }
     fs::write(engram_dir.join("config.toml"), config).expect("write config");
 }
