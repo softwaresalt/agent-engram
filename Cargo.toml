@@ -124,6 +124,7 @@ debug = false
 proptest = "1"
 tokio-test = "0.4"
 serial_test = "3"
+engram-indexer = { path = "crates/engram-indexer", default-features = false }
 
 # Rayon is pinned below 1.11 to work around graph_builder 0.4.1's
 # `.into_par_iter().copied()` breakage introduced in rayon 1.11.

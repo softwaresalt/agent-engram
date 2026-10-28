@@ -160,3 +160,7 @@ memory remains a separate backlog. Compaction status: `done`.
   no Ready daemon was available. Detection of leaked children or reader threads is by process inspection.
 * `closure_pr_number` and `closure_pr_merge_commit` are `null` in this record because it ships in the
   closure PR itself; they are recorded in the session summary.
+
+## 153-S
+
+Delivery: PR #437 (feature), commit b2f2d57f2ce713757f1f98e73f0255bdc67b9081 (merge commit, P-009).

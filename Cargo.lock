@@ -1046,6 +1046,7 @@ dependencies = [
  "clap",
  "cozo",
  "dirs 5.0.1",
+ "engram-indexer",
  "fastembed",
  "fd-lock",
  "git2",
