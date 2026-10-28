@@ -187,11 +187,11 @@ mod production_stages {
     use std::time::{Duration, Instant};
 
     use engram::daemon::ipc_server::ipc_endpoint;
-    use engram::shim::lifecycle::check_health;
     use engram::services::generations::candidate_build::{
         ReadServerLayout, current_published_revision, open_generation_store, read_server_layout,
     };
     use engram::services::generations::{GenerationActivator, GenerationRevision};
+    use engram::shim::lifecycle::check_health;
     use engram_indexer::preflight::{
         Build, Preflight, ProductionVerifier, StageKind, VerificationError, VerificationErrorKind,
         Verifier,
@@ -618,12 +618,9 @@ mod production_stages {
         publish_through_stages(&layout, REAL_GENERATION);
         let before = manifest_bytes(&layout);
         let _daemon = Daemon::spawn(&layout);
-        let mut verifier = ProductionVerifier::new(
-            layout.clone(),
-            engram_exe(),
-            Instant::now() + PROBE_BUDGET,
-        )
-        .expect("construct production verifier");
+        let mut verifier =
+            ProductionVerifier::new(layout.clone(), engram_exe(), Instant::now() + PROBE_BUDGET)
+                .expect("construct production verifier");
 
         run_probe_stages(&mut verifier, PROBE_BUDGET, REAL_GENERATION)
             .unwrap_or_else(|(stage, error)| panic!("{stage:?} must verify: {error}"));
@@ -637,12 +634,9 @@ mod production_stages {
         let (_dir, layout) = chain_fixture("managed");
         publish_through_stages(&layout, REAL_GENERATION);
         let _daemon = Daemon::spawn(&layout);
-        let mut verifier = ProductionVerifier::new(
-            layout.clone(),
-            engram_exe(),
-            Instant::now() + PROBE_BUDGET,
-        )
-        .expect("construct production verifier");
+        let mut verifier =
+            ProductionVerifier::new(layout.clone(), engram_exe(), Instant::now() + PROBE_BUDGET)
+                .expect("construct production verifier");
 
         let (stage, _error) = run_probe_stages(&mut verifier, SHORT_BUDGET, REAL_GENERATION)
             .expect_err("a managed-mode daemon must not verify");
@@ -657,12 +651,9 @@ mod production_stages {
         let (_dir, layout) = chain_fixture("read_server");
         publish_through_stages(&layout, "older-gen");
         let _daemon = Daemon::spawn(&layout);
-        let mut verifier = ProductionVerifier::new(
-            layout.clone(),
-            engram_exe(),
-            Instant::now() + PROBE_BUDGET,
-        )
-        .expect("construct production verifier");
+        let mut verifier =
+            ProductionVerifier::new(layout.clone(), engram_exe(), Instant::now() + PROBE_BUDGET)
+                .expect("construct production verifier");
 
         let (stage, _error) = run_probe_stages(&mut verifier, SHORT_BUDGET, "newer-gen")
             .expect_err("an older revision must not satisfy the expected generation");
