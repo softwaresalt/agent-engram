@@ -3,20 +3,11 @@
 //! Covers success, fail-closed failure at each of the seven stages (one
 //! table), and the single shared deadline / expected generation.
 
-use std::collections::BTreeMap;
-use std::fs;
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use engram::services::generations::candidate_build::{
-    ReadServerLayout, current_published_revision, open_generation_store, read_server_layout,
-};
-use engram::services::generations::{GenerationActivator, GenerationRevision};
 use engram_indexer::preflight::{
-    Build, Failure, Preflight, ProductionVerifier, StageKind, Succeeded, VerificationError,
-    VerificationErrorKind, Verifier,
+    Build, Failure, Preflight, StageKind, Succeeded, VerificationError, Verifier,
 };
-use tempfile::TempDir;
 
 const GENERATION: &str = "gen-0042";
 
@@ -186,308 +177,328 @@ fn expired_deadline_fails_first_stage_without_calling_verifier() {
     assert!(mock.calls.is_empty(), "verifier must not be called");
 }
 
-// ---------------------------------------------------------------------------
-// Plan unit F50b (142.079-T): ProductionVerifier Build, Seal and Publish stages.
-// ---------------------------------------------------------------------------
+/// Plan unit F50b stages need the real database backend (cozo).
+#[cfg(feature = "cozo-backend")]
+mod production_stages {
+    use std::collections::BTreeMap;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::Instant;
 
-const REAL_GENERATION: &str = "preflight-gen-1";
+    use engram::services::generations::candidate_build::{
+        ReadServerLayout, current_published_revision, open_generation_store, read_server_layout,
+    };
+    use engram::services::generations::{GenerationActivator, GenerationRevision};
+    use engram_indexer::preflight::{
+        ProductionVerifier, StageKind, VerificationErrorKind, Verifier,
+    };
+    use tempfile::TempDir;
 
-/// Spaced git fixture with a two-function `lib.rs`.
-fn real_fixture() -> (TempDir, ReadServerLayout) {
-    let dir = tempfile::Builder::new()
-        .prefix("preflight stages ")
-        .tempdir()
-        .expect("tempdir");
-    let root = dir.path().join("work space");
-    fs::create_dir_all(root.join(".git")).expect("create .git");
-    fs::write(root.join(".git").join("HEAD"), "ref: refs/heads/main\n").expect("write HEAD");
-    fs::create_dir_all(root.join("src")).expect("create src");
-    fs::write(
-        root.join("src").join("lib.rs"),
-        "pub fn alpha() -> u32 {\n    1\n}\n\npub fn beta() -> u32 {\n    2\n}\n",
-    )
-    .expect("write lib.rs");
-    let layout = read_server_layout(root.to_str().expect("utf8 path")).expect("layout");
-    (dir, layout)
-}
+    use super::far_deadline;
 
-fn production(layout: &ReadServerLayout, deadline: Instant) -> ProductionVerifier {
-    ProductionVerifier::new(layout.clone(), PathBuf::from("engram"), deadline)
-        .expect("construct production verifier")
-}
+    // ---------------------------------------------------------------------------
+    // Plan unit F50b (142.079-T): ProductionVerifier Build, Seal and Publish stages.
+    // ---------------------------------------------------------------------------
 
-fn candidate_db(layout: &ReadServerLayout, id: &str) -> PathBuf {
-    layout.generations_root.join(id).join("engram.db")
-}
+    const REAL_GENERATION: &str = "preflight-gen-1";
 
-fn manifest_bytes(layout: &ReadServerLayout) -> Vec<u8> {
-    let store = open_generation_store(layout, false).expect("open store");
-    fs::read(store.active_manifest_path()).expect("read manifest")
-}
-
-fn function_count(db: &cozo::DbInstance) -> i64 {
-    let rows = db
-        .run_script(
-            "?[count(id)] := *function_meta { id }",
-            BTreeMap::new(),
-            cozo::ScriptMutability::Immutable,
+    /// Spaced git fixture with a two-function `lib.rs`.
+    fn real_fixture() -> (TempDir, ReadServerLayout) {
+        let dir = tempfile::Builder::new()
+            .prefix("preflight stages ")
+            .tempdir()
+            .expect("tempdir");
+        let root = dir.path().join("work space");
+        fs::create_dir_all(root.join(".git")).expect("create .git");
+        fs::write(root.join(".git").join("HEAD"), "ref: refs/heads/main\n").expect("write HEAD");
+        fs::create_dir_all(root.join("src")).expect("create src");
+        fs::write(
+            root.join("src").join("lib.rs"),
+            "pub fn alpha() -> u32 {\n    1\n}\n\npub fn beta() -> u32 {\n    2\n}\n",
         )
-        .expect("count script");
-    rows.rows[0][0].get_int().expect("integer count")
-}
+        .expect("write lib.rs");
+        let layout = read_server_layout(root.to_str().expect("utf8 path")).expect("layout");
+        (dir, layout)
+    }
 
-fn serving_generation(layout: &ReadServerLayout) -> (String, i64) {
-    let store = open_generation_store(layout, false).expect("open store");
-    let activator = GenerationActivator::new(
-        store,
-        layout.runtime_root.clone(),
-        layout.expected_identity(),
-        layout.activation_deadline,
-    );
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime");
-    let context = runtime
-        .block_on(activator.activate_initial())
-        .expect("activate");
-    (
-        context.generation_id().as_str().to_owned(),
-        function_count(context.opened_generation().db()),
-    )
-}
+    fn production(layout: &ReadServerLayout, deadline: Instant) -> ProductionVerifier {
+        ProductionVerifier::new(layout.clone(), PathBuf::from("engram"), deadline)
+            .expect("construct production verifier")
+    }
 
-/// Publishes `id` through the stage verifier and returns its layout state.
-fn publish_through_stages(layout: &ReadServerLayout, id: &str) {
-    let mut verifier = production(layout, far_deadline());
-    for stage in [StageKind::Build, StageKind::Seal, StageKind::Publish] {
+    fn candidate_db(layout: &ReadServerLayout, id: &str) -> PathBuf {
+        layout.generations_root.join(id).join("engram.db")
+    }
+
+    fn manifest_bytes(layout: &ReadServerLayout) -> Vec<u8> {
+        let store = open_generation_store(layout, false).expect("open store");
+        fs::read(store.active_manifest_path()).expect("read manifest")
+    }
+
+    fn function_count(db: &cozo::DbInstance) -> i64 {
+        let rows = db
+            .run_script(
+                "?[count(id)] := *function_meta { id }",
+                BTreeMap::new(),
+                cozo::ScriptMutability::Immutable,
+            )
+            .expect("count script");
+        rows.rows[0][0].get_int().expect("integer count")
+    }
+
+    fn serving_generation(layout: &ReadServerLayout) -> (String, i64) {
+        let store = open_generation_store(layout, false).expect("open store");
+        let activator = GenerationActivator::new(
+            store,
+            layout.runtime_root.clone(),
+            layout.expected_identity(),
+            layout.activation_deadline,
+        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let context = runtime
+            .block_on(activator.activate_initial())
+            .expect("activate");
+        (
+            context.generation_id().as_str().to_owned(),
+            function_count(context.opened_generation().db()),
+        )
+    }
+
+    /// Publishes `id` through the stage verifier and returns its layout state.
+    fn publish_through_stages(layout: &ReadServerLayout, id: &str) {
+        let mut verifier = production(layout, far_deadline());
+        for stage in [StageKind::Build, StageKind::Seal, StageKind::Publish] {
+            verifier
+                .verify(stage, far_deadline(), id)
+                .unwrap_or_else(|e| panic!("{stage:?} must verify: {e}"));
+        }
+    }
+
+    #[test]
+    fn build_seal_publish_stages_succeed_in_order() {
+        let (_dir, layout) = real_fixture();
+        let mut verifier = production(&layout, far_deadline());
+
         verifier
-            .verify(stage, far_deadline(), id)
-            .unwrap_or_else(|e| panic!("{stage:?} must verify: {e}"));
+            .verify(StageKind::Build, far_deadline(), REAL_GENERATION)
+            .expect("build stage");
+        assert!(
+            candidate_db(&layout, REAL_GENERATION).is_file(),
+            "Build must construct the candidate database"
+        );
+        let store = open_generation_store(&layout, false).expect("open store");
+        assert!(
+            !store.active_manifest_path().exists(),
+            "Build must not publish"
+        );
+
+        verifier
+            .verify(StageKind::Seal, far_deadline(), REAL_GENERATION)
+            .expect("seal stage");
+        assert!(
+            !store.active_manifest_path().exists(),
+            "Seal must not publish"
+        );
+
+        verifier
+            .verify(StageKind::Publish, far_deadline(), REAL_GENERATION)
+            .expect("publish stage");
+        assert_eq!(
+            current_published_revision(&store).expect("revision"),
+            GenerationRevision::new(1)
+        );
+        assert_eq!(serving_generation(&layout), (REAL_GENERATION.to_owned(), 2));
     }
-}
 
-#[test]
-fn build_seal_publish_stages_succeed_in_order() {
-    let (_dir, layout) = real_fixture();
-    let mut verifier = production(&layout, far_deadline());
+    #[test]
+    fn stages_cannot_run_out_of_order() {
+        let (_dir, layout) = real_fixture();
+        let mut verifier = production(&layout, far_deadline());
 
-    verifier
-        .verify(StageKind::Build, far_deadline(), REAL_GENERATION)
-        .expect("build stage");
-    assert!(
-        candidate_db(&layout, REAL_GENERATION).is_file(),
-        "Build must construct the candidate database"
-    );
-    let store = open_generation_store(&layout, false).expect("open store");
-    assert!(
-        !store.active_manifest_path().exists(),
-        "Build must not publish"
-    );
+        for stage in [StageKind::Seal, StageKind::Publish] {
+            let err = verifier
+                .verify(stage, far_deadline(), REAL_GENERATION)
+                .expect_err("stage without its predecessor must fail closed");
+            assert_eq!(err.kind(), VerificationErrorKind::Failed);
+        }
+        if let Ok(store) = open_generation_store(&layout, false) {
+            assert!(
+                !store.active_manifest_path().exists(),
+                "nothing may be published"
+            );
+        }
+    }
 
-    verifier
-        .verify(StageKind::Seal, far_deadline(), REAL_GENERATION)
-        .expect("seal stage");
-    assert!(
-        !store.active_manifest_path().exists(),
-        "Seal must not publish"
-    );
+    #[test]
+    fn each_stage_fails_typed_on_expired_deadline() {
+        let (_dir, layout) = real_fixture();
+        let mut verifier = production(&layout, far_deadline());
+        let expired = Instant::now();
 
-    verifier
-        .verify(StageKind::Publish, far_deadline(), REAL_GENERATION)
-        .expect("publish stage");
-    assert_eq!(
-        current_published_revision(&store).expect("revision"),
-        GenerationRevision::new(1)
-    );
-    assert_eq!(serving_generation(&layout), (REAL_GENERATION.to_owned(), 2));
-}
-
-#[test]
-fn stages_cannot_run_out_of_order() {
-    let (_dir, layout) = real_fixture();
-    let mut verifier = production(&layout, far_deadline());
-
-    for stage in [StageKind::Seal, StageKind::Publish] {
         let err = verifier
-            .verify(stage, far_deadline(), REAL_GENERATION)
-            .expect_err("stage without its predecessor must fail closed");
-        assert_eq!(err.kind(), VerificationErrorKind::Failed);
-    }
-    if let Ok(store) = open_generation_store(&layout, false) {
+            .verify(StageKind::Build, expired, REAL_GENERATION)
+            .expect_err("expired build");
+        assert_eq!(err.kind(), VerificationErrorKind::DeadlineExpired);
         assert!(
-            !store.active_manifest_path().exists(),
-            "nothing may be published"
+            !candidate_db(&layout, REAL_GENERATION).exists(),
+            "expired Build must not construct a candidate"
         );
+
+        verifier
+            .verify(StageKind::Build, far_deadline(), REAL_GENERATION)
+            .expect("build");
+        let err = verifier
+            .verify(StageKind::Seal, expired, REAL_GENERATION)
+            .expect_err("expired seal");
+        assert_eq!(err.kind(), VerificationErrorKind::DeadlineExpired);
+
+        verifier
+            .verify(StageKind::Seal, far_deadline(), REAL_GENERATION)
+            .expect("seal");
+        let err = verifier
+            .verify(StageKind::Publish, expired, REAL_GENERATION)
+            .expect_err("expired publish");
+        assert_eq!(err.kind(), VerificationErrorKind::DeadlineExpired);
     }
-}
 
-#[test]
-fn each_stage_fails_typed_on_expired_deadline() {
-    let (_dir, layout) = real_fixture();
-    let mut verifier = production(&layout, far_deadline());
-    let expired = Instant::now();
+    #[test]
+    fn constructor_deadline_also_bounds_every_stage() {
+        let (_dir, layout) = real_fixture();
+        let mut verifier = production(&layout, Instant::now());
 
-    let err = verifier
-        .verify(StageKind::Build, expired, REAL_GENERATION)
-        .expect_err("expired build");
-    assert_eq!(err.kind(), VerificationErrorKind::DeadlineExpired);
-    assert!(
-        !candidate_db(&layout, REAL_GENERATION).exists(),
-        "expired Build must not construct a candidate"
-    );
-
-    verifier
-        .verify(StageKind::Build, far_deadline(), REAL_GENERATION)
-        .expect("build");
-    let err = verifier
-        .verify(StageKind::Seal, expired, REAL_GENERATION)
-        .expect_err("expired seal");
-    assert_eq!(err.kind(), VerificationErrorKind::DeadlineExpired);
-
-    verifier
-        .verify(StageKind::Seal, far_deadline(), REAL_GENERATION)
-        .expect("seal");
-    let err = verifier
-        .verify(StageKind::Publish, expired, REAL_GENERATION)
-        .expect_err("expired publish");
-    assert_eq!(err.kind(), VerificationErrorKind::DeadlineExpired);
-}
-
-#[test]
-fn constructor_deadline_also_bounds_every_stage() {
-    let (_dir, layout) = real_fixture();
-    let mut verifier = production(&layout, Instant::now());
-
-    let err = verifier
-        .verify(StageKind::Build, far_deadline(), REAL_GENERATION)
-        .expect_err("constructor deadline already expired");
-    assert_eq!(err.kind(), VerificationErrorKind::DeadlineExpired);
-}
-
-#[test]
-fn failed_build_leaves_prior_generation_serving() {
-    let (_dir, layout) = real_fixture();
-    publish_through_stages(&layout, "prior-gen");
-    let before = manifest_bytes(&layout);
-
-    // `runtime` is reserved, so Build must fail closed.
-    let mut verifier = production(&layout, far_deadline());
-    verifier
-        .verify(StageKind::Build, far_deadline(), "runtime")
-        .expect_err("reserved id must fail Build");
-
-    assert_eq!(manifest_bytes(&layout), before, "manifest untouched");
-    assert_eq!(serving_generation(&layout), ("prior-gen".to_owned(), 2));
-}
-
-#[test]
-fn failed_publish_leaves_prior_generation_serving() {
-    let (_dir, layout) = real_fixture();
-    publish_through_stages(&layout, "prior-gen");
-    let before = manifest_bytes(&layout);
-
-    let mut verifier = production(&layout, far_deadline());
-    verifier
-        .verify(StageKind::Build, far_deadline(), "next-gen")
-        .expect("build");
-    verifier
-        .verify(StageKind::Seal, far_deadline(), "next-gen")
-        .expect("seal");
-    let err = verifier
-        .verify(StageKind::Publish, Instant::now(), "next-gen")
-        .expect_err("publish past deadline");
-    assert_eq!(err.kind(), VerificationErrorKind::DeadlineExpired);
-
-    assert_eq!(manifest_bytes(&layout), before, "manifest untouched");
-    let store = open_generation_store(&layout, false).expect("open store");
-    assert_eq!(
-        current_published_revision(&store).expect("revision"),
-        GenerationRevision::new(1)
-    );
-    assert_eq!(serving_generation(&layout), ("prior-gen".to_owned(), 2));
-}
-
-#[test]
-fn production_verifier_refuses_to_run_inside_a_runtime() {
-    let (_dir, layout) = real_fixture();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .expect("runtime");
-
-    let outcome = runtime.block_on(async {
-        ProductionVerifier::new(layout.clone(), PathBuf::from("engram"), far_deadline())
-    });
-
-    let err = outcome.expect_err("must not nest inside another runtime");
-    assert!(err.reason().contains("another runtime"), "{err}");
-}
-
-#[test]
-fn stages_are_bound_to_the_one_expected_generation() {
-    let (_dir, layout) = real_fixture();
-    let mut verifier = production(&layout, far_deadline());
-    verifier
-        .verify(StageKind::Build, far_deadline(), REAL_GENERATION)
-        .expect("build");
-    verifier
-        .verify(StageKind::Seal, far_deadline(), "some-other-gen")
-        .expect_err("seal must not accept a different generation");
-
-    let (_dir2, layout2) = real_fixture();
-    let mut verifier = production(&layout2, far_deadline());
-    verifier
-        .verify(StageKind::Build, far_deadline(), REAL_GENERATION)
-        .expect("rebuild");
-    verifier
-        .verify(StageKind::Seal, far_deadline(), REAL_GENERATION)
-        .expect("seal");
-    verifier
-        .verify(StageKind::Publish, far_deadline(), "some-other-gen")
-        .expect_err("publish must not accept a different generation");
-    if let Ok(store) = open_generation_store(&layout2, false) {
-        assert!(
-            !store.active_manifest_path().exists(),
-            "a mismatched publish must not publish"
-        );
-    }
-}
-
-#[test]
-fn verify_inside_a_runtime_fails_typed_and_dropping_is_safe() {
-    let (_dir, layout) = real_fixture();
-    let mut verifier = production(&layout, far_deadline());
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .expect("runtime");
-
-    runtime.block_on(async {
         let err = verifier
             .verify(StageKind::Build, far_deadline(), REAL_GENERATION)
-            .expect_err("must not nest a runtime");
-        assert_eq!(err.kind(), VerificationErrorKind::Failed);
-        assert!(err.reason().contains("another runtime"), "{err}");
-        drop(verifier);
-    });
-    assert!(
-        !candidate_db(&layout, REAL_GENERATION).exists(),
-        "nothing may be built"
-    );
-}
+            .expect_err("constructor deadline already expired");
+        assert_eq!(err.kind(), VerificationErrorKind::DeadlineExpired);
+    }
 
-#[test]
-fn probe_stages_remain_unimplemented_and_fail_closed() {
-    let (_dir, layout) = real_fixture();
-    let mut verifier = production(&layout, far_deadline());
+    #[test]
+    fn failed_build_leaves_prior_generation_serving() {
+        let (_dir, layout) = real_fixture();
+        publish_through_stages(&layout, "prior-gen");
+        let before = manifest_bytes(&layout);
 
-    for stage in [
-        StageKind::DaemonVerified,
-        StageKind::HealthVerified,
-        StageKind::CliProbeVerified,
-        StageKind::McpProbeVerified,
-    ] {
+        // `runtime` is reserved, so Build must fail closed.
+        let mut verifier = production(&layout, far_deadline());
         verifier
-            .verify(stage, far_deadline(), REAL_GENERATION)
-            .expect_err("probe stages belong to 142.054-T");
+            .verify(StageKind::Build, far_deadline(), "runtime")
+            .expect_err("reserved id must fail Build");
+
+        assert_eq!(manifest_bytes(&layout), before, "manifest untouched");
+        assert_eq!(serving_generation(&layout), ("prior-gen".to_owned(), 2));
+    }
+
+    #[test]
+    fn failed_publish_leaves_prior_generation_serving() {
+        let (_dir, layout) = real_fixture();
+        publish_through_stages(&layout, "prior-gen");
+        let before = manifest_bytes(&layout);
+
+        let mut verifier = production(&layout, far_deadline());
+        verifier
+            .verify(StageKind::Build, far_deadline(), "next-gen")
+            .expect("build");
+        verifier
+            .verify(StageKind::Seal, far_deadline(), "next-gen")
+            .expect("seal");
+        let err = verifier
+            .verify(StageKind::Publish, Instant::now(), "next-gen")
+            .expect_err("publish past deadline");
+        assert_eq!(err.kind(), VerificationErrorKind::DeadlineExpired);
+
+        assert_eq!(manifest_bytes(&layout), before, "manifest untouched");
+        let store = open_generation_store(&layout, false).expect("open store");
+        assert_eq!(
+            current_published_revision(&store).expect("revision"),
+            GenerationRevision::new(1)
+        );
+        assert_eq!(serving_generation(&layout), ("prior-gen".to_owned(), 2));
+    }
+
+    #[test]
+    fn production_verifier_refuses_to_run_inside_a_runtime() {
+        let (_dir, layout) = real_fixture();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime");
+
+        let outcome = runtime.block_on(async {
+            ProductionVerifier::new(layout.clone(), PathBuf::from("engram"), far_deadline())
+        });
+
+        let err = outcome.expect_err("must not nest inside another runtime");
+        assert!(err.reason().contains("another runtime"), "{err}");
+    }
+
+    #[test]
+    fn stages_are_bound_to_the_one_expected_generation() {
+        let (_dir, layout) = real_fixture();
+        let mut verifier = production(&layout, far_deadline());
+        verifier
+            .verify(StageKind::Build, far_deadline(), REAL_GENERATION)
+            .expect("build");
+        verifier
+            .verify(StageKind::Seal, far_deadline(), "some-other-gen")
+            .expect_err("seal must not accept a different generation");
+
+        let (_dir2, layout2) = real_fixture();
+        let mut verifier = production(&layout2, far_deadline());
+        verifier
+            .verify(StageKind::Build, far_deadline(), REAL_GENERATION)
+            .expect("rebuild");
+        verifier
+            .verify(StageKind::Seal, far_deadline(), REAL_GENERATION)
+            .expect("seal");
+        verifier
+            .verify(StageKind::Publish, far_deadline(), "some-other-gen")
+            .expect_err("publish must not accept a different generation");
+        if let Ok(store) = open_generation_store(&layout2, false) {
+            assert!(
+                !store.active_manifest_path().exists(),
+                "a mismatched publish must not publish"
+            );
+        }
+    }
+
+    #[test]
+    fn verify_inside_a_runtime_fails_typed_and_dropping_is_safe() {
+        let (_dir, layout) = real_fixture();
+        let mut verifier = production(&layout, far_deadline());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime");
+
+        runtime.block_on(async {
+            let err = verifier
+                .verify(StageKind::Build, far_deadline(), REAL_GENERATION)
+                .expect_err("must not nest a runtime");
+            assert_eq!(err.kind(), VerificationErrorKind::Failed);
+            assert!(err.reason().contains("another runtime"), "{err}");
+            drop(verifier);
+        });
+        assert!(
+            !candidate_db(&layout, REAL_GENERATION).exists(),
+            "nothing may be built"
+        );
+    }
+
+    #[test]
+    fn probe_stages_remain_unimplemented_and_fail_closed() {
+        let (_dir, layout) = real_fixture();
+        let mut verifier = production(&layout, far_deadline());
+
+        for stage in [
+            StageKind::DaemonVerified,
+            StageKind::HealthVerified,
+            StageKind::CliProbeVerified,
+            StageKind::McpProbeVerified,
+        ] {
+            verifier
+                .verify(stage, far_deadline(), REAL_GENERATION)
+                .expect_err("probe stages belong to 142.054-T");
+        }
     }
 }
