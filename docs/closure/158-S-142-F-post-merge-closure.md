@@ -21,7 +21,7 @@ runtime_verification_report: null
 follow_up_stash: []
 blocking_stash: null
 shipment_record_status: "archived (archived_status: shipped) via backlogit shipment reconcile-shipped"
-pre_reconcile: ".backlogit/reconcile/158-S-pre-20261028T1840Z.md"
+pre_reconcile: ".backlogit/reconcile/158-S-pre-20261028T1838Z.md"
 post_reconcile: ".backlogit/reconcile/158-S-post-20261028T1850Z.md"
 ---
 
@@ -49,13 +49,13 @@ line. PR #447 merged with a merge commit (P-009) at head `867c9d9a`, merge SHA `
 * Local multi-persona review (Correctness, Rust, Security, Architecture in parallel): READY_WITH_FOLLOWUPS, no P0/P1.
   In-scope P2/P3 items fixed in `372ea2ce` (`&OsStr` flag check, verifier-never-invoked assertion, `u64::MAX` through
   `main_with`, extra `--engram` cases, cap boundary test, rustdoc contract). Accepted advisories: post-hoc `cause=deadline`
-  heuristic and `MAX_TIMEOUT_MS` cap are documented. No out-of-scope findings, so no P-021 C2 capture and no stash entry.
+  heuristic and `MAX_TIMEOUT_MS` cap are documented. No new out-of-scope findings, so no P-021 C2 capture and no new stash entry. Existing stash `47DAEF9D` (deferred scope expansion from PR #410: portable timeout bound for the `u64::MAX` case) is addressed in code by the `MAX_TIMEOUT_MS` cap; any acceptance-criteria or plan change and the stash disposition remain Stage-owned, so it is left open for Stage triage (cited, not duplicated).
 * Copilot review `5687751845` ("no open issues"): no threads and no review-body findings.
   `autoharness gate copilot-review 447` returned `SATISFIED: PASS` before and at merge.
 
 ## Safe-close and archive evidence
 
-* Pre-reconcile report `.backlogit/reconcile/158-S-pre-20261028T1840Z.md` was written while
+* Pre-reconcile report `.backlogit/reconcile/158-S-pre-20261028T1838Z.md` (generated 18:38:43Z) was written while
   `.backlogit/queue/158-S.md` was still `active` in the queue.
 * `autoharness shipment cascade-close --classify-only --shipment 158-S --feature 142-F --sha
   0071c2eba5655a087ba27467d34432879dc5599c --json` exited 3: `SAFE_CLOSE`, no mutation, engine verdict `UNVERIFIED`.
@@ -110,4 +110,4 @@ consolidated into `docs/memory/compacted/2026-10-28-158-s-compacted.md` and the 
 
 ## Follow-ups
 
-* None captured. Stage proceeds with `142.071-T` (NEW-3, Slot-12).
+* No new stash entries. Stage should triage existing stash `47DAEF9D` (the cap is now implemented). Stage proceeds with `142.071-T` (NEW-3, Slot-12).
