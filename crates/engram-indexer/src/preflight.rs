@@ -9,7 +9,10 @@
 
 use std::fmt;
 use std::marker::PhantomData;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
+
+use engram::services::generations::candidate_build::ReadServerLayout;
 
 /// The preflight stage currently being verified.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -154,9 +157,20 @@ pub trait Verifier {
     ) -> Result<(), VerificationError>;
 }
 
+/// Classifies why a [`Verifier`] could not verify a stage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum VerificationErrorKind {
+    /// The stage failed for a reason other than the deadline.
+    Failed,
+    /// The shared deadline expired before or during the stage.
+    DeadlineExpired,
+}
+
 /// Error returned by a [`Verifier`] when a stage cannot be verified.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerificationError {
+    kind: VerificationErrorKind,
     reason: String,
 }
 
@@ -165,8 +179,24 @@ impl VerificationError {
     #[must_use]
     pub fn new(reason: impl Into<String>) -> Self {
         Self {
+            kind: VerificationErrorKind::Failed,
             reason: reason.into(),
         }
+    }
+
+    /// Creates a typed deadline-expiry error carrying a diagnostic reason.
+    #[must_use]
+    pub fn deadline_expired(reason: impl Into<String>) -> Self {
+        Self {
+            kind: VerificationErrorKind::DeadlineExpired,
+            reason: reason.into(),
+        }
+    }
+
+    /// Returns why verification failed.
+    #[must_use]
+    pub const fn kind(&self) -> VerificationErrorKind {
+        self.kind
     }
 
     /// Returns the diagnostic reason.
@@ -245,5 +275,63 @@ impl Preflight<Succeeded> {
     #[must_use]
     pub fn expected_generation(&self) -> &str {
         &self.expected_generation
+    }
+}
+
+/// Production [`Verifier`] for the Build, Seal and Publish stages (plan unit F50b).
+///
+/// STRUCTURAL STUB (harness step): every stage fails closed until implemented.
+#[derive(Debug)]
+pub struct ProductionVerifier {
+    layout: ReadServerLayout,
+    engram_executable: PathBuf,
+    deadline: Instant,
+}
+
+impl ProductionVerifier {
+    /// Creates a verifier from the single layout, executable and deadline.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VerificationError`] when the verifier cannot be constructed.
+    pub fn new(
+        layout: ReadServerLayout,
+        engram_executable: PathBuf,
+        deadline: Instant,
+    ) -> Result<Self, VerificationError> {
+        Ok(Self {
+            layout,
+            engram_executable,
+            deadline,
+        })
+    }
+
+    /// Returns the engram executable the probe stages will use.
+    #[must_use]
+    pub fn engram_executable(&self) -> &Path {
+        &self.engram_executable
+    }
+
+    /// Returns the layout this verifier was built from.
+    #[must_use]
+    pub const fn layout(&self) -> &ReadServerLayout {
+        &self.layout
+    }
+
+    /// Returns the shared deadline.
+    #[must_use]
+    pub const fn deadline(&self) -> Instant {
+        self.deadline
+    }
+}
+
+impl Verifier for ProductionVerifier {
+    fn verify(
+        &mut self,
+        stage: StageKind,
+        _deadline: Instant,
+        _expected_generation: &str,
+    ) -> Result<(), VerificationError> {
+        Err(VerificationError::new(format!("{stage:?} not implemented")))
     }
 }
