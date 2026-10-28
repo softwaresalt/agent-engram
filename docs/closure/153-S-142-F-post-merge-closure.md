@@ -150,7 +150,7 @@ memory remains a separate backlog. Compaction status: `done`.
 * Stash `6B3DD712` (existing): re-run the `engram` CLI runtime probes once a daemon is Ready.
 * Stash `CF6CF510` (new, provisional low): scrub `ENGRAM_*` environment in both probe spawns and share
   the reader and fixture-compile helpers.
-* Process note: acklogit shipment claim refuses slots whose predecessor is archived with
+* Process note: `backlogit shipment claim` refuses slots whose predecessor is archived with
   `archived_status: done` (it requires `shipped`). 153-S was claimed with a manual status edit under the
   operator-directed manual safe-close ordering; that is a recorded deviation, not a pattern to repeat. A later
   slot that hits the same refusal must halt and route to the operator or Stage to remediate the predecessor
