@@ -12,7 +12,7 @@ use std::marker::PhantomData;
 use std::time::Instant;
 
 /// The preflight stage currently being verified.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StageKind {
     /// The index build completed.
     Build,
@@ -31,7 +31,7 @@ pub enum StageKind {
 }
 
 /// The stage-specific failure returned by preflight verification.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Failure {
     /// Build verification failed.
     Build,
@@ -48,6 +48,23 @@ pub enum Failure {
     /// MCP probe verification failed.
     McpProbeVerified,
 }
+
+impl fmt::Display for Failure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let stage = match self {
+            Self::Build => "build",
+            Self::Seal => "seal",
+            Self::Publish => "publish",
+            Self::DaemonVerified => "daemon verification",
+            Self::HealthVerified => "health verification",
+            Self::CliProbeVerified => "CLI probe verification",
+            Self::McpProbeVerified => "MCP probe verification",
+        };
+        write!(formatter, "preflight failed at stage: {stage}")
+    }
+}
+
+impl std::error::Error for Failure {}
 
 /// Type-state marker for the build stage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,6 +136,10 @@ stage!(CliProbeVerified, CliProbeVerified, McpProbeVerified);
 stage!(McpProbeVerified, McpProbeVerified, Succeeded);
 
 /// Performs the underlying verification for a preflight stage.
+///
+/// Implementations must enforce the deadline themselves (for example via
+/// timeouts on I/O). The gate also post-checks the deadline after each call
+/// and fails closed if it was exceeded, but it cannot interrupt a verifier.
 pub trait Verifier {
     /// Verifies a stage using the shared deadline and expected generation.
     ///
@@ -165,6 +186,7 @@ impl std::error::Error for VerificationError {}
 
 /// Preflight state carrying the shared deadline and expected generation.
 #[derive(Debug)]
+#[must_use = "preflight state must be advanced or inspected"]
 pub struct Preflight<S> {
     deadline: Instant,
     expected_generation: String,
@@ -173,7 +195,6 @@ pub struct Preflight<S> {
 
 impl Preflight<Build> {
     /// Starts preflight with its single deadline and expected generation.
-    #[must_use]
     pub fn start(deadline: Instant, expected_generation: String) -> Self {
         Self {
             deadline,
@@ -185,6 +206,9 @@ impl Preflight<Build> {
 
 impl<S: Stage> Preflight<S> {
     /// Verifies this stage and advances to its type-defined successor.
+    ///
+    /// A stage that completes after the deadline is reported as failed
+    /// (fail-closed) even if its side effects already completed.
     ///
     /// # Errors
     ///

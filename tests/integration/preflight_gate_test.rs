@@ -50,7 +50,7 @@ fn far_deadline() -> Instant {
 }
 
 /// Runs all seven stages in order, returning the typed result.
-fn run(deadline: Instant, verifier: &mut MockVerifier) -> Result<Preflight<Succeeded>, Failure> {
+fn run<V: Verifier>(deadline: Instant, verifier: &mut V) -> Result<Preflight<Succeeded>, Failure> {
     Preflight::<Build>::start(deadline, GENERATION.to_owned())
         .verify(verifier)?
         .verify(verifier)?
@@ -101,13 +101,69 @@ fn one_deadline_and_one_generation_span_every_stage() {
     let deadline = far_deadline();
     let mut mock = MockVerifier::default();
 
-    run(deadline, &mut mock).expect("all stages verify");
+    let _done = run(deadline, &mut mock).expect("all stages verify");
 
     assert_eq!(mock.calls.len(), 7);
     for (stage, seen_deadline, seen_generation) in &mock.calls {
         assert_eq!(*seen_deadline, deadline, "deadline at {stage:?}");
         assert_eq!(seen_generation, GENERATION, "generation at {stage:?}");
     }
+}
+
+/// Succeeds at every stage but sleeps past the deadline during one stage.
+struct SlowVerifier {
+    slow_at: StageKind,
+    sleep: Duration,
+    calls: Vec<StageKind>,
+}
+
+impl Verifier for SlowVerifier {
+    fn verify(
+        &mut self,
+        stage: StageKind,
+        _deadline: Instant,
+        _expected_generation: &str,
+    ) -> Result<(), VerificationError> {
+        self.calls.push(stage);
+        if stage == self.slow_at {
+            std::thread::sleep(self.sleep);
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn overrun_during_each_stage_fails_that_stage_without_restarting_deadline() {
+    for (index, (stage, failure)) in ALL_STAGES.iter().enumerate() {
+        let mut slow = SlowVerifier {
+            slow_at: *stage,
+            sleep: Duration::from_millis(300),
+            calls: Vec::new(),
+        };
+        let deadline = Instant::now() + Duration::from_millis(200);
+
+        let outcome = run(deadline, &mut slow);
+
+        assert_eq!(
+            outcome.err(),
+            Some(*failure),
+            "overrun in {stage:?} must fail that stage"
+        );
+        let expected: Vec<StageKind> = ALL_STAGES[..=index].iter().map(|entry| entry.0).collect();
+        assert_eq!(
+            slow.calls, expected,
+            "no stage after {stage:?} may be called"
+        );
+    }
+}
+
+#[test]
+fn failure_displays_stage_and_is_an_error() {
+    for (_, failure) in &ALL_STAGES {
+        let error: &dyn std::error::Error = failure;
+        assert!(error.to_string().starts_with("preflight failed at stage: "));
+    }
+    assert!(Failure::Seal.to_string().contains("seal"));
 }
 
 #[test]
