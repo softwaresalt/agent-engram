@@ -13,6 +13,10 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use engram::models::config::CodeGraphConfig;
+use engram::preflight_probe::{
+    HEALTH_READ, PREFLIGHT_READ, ProbeError, ProbeReport, probe_cli_read, probe_mcp_read,
+    wait_for_generation,
+};
 use engram::services::generations::candidate_build::{
     BuiltCandidate, CandidateBuildError, ReadServerLayout, SealedCandidate,
     build_candidate_generation, open_generation_store, publish_sealed_candidate,
@@ -285,7 +289,7 @@ impl Preflight<Succeeded> {
     }
 }
 
-/// Production [`Verifier`] for the Build, Seal and Publish stages (plan unit F50b).
+/// Production [`Verifier`] for all seven stages (plan units F50b and F50c).
 ///
 /// Inputs are the single layout produced by the factory's one
 /// `read_server_layout` call, the engram executable and the shared deadline;
@@ -294,7 +298,11 @@ impl Preflight<Succeeded> {
 /// is fail-closed: any failure leaves the previously published generation
 /// untouched because only the final Publish stage mutates the manifest.
 ///
-/// The four probe stages belong to a later slot and fail closed here.
+/// The four probe stages (plan unit F50c) are observational only: they
+/// wait for the daemon's request-entry reconciliation and never call a
+/// generation-control endpoint. The probe stages block the calling thread
+/// (child-process I/O) until the shared deadline, so run the verifier on a
+/// synchronous thread. The instance holds single-attempt state.
 pub struct ProductionVerifier {
     layout: ReadServerLayout,
     engram_executable: PathBuf,
@@ -303,6 +311,8 @@ pub struct ProductionVerifier {
     store: Option<GenerationStore>,
     built: Option<BuiltCandidate>,
     sealed: Option<SealedCandidate>,
+    /// Data fingerprint of the CLI probe, compared by the MCP probe.
+    cli_fingerprint: Option<String>,
 }
 
 impl Drop for ProductionVerifier {
@@ -357,6 +367,7 @@ impl ProductionVerifier {
             store: None,
             built: None,
             sealed: None,
+            cli_fingerprint: None,
         })
     }
 
@@ -419,6 +430,7 @@ impl ProductionVerifier {
         self.store = None;
         self.built = None;
         self.sealed = None;
+        self.cli_fingerprint = None;
         let id = GenerationId::new(expected_generation).map_err(|error| {
             VerificationError::new(format!("Build rejected expected generation: {error}"))
         })?;
@@ -498,12 +510,141 @@ impl Verifier for ProductionVerifier {
             StageKind::Build => self.build_stage(deadline, expected_generation),
             StageKind::Seal => self.seal_stage(expected_generation),
             StageKind::Publish => self.publish_stage(expected_generation),
-            StageKind::DaemonVerified
-            | StageKind::HealthVerified
-            | StageKind::CliProbeVerified
-            | StageKind::McpProbeVerified => Err(VerificationError::new(format!(
-                "{stage:?} is not implemented in this slice"
-            ))),
+            StageKind::DaemonVerified => self.daemon_stage(deadline, expected_generation),
+            StageKind::HealthVerified => self.health_stage(deadline),
+            StageKind::CliProbeVerified => self.cli_probe_stage(deadline, expected_generation),
+            StageKind::McpProbeVerified => self.mcp_probe_stage(deadline, expected_generation),
+        }
+    }
+}
+
+/// Maps a probe-facade failure; its messages are static text only.
+fn probe_failure(stage: StageKind, error: ProbeError) -> VerificationError {
+    match error {
+        ProbeError::Deadline => {
+            VerificationError::deadline_expired(format!("deadline expired during {stage:?}"))
+        }
+        other => VerificationError::new(format!("{stage:?} failed: {other}")),
+    }
+}
+
+/// Fails closed unless the report is accepted and carries the expected
+/// generation provenance.
+fn require_expected_generation(
+    stage: StageKind,
+    report: &ProbeReport,
+    expected_generation: &str,
+) -> Result<(), VerificationError> {
+    if !report.accepted {
+        return Err(VerificationError::new(format!(
+            "{stage:?} read was refused"
+        )));
+    }
+    if report.generation_id.as_deref() != Some(expected_generation) {
+        return Err(VerificationError::new(format!(
+            "{stage:?} observed a generation other than the expected one"
+        )));
+    }
+    Ok(())
+}
+
+/// Probe stages. Verification is observational only (R48): the daemon
+/// reconciles the durable manifest at request entry, so no generation-control
+/// or reload endpoint is ever invoked.
+impl ProductionVerifier {
+    /// `DaemonVerified`: waits until the daemon serves the EXPECTED generation
+    /// (not merely any generation).
+    fn daemon_stage(
+        &mut self,
+        deadline: Instant,
+        expected_generation: &str,
+    ) -> Result<(), VerificationError> {
+        // A fresh attempt discards any fingerprint from an earlier one.
+        self.cli_fingerprint = None;
+        wait_for_generation(
+            &self.engram_executable,
+            Path::new(&self.layout.workspace),
+            &PREFLIGHT_READ,
+            expected_generation,
+            deadline,
+        )
+        .map(|_| ())
+        .map_err(|error| match error {
+            // Never observing the expected generation before the deadline is
+            // a deadline expiry for this stage, even when an older
+            // generation was served meanwhile.
+            ProbeError::Mismatch => VerificationError::deadline_expired(
+                "DaemonVerified never observed the expected generation before the deadline",
+            ),
+            other => probe_failure(StageKind::DaemonVerified, other),
+        })
+    }
+
+    /// `HealthVerified`: the CLI health read is accepted.
+    fn health_stage(&self, deadline: Instant) -> Result<(), VerificationError> {
+        let report = probe_cli_read(
+            &self.engram_executable,
+            Path::new(&self.layout.workspace),
+            &HEALTH_READ,
+            deadline,
+        )
+        .map_err(|error| probe_failure(StageKind::HealthVerified, error))?;
+        if report.accepted {
+            Ok(())
+        } else {
+            Err(VerificationError::new("HealthVerified read was refused"))
+        }
+    }
+
+    /// `CliProbeVerified`: a representative CLI read carries the expected
+    /// generation; its data fingerprint is kept for the MCP comparison.
+    fn cli_probe_stage(
+        &mut self,
+        deadline: Instant,
+        expected_generation: &str,
+    ) -> Result<(), VerificationError> {
+        self.cli_fingerprint = None;
+        let report = probe_cli_read(
+            &self.engram_executable,
+            Path::new(&self.layout.workspace),
+            &PREFLIGHT_READ,
+            deadline,
+        )
+        .map_err(|error| probe_failure(StageKind::CliProbeVerified, error))?;
+        require_expected_generation(StageKind::CliProbeVerified, &report, expected_generation)?;
+        // Fail closed: without a fingerprint the MCP read cannot be compared.
+        let fingerprint = report.data_fingerprint.ok_or_else(|| {
+            VerificationError::new("CliProbeVerified read carried no data fingerprint")
+        })?;
+        self.cli_fingerprint = Some(fingerprint);
+        Ok(())
+    }
+
+    /// `McpProbeVerified`: the stdio MCP read carries the expected generation
+    /// and the same data fingerprint as the CLI read.
+    fn mcp_probe_stage(
+        &self,
+        deadline: Instant,
+        expected_generation: &str,
+    ) -> Result<(), VerificationError> {
+        let cli_fingerprint = self
+            .cli_fingerprint
+            .as_deref()
+            .ok_or_else(|| out_of_order(StageKind::McpProbeVerified, "a CLI fingerprint"))?;
+        let report = probe_mcp_read(
+            &self.engram_executable,
+            Path::new(&self.layout.workspace),
+            &PREFLIGHT_READ,
+            deadline,
+        )
+        .map_err(|error| probe_failure(StageKind::McpProbeVerified, error))?;
+        require_expected_generation(StageKind::McpProbeVerified, &report, expected_generation)?;
+        if report.data_fingerprint.as_deref() == Some(cli_fingerprint) {
+            Ok(())
+        } else {
+            Err(VerificationError::new(
+                "McpProbeVerified fingerprint differs from the CLI fingerprint",
+            ))
         }
     }
 }

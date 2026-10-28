@@ -182,15 +182,19 @@ fn expired_deadline_fails_first_stage_without_calling_verifier() {
 mod production_stages {
     use std::collections::BTreeMap;
     use std::fs;
-    use std::path::PathBuf;
-    use std::time::Instant;
+    use std::path::{Path, PathBuf};
+    use std::process::{Child, Command, Stdio};
+    use std::time::{Duration, Instant};
 
+    use engram::daemon::ipc_server::ipc_endpoint;
     use engram::services::generations::candidate_build::{
         ReadServerLayout, current_published_revision, open_generation_store, read_server_layout,
     };
     use engram::services::generations::{GenerationActivator, GenerationRevision};
+    use engram::shim::lifecycle::check_health;
     use engram_indexer::preflight::{
-        ProductionVerifier, StageKind, VerificationErrorKind, Verifier,
+        Build, Preflight, ProductionVerifier, StageKind, VerificationError, VerificationErrorKind,
+        Verifier,
     };
     use tempfile::TempDir;
 
@@ -485,20 +489,292 @@ mod production_stages {
         );
     }
 
+    // -----------------------------------------------------------------------
+    // Plan unit F50c (142.054-T): real-chain probe stages. These drive the
+    // production verifier with the real engram executable against a real
+    // spawned read-server daemon.
+    // -----------------------------------------------------------------------
+
+    const READY_TIMEOUT: Duration = Duration::from_secs(120);
+    const PROBE_BUDGET: Duration = Duration::from_secs(120);
+    const SHORT_BUDGET: Duration = Duration::from_secs(8);
+    const PROBE_STAGES: [StageKind; 4] = [
+        StageKind::DaemonVerified,
+        StageKind::HealthVerified,
+        StageKind::CliProbeVerified,
+        StageKind::McpProbeVerified,
+    ];
+
+    fn engram_exe() -> PathBuf {
+        PathBuf::from(env!("CARGO_BIN_EXE_engram"))
+    }
+
+    /// Spaced git fixture whose `.engram/config.toml` carries `mode`.
+    fn chain_fixture(mode: &str) -> (TempDir, ReadServerLayout) {
+        let (dir, layout) = real_fixture();
+        let engram_dir = layout.workspace.join(".engram");
+        fs::create_dir_all(&engram_dir).expect("create .engram");
+        fs::write(
+            engram_dir.join("config.toml"),
+            format!("log_level = \"debug\"\nmode = \"{mode}\"\n"),
+        )
+        .expect("write config");
+        (dir, layout)
+    }
+
+    /// A spawned daemon, killed (exact child) on drop.
+    struct Daemon(Child);
+
+    impl Daemon {
+        fn spawn(layout: &ReadServerLayout) -> Self {
+            let child = Command::new(engram_exe())
+                .args(["daemon", "--workspace"])
+                .arg(&layout.workspace)
+                .env_remove("ENGRAM_DATA_DIR")
+                .env_remove("ENGRAM_WORKSPACE")
+                .env_remove("ENGRAM_DIRECT")
+                .env("ENGRAM_IDLE_TIMEOUT_MS", "600000")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn engram daemon");
+            let mut daemon = Self(child);
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime");
+            let endpoint = ipc_endpoint(&layout.workspace).expect("ipc endpoint");
+            runtime.block_on(async {
+                let end = tokio::time::Instant::now() + READY_TIMEOUT;
+                while !check_health(&endpoint).await {
+                    if let Some(status) = daemon.0.try_wait().expect("poll daemon") {
+                        panic!("daemon exited before becoming ready: {status}");
+                    }
+                    assert!(
+                        tokio::time::Instant::now() < end,
+                        "daemon never became ready"
+                    );
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+            });
+            daemon
+        }
+    }
+
+    impl Drop for Daemon {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    /// Runs the four probe stages in order, stopping at the first failure.
+    fn run_probe_stages(
+        verifier: &mut ProductionVerifier,
+        budget: Duration,
+        generation: &str,
+    ) -> Result<(), (StageKind, VerificationError)> {
+        let deadline = Instant::now() + budget;
+        for stage in PROBE_STAGES {
+            verifier
+                .verify(stage, deadline, generation)
+                .map_err(|error| (stage, error))?;
+        }
+        Ok(())
+    }
+
+    /// [054-T AC8; 054.003-ST V1, V3]: the full machine over a spaced
+    /// read-server fixture reaches `Succeeded` with the real executable.
     #[test]
-    fn probe_stages_remain_unimplemented_and_fail_closed() {
-        let (_dir, layout) = real_fixture();
+    fn real_chain_read_server_fixture_reaches_succeeded() {
+        let (_dir, layout) = chain_fixture("read_server");
+        let _daemon = Daemon::spawn(&layout);
+        let deadline = Instant::now() + PROBE_BUDGET;
+        let mut verifier = ProductionVerifier::new(layout.clone(), engram_exe(), deadline)
+            .expect("construct production verifier");
+
+        let done = Preflight::<Build>::start(deadline, REAL_GENERATION.to_owned())
+            .verify(&mut verifier)
+            .and_then(|state| state.verify(&mut verifier))
+            .and_then(|state| state.verify(&mut verifier))
+            .and_then(|state| state.verify(&mut verifier))
+            .and_then(|state| state.verify(&mut verifier))
+            .and_then(|state| state.verify(&mut verifier))
+            .and_then(|state| state.verify(&mut verifier))
+            .expect("all seven stages verify against the real chain");
+
+        assert_eq!(done.expected_generation(), REAL_GENERATION);
+        assert_eq!(done.deadline(), deadline);
+        let store = open_generation_store(&layout, false).expect("open store");
+        assert_eq!(
+            current_published_revision(&store).expect("revision"),
+            GenerationRevision::new(1),
+            "verification is observational: it must not publish again"
+        );
+    }
+
+    /// [054.003-ST AC5; R48]: the probe stages never mutate the manifest.
+    #[test]
+    fn probe_stages_do_not_touch_the_manifest() {
+        let (_dir, layout) = chain_fixture("read_server");
+        publish_through_stages(&layout, REAL_GENERATION);
+        let before = manifest_bytes(&layout);
+        let _daemon = Daemon::spawn(&layout);
+        let mut verifier =
+            ProductionVerifier::new(layout.clone(), engram_exe(), Instant::now() + PROBE_BUDGET)
+                .expect("construct production verifier");
+
+        run_probe_stages(&mut verifier, PROBE_BUDGET, REAL_GENERATION)
+            .unwrap_or_else(|(stage, error)| panic!("{stage:?} must verify: {error}"));
+
+        assert_eq!(manifest_bytes(&layout), before, "manifest untouched");
+    }
+
+    /// [054-T AC8]: a managed-mode fixture fails at `DaemonVerified`.
+    #[test]
+    fn real_chain_managed_mode_fails_at_daemon_verified() {
+        let (_dir, layout) = chain_fixture("managed");
+        publish_through_stages(&layout, REAL_GENERATION);
+        let _daemon = Daemon::spawn(&layout);
+        let mut verifier =
+            ProductionVerifier::new(layout.clone(), engram_exe(), Instant::now() + PROBE_BUDGET)
+                .expect("construct production verifier");
+
+        let (stage, error) = run_probe_stages(&mut verifier, SHORT_BUDGET, REAL_GENERATION)
+            .expect_err("a managed-mode daemon must not verify");
+
+        assert_eq!(stage, StageKind::DaemonVerified);
+        assert_eq!(error.kind(), VerificationErrorKind::DeadlineExpired);
+    }
+
+    /// [054.003-ST V2]: a daemon serving an older revision never reaches
+    /// `DaemonVerified` for a newer expected generation.
+    #[test]
+    fn daemon_serving_an_older_revision_does_not_verify() {
+        let (_dir, layout) = chain_fixture("read_server");
+        publish_through_stages(&layout, "older-gen");
+        let _daemon = Daemon::spawn(&layout);
+        let mut verifier =
+            ProductionVerifier::new(layout.clone(), engram_exe(), Instant::now() + PROBE_BUDGET)
+                .expect("construct production verifier");
+
+        let (stage, error) = run_probe_stages(&mut verifier, SHORT_BUDGET, "newer-gen")
+            .expect_err("an older revision must not satisfy the expected generation");
+
+        assert_eq!(stage, StageKind::DaemonVerified);
+        assert_eq!(error.kind(), VerificationErrorKind::DeadlineExpired);
+    }
+
+    /// Fake engram executable; the compiled stem selects the MCP variant.
+    /// CLI form: `<exe> --workspace W --json <read>`; MCP form: `<exe> shim ...`.
+    const FAKE_ENGRAM_SRC: &str = r##"
+use std::io::{BufRead, Write};
+const CLI: &str = r#"{"result":{"code_files":1,"functions":2,"classes":0,"interfaces":0,"edges":0,"provenance":{"generation_id":"fixture-gen"}}}"#;
+const INIT: &str = r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"fixture","version":"0"}}}"#;
+fn call(stem: &str) -> &'static str {
+    match stem {
+        "fpmismatch" => r#"{"jsonrpc":"2.0","id":2,"result":{"content":[],"structuredContent":{"code_files":1,"functions":3,"classes":0,"interfaces":0,"edges":0,"provenance":{"generation_id":"fixture-gen"}},"isError":false}}"#,
+        "fpmissing" => r#"{"jsonrpc":"2.0","id":2,"result":{"content":[],"structuredContent":{"provenance":{"generation_id":"fixture-gen"}},"isError":false}}"#,
+        _ => r#"{"jsonrpc":"2.0","id":2,"result":{"content":[],"structuredContent":{"code_files":1,"functions":2,"classes":0,"interfaces":0,"edges":0,"provenance":{"generation_id":"fixture-gen"}},"isError":false}}"#,
+    }
+}
+fn main() {
+    let exe = std::env::current_exe().unwrap_or_default();
+    let stem = exe.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) != Some("shim") {
+        println!("{CLI}");
+        return;
+    }
+    let mut out = std::io::stdout();
+    for line in std::io::stdin().lock().lines() {
+        let Ok(line) = line else { break };
+        if line.contains("\"method\":\"initialize\"") {
+            let _ = writeln!(out, "{INIT}");
+        } else if line.contains("\"method\":\"tools/call\"") {
+            let _ = writeln!(out, "{}", call(&stem));
+        }
+        let _ = out.flush();
+    }
+}
+"##;
+
+    fn compile_fake_engram(dir: &Path, name: &str) -> PathBuf {
+        let src = dir.join("fake_engram.rs");
+        fs::write(&src, FAKE_ENGRAM_SRC).expect("write fake engram source");
+        let exe = dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+        let status = Command::new("rustc")
+            .args(["--edition", "2021", "-O", "-o"])
+            .arg(&exe)
+            .arg(&src)
+            .env_remove("CARGO_BIN_EXE_engram")
+            .status()
+            .expect("run rustc");
+        assert!(status.success(), "fake engram {name} must compile");
+        exe
+    }
+
+    /// Runs the CLI then MCP probe stages against a fake executable.
+    fn cli_then_mcp(name: &str) -> Result<(), VerificationError> {
+        let (dir, layout) = real_fixture();
+        let exe = compile_fake_engram(dir.path(), name);
+        let mut verifier = ProductionVerifier::new(layout, exe, far_deadline())
+            .expect("construct production verifier");
+        for stage in [StageKind::CliProbeVerified, StageKind::McpProbeVerified] {
+            verifier.verify(stage, far_deadline(), "fixture-gen")?;
+        }
+        Ok(())
+    }
+
+    /// Control: matching CLI and MCP fingerprints verify through the fixture.
+    #[test]
+    fn matching_mcp_fingerprint_verifies() {
+        cli_then_mcp("fpmatch").expect("matching fingerprints must verify");
+    }
+
+    /// [054.003-ST AC4]: a differing MCP fingerprint fails `McpProbeVerified`.
+    #[test]
+    fn mismatched_mcp_fingerprint_fails_mcp_probe() {
+        let err = cli_then_mcp("fpmismatch").expect_err("differing fingerprint must fail");
+        assert_eq!(err.kind(), VerificationErrorKind::Failed);
+        assert!(err.reason().contains("McpProbeVerified"), "{err}");
+        assert!(err.reason().contains("fingerprint"), "{err}");
+    }
+
+    /// [054.003-ST AC4]: a missing MCP fingerprint fails `McpProbeVerified`.
+    #[test]
+    fn missing_mcp_fingerprint_fails_mcp_probe() {
+        let err = cli_then_mcp("fpmissing").expect_err("missing fingerprint must fail");
+        assert_eq!(err.kind(), VerificationErrorKind::Failed);
+        assert!(err.reason().contains("McpProbeVerified"), "{err}");
+    }
+
+    /// Fail closed: the MCP stage cannot run without a prior CLI fingerprint.
+    #[test]
+    fn mcp_probe_requires_a_prior_cli_fingerprint() {
+        let (_dir, layout) = chain_fixture("read_server");
         let mut verifier = production(&layout, far_deadline());
 
-        for stage in [
-            StageKind::DaemonVerified,
-            StageKind::HealthVerified,
-            StageKind::CliProbeVerified,
-            StageKind::McpProbeVerified,
-        ] {
-            verifier
-                .verify(stage, far_deadline(), REAL_GENERATION)
-                .expect_err("probe stages belong to 142.054-T");
+        let err = verifier
+            .verify(StageKind::McpProbeVerified, far_deadline(), REAL_GENERATION)
+            .expect_err("MCP probe without a CLI fingerprint");
+
+        assert_eq!(err.kind(), VerificationErrorKind::Failed);
+        assert!(err.reason().contains("requires"), "{err}");
+    }
+
+    /// Fail closed: every probe stage rejects an expired deadline typed.
+    #[test]
+    fn probe_stages_fail_typed_on_expired_deadline() {
+        let (_dir, layout) = chain_fixture("read_server");
+        let mut verifier = production(&layout, far_deadline());
+
+        for stage in PROBE_STAGES {
+            let err = verifier
+                .verify(stage, Instant::now(), REAL_GENERATION)
+                .expect_err("expired deadline");
+            assert_eq!(err.kind(), VerificationErrorKind::DeadlineExpired);
         }
     }
 }
