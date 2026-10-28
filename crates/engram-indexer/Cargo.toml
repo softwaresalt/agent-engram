@@ -11,8 +11,15 @@ publish = false
 name = "engram-indexer"
 path = "src/main.rs"
 
+[features]
+# Forward the root engram feature set so a dependent that opts out of defaults (for example the root
+# crate's dev-dependency used by the preflight integration harness) does not silently re-enable them.
+default = ["embeddings", "cozo-backend"]
+embeddings = ["engram/embeddings"]
+cozo-backend = ["engram/cozo-backend"]
+
 [dependencies]
-engram = { path = "../.." }
+engram = { path = "../..", default-features = false }
 tokio = { version = "1", features = ["macros", "rt"] }
 
 [dev-dependencies]
