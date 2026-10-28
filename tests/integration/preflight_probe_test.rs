@@ -525,11 +525,14 @@ async fn mcp_probe_matches_the_cli_provenance() {
         .stdin(Stdio::null())
         .output()
         .expect("run workspace-status");
+    let body: serde_json::Value =
+        serde_json::from_slice(&status.stdout).expect("workspace-status JSON");
+    let generation = &body["result"]["generation"];
     assert!(
-        String::from_utf8_lossy(&status.stdout).contains(GENERATION),
-        "workspace-status must show the published generation"
+        generation["active_revision"].as_u64().is_some()
+            && generation["active_revision"] == generation["published_revision"],
+        "the published generation must be active: {generation}"
     );
-
     let cli = probe_cli_read(
         &engram_exe(),
         &root,
