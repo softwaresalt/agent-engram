@@ -419,7 +419,60 @@ fn production_verifier_refuses_to_run_inside_a_runtime() {
         ProductionVerifier::new(layout.clone(), PathBuf::from("engram"), far_deadline())
     });
 
-    assert!(outcome.is_err(), "must not nest inside another runtime");
+    let err = outcome.expect_err("must not nest inside another runtime");
+    assert!(err.reason().contains("another runtime"), "{err}");
+}
+
+#[test]
+fn stages_are_bound_to_the_one_expected_generation() {
+    let (_dir, layout) = real_fixture();
+    let mut verifier = production(&layout, far_deadline());
+    verifier
+        .verify(StageKind::Build, far_deadline(), REAL_GENERATION)
+        .expect("build");
+    verifier
+        .verify(StageKind::Seal, far_deadline(), "some-other-gen")
+        .expect_err("seal must not accept a different generation");
+
+    let (_dir2, layout2) = real_fixture();
+    let mut verifier = production(&layout2, far_deadline());
+    verifier
+        .verify(StageKind::Build, far_deadline(), REAL_GENERATION)
+        .expect("rebuild");
+    verifier
+        .verify(StageKind::Seal, far_deadline(), REAL_GENERATION)
+        .expect("seal");
+    verifier
+        .verify(StageKind::Publish, far_deadline(), "some-other-gen")
+        .expect_err("publish must not accept a different generation");
+    if let Ok(store) = open_generation_store(&layout2, false) {
+        assert!(
+            !store.active_manifest_path().exists(),
+            "a mismatched publish must not publish"
+        );
+    }
+}
+
+#[test]
+fn verify_inside_a_runtime_fails_typed_and_dropping_is_safe() {
+    let (_dir, layout) = real_fixture();
+    let mut verifier = production(&layout, far_deadline());
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("runtime");
+
+    runtime.block_on(async {
+        let err = verifier
+            .verify(StageKind::Build, far_deadline(), REAL_GENERATION)
+            .expect_err("must not nest a runtime");
+        assert_eq!(err.kind(), VerificationErrorKind::Failed);
+        assert!(err.reason().contains("another runtime"), "{err}");
+        drop(verifier);
+    });
+    assert!(
+        !candidate_db(&layout, REAL_GENERATION).exists(),
+        "nothing may be built"
+    );
 }
 
 #[test]

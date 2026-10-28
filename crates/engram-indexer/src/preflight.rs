@@ -299,10 +299,20 @@ pub struct ProductionVerifier {
     layout: ReadServerLayout,
     engram_executable: PathBuf,
     deadline: Instant,
-    runtime: Runtime,
+    runtime: Option<Runtime>,
     store: Option<GenerationStore>,
     built: Option<BuiltCandidate>,
     sealed: Option<SealedCandidate>,
+}
+
+impl Drop for ProductionVerifier {
+    fn drop(&mut self) {
+        // Dropping a runtime inside an async context panics; shut it down
+        // without blocking so the verifier is safe to drop anywhere.
+        if let Some(runtime) = self.runtime.take() {
+            runtime.shutdown_background();
+        }
+    }
 }
 
 impl fmt::Debug for ProductionVerifier {
@@ -343,7 +353,7 @@ impl ProductionVerifier {
             layout,
             engram_executable,
             deadline,
-            runtime,
+            runtime: Some(runtime),
             store: None,
             built: None,
             sealed: None,
@@ -354,12 +364,6 @@ impl ProductionVerifier {
     #[must_use]
     pub fn engram_executable(&self) -> &Path {
         &self.engram_executable
-    }
-
-    /// Returns the layout this verifier was built from.
-    #[must_use]
-    pub const fn layout(&self) -> &ReadServerLayout {
-        &self.layout
     }
 
     /// Returns the shared deadline.
@@ -400,21 +404,37 @@ impl ProductionVerifier {
         deadline: Instant,
         expected_generation: &str,
     ) -> Result<(), VerificationError> {
+        // `block_on` panics inside a runtime; fail closed with a typed error
+        // instead (the constructor guard only covers construction time).
+        if Handle::try_current().is_ok() {
+            return Err(VerificationError::new(
+                "production verifier must not run inside another runtime",
+            ));
+        }
+        let runtime = self
+            .runtime
+            .as_ref()
+            .ok_or_else(|| VerificationError::new("verifier runtime is unavailable"))?;
         // A fresh attempt discards any state from an earlier one.
         self.store = None;
         self.built = None;
         self.sealed = None;
-        let store = open_generation_store(&self.layout, true)
-            .map_err(|error| stage_failure(StageKind::Build, &error))?;
         let id = GenerationId::new(expected_generation).map_err(|error| {
             VerificationError::new(format!("Build rejected expected generation: {error}"))
         })?;
+        let store = open_generation_store(&self.layout, true)
+            .map_err(|error| stage_failure(StageKind::Build, &error))?;
+        // Indexing configuration is the facade's default; the daemon and the
+        // preflight must index identically, so no override exists here.
         let config = CodeGraphConfig::default();
         let layout = &self.layout;
         let pending = build_candidate_generation(layout, &store, &id, &config);
         let limit = tokio::time::Instant::from_std(deadline);
-        let built = self
-            .runtime
+        // The timeout preempts only at `.await` points; synchronous work inside
+        // the facade is caught late by the machine's post-deadline check. A
+        // timed-out build may leave a partial candidate directory, which is
+        // never published (a fresh generation ID is used per attempt).
+        let built = runtime
             .block_on(async { tokio::time::timeout_at(limit, pending).await })
             .map_err(|_| VerificationError::deadline_expired("deadline expired during Build"))?
             .map_err(|error| stage_failure(StageKind::Build, &error))?;
@@ -424,11 +444,17 @@ impl ProductionVerifier {
     }
 
     /// Seal: computes the sealed inventory of the built candidate.
-    fn seal_stage(&mut self) -> Result<(), VerificationError> {
+    fn seal_stage(&mut self, expected_generation: &str) -> Result<(), VerificationError> {
         let built = self
             .built
             .take()
             .ok_or_else(|| out_of_order(StageKind::Seal, "a built candidate"))?;
+        // One expected generation spans every stage; never seal another one.
+        if built.id().as_str() != expected_generation {
+            return Err(VerificationError::new(
+                "Seal expected generation differs from the built candidate",
+            ));
+        }
         let sealed = seal_candidate_inventory(built)
             .map_err(|error| stage_failure(StageKind::Seal, &error))?;
         self.sealed = Some(sealed);
@@ -437,7 +463,7 @@ impl ProductionVerifier {
 
     /// Publish: atomic publication of the sealed candidate under the
     /// publisher lock.
-    fn publish_stage(&mut self) -> Result<(), VerificationError> {
+    fn publish_stage(&mut self, expected_generation: &str) -> Result<(), VerificationError> {
         let store = self
             .store
             .as_ref()
@@ -446,6 +472,12 @@ impl ProductionVerifier {
             .sealed
             .take()
             .ok_or_else(|| out_of_order(StageKind::Publish, "a sealed candidate"))?;
+        // Only the candidate this machine built and sealed may be published.
+        if sealed.id().as_str() != expected_generation {
+            return Err(VerificationError::new(
+                "Publish expected generation differs from the sealed candidate",
+            ));
+        }
         publish_sealed_candidate(&self.layout, store, sealed, PREFLIGHT_PRODUCER)
             .map(|_| ())
             .map_err(|error| stage_failure(StageKind::Publish, &error))
@@ -464,8 +496,8 @@ impl Verifier for ProductionVerifier {
         ensure_time_remaining(stage, deadline)?;
         match stage {
             StageKind::Build => self.build_stage(deadline, expected_generation),
-            StageKind::Seal => self.seal_stage(),
-            StageKind::Publish => self.publish_stage(),
+            StageKind::Seal => self.seal_stage(expected_generation),
+            StageKind::Publish => self.publish_stage(expected_generation),
             StageKind::DaemonVerified
             | StageKind::HealthVerified
             | StageKind::CliProbeVerified
