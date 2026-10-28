@@ -2,7 +2,7 @@
 
 use std::env;
 use std::ffi::{OsStr, OsString};
-use std::io;
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Instant, SystemTime};
@@ -57,10 +57,11 @@ fn main() -> ExitCode {
 /// Runs the preflight supervisor synchronously, before any tokio runtime exists.
 fn run_preflight(args: impl Iterator<Item = OsString>) -> ExitCode {
     let output = preflight_invocation::main_with(args, production_factory);
+    // A closed pipe must not turn the verdict exit code into a panic, so write errors are ignored.
     if let Some(stdout) = output.stdout {
-        println!("{stdout}");
+        let _ = writeln!(io::stdout().lock(), "{stdout}");
     }
-    eprint!("{}", output.stderr);
+    let _ = io::stderr().lock().write_all(output.stderr.as_bytes());
     ExitCode::from(output.exit_code)
 }
 
