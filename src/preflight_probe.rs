@@ -185,6 +185,10 @@ fn run_bounded(
     }
 }
 
+/// Parses the first non-empty stdout line as a JSON-RPC response.
+///
+/// Returns `None` (malformed) unless the line is a JSON object carrying either
+/// an `error` member or a `result` member that is itself a JSON object.
 fn parse_report(stdout: &[u8]) -> Option<ProbeReport> {
     let line = stdout
         .split(|byte| *byte == b'\n')
@@ -199,7 +203,7 @@ fn parse_report(stdout: &[u8]) -> Option<ProbeReport> {
             data_fingerprint: None,
         });
     }
-    let result = object.get("result")?;
+    let result = object.get("result").filter(|v| v.is_object())?;
     let generation_id = result
         .pointer("/provenance/generation_id")
         .and_then(serde_json::Value::as_str)
