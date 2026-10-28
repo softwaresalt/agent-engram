@@ -183,14 +183,18 @@ mod production_stages {
     use std::collections::BTreeMap;
     use std::fs;
     use std::path::PathBuf;
-    use std::time::Instant;
+    use std::process::{Child, Command, Stdio};
+    use std::time::{Duration, Instant};
 
+    use engram::daemon::ipc_server::ipc_endpoint;
+    use engram::shim::lifecycle::check_health;
     use engram::services::generations::candidate_build::{
         ReadServerLayout, current_published_revision, open_generation_store, read_server_layout,
     };
     use engram::services::generations::{GenerationActivator, GenerationRevision};
     use engram_indexer::preflight::{
-        ProductionVerifier, StageKind, VerificationErrorKind, Verifier,
+        Build, Preflight, ProductionVerifier, StageKind, VerificationError, VerificationErrorKind,
+        Verifier,
     };
     use tempfile::TempDir;
 
@@ -485,20 +489,198 @@ mod production_stages {
         );
     }
 
+    // -----------------------------------------------------------------------
+    // Plan unit F50c (142.054-T): real-chain probe stages. These drive the
+    // production verifier with the real engram executable against a real
+    // spawned read-server daemon.
+    // -----------------------------------------------------------------------
+
+    const READY_TIMEOUT: Duration = Duration::from_secs(120);
+    const PROBE_BUDGET: Duration = Duration::from_secs(120);
+    const SHORT_BUDGET: Duration = Duration::from_secs(8);
+    const PROBE_STAGES: [StageKind; 4] = [
+        StageKind::DaemonVerified,
+        StageKind::HealthVerified,
+        StageKind::CliProbeVerified,
+        StageKind::McpProbeVerified,
+    ];
+
+    fn engram_exe() -> PathBuf {
+        PathBuf::from(env!("CARGO_BIN_EXE_engram"))
+    }
+
+    /// Spaced git fixture whose `.engram/config.toml` carries `mode`.
+    fn chain_fixture(mode: &str) -> (TempDir, ReadServerLayout) {
+        let (dir, layout) = real_fixture();
+        let engram_dir = layout.workspace.join(".engram");
+        fs::create_dir_all(&engram_dir).expect("create .engram");
+        fs::write(
+            engram_dir.join("config.toml"),
+            format!("log_level = \"debug\"\nmode = \"{mode}\"\n"),
+        )
+        .expect("write config");
+        (dir, layout)
+    }
+
+    /// A spawned daemon, killed (exact child) on drop.
+    struct Daemon(Child);
+
+    impl Daemon {
+        fn spawn(layout: &ReadServerLayout) -> Self {
+            let child = Command::new(engram_exe())
+                .args(["daemon", "--workspace"])
+                .arg(&layout.workspace)
+                .env_remove("ENGRAM_DATA_DIR")
+                .env_remove("ENGRAM_WORKSPACE")
+                .env_remove("ENGRAM_DIRECT")
+                .env("ENGRAM_IDLE_TIMEOUT_MS", "0")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn engram daemon");
+            let daemon = Self(child);
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime");
+            let endpoint = ipc_endpoint(&layout.workspace).expect("ipc endpoint");
+            runtime.block_on(async {
+                let end = tokio::time::Instant::now() + READY_TIMEOUT;
+                while !check_health(&endpoint).await {
+                    assert!(
+                        tokio::time::Instant::now() < end,
+                        "daemon never became ready"
+                    );
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+            });
+            daemon
+        }
+    }
+
+    impl Drop for Daemon {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    /// Runs the four probe stages in order, stopping at the first failure.
+    fn run_probe_stages(
+        verifier: &mut ProductionVerifier,
+        budget: Duration,
+        generation: &str,
+    ) -> Result<(), (StageKind, VerificationError)> {
+        let deadline = Instant::now() + budget;
+        for stage in PROBE_STAGES {
+            verifier
+                .verify(stage, deadline, generation)
+                .map_err(|error| (stage, error))?;
+        }
+        Ok(())
+    }
+
+    /// [054-T AC8; 054.003-ST V1, V3]: the full machine over a spaced
+    /// read-server fixture reaches `Succeeded` with the real executable.
     #[test]
-    fn probe_stages_remain_unimplemented_and_fail_closed() {
-        let (_dir, layout) = real_fixture();
+    fn real_chain_read_server_fixture_reaches_succeeded() {
+        let (_dir, layout) = chain_fixture("read_server");
+        let _daemon = Daemon::spawn(&layout);
+        let deadline = Instant::now() + PROBE_BUDGET;
+        let mut verifier = ProductionVerifier::new(layout.clone(), engram_exe(), deadline)
+            .expect("construct production verifier");
+
+        let done = Preflight::<Build>::start(deadline, REAL_GENERATION.to_owned())
+            .verify(&mut verifier)
+            .and_then(|state| state.verify(&mut verifier))
+            .and_then(|state| state.verify(&mut verifier))
+            .and_then(|state| state.verify(&mut verifier))
+            .and_then(|state| state.verify(&mut verifier))
+            .and_then(|state| state.verify(&mut verifier))
+            .and_then(|state| state.verify(&mut verifier))
+            .expect("all seven stages verify against the real chain");
+
+        assert_eq!(done.expected_generation(), REAL_GENERATION);
+        assert_eq!(done.deadline(), deadline);
+        let store = open_generation_store(&layout, false).expect("open store");
+        assert_eq!(
+            current_published_revision(&store).expect("revision"),
+            GenerationRevision::new(1),
+            "verification is observational: it must not publish again"
+        );
+    }
+
+    /// [054.003-ST AC5; R48]: the probe stages never mutate the manifest.
+    #[test]
+    fn probe_stages_do_not_touch_the_manifest() {
+        let (_dir, layout) = chain_fixture("read_server");
+        publish_through_stages(&layout, REAL_GENERATION);
+        let before = manifest_bytes(&layout);
+        let _daemon = Daemon::spawn(&layout);
+        let mut verifier = ProductionVerifier::new(
+            layout.clone(),
+            engram_exe(),
+            Instant::now() + PROBE_BUDGET,
+        )
+        .expect("construct production verifier");
+
+        run_probe_stages(&mut verifier, PROBE_BUDGET, REAL_GENERATION)
+            .unwrap_or_else(|(stage, error)| panic!("{stage:?} must verify: {error}"));
+
+        assert_eq!(manifest_bytes(&layout), before, "manifest untouched");
+    }
+
+    /// [054-T AC8]: a managed-mode fixture fails at `DaemonVerified`.
+    #[test]
+    fn real_chain_managed_mode_fails_at_daemon_verified() {
+        let (_dir, layout) = chain_fixture("managed");
+        publish_through_stages(&layout, REAL_GENERATION);
+        let _daemon = Daemon::spawn(&layout);
+        let mut verifier = ProductionVerifier::new(
+            layout.clone(),
+            engram_exe(),
+            Instant::now() + PROBE_BUDGET,
+        )
+        .expect("construct production verifier");
+
+        let (stage, _error) = run_probe_stages(&mut verifier, SHORT_BUDGET, REAL_GENERATION)
+            .expect_err("a managed-mode daemon must not verify");
+
+        assert_eq!(stage, StageKind::DaemonVerified);
+    }
+
+    /// [054.003-ST V2]: a daemon serving an older revision never reaches
+    /// `DaemonVerified` for a newer expected generation.
+    #[test]
+    fn daemon_serving_an_older_revision_does_not_verify() {
+        let (_dir, layout) = chain_fixture("read_server");
+        publish_through_stages(&layout, "older-gen");
+        let _daemon = Daemon::spawn(&layout);
+        let mut verifier = ProductionVerifier::new(
+            layout.clone(),
+            engram_exe(),
+            Instant::now() + PROBE_BUDGET,
+        )
+        .expect("construct production verifier");
+
+        let (stage, _error) = run_probe_stages(&mut verifier, SHORT_BUDGET, "newer-gen")
+            .expect_err("an older revision must not satisfy the expected generation");
+
+        assert_eq!(stage, StageKind::DaemonVerified);
+    }
+
+    /// Fail closed: every probe stage rejects an expired deadline typed.
+    #[test]
+    fn probe_stages_fail_typed_on_expired_deadline() {
+        let (_dir, layout) = chain_fixture("read_server");
         let mut verifier = production(&layout, far_deadline());
 
-        for stage in [
-            StageKind::DaemonVerified,
-            StageKind::HealthVerified,
-            StageKind::CliProbeVerified,
-            StageKind::McpProbeVerified,
-        ] {
-            verifier
-                .verify(stage, far_deadline(), REAL_GENERATION)
-                .expect_err("probe stages belong to 142.054-T");
+        for stage in PROBE_STAGES {
+            let err = verifier
+                .verify(stage, Instant::now(), REAL_GENERATION)
+                .expect_err("expired deadline");
+            assert_eq!(err.kind(), VerificationErrorKind::DeadlineExpired);
         }
     }
 }
