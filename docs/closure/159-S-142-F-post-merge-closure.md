@@ -90,7 +90,7 @@ launcher invokes `engram-indexer preflight` (142.072-T and later).
 
 | Evidence | Value |
 |---|---|
-| SLI | Fraction of `engram-indexer preflight` invocations whose stdout, exit code and single stderr line match the contract: usage errors exit 2 with empty stdout, setup errors print `{"state":"Failed","stage":"Build"}` and exit 1, and deadline failures exit 1 with the verdict of the stage current at expiry (`Build` only when the deadline is already expired at start; a later timeout, for example in the daemon stage, reports that stage), and the stderr line never contains the workspace path or error text. |
+| SLI | Fraction of `engram-indexer preflight` invocations whose stdout, exit code and single stderr line match the contract: usage errors exit 2 with empty stdout, setup errors print `{"state":"Failed","stage":"Build"}` and exit 1, and deadline failures exit 1 with the verdict of the stage current at expiry (`Build` when it expires before or during the Build stage, including indexing; a later timeout, for example in the daemon stage, reports that stage), and the stderr line never contains the workspace path or error text. |
 | Observation query | `cargo test -p engram-indexer --all-targets --no-fail-fast` (the crate-local tests are not run by `cargo dev-test`), and the launcher's preflight stderr line once wired. |
 | Baseline | 3/3 `preflight_entrypoint_test` cases pass; no-argument invocation still fails with `missing required environment variable`; the preflight path writes nothing to the workspace before the verifier runs. |
 | Alert threshold | Any `preflight_entrypoint_test` failure on `main`, a legacy-path behavior change, or a stderr line outside the documented grammar. |
