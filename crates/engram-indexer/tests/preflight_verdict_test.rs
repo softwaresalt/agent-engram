@@ -94,6 +94,7 @@ fn each_stage_failure_yields_failed_and_stops() {
     assert_eq!(verdict, Verdict::Failed(Failure::Build));
     assert_eq!(verdict.json_line(), r#"{"state":"Failed","stage":"Build"}"#);
     assert_eq!(verdict.exit_code(), 1);
+    assert!(mock.calls.is_empty());
 }
 
 #[test]
@@ -117,5 +118,11 @@ fn stage_name_maps_every_variant() {
             Failure::McpProbeVerified => "McpProbeVerified",
         };
         assert_eq!(stage_name(failure), expected);
+        let line = Verdict::Failed(failure).json_line();
+        assert_eq!(
+            line,
+            format!(r#"{{"state":"Failed","stage":"{}"}}"#, stage_name(failure))
+        );
+        assert!(!line.ends_with('\n'));
     }
 }
