@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
@@ -326,6 +328,20 @@ enum Command {
     /// `.engram/config.toml`. Distinct from `engram report eval` (agent
     /// efficiency).
     Eval,
+
+    /// Dev-launcher-only readiness probe relayed to the `engram-indexer` sibling.
+    ///
+    /// Ignores the global `--workspace`, `--timeout`, `--json`, `--format`, and
+    /// `--quiet` flags and `ENGRAM_WORKSPACE`.
+    #[command(hide = true)]
+    Preflight {
+        /// Workspace directory to probe.
+        #[arg(id = "preflight_workspace", value_name = "WORKSPACE")]
+        workspace: PathBuf,
+        /// Relay deadline in milliseconds.
+        #[arg(long)]
+        timeout_ms: u64,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -609,6 +625,13 @@ async fn main() -> Result<()> {
             let code = eval::run_eval_retrieval(&flags, &fmt).await;
             std::process::exit(code);
         }
+        Command::Preflight {
+            workspace: _,
+            timeout_ms: _,
+        } => {
+            eprintln!("Worker: 142.073-T");
+            std::process::exit(2);
+        }
     }
 
     Ok(())
@@ -616,7 +639,13 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::daemon_log_format_for_capture;
+    use super::{Cli, daemon_log_format_for_capture};
+    use clap::CommandFactory;
+
+    #[test]
+    fn cli_definition_has_no_clap_id_collision() {
+        Cli::command().debug_assert();
+    }
 
     #[test]
     fn daemon_capture_switch_selects_json_without_changing_default() {

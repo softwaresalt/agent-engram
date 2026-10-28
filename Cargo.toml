@@ -1278,6 +1278,10 @@ name = "contract_cli_preflight_relay"
 path = "tests/contract/cli_preflight_relay_test.rs"
 
 [[test]]
+name = "contract_cli_preflight_command"
+path = "tests/contract/cli_preflight_command_test.rs"
+
+[[test]]
 name = "integration_preflight_probe"
 path = "tests/integration/preflight_probe_test.rs"
 
