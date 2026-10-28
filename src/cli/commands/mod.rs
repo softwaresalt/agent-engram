@@ -6,6 +6,7 @@ pub mod lifecycle;
 pub mod lint_dax;
 pub mod manifest;
 pub mod migrate;
+pub mod preflight;
 pub mod report;
 pub mod search;
 pub mod verify;
