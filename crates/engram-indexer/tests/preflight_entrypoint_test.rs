@@ -66,12 +66,19 @@ fn zero_deadline_and_non_git_setup_share_a_verdict_with_distinct_causes() {
 
     let git_fixture = base.path().join("git fixture");
     fs::create_dir_all(git_fixture.join(".git")).expect("create .git");
-    fs::write(git_fixture.join(".git").join("HEAD"), "ref: refs/heads/main\n").expect("HEAD");
+    fs::write(
+        git_fixture.join(".git").join("HEAD"),
+        "ref: refs/heads/main\n",
+    )
+    .expect("HEAD");
     fs::write(git_fixture.join("lib.rs"), "pub fn seeded() {}\n").expect("source");
     let before = snapshot(&git_fixture);
 
     let output = run_preflight(&git_fixture, "0");
-    assert_eq!(String::from_utf8_lossy(&output.stdout), VERDICT_FAILED_BUILD);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        VERDICT_FAILED_BUILD
+    );
     assert_eq!(output.status.code(), Some(1));
     assert!(
         stderr_of(&output).contains("cause=deadline"),
@@ -86,7 +93,10 @@ fn zero_deadline_and_non_git_setup_share_a_verdict_with_distinct_causes() {
     let before = snapshot(&plain);
 
     let output = run_preflight(&plain, "60000");
-    assert_eq!(String::from_utf8_lossy(&output.stdout), VERDICT_FAILED_BUILD);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        VERDICT_FAILED_BUILD
+    );
     assert_eq!(output.status.code(), Some(1));
     let stderr = stderr_of(&output);
     assert!(stderr.contains("cause=setup"), "stderr: {stderr}");
