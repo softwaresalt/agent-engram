@@ -165,15 +165,22 @@ fn classify(stdout: &[u8], exit_code: Option<i32>) -> (&'static str, i32, bool) 
     }
 }
 
-/// Echoes non-conforming supervisor bytes (at most 4 KiB, escaped onto one line) to stderr.
-fn echo_nonconforming(stdout: &[u8]) {
-    if stdout.len() <= OUTPUT_CAP {
-        let _ = writeln!(
-            std::io::stderr(),
-            "{}",
-            String::from_utf8_lossy(stdout).escape_debug()
-        );
+/// Renders supervisor bytes as one escaped line of at most 4 KiB (captured bytes
+/// and rendered text are both capped; the cut falls on a char boundary).
+fn diagnostic(stdout: &[u8]) -> String {
+    let head = &stdout[..stdout.len().min(OUTPUT_CAP)];
+    let mut text = String::from_utf8_lossy(head).escape_debug().to_string();
+    let mut cut = text.len().min(OUTPUT_CAP);
+    while !text.is_char_boundary(cut) {
+        cut -= 1;
     }
+    text.truncate(cut);
+    text
+}
+
+/// Echoes supervisor diagnostics (see [`diagnostic`]) to stderr.
+fn echo_nonconforming(stdout: &[u8]) {
+    let _ = writeln!(std::io::stderr(), "{}", diagnostic(stdout));
 }
 
 /// Normalizes supervisor stdout and exit code to a verdict line and exit code.
@@ -290,6 +297,9 @@ pub fn run_relay(
     let status = loop {
         if let Some(cause) = collect(&mut buf) {
             kill_and_reap(&mut child);
+            if cause == RelayCause::RelayOversize {
+                echo_nonconforming(&buf);
+            }
             return fail(cause);
         }
         match child.try_wait() {
@@ -317,6 +327,7 @@ pub fn run_relay(
             Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => break,
         }
         if buf.len() > OUTPUT_CAP {
+            echo_nonconforming(&buf);
             return fail(RelayCause::RelayOversize);
         }
     }
@@ -350,4 +361,17 @@ pub fn run_preflight(workspace: &Path, timeout_ms: u64) -> i32 {
     let _ = writeln!(std::io::stdout(), "{}", outcome.line);
     let _ = writeln!(std::io::stderr(), "{}", outcome.stderr_line());
     outcome.exit
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{OUTPUT_CAP, diagnostic};
+
+    #[test]
+    fn diagnostic_is_one_line_and_capped_after_escaping() {
+        let text = diagnostic(&vec![0x1b; OUTPUT_CAP + 100]);
+        assert!(text.len() <= OUTPUT_CAP, "{}", text.len());
+        assert!(!text.contains('\n') && !text.contains('\u{1b}'));
+        assert_eq!(diagnostic(b"a\nb"), "a\\nb");
+    }
 }
