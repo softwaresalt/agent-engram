@@ -310,3 +310,18 @@ pub fn wait_for_generation(
         Err(ProbeError::Deadline)
     }
 }
+
+/// Run one bounded MCP `tools/call` through `engram shim` (plan unit PRE-6).
+///
+/// # Errors
+///
+/// Returns a [`ProbeError`] when the session fails.
+pub fn probe_mcp_read(
+    engram: &Path,
+    workspace: &Path,
+    read: &ProbeRead,
+    deadline: Instant,
+) -> Result<ProbeReport, ProbeError> {
+    let _ = (engram, workspace, read, deadline);
+    unimplemented!("Worker: 142.068-T")
+}
