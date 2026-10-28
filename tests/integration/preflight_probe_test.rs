@@ -465,7 +465,14 @@ fn main() {
     for line in stdin.lock().lines() {
         let Ok(line) = line else { break };
         if line.contains("\"method\":\"initialize\"") { let _ = writeln!(out, "{INIT}"); }
-        else if line.contains("\"method\":\"tools/call\"") { let _ = writeln!(out, "{CALL}"); }
+        else if line.contains("\"method\":\"tools/call\"") {
+            let _ = writeln!(out, "{}", r#"{"jsonrpc":"2.0","method":"notifications/message","params":{}}"#);
+            match stem.as_str() {
+                "mcperror" => { let _ = writeln!(out, "{}", r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"refused"}}"#); }
+                "mcpnostruct" => { let _ = writeln!(out, "{}", r#"{"jsonrpc":"2.0","id":2,"result":{"content":[]}}"#); }
+                _ => { let _ = writeln!(out, "{CALL}"); }
+            }
+        }
         let _ = out.flush();
     }
 }
@@ -620,5 +627,36 @@ fn mcp_probe_ignores_an_inherited_grandchild() {
     assert!(
         pid_alive(grandchild.0),
         "non-vacuity: grandchild must be alive at return"
+    );
+}
+
+/// PRE-6 scenario 2 (typed refusals): an error reply is `accepted: false`, and
+/// a result without `structuredContent` is `Malformed`; a notification line
+/// before the response is skipped in both cases.
+#[test]
+fn mcp_probe_types_refusals_and_missing_structured_content() {
+    let dir = spaced_dir();
+    assert_bad_arguments_spawn_nothing(dir.path());
+    let refused = compile_mcp_fixture(dir.path(), "mcperror");
+    let report = probe_mcp_read(
+        &refused,
+        dir.path(),
+        &PREFLIGHT_READ,
+        Instant::now() + Duration::from_secs(10),
+    )
+    .expect("typed refusal");
+    assert!(!report.accepted, "{report:?}");
+    assert_eq!(report.generation_id, None);
+
+    let bare = compile_mcp_fixture(dir.path(), "mcpnostruct");
+    let result = probe_mcp_read(
+        &bare,
+        dir.path(),
+        &PREFLIGHT_READ,
+        Instant::now() + Duration::from_secs(10),
+    );
+    assert!(
+        matches!(result, Err(ProbeError::Malformed("no_structured_content"))),
+        "{result:?}"
     );
 }

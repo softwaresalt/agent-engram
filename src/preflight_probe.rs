@@ -1,4 +1,5 @@
-//! CLI provenance probe facade (plan unit PRE-5, task 142.067-T).
+//! Provenance probe facades: the CLI probe (plan unit PRE-5, task 142.067-T)
+//! and the stdio MCP probe (plan unit PRE-6, task 142.068-T).
 //!
 //! Synchronous, bounded child I/O: a capped reader thread feeds the owner
 //! loop, which keys on the CLI child's exit and never joins the reader.
@@ -323,10 +324,10 @@ enum LineMsg {
 
 /// Reader thread for the MCP session: sends whole stdout lines. Total bytes
 /// are capped through `take(cap + 1)`; exceeding the cap reports `Oversize`.
-fn spawn_line_reader(stdout: impl Read + Send + 'static) -> Receiver<LineMsg> {
+fn spawn_line_reader(stdout: impl Read + Send + 'static) -> Result<Receiver<LineMsg>, ProbeError> {
     let (tx, rx) = mpsc::channel();
     // Detached on purpose; see `spawn_reader`.
-    drop(thread::spawn(move || {
+    let spawned = thread::Builder::new().spawn(move || {
         let mut reader = io::BufReader::new(stdout.take(OUTPUT_CAP as u64 + 1));
         let mut total = 0_usize;
         loop {
@@ -349,8 +350,10 @@ fn spawn_line_reader(stdout: impl Read + Send + 'static) -> Receiver<LineMsg> {
                 break;
             }
         }
-    }));
-    rx
+    });
+    spawned
+        .map(|_| rx)
+        .map_err(|_| ProbeError::Spawn("reader_thread"))
 }
 
 /// Turn one received line into the JSON-RPC response for `id`.
@@ -366,7 +369,15 @@ fn match_response(line: &[u8], id: u64) -> Result<Option<serde_json::Value>, Pro
     if !value.is_object() {
         return Err(ProbeError::Malformed("not_a_response"));
     }
-    if value.get("id").and_then(serde_json::Value::as_u64) == Some(id) {
+    // A JSON-RPC error with a null id answers an unparseable request: fail fast.
+    if value.get("error").is_some() && value.get("id").is_some_and(serde_json::Value::is_null) {
+        return Err(ProbeError::Malformed("rpc_error_no_id"));
+    }
+    // A response carries `result` or `error` and no `method`; server-initiated
+    // requests that reuse the id are skipped.
+    let is_response = value.get("method").is_none()
+        && (value.get("result").is_some() || value.get("error").is_some());
+    if is_response && value.get("id").and_then(serde_json::Value::as_u64) == Some(id) {
         Ok(Some(value))
     } else {
         Ok(None)
@@ -392,6 +403,12 @@ fn await_response(
             None => deadline,
         };
         if now >= limit {
+            // A line queued just before the limit still counts.
+            while let Ok(LineMsg::Line(line)) = rx.try_recv() {
+                if let Some(value) = match_response(&line, id)? {
+                    return Ok(value);
+                }
+            }
             return Err(if exited_at.is_some() {
                 ProbeError::Exit("shim_exited")
             } else {
@@ -490,7 +507,7 @@ fn run_mcp_session(
     let (Some(mut stdin), Some(pipe)) = (child.stdin.take(), child.stdout.take()) else {
         return Err(ProbeError::Spawn("pipe_unavailable"));
     };
-    let rx = spawn_line_reader(pipe);
+    let rx = spawn_line_reader(pipe)?;
     send_line(
         &mut stdin,
         &serde_json::json!({
@@ -504,7 +521,14 @@ fn run_mcp_session(
             }
         }),
     )?;
-    await_response(&rx, child, MCP_INIT_ID, deadline)?;
+    let init = await_response(&rx, child, MCP_INIT_ID, deadline)?;
+    if init.get("error").is_some() {
+        return Ok(ProbeReport {
+            accepted: false,
+            generation_id: None,
+            data_fingerprint: None,
+        });
+    }
     send_line(
         &mut stdin,
         &serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
