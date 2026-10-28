@@ -4,7 +4,7 @@
 //! the single deadline, and reduces a run to one [`PreflightOutput`].
 
 use std::error::Error;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -19,7 +19,8 @@ pub struct Invocation {
     pub workspace: String,
     /// Total preflight budget in milliseconds.
     pub timeout_ms: u64,
-    /// Absolute, canonical path of the engram executable.
+    /// Absolute, canonical path of the engram executable. On Windows,
+    /// canonicalization yields a verbatim `\\?\` path.
     pub engram: PathBuf,
 }
 
@@ -103,8 +104,9 @@ struct Parsed {
     engram: Option<OsString>,
 }
 
-fn is_flag_token(value: &OsString) -> bool {
-    value.to_string_lossy().starts_with("--")
+fn is_flag_token(value: &OsStr) -> bool {
+    value.to_str().is_some_and(|text| text.starts_with("--"))
+        || value.as_encoded_bytes().starts_with(b"--")
 }
 
 /// Parses the supervisor argv strictly.
@@ -172,8 +174,10 @@ fn parse_engram(value: OsString) -> Result<PathBuf, UsageError> {
     }
 }
 
-/// Largest accepted timeout (`u32::MAX` seconds); some platforms represent `Instant` as an
-/// unbounded `Duration`, so `checked_add` alone would not reject absurd values.
+/// Largest accepted timeout (`u32::MAX` seconds).
+///
+/// `Instant` arithmetic does not reliably overflow on all platforms (some represent it as an
+/// unbounded `Duration`), so `checked_add` alone would not reject absurd values; this cap does.
 const MAX_TIMEOUT_MS: u64 = 1_000 * 4_294_967_295;
 
 /// Computes the single deadline from `now` plus the timeout.
@@ -203,6 +207,13 @@ fn usage_output(started: Instant) -> PreflightOutput {
 }
 
 /// Parses `args`, builds the verifier with `make`, and runs the preflight.
+///
+/// `make` runs only after the deadline is computed, receives that deadline, and must not mutate
+/// the filesystem. A usage error (including a deadline overflow) never calls `make`.
+///
+/// The stderr cause is `deadline` when the verdict is failed and `Instant::now() >= deadline` at
+/// the time the run returns. This is a heuristic: a verifier failure that happens to land after
+/// the deadline is reported as `deadline`.
 pub fn main_with<V, F>(args: impl IntoIterator<Item = OsString>, make: F) -> PreflightOutput
 where
     V: Verifier,

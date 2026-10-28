@@ -3,16 +3,27 @@
 use std::cell::Cell;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::time::Instant;
 
 use engram_indexer::preflight::{StageKind, VerificationError, Verifier};
 use engram_indexer::preflight_invocation::{
-    Invocation, PreflightOutput, SetupError, deadline_from, main_with, parse_invocation,
+    Invocation, PreflightOutput, SetupError, UsageError, deadline_from, main_with, parse_invocation,
 };
 use engram_indexer::preflight_verdict::{EXIT_USAGE, stage_name};
 
 struct Mock {
-    calls: usize,
+    calls: Rc<Cell<usize>>,
+}
+
+fn mock() -> (Mock, Rc<Cell<usize>>) {
+    let calls = Rc::new(Cell::new(0));
+    (
+        Mock {
+            calls: Rc::clone(&calls),
+        },
+        calls,
+    )
 }
 
 impl Verifier for Mock {
@@ -22,7 +33,7 @@ impl Verifier for Mock {
         _deadline: Instant,
         _expected_generation: &str,
     ) -> Result<(), VerificationError> {
-        self.calls += 1;
+        self.calls.set(self.calls.get() + 1);
         Ok(())
     }
 }
@@ -50,7 +61,7 @@ fn usage_via_main(args: Vec<OsString>) -> PreflightOutput {
     let made = Cell::new(false);
     let output = main_with(args, |_inv: &Invocation, _deadline| {
         made.set(true);
-        Ok((Mock { calls: 0 }, "gen".to_string()))
+        Ok((mock().0, "gen".to_string()))
     });
     assert!(!made.get(), "factory must not run on a usage error");
     output
@@ -114,7 +125,7 @@ fn valid_spaced_invocation_parses_as_given() {
         "--engram",
         "engram-relative",
     ]);
-    assert!(parse_invocation(relative).is_err());
+    assert_eq!(parse_invocation(relative), Err(UsageError::InvalidEngram));
 
     let missing = os(&[
         "--workspace",
@@ -122,7 +133,7 @@ fn valid_spaced_invocation_parses_as_given() {
         "--timeout-ms",
         "1",
     ]);
-    assert!(parse_invocation(missing).is_err());
+    assert_eq!(parse_invocation(missing), Err(UsageError::MissingFlag));
 }
 
 #[test]
@@ -137,8 +148,20 @@ fn strict_parser_table_exits_two_without_stdout() {
     let exe_s = exe.to_str().expect("utf-8").to_string();
 
     assert!(deadline_from(Instant::now(), u64::MAX).is_err());
+    let max_ms = u64::from(u32::MAX) * 1000;
+    assert!(deadline_from(Instant::now(), max_ms).is_ok());
+    assert_eq!(
+        deadline_from(Instant::now(), max_ms + 1),
+        Err(UsageError::DeadlineOverflow)
+    );
 
     let base: Vec<(&str, Vec<OsString>)> = vec![
+        ("timeout overflow", argv(&ws, "18446744073709551615", &exe)),
+        (
+            "absolute nonexistent engram",
+            argv(&ws, "5", &tmp.path().join("no-engram")),
+        ),
+        ("directory as engram", argv(&ws, "5", tmp.path())),
         (
             "missing flag",
             os(&["--workspace", &ws_s, "--timeout-ms", "5"]),
@@ -204,12 +227,16 @@ fn strict_parser_table_exits_two_without_stdout() {
     ];
 
     for (name, args) in base.into_iter().chain(non_utf8_case(&exe)) {
-        assert!(parse_invocation(args.clone()).is_err(), "{name}");
+        if name != "timeout overflow" {
+            assert!(parse_invocation(args.clone()).is_err(), "{name}");
+        }
         let output = usage_via_main(args);
         assert_eq!(output.exit_code, EXIT_USAGE, "{name}");
         assert_eq!(output.exit_code, 2, "{name}");
         assert_eq!(output.stdout, None, "{name}");
         assert_stderr_line(&output.stderr, "none", "usage");
+        assert!(!output.stderr.contains(&ws_s), "{name}");
+        assert!(!output.stderr.contains(&exe_s), "{name}");
     }
 }
 
@@ -221,12 +248,16 @@ fn main_with_maps_outcomes_to_verdict_and_stderr() {
     let exe = engram_exe();
     let ws_s = ws.to_str().expect("utf-8").to_string();
 
+    let (ok_mock, ok_calls) = mock();
     let calls = Cell::new(0usize);
+    let ok_mock = Cell::new(Some(ok_mock));
     let ok = main_with(argv(&ws, "60000", &exe), |_inv: &Invocation, _deadline| {
         calls.set(calls.get() + 1);
-        Ok((Mock { calls: 0 }, "gen-1".to_string()))
+        let verifier = ok_mock.take().expect("single make call");
+        Ok((verifier, "gen-1".to_string()))
     });
     assert_eq!(calls.get(), 1);
+    assert_eq!(ok_calls.get(), 7);
     assert_eq!(ok.stdout, Some(r#"{"state":"Succeeded"}"#));
     assert_eq!(ok.exit_code, 0);
     assert_stderr_line(&ok.stderr, "none", "ok");
@@ -242,11 +273,22 @@ fn main_with_maps_outcomes_to_verdict_and_stderr() {
     let build = stage_name(engram_indexer::preflight::Failure::Build);
     assert_stderr_line(&setup.stderr, build, "setup");
 
-    let verifier_calls = Cell::new(0usize);
+    let setup_expired = main_with(
+        argv(&ws, "0", &exe),
+        |_inv: &Invocation, _deadline| -> Result<(Mock, String), SetupError> {
+            Err(SetupError::Layout)
+        },
+    );
+    assert_eq!(setup_expired.exit_code, 1);
+    assert_stderr_line(&setup_expired.stderr, build, "setup");
+
+    let (expired_mock, expired_calls) = mock();
+    let expired_mock = Cell::new(Some(expired_mock));
     let expired = main_with(argv(&ws, "0", &exe), |_inv: &Invocation, _deadline| {
-        verifier_calls.set(verifier_calls.get() + 1);
-        Ok((Mock { calls: 0 }, "gen-2".to_string()))
+        let verifier = expired_mock.take().expect("single make call");
+        Ok((verifier, "gen-2".to_string()))
     });
+    assert_eq!(expired_calls.get(), 0);
     assert_eq!(
         expired.stdout,
         Some(r#"{"state":"Failed","stage":"Build"}"#)
@@ -254,7 +296,7 @@ fn main_with_maps_outcomes_to_verdict_and_stderr() {
     assert_eq!(expired.exit_code, 1);
     assert_stderr_line(&expired.stderr, build, "deadline");
 
-    for output in [&ok, &setup, &expired] {
+    for output in [&ok, &setup, &setup_expired, &expired] {
         assert!(!output.stderr.contains(&ws_s));
         assert!(!output.stderr.contains(exe.to_str().expect("utf-8")));
     }
