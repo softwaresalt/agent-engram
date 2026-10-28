@@ -37,7 +37,7 @@ Shipment `155-S` delivered the single task `142.079-T` (F50b): `ProductionVerifi
 and `build_candidate_generation`; Seal runs `seal_candidate_inventory`; Publish runs
 `publish_sealed_candidate(.., "engram-preflight")`. The verifier owns a current-thread runtime and never nests, enforces
 the earlier of the machine and constructor deadlines with typed `VerificationErrorKind::DeadlineExpired`, binds Seal and
-Publish to the one expected generation, and leaves the published generation untouched on any failure. The four probe
+Publish to the one expected generation, and leaves the published generation untouched on any failure that occurs before the manifest rename. Two limitations are open and tracked, not verified: Seal and Publish are synchronous so the deadline does not interrupt them and Publish can report failure after the manifest changed on a deadline overrun (stash `3CF808CD`), and a post-rename directory-sync error is reported as an ordinary publish failure although the new generation is visible (stash `8D20C81B`). The four probe
 stages stay unimplemented for Slot-09c (`142.054-T`). PR #441 merged with a merge commit (P-009) at head `3eedb4a9`,
 merge SHA `9d1d0678908fd3f795c1f0bf36f3b6744e209151`.
 
@@ -97,12 +97,12 @@ launcher preflight consumes `ProductionVerifier`.
 |---|---|
 | SLI | Fraction of preflight runs where Build, Seal and Publish succeed or fail typed within the shared deadline, with the previously published generation still serving after every failure. |
 | Observation query | Preflight verdict output of the launcher once wired (142.069-T), and `cargo test --test integration_preflight_gate` in CI. |
-| Baseline | 16/16 tests pass; no failed stage changes the active manifest. |
-| Alert threshold | Any run where a failed or timed-out stage changes the published generation, or any `integration_preflight_gate` failure on `main`. |
+| Baseline | 16/16 tests pass; no stage failure before the manifest rename changes the active manifest. Known gaps, not covered by the baseline: Publish deadline overrun and post-rename directory-sync failure (stash `3CF808CD`, `8D20C81B`). |
+| Alert threshold | Any run where a failed or timed-out stage changes the published generation (including the two known gaps above, which must be treated as expected-until-fixed signals, not regressions), or any `integration_preflight_gate` failure on `main`. |
 | Owner | Release owner of the next tagged release; Stage owns triage of stash `16172B49`, `1AB175A8`, `3CF808CD`, `8ECFE00E` and `8D20C81B`. |
 | Observation window | The first release that consumes the preflight, plus one daemon restart. |
 | Rollback trigger | Any alert-threshold condition that persists after one retry. |
-| Rollback procedure | Revert merge commit `9d1d0678908fd3f795c1f0bf36f3b6744e209151`; the verifier is unconsumed, so reverting removes only the stages, the `tokio` `time` feature on the indexer and the tests. |
+| Rollback procedure | Today the verifier is unconsumed, so reverting merge commit `9d1d0678908fd3f795c1f0bf36f3b6744e209151` removes only the stages, the `tokio` `time` feature on the indexer and the tests. Once a launcher consumes `ProductionVerifier` that revert alone no longer builds: roll back the complete consuming release (or revert the consumer changes together with this merge) and rebuild. |
 
 ## Source artifact cleanup
 
