@@ -68,6 +68,7 @@ merged with a merge commit (P-009) at head `778ebf0d`, merge SHA `ef1df553dc2932
   invoked and no file was deleted by hand.
 * Covering feature `142-F` is `status: active` with SHA-256
   `42FCA67C1407641C8F3CF4752B3431D978290B1342614A831DF463B572181770` before and after close.
+* The `shipment_reconciled_shipped` event attests the closure document as first written (`closure_content_hash` `df91775c`). Two accuracy edits made afterwards in response to Copilot review (deadline-stage wording and a coordinated-rollback note in the monitoring handoff) change the hash, and `reconcile-shipped` refuses a second attestation (exit 10, idempotency conflict), so the shipped evidence is the commit `e8eb547b` version of this file.
 * Post-reconcile report: `.backlogit/reconcile/159-S-post-20261028T2003Z.md`.
 
 ## 159-S
@@ -89,14 +90,14 @@ launcher invokes `engram-indexer preflight` (142.072-T and later).
 
 | Evidence | Value |
 |---|---|
-| SLI | Fraction of `engram-indexer preflight` invocations whose stdout, exit code and single stderr line match the contract: usage errors exit 2 with empty stdout, setup errors and deadline failures print `{"state":"Failed","stage":"Build"}` and exit 1, and the stderr line never contains the workspace path or error text. |
+| SLI | Fraction of `engram-indexer preflight` invocations whose stdout, exit code and single stderr line match the contract: usage errors exit 2 with empty stdout, setup errors print `{"state":"Failed","stage":"Build"}` and exit 1, and deadline failures exit 1 with the verdict of the stage current at expiry (`Build` only when the deadline is already expired at start; a later timeout, for example in the daemon stage, reports that stage), and the stderr line never contains the workspace path or error text. |
 | Observation query | `cargo test -p engram-indexer --all-targets --no-fail-fast` (the crate-local tests are not run by `cargo dev-test`), and the launcher's preflight stderr line once wired. |
 | Baseline | 3/3 `preflight_entrypoint_test` cases pass; no-argument invocation still fails with `missing required environment variable`; the preflight path writes nothing to the workspace before the verifier runs. |
 | Alert threshold | Any `preflight_entrypoint_test` failure on `main`, a legacy-path behavior change, or a stderr line outside the documented grammar. |
 | Owner | Release owner of the next tagged release; Stage owns follow-up triage. |
 | Observation window | The first release that invokes the preflight entrypoint, plus one daemon restart. |
 | Rollback trigger | Any alert-threshold condition that persists after one retry. |
-| Rollback procedure | Revert only the code from PR #449 (merge `ef1df553dc293220052faf343ae5c9a285bf2672`): restore `crates/engram-indexer/src/main.rs` to its prior async `#[tokio::main]` form and remove `crates/engram-indexer/tests/preflight_entrypoint_test.rs`. Do not revert the whole merge: that would also undo the `142.071-T` archival and conflict with the closed `159-S` shipment record. Preserve backlog state and closure evidence. Rebuild with `cargo build -p engram-indexer`. |
+| Rollback procedure | Before any consumer invokes `preflight`, revert only the code from PR #449 (merge `ef1df553dc293220052faf343ae5c9a285bf2672`): restore `crates/engram-indexer/src/main.rs` to its prior async `#[tokio::main]` form and remove `crates/engram-indexer/tests/preflight_entrypoint_test.rs`. Do not revert the whole merge: that would also undo the `142.071-T` archival and conflict with the closed `159-S` shipment record. Preserve backlog state and closure evidence. Rebuild with `cargo build -p engram-indexer`. Once the relay or launcher consumes `preflight`, roll back that consumer together with these files in one coordinated change, because the legacy env path would otherwise receive the `preflight` arguments. |
 
 ## Source artifact cleanup
 
