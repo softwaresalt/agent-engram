@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 pub mod preflight;
+pub mod preflight_invocation;
 pub mod preflight_verdict;
 
 use std::path::Path;
