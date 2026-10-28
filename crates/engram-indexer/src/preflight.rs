@@ -289,7 +289,7 @@ impl Preflight<Succeeded> {
     }
 }
 
-/// Production [`Verifier`] for the Build, Seal and Publish stages (plan unit F50b).
+/// Production [`Verifier`] for all seven stages (plan units F50b and F50c).
 ///
 /// Inputs are the single layout produced by the factory's one
 /// `read_server_layout` call, the engram executable and the shared deadline;
@@ -300,7 +300,9 @@ impl Preflight<Succeeded> {
 ///
 /// The four probe stages (plan unit F50c) are observational only: they
 /// wait for the daemon's request-entry reconciliation and never call a
-/// generation-control endpoint.
+/// generation-control endpoint. The probe stages block the calling thread
+/// (child-process I/O) until the shared deadline, so run the verifier on a
+/// synchronous thread. The instance holds single-attempt state.
 pub struct ProductionVerifier {
     layout: ReadServerLayout,
     engram_executable: PathBuf,
@@ -428,6 +430,7 @@ impl ProductionVerifier {
         self.store = None;
         self.built = None;
         self.sealed = None;
+        self.cli_fingerprint = None;
         let id = GenerationId::new(expected_generation).map_err(|error| {
             VerificationError::new(format!("Build rejected expected generation: {error}"))
         })?;
@@ -566,7 +569,15 @@ impl ProductionVerifier {
             deadline,
         )
         .map(|_| ())
-        .map_err(|error| probe_failure(StageKind::DaemonVerified, error))
+        .map_err(|error| match error {
+            // Never observing the expected generation before the deadline is
+            // a deadline expiry for this stage, even when an older
+            // generation was served meanwhile.
+            ProbeError::Mismatch => VerificationError::deadline_expired(
+                "DaemonVerified never observed the expected generation before the deadline",
+            ),
+            other => probe_failure(StageKind::DaemonVerified, other),
+        })
     }
 
     /// `HealthVerified`: the CLI health read is accepted.

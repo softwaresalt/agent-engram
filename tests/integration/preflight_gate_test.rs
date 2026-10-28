@@ -533,13 +533,13 @@ mod production_stages {
                 .env_remove("ENGRAM_DATA_DIR")
                 .env_remove("ENGRAM_WORKSPACE")
                 .env_remove("ENGRAM_DIRECT")
-                .env("ENGRAM_IDLE_TIMEOUT_MS", "0")
+                .env("ENGRAM_IDLE_TIMEOUT_MS", "600000")
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .spawn()
                 .expect("spawn engram daemon");
-            let daemon = Self(child);
+            let mut daemon = Self(child);
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -548,6 +548,9 @@ mod production_stages {
             runtime.block_on(async {
                 let end = tokio::time::Instant::now() + READY_TIMEOUT;
                 while !check_health(&endpoint).await {
+                    if let Some(status) = daemon.0.try_wait().expect("poll daemon") {
+                        panic!("daemon exited before becoming ready: {status}");
+                    }
                     assert!(
                         tokio::time::Instant::now() < end,
                         "daemon never became ready"
@@ -638,10 +641,11 @@ mod production_stages {
             ProductionVerifier::new(layout.clone(), engram_exe(), Instant::now() + PROBE_BUDGET)
                 .expect("construct production verifier");
 
-        let (stage, _error) = run_probe_stages(&mut verifier, SHORT_BUDGET, REAL_GENERATION)
+        let (stage, error) = run_probe_stages(&mut verifier, SHORT_BUDGET, REAL_GENERATION)
             .expect_err("a managed-mode daemon must not verify");
 
         assert_eq!(stage, StageKind::DaemonVerified);
+        assert_eq!(error.kind(), VerificationErrorKind::DeadlineExpired);
     }
 
     /// [054.003-ST V2]: a daemon serving an older revision never reaches
@@ -655,10 +659,25 @@ mod production_stages {
             ProductionVerifier::new(layout.clone(), engram_exe(), Instant::now() + PROBE_BUDGET)
                 .expect("construct production verifier");
 
-        let (stage, _error) = run_probe_stages(&mut verifier, SHORT_BUDGET, "newer-gen")
+        let (stage, error) = run_probe_stages(&mut verifier, SHORT_BUDGET, "newer-gen")
             .expect_err("an older revision must not satisfy the expected generation");
 
         assert_eq!(stage, StageKind::DaemonVerified);
+        assert_eq!(error.kind(), VerificationErrorKind::DeadlineExpired);
+    }
+
+    /// Fail closed: the MCP stage cannot run without a prior CLI fingerprint.
+    #[test]
+    fn mcp_probe_requires_a_prior_cli_fingerprint() {
+        let (_dir, layout) = chain_fixture("read_server");
+        let mut verifier = production(&layout, far_deadline());
+
+        let err = verifier
+            .verify(StageKind::McpProbeVerified, far_deadline(), REAL_GENERATION)
+            .expect_err("MCP probe without a CLI fingerprint");
+
+        assert_eq!(err.kind(), VerificationErrorKind::Failed);
+        assert!(err.reason().contains("requires"), "{err}");
     }
 
     /// Fail closed: every probe stage rejects an expired deadline typed.
