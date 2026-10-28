@@ -22,6 +22,7 @@ follow_up_stash:
   - "6B3DD712"
   - "CF792EC3"
   - "C799846B"
+  - "E965AF3C"
 blocking_stash: null
 shipment_record_status: "archived (archived_status: done) - targeted manual safe-close; see .backlogit/archive/152-S.md"
 pre_reconcile: ".backlogit/reconcile/152-S-pre-20261028T0025Z.md"
@@ -153,6 +154,11 @@ status: `done`.
 * Stash `C799846B` (new, provisional low): harness gaps (typed refusal, `Exit`, `Malformed`,
   `ReadError` precedence, `wait_for_generation` re-probe and early-return cases) and startup-race
   hardening.
+* Stash `E965AF3C` (new, provisional low): verify backlogit 1.12 engine semantics (or update the
+  verified-line table) so closure evidence stops reporting `UNVERIFIED`.
+* Monitoring note: the baseline and alert threshold above are the expected values; they were not
+  measured because no Ready daemon was available (stash `6B3DD712`). Detection of leaked probe children
+  or reader threads is by process inspection after a probe batch (no automated check exists yet).
 * Process lesson: quote the plan's function signatures verbatim in the harness brief; the first
   harness used `Duration` and `()` where the plan specifies `Instant` and `ProbeReport`.
 * `closure_pr_number` and `closure_pr_merge_commit` are `null` in this record because it ships in the
