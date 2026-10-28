@@ -1,9 +1,10 @@
-//! CLI provenance probe facade (plan unit PRE-5, task 142.067-T).
+//! Provenance probe facades: the CLI probe (plan unit PRE-5, task 142.067-T)
+//! and the stdio MCP probe (plan unit PRE-6, task 142.068-T).
 //!
 //! Synchronous, bounded child I/O: a capped reader thread feeds the owner
 //! loop, which keys on the CLI child's exit and never joins the reader.
 
-use std::io::{self, Read};
+use std::io::{self, BufRead, Read, Write};
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -309,4 +310,291 @@ pub fn wait_for_generation(
     } else {
         Err(ProbeError::Deadline)
     }
+}
+
+const MCP_INIT_ID: u64 = 1;
+const MCP_CALL_ID: u64 = 2;
+
+enum LineMsg {
+    Line(Vec<u8>),
+    Oversize,
+    ReadError,
+    Eof,
+}
+
+/// Reader thread for the MCP session: sends whole stdout lines. Total bytes
+/// are capped through `take(cap + 1)`; exceeding the cap reports `Oversize`.
+fn spawn_line_reader(stdout: impl Read + Send + 'static) -> Result<Receiver<LineMsg>, ProbeError> {
+    let (tx, rx) = mpsc::channel();
+    // Detached on purpose; see `spawn_reader`.
+    let spawned = thread::Builder::new().spawn(move || {
+        let mut reader = io::BufReader::new(stdout.take(OUTPUT_CAP as u64 + 1));
+        let mut total = 0_usize;
+        loop {
+            let mut line = Vec::new();
+            let msg = match reader.read_until(b'\n', &mut line) {
+                Ok(0) => LineMsg::Eof,
+                Ok(n) => {
+                    total += n;
+                    if total > OUTPUT_CAP {
+                        LineMsg::Oversize
+                    } else {
+                        LineMsg::Line(line)
+                    }
+                }
+                Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                Err(_) => LineMsg::ReadError,
+            };
+            let last = !matches!(msg, LineMsg::Line(_));
+            if tx.send(msg).is_err() || last {
+                break;
+            }
+        }
+    });
+    spawned
+        .map(|_| rx)
+        .map_err(|_| ProbeError::Spawn("reader_thread"))
+}
+
+/// Turn one received line into the JSON-RPC response for `id`.
+///
+/// `Ok(None)` means a valid JSON line that is not the awaited response.
+fn match_response(line: &[u8], id: u64) -> Result<Option<serde_json::Value>, ProbeError> {
+    let trimmed = line.trim_ascii();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let value: serde_json::Value =
+        serde_json::from_slice(trimmed).map_err(|_| ProbeError::Malformed("not_json"))?;
+    if !value.is_object() {
+        return Err(ProbeError::Malformed("not_a_response"));
+    }
+    // A JSON-RPC error with a null id answers an unparseable request: fail fast.
+    if value.get("error").is_some() && value.get("id").is_some_and(serde_json::Value::is_null) {
+        return Err(ProbeError::Malformed("rpc_error_no_id"));
+    }
+    // A response carries `result` or `error` and no `method`; server-initiated
+    // requests that reuse the id are skipped.
+    let is_response = value.get("method").is_none()
+        && (value.get("result").is_some() || value.get("error").is_some());
+    if is_response && value.get("id").and_then(serde_json::Value::as_u64) == Some(id) {
+        Ok(Some(value))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Await the response line carrying `id`.
+///
+/// Every wait is a `recv_timeout` sliced to `POLL_INTERVAL`, interleaved with
+/// `try_wait()`. On an early shim exit the post-exit drain runs once; a line
+/// still missing afterwards is `Exit`. Never waits for stdout EOF.
+fn await_response(
+    rx: &Receiver<LineMsg>,
+    child: &mut Child,
+    id: u64,
+    deadline: Instant,
+) -> Result<serde_json::Value, ProbeError> {
+    let mut exited_at: Option<Instant> = None;
+    loop {
+        // Polled on every iteration, independent of the receive outcome, so a
+        // chatty grandchild cannot starve exit detection.
+        if exited_at.is_none() {
+            match child.try_wait() {
+                Ok(Some(_)) => exited_at = Some(Instant::now()),
+                Ok(None) => {}
+                Err(_) => return Err(ProbeError::Exit("wait_failed")),
+            }
+        }
+        let now = Instant::now();
+        let limit = match exited_at {
+            Some(at) => at + POST_EXIT_DRAIN,
+            None => deadline,
+        };
+        if now >= limit {
+            // A line queued just before the limit still counts.
+            while let Ok(LineMsg::Line(line)) = rx.try_recv() {
+                if let Some(value) = match_response(&line, id)? {
+                    return Ok(value);
+                }
+            }
+            return Err(if exited_at.is_some() {
+                ProbeError::Exit("shim_exited")
+            } else {
+                ProbeError::Deadline
+            });
+        }
+        let slice = POLL_INTERVAL.min(limit - now);
+        match rx.recv_timeout(slice) {
+            Ok(LineMsg::Line(line)) => {
+                if let Some(value) = match_response(&line, id)? {
+                    return Ok(value);
+                }
+            }
+            Ok(LineMsg::Oversize) => return Err(ProbeError::Oversize),
+            Ok(LineMsg::ReadError) => return Err(ProbeError::Malformed("stdout_read")),
+            Ok(LineMsg::Eof) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(ProbeError::Exit("shim_exited"));
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+    }
+}
+
+fn send_line(stdin: &mut impl Write, value: &serde_json::Value) -> Result<(), ProbeError> {
+    let mut text = value.to_string();
+    text.push('\n');
+    stdin
+        .write_all(text.as_bytes())
+        .and_then(|()| stdin.flush())
+        .map_err(|_| ProbeError::Exit("stdin_write"))
+}
+
+/// Build a report from a `tools/call` response: the `generation_id` and
+/// `data_fingerprint` come from the tool result's `structuredContent`.
+fn report_from_call(response: &serde_json::Value) -> Result<ProbeReport, ProbeError> {
+    let refused = ProbeReport {
+        accepted: false,
+        generation_id: None,
+        data_fingerprint: None,
+    };
+    if response.get("error").is_some() {
+        return Ok(refused);
+    }
+    let result = response
+        .get("result")
+        .filter(|v| v.is_object())
+        .ok_or(ProbeError::Malformed("not_a_report"))?;
+    if result.get("isError").and_then(serde_json::Value::as_bool) == Some(true) {
+        return Ok(refused);
+    }
+    let structured = result
+        .get("structuredContent")
+        .filter(|v| v.is_object())
+        .ok_or(ProbeError::Malformed("no_structured_content"))?;
+    let text = |pointer: &str| {
+        structured
+            .pointer(pointer)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    };
+    let generation_id = text("/provenance/generation_id").or_else(|| text("/generation_id"));
+    let count = |key: &str| structured.get(key).and_then(serde_json::Value::as_u64);
+    let data_fingerprint = text("/data_fingerprint").or_else(|| {
+        Some(format!(
+            "code_files={};functions={};classes={};interfaces={};edges={}",
+            count("code_files")?,
+            count("functions")?,
+            count("classes")?,
+            count("interfaces")?,
+            count("edges")?
+        ))
+    });
+    Ok(ProbeReport {
+        accepted: true,
+        generation_id,
+        data_fingerprint,
+    })
+}
+
+/// Drive one MCP session: initialize, one `tools/call`, read its response
+/// BEFORE closing stdin, then wait for the shim's exit within the deadline.
+fn run_mcp_session(
+    child: &mut Child,
+    arguments: serde_json::Value,
+    tool: &str,
+    deadline: Instant,
+) -> Result<ProbeReport, ProbeError> {
+    let (Some(mut stdin), Some(pipe)) = (child.stdin.take(), child.stdout.take()) else {
+        return Err(ProbeError::Spawn("pipe_unavailable"));
+    };
+    let rx = spawn_line_reader(pipe)?;
+    send_line(
+        &mut stdin,
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": MCP_INIT_ID,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "engram-preflight-probe", "version": "0"}
+            }
+        }),
+    )?;
+    let init = await_response(&rx, child, MCP_INIT_ID, deadline)?;
+    if init.get("error").is_some() {
+        return Ok(ProbeReport {
+            accepted: false,
+            generation_id: None,
+            data_fingerprint: None,
+        });
+    }
+    send_line(
+        &mut stdin,
+        &serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+    )?;
+    send_line(
+        &mut stdin,
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": MCP_CALL_ID,
+            "method": "tools/call",
+            "params": {"name": tool, "arguments": arguments}
+        }),
+    )?;
+    let response = await_response(&rx, child, MCP_CALL_ID, deadline)?;
+    let report = report_from_call(&response)?;
+    // The response is in hand; closing stdin asks the shim to exit.
+    drop(stdin);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) | Err(_) => return Ok(report),
+            // A shim that ignores the stdin close is a failure; the caller
+            // kills and reaps it.
+            Ok(None) if Instant::now() >= deadline => return Err(ProbeError::Deadline),
+            Ok(None) => thread::sleep(POLL_INTERVAL),
+        }
+    }
+}
+
+/// Run one bounded MCP `tools/call` through `engram shim --workspace <W>`.
+///
+/// `read.mcp_arguments_json` is parsed before anything is spawned; invalid
+/// JSON or a non-object is `Malformed("mcp_arguments")`. The `generation_id`
+/// and `data_fingerprint` are taken from the tool result's
+/// `structuredContent`. The response is read before stdin is closed; the
+/// shim is then awaited by `try_wait` until the absolute `deadline` (a shim still running then is `Deadline`), never
+/// by stdout EOF, and is killed and reaped on every error path or expiry.
+///
+/// The stdout reader runs on a detached thread that a grandchild holding the
+/// pipe can leave blocked after this function returns.
+///
+/// # Errors
+///
+/// Returns a [`ProbeError`]: `Malformed` for bad arguments or output,
+/// `Spawn`, `Deadline`, `Exit` (shim gone without a response) or `Oversize`.
+pub fn probe_mcp_read(
+    engram: &Path,
+    workspace: &Path,
+    read: &ProbeRead,
+    deadline: Instant,
+) -> Result<ProbeReport, ProbeError> {
+    let arguments: serde_json::Value = serde_json::from_str(read.mcp_arguments_json)
+        .ok()
+        .filter(serde_json::Value::is_object)
+        .ok_or(ProbeError::Malformed("mcp_arguments"))?;
+    let mut child = Command::new(engram)
+        .arg("shim")
+        .arg("--workspace")
+        .arg(workspace)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| ProbeError::Spawn("spawn_failed"))?;
+    let result = run_mcp_session(&mut child, arguments, read.mcp_tool, deadline);
+    // Reaps in every case; a shim that already exited makes `kill` a no-op.
+    kill_and_reap(&mut child);
+    result
 }
