@@ -182,7 +182,7 @@ fn expired_deadline_fails_first_stage_without_calling_verifier() {
 mod production_stages {
     use std::collections::BTreeMap;
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::process::{Child, Command, Stdio};
     use std::time::{Duration, Instant};
 
@@ -664,6 +664,90 @@ mod production_stages {
 
         assert_eq!(stage, StageKind::DaemonVerified);
         assert_eq!(error.kind(), VerificationErrorKind::DeadlineExpired);
+    }
+
+    /// Fake engram executable; the compiled stem selects the MCP variant.
+    /// CLI form: `<exe> --workspace W --json <read>`; MCP form: `<exe> shim ...`.
+    const FAKE_ENGRAM_SRC: &str = r##"
+use std::io::{BufRead, Write};
+const CLI: &str = r#"{"result":{"code_files":1,"functions":2,"classes":0,"interfaces":0,"edges":0,"provenance":{"generation_id":"fixture-gen"}}}"#;
+const INIT: &str = r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"fixture","version":"0"}}}"#;
+fn call(stem: &str) -> &'static str {
+    match stem {
+        "fpmismatch" => r#"{"jsonrpc":"2.0","id":2,"result":{"content":[],"structuredContent":{"code_files":1,"functions":3,"classes":0,"interfaces":0,"edges":0,"provenance":{"generation_id":"fixture-gen"}},"isError":false}}"#,
+        "fpmissing" => r#"{"jsonrpc":"2.0","id":2,"result":{"content":[],"structuredContent":{"provenance":{"generation_id":"fixture-gen"}},"isError":false}}"#,
+        _ => r#"{"jsonrpc":"2.0","id":2,"result":{"content":[],"structuredContent":{"code_files":1,"functions":2,"classes":0,"interfaces":0,"edges":0,"provenance":{"generation_id":"fixture-gen"}},"isError":false}}"#,
+    }
+}
+fn main() {
+    let exe = std::env::current_exe().unwrap_or_default();
+    let stem = exe.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) != Some("shim") {
+        println!("{CLI}");
+        return;
+    }
+    let mut out = std::io::stdout();
+    for line in std::io::stdin().lock().lines() {
+        let Ok(line) = line else { break };
+        if line.contains("\"method\":\"initialize\"") {
+            let _ = writeln!(out, "{INIT}");
+        } else if line.contains("\"method\":\"tools/call\"") {
+            let _ = writeln!(out, "{}", call(&stem));
+        }
+        let _ = out.flush();
+    }
+}
+"##;
+
+    fn compile_fake_engram(dir: &Path, name: &str) -> PathBuf {
+        let src = dir.join("fake_engram.rs");
+        fs::write(&src, FAKE_ENGRAM_SRC).expect("write fake engram source");
+        let exe = dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+        let status = Command::new("rustc")
+            .args(["--edition", "2021", "-O", "-o"])
+            .arg(&exe)
+            .arg(&src)
+            .env_remove("CARGO_BIN_EXE_engram")
+            .status()
+            .expect("run rustc");
+        assert!(status.success(), "fake engram {name} must compile");
+        exe
+    }
+
+    /// Runs the CLI then MCP probe stages against a fake executable.
+    fn cli_then_mcp(name: &str) -> Result<(), VerificationError> {
+        let (dir, layout) = real_fixture();
+        let exe = compile_fake_engram(dir.path(), name);
+        let mut verifier = ProductionVerifier::new(layout, exe, far_deadline())
+            .expect("construct production verifier");
+        for stage in [StageKind::CliProbeVerified, StageKind::McpProbeVerified] {
+            verifier.verify(stage, far_deadline(), "fixture-gen")?;
+        }
+        Ok(())
+    }
+
+    /// Control: matching CLI and MCP fingerprints verify through the fixture.
+    #[test]
+    fn matching_mcp_fingerprint_verifies() {
+        cli_then_mcp("fpmatch").expect("matching fingerprints must verify");
+    }
+
+    /// [054.003-ST AC4]: a differing MCP fingerprint fails `McpProbeVerified`.
+    #[test]
+    fn mismatched_mcp_fingerprint_fails_mcp_probe() {
+        let err = cli_then_mcp("fpmismatch").expect_err("differing fingerprint must fail");
+        assert_eq!(err.kind(), VerificationErrorKind::Failed);
+        assert!(err.reason().contains("McpProbeVerified"), "{err}");
+        assert!(err.reason().contains("fingerprint"), "{err}");
+    }
+
+    /// [054.003-ST AC4]: a missing MCP fingerprint fails `McpProbeVerified`.
+    #[test]
+    fn missing_mcp_fingerprint_fails_mcp_probe() {
+        let err = cli_then_mcp("fpmissing").expect_err("missing fingerprint must fail");
+        assert_eq!(err.kind(), VerificationErrorKind::Failed);
+        assert!(err.reason().contains("McpProbeVerified"), "{err}");
     }
 
     /// Fail closed: the MCP stage cannot run without a prior CLI fingerprint.
