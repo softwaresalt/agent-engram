@@ -1,6 +1,6 @@
 //! Contract coverage for NEW-5 (142.073-T): the hidden `engram preflight`
-//! subcommand. While RED the dispatch arm is a placeholder that writes a
-//! `Worker: 142.073-T` marker to stderr and exits without calling the relay.
+//! subcommand, which forwards its positional workspace and `--timeout-ms` to
+//! the root preflight relay and ignores the global flags and `ENGRAM_WORKSPACE`.
 
 #![forbid(unsafe_code)]
 
