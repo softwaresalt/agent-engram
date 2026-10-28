@@ -397,6 +397,15 @@ fn await_response(
 ) -> Result<serde_json::Value, ProbeError> {
     let mut exited_at: Option<Instant> = None;
     loop {
+        // Polled on every iteration, independent of the receive outcome, so a
+        // chatty grandchild cannot starve exit detection.
+        if exited_at.is_none() {
+            match child.try_wait() {
+                Ok(Some(_)) => exited_at = Some(Instant::now()),
+                Ok(None) => {}
+                Err(_) => return Err(ProbeError::Exit("wait_failed")),
+            }
+        }
         let now = Instant::now();
         let limit = match exited_at {
             Some(at) => at + POST_EXIT_DRAIN,
@@ -427,15 +436,7 @@ fn await_response(
             Ok(LineMsg::Eof) | Err(mpsc::RecvTimeoutError::Disconnected) => {
                 return Err(ProbeError::Exit("shim_exited"));
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                if exited_at.is_none() {
-                    match child.try_wait() {
-                        Ok(Some(_)) => exited_at = Some(Instant::now()),
-                        Ok(None) => {}
-                        Err(_) => return Err(ProbeError::Exit("wait_failed")),
-                    }
-                }
-            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
     }
 }

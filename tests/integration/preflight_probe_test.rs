@@ -447,8 +447,25 @@ fn main() {
     let exe = std::env::current_exe().unwrap_or_default();
     let stem = exe.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     let forever = || { std::thread::sleep(Duration::from_secs(60)); std::process::exit(0); };
-    if std::env::var_os("GC_ROLE").is_some() { forever(); }
+    if let Some(role) = std::env::var_os("GC_ROLE") {
+        if role == "chat" {
+            let mut out = std::io::stdout();
+            for _ in 0..30000 {
+                let _ = writeln!(out, "{}", r#"{"jsonrpc":"2.0","method":"notifications/message","params":{}}"#);
+                let _ = out.flush();
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            std::process::exit(0);
+        }
+        forever();
+    }
     let _ = std::fs::write(exe.with_extension("pid"), std::process::id().to_string());
+    if stem == "mcpchatty" {
+        if let Ok(gc) = Command::new(&exe).env("GC_ROLE", "chat").stdin(Stdio::null()).stderr(Stdio::null()).spawn() {
+            let _ = std::fs::write(exe.with_extension("gc"), gc.id().to_string());
+        }
+        std::process::exit(0);
+    }
     match stem.as_str() {
         "mcphang" => forever(),
         "mcpgarbage" => { println!("this is not json"); forever(); }
@@ -491,6 +508,21 @@ fn compile_mcp_fixture(dir: &Path, name: &str) -> PathBuf {
         .expect("run rustc");
     assert!(status.success(), "mcp fixture {name} must compile");
     exe
+}
+
+/// Reads a PID marker, retrying while the fixture is still writing it.
+fn wait_marker_pid(exe: &Path, ext: &str) -> u32 {
+    let end = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(pid) = fs::read_to_string(exe.with_extension(ext))
+            .ok()
+            .and_then(|text| text.trim().parse().ok())
+        {
+            return pid;
+        }
+        assert!(Instant::now() < end, "pid marker {ext} never appeared");
+        std::thread::sleep(Duration::from_millis(25));
+    }
 }
 
 /// Plan R13.6 F1: the first call of every PRE-6 test; invalid MCP arguments
@@ -607,7 +639,7 @@ fn mcp_probe_kills_a_hanging_shim_at_the_deadline() {
     );
     assert!(matches!(result, Err(ProbeError::Deadline)), "{result:?}");
     assert!(started.elapsed() <= Duration::from_secs(1) + SLACK);
-    assert_dead_soon(marker_pid(&exe, "pid"), "hanging shim");
+    assert_dead_soon(wait_marker_pid(&exe, "pid"), "hanging shim");
 }
 
 /// PRE-6 scenario 3b: an inherited grandchild holding stdout does not delay the report.
@@ -620,7 +652,7 @@ fn mcp_probe_ignores_an_inherited_grandchild() {
     let started = Instant::now();
     let result = probe_mcp_read(&exe, dir.path(), &PREFLIGHT_READ, started + deadline);
     let elapsed = started.elapsed();
-    let grandchild = PidGuard(marker_pid(&exe, "gc"));
+    let grandchild = PidGuard(wait_marker_pid(&exe, "gc"));
     let report = result.expect("report despite the inherited stdout");
     assert!(elapsed <= deadline + SLACK, "{elapsed:?}");
     assert_fixture_report(&report);
@@ -658,5 +690,29 @@ fn mcp_probe_types_refusals_and_missing_structured_content() {
     assert!(
         matches!(result, Err(ProbeError::Malformed("no_structured_content"))),
         "{result:?}"
+    );
+}
+
+/// Copilot review regression: a grandchild that keeps the stdout pipe busy
+/// with notifications must not hide the shim's exit; the probe reports `Exit`
+/// well before the deadline instead of consuming it.
+#[test]
+fn mcp_probe_detects_exit_despite_a_chatty_grandchild() {
+    let dir = spaced_dir();
+    assert_bad_arguments_spawn_nothing(dir.path());
+    let exe = compile_mcp_fixture(dir.path(), "mcpchatty");
+    let deadline = Duration::from_secs(10);
+    let started = Instant::now();
+    let result = probe_mcp_read(&exe, dir.path(), &PREFLIGHT_READ, started + deadline);
+    let elapsed = started.elapsed();
+    let grandchild = PidGuard(wait_marker_pid(&exe, "gc"));
+    assert!(matches!(result, Err(ProbeError::Exit(_))), "{result:?}");
+    assert!(
+        elapsed + SLACK < deadline,
+        "exit must be detected before the deadline: {elapsed:?}"
+    );
+    assert!(
+        pid_alive(grandchild.0),
+        "non-vacuity: chatty grandchild must be alive at return"
     );
 }
