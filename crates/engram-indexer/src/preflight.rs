@@ -190,12 +190,23 @@ impl<S: Stage> Preflight<S> {
     ///
     /// Returns this stage's [`Failure`] if verification fails or the shared
     /// deadline has expired.
-    ///
-    /// # Panics
-    ///
-    /// STUB (RED phase): always panics until Worker task 142.078-T.
-    pub fn verify<V: Verifier>(self, _verifier: &mut V) -> Result<Preflight<S::Next>, Failure> {
-        unimplemented!("Worker: 142.078-T")
+    pub fn verify<V: Verifier>(self, verifier: &mut V) -> Result<Preflight<S::Next>, Failure> {
+        // Fail closed: an already-expired deadline never reaches the verifier.
+        if Instant::now() >= self.deadline {
+            return Err(S::FAILURE);
+        }
+        verifier
+            .verify(S::KIND, self.deadline, &self.expected_generation)
+            .map_err(|_| S::FAILURE)?;
+        // Fail closed: a verification that finished past the deadline is not trusted.
+        if Instant::now() >= self.deadline {
+            return Err(S::FAILURE);
+        }
+        Ok(Preflight {
+            deadline: self.deadline,
+            expected_generation: self.expected_generation,
+            state: PhantomData,
+        })
     }
 }
 
