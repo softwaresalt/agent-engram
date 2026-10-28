@@ -549,10 +549,10 @@ fn run_mcp_session(
     drop(stdin);
     loop {
         match child.try_wait() {
-            // A shim that outlives the deadline is killed by the caller; the
-            // verified report is still returned.
             Ok(Some(_)) | Err(_) => return Ok(report),
-            Ok(None) if Instant::now() >= deadline => return Ok(report),
+            // A shim that ignores the stdin close is a failure; the caller
+            // kills and reaps it.
+            Ok(None) if Instant::now() >= deadline => return Err(ProbeError::Deadline),
             Ok(None) => thread::sleep(POLL_INTERVAL),
         }
     }
@@ -564,7 +564,7 @@ fn run_mcp_session(
 /// JSON or a non-object is `Malformed("mcp_arguments")`. The `generation_id`
 /// and `data_fingerprint` are taken from the tool result's
 /// `structuredContent`. The response is read before stdin is closed; the
-/// shim is then awaited by `try_wait` until the absolute `deadline`, never
+/// shim is then awaited by `try_wait` until the absolute `deadline` (a shim still running then is `Deadline`), never
 /// by stdout EOF, and is killed and reaped on every error path or expiry.
 ///
 /// The stdout reader runs on a detached thread that a grandchild holding the

@@ -492,6 +492,7 @@ fn main() {
         }
         let _ = out.flush();
     }
+    if stem == "mcpstuck" { forever(); }
 }
 "##;
 
@@ -715,4 +716,23 @@ fn mcp_probe_detects_exit_despite_a_chatty_grandchild() {
         pid_alive(grandchild.0),
         "non-vacuity: chatty grandchild must be alive at return"
     );
+}
+
+/// Copilot review: a shim that answers but never exits after stdin closes is
+/// `Deadline` (killed and reaped), not a success.
+#[test]
+fn mcp_probe_fails_a_shim_that_ignores_stdin_close() {
+    let dir = spaced_dir();
+    assert_bad_arguments_spawn_nothing(dir.path());
+    let exe = compile_mcp_fixture(dir.path(), "mcpstuck");
+    let started = Instant::now();
+    let result = probe_mcp_read(
+        &exe,
+        dir.path(),
+        &PREFLIGHT_READ,
+        started + Duration::from_secs(3),
+    );
+    assert!(matches!(result, Err(ProbeError::Deadline)), "{result:?}");
+    assert!(started.elapsed() <= Duration::from_secs(3) + SLACK);
+    assert_dead_soon(wait_marker_pid(&exe, "pid"), "stuck shim");
 }
