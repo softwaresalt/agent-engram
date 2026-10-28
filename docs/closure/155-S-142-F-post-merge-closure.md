@@ -83,6 +83,10 @@ merge SHA `9d1d0678908fd3f795c1f0bf36f3b6744e209151`.
 
 Delivery: PR #441 (feature), commit 9d1d0678908fd3f795c1f0bf36f3b6744e209151 (merge commit, P-009).
 
+## Procedure deviation record (operator-directed)
+
+The shipment-reconcile skill's non-cascading sequence moves the shipment to `shipped` and verifies live `status: shipped` before `backlogit archive`. This close instead followed the sequence the operator prescribed in the 155-S dark-mode activation contract (the same sequence approved and merged for 154-S in PR #440): `backlogit archive 155-S` (`archived_status: active`) and then the official `backlogit shipment reconcile-shipped` with `--closure-evidence` and `--confirm`, which records a `shipment_reconciled_shipped` event bound to merge SHA `9d1d0678908fd3f795c1f0bf36f3b6744e209151` and ends at `archived_status: shipped`. Provenance is preserved in `.backlogit/archive/155-S.md` (before: `archived_status: active`; after: `shipped`). Approval source: operator activation contract (`merge_approval_pre_authorized: true`, explicit closure procedure). The skill text is not changed here; aligning it with the `reconcile-shipped` path is a Stage concern.
+
 ## Runtime verification
 
 Not applicable. The change adds library stages that no binary or launcher consumes yet, so no runtime surface changed.
