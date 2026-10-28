@@ -95,7 +95,7 @@ launcher consumes `preflight_invocation` (142.071-T and later).
 | Owner | Release owner of the next tagged release; Stage owns follow-up triage. |
 | Observation window | The first release that consumes the invocation contract, plus one daemon restart. |
 | Rollback trigger | Any alert-threshold condition that persists after one retry. |
-| Rollback procedure | The module is unconsumed today, so reverting merge commit `0071c2eba5655a087ba27467d34432879dc5599c` removes only the module, its `pub mod` line and its test. Once 142.071-T consumes it, roll back the consuming release together with this merge and rebuild. |
+| Rollback procedure | The module is unconsumed today, so roll back by reverting only the code from PR #447 (merge `0071c2eba5655a087ba27467d34432879dc5599c`): `crates/engram-indexer/src/preflight_invocation.rs`, its `pub mod` line in `crates/engram-indexer/src/lib.rs`, and `crates/engram-indexer/tests/preflight_invocation_test.rs`. Do not revert the whole merge: that would also undo the `142.070-T` archival and conflict with the closed `158-S` shipment record. Preserve backlog state and closure evidence. Once 142.071-T consumes the module, roll back the consuming release code together with these files and rebuild. |
 
 ## Source artifact cleanup
 
