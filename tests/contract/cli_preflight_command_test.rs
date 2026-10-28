@@ -43,7 +43,17 @@ fn run(exe: &Path, args: &[&str], workspace_env: Option<&Path>) -> Output {
     if let Some(ws) = workspace_env {
         cmd.env("ENGRAM_WORKSPACE", ws);
     }
-    cmd.output().expect("spawn engram")
+    // A freshly copied executable can transiently report ETXTBSY on Linux when
+    // a concurrent test thread forks while the copy's write handle is open.
+    for attempt in 0..20 {
+        match cmd.output() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && attempt < 19 => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            other => return other.expect("spawn engram"),
+        }
+    }
+    unreachable!("the final attempt always returns")
 }
 
 /// Infrastructure smoke check: a copied debug binary must start at all.
