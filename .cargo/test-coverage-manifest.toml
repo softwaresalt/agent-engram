@@ -121,6 +121,10 @@ path = "src/services/"
 targets = ["contract_*", "integration_*", "unit_*", "cold_*", "helpers_*"]
 
 [[surface]]
+path = "src/preflight_probe.rs"
+targets = ["contract_*", "integration_*", "unit_*", "cold_*", "helpers_*"]
+
+[[surface]]
 path = "src/shim/"
 targets = ["contract_*", "integration_*", "unit_*", "cold_*", "helpers_*"]
 

@@ -40,6 +40,7 @@ pub mod db;
 pub mod errors;
 pub mod installer;
 pub mod models;
+pub mod preflight_probe;
 pub mod server;
 pub mod services;
 pub mod shim;
