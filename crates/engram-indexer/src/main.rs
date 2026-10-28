@@ -44,6 +44,10 @@ fn required_env_os(name: &str) -> Result<OsString, io::Error> {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
+    if env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("preflight")) {
+        eprintln!("Worker: 142.071-T");
+        return ExitCode::SUCCESS;
+    }
     match run().await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
