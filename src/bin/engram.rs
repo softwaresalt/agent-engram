@@ -4,7 +4,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use engram::cli::commands::{
-    eval, indexing, lifecycle, lint_dax, manifest, migrate, report, search, verify,
+    eval, indexing, lifecycle, lint_dax, manifest, migrate, preflight, report, search, verify,
 };
 use engram::cli::flags::GlobalFlags;
 use engram::cli::output::OutputFormatter;
@@ -626,11 +626,10 @@ async fn main() -> Result<()> {
             std::process::exit(code);
         }
         Command::Preflight {
-            workspace: _,
-            timeout_ms: _,
+            workspace,
+            timeout_ms,
         } => {
-            eprintln!("Worker: 142.073-T");
-            std::process::exit(2);
+            std::process::exit(preflight::run_preflight(&workspace, timeout_ms));
         }
     }
 
