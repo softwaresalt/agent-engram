@@ -70,7 +70,10 @@ with a merge commit (P-009), merge SHA `7cb7ad6c0b663b78c3a57f344583cafc88e24e4a
 * Covering feature `142-F` is `status: active` with SHA-256
   `42FCA67C1407641C8F3CF4752B3431D978290B1342614A831DF463B572181770` before and after close.
 * The `shipment_reconciled_shipped` event attests this closure document as committed with the `reconcile-shipped`
-  call; it is reviewed before that call so the attested hash matches the final content.
+  call; it was reviewed before that call. A later Copilot review correction (the distribution wording in Runtime
+  verification) changed the document after that attestation; `backlogit shipment reconcile-shipped` refused a second
+  attestation for the already-reconciled shipment (exit 10, idempotency conflict), so the event keeps the hash of the
+  pre-correction content and this note is the traceable record of the difference.
 * Post-reconcile report: `.backlogit/reconcile/161-S-post-20261028T2350Z.md`.
 
 ## 161-S
@@ -99,7 +102,10 @@ stderr: engram-preflight stage=Build cause=setup elapsed_ms=19 engram-preflight-
 scratch directory entries before and after: 0 / 0 (unchanged)
 ```
 
-The command is hidden, dev-launcher-only, and excluded from the agent archive and installer.
+The hidden command is declared unconditionally in the `engram` binary, so it ships in every distributed `engram` build
+(`hide = true` only removes it from help). It is dev-launcher-only by contract; the separately packaged helper
+`engram-indexer`, which the command relays to, is the component excluded from the agent archive and installer. Outside
+a dev layout the command therefore reports the `missing_sibling` build failure.
 
 ## Monitoring and rollback handoff
 
