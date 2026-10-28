@@ -165,10 +165,14 @@ fn classify(stdout: &[u8], exit_code: Option<i32>) -> (&'static str, i32, bool) 
     }
 }
 
-/// Echoes non-conforming supervisor bytes (at most 4 KiB) to stderr.
+/// Echoes non-conforming supervisor bytes (at most 4 KiB, escaped onto one line) to stderr.
 fn echo_nonconforming(stdout: &[u8]) {
     if stdout.len() <= OUTPUT_CAP {
-        let _ = writeln!(std::io::stderr(), "{}", String::from_utf8_lossy(stdout));
+        let _ = writeln!(
+            std::io::stderr(),
+            "{}",
+            String::from_utf8_lossy(stdout).escape_debug()
+        );
     }
 }
 
@@ -211,6 +215,7 @@ fn spawn_reader(mut pipe: impl Read + Send + 'static) -> mpsc::Receiver<std::io:
                         break;
                     }
                 }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(e) => {
                     let _ = tx.send(Err(e));
                     break;
