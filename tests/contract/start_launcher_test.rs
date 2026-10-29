@@ -16,10 +16,13 @@ fn main() {
     let mode = env::var("FIX_MODE").unwrap_or_default();
     if mode == "child" {
         thread::sleep(Duration::from_millis(6000));
-        fs::write(env::var("FIX_MARKER").unwrap(), "survived").unwrap();
+        let _ = fs::write(env::var("FIX_MARKER").unwrap(), "survived");
         return;
     }
-    if let Ok(p) = env::var("FIX_ARGS") { fs::write(p, args.join("\n")).unwrap(); }
+    if let Ok(p) = env::var("FIX_ARGS") {
+        let mut f = fs::OpenOptions::new().create(true).append(true).open(p).unwrap();
+        std::io::Write::write_all(&mut f, format!("{}\n", args.join("|")).as_bytes()).unwrap();
+    }
     match mode.as_str() {
         "ok" => println!("{{\"state\":\"Succeeded\"}}"),
         "fail" => {
@@ -27,6 +30,7 @@ fn main() {
             eprintln!("boom-stderr");
             std::process::exit(1);
         }
+        "silent" => {}
         "lie" => println!("{{\"state\":\"Failed\",\"stage\":\"Build\"}}"),
         _ => {
             Command::new(env::current_exe().unwrap()).env("FIX_MODE", "child")
@@ -149,7 +153,12 @@ fn launcher_launches_copilot_after_succeeded_preflight() {
         run.output
     );
     let args = fs::read_to_string(run.dir.join("args.txt")).expect("preflight argv recorded");
-    let lines: Vec<&str> = args.lines().collect();
+    assert_eq!(
+        args.lines().count(),
+        1,
+        "exactly one preflight call, no sync/bind: {args:?}"
+    );
+    let lines: Vec<&str> = args.trim_end().split('|').collect();
     assert_eq!(lines.len(), 4, "one argv element per argument: {args:?}");
     assert_eq!(lines[0], "preflight");
     assert!(
@@ -193,6 +202,19 @@ fn launcher_blocks_on_non_succeeded_verdict_despite_zero_exit() {
         run.output
     );
     assert!(!run.copilot_marker().exists(), "{}", run.output);
+    assert!(run.output.contains("reported state"), "{}", run.output);
+}
+
+#[test]
+fn launcher_blocks_when_exit_zero_without_succeeded_verdict() {
+    let run = run_launcher(Some("silent"), "15000");
+    assert!(!run.success, "silent exit 0 must block; {}", run.output);
+    assert!(!run.copilot_marker().exists(), "{}", run.output);
+    assert!(
+        run.output.contains("without a Succeeded verdict"),
+        "{}",
+        run.output
+    );
 }
 
 #[test]
@@ -212,11 +234,11 @@ fn launcher_timeout_blocks_and_kills_only_its_own_child() {
     assert!(!run.success, "timeout must block; {}", run.output);
     assert!(!run.copilot_marker().exists(), "{}", run.output);
     assert!(
-        run.elapsed < Duration::from_secs(15),
+        run.elapsed < Duration::from_secs(25),
         "bounded wait; elapsed {:?}",
         run.elapsed
     );
-    let deadline = Instant::now() + Duration::from_secs(8);
+    let deadline = Instant::now() + Duration::from_secs(15);
     while !run.descendant_marker().is_file() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
     }

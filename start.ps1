@@ -1,3 +1,4 @@
+#Requires -Version 7.0
 # Runtime registration is handled by the setup commands.
 # This script only launches Copilot CLI with workspace-local state.
 #
@@ -70,18 +71,28 @@ function Invoke-EngramPreflight {
     }
 
     # Bounded drain: an unowned descendant may hold the pipes open after exit.
-    if ($stdoutTask.Wait(2000)) { $stdout = $stdoutTask.Result }
-    if ($stderrTask.Wait(2000)) { $stderr = $stderrTask.Result }
+    try { [void][System.Threading.Tasks.Task]::WaitAll(@($stdoutTask, $stderrTask), 2000) } catch { }
+    if ($stdoutTask.IsCompletedSuccessfully) { $stdout = $stdoutTask.Result }
+    if ($stderrTask.IsCompletedSuccessfully) { $stderr = $stderrTask.Result }
 
     if ($null -eq $failure -and $process.ExitCode -ne 0) {
       $failure = "engram preflight failed with exit code $($process.ExitCode)."
     }
     if ($null -eq $failure) {
+      # Exit 0 is necessary but not sufficient: a Succeeded verdict line must be
+      # present and no verdict line may report any other state.
+      $succeeded = $false
       foreach ($line in ($stdout -split "`r?`n")) {
-        if ($line -match '"state"\s*:\s*"([^"]*)"' -and $matches[1] -ne "Succeeded") {
-          $failure = "engram preflight reported state '$($matches[1])': $line"
-          break
+        if ($line -match '"state"\s*:\s*"([^"]*)"') {
+          if ($matches[1] -eq "Succeeded") { $succeeded = $true }
+          else {
+            $failure = "engram preflight reported state '$($matches[1])': $line"
+            break
+          }
         }
+      }
+      if ($null -eq $failure -and -not $succeeded) {
+        $failure = "engram preflight exited 0 without a Succeeded verdict line."
       }
     }
   }
