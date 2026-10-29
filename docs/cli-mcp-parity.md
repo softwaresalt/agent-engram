@@ -52,6 +52,7 @@ The audit is grounded in the current source:
 | `-` | `engram manifest` | local | Local command emits the compile-time MCP catalog without contacting a daemon |
 | `-` | `engram verify <path>` | local | Local structural markdown and TMDL conformance gate; no daemon or database |
 | `-` | `engram migrate-down <target>` | local | Operator-invoked destructive down-migration; intentionally not exposed as MCP |
+| `-` | `engram preflight <WORKSPACE> --timeout-ms <MS>` | local | Local dev launcher only; hidden; relays to the separately distributed `engram-indexer` supervisor; one JSON verdict line; exit 0 only on Succeeded; requires `cargo build --workspace` |
 
 ## MCP tools without CLI commands
 
@@ -89,6 +90,7 @@ Current CLI-only commands are intentionally local or internal:
 * `engram manifest`: local tools-list rendering from the compile-time catalog
 * `engram verify <path>`: local structural conformance gate
 * `engram migrate-down <target>`: operator-invoked destructive maintenance
+* `engram preflight <WORKSPACE> --timeout-ms <MS>`: local dev-launcher-only preflight relay to the separately distributed `engram-indexer` supervisor
 
 ## Drift guard expectations
 

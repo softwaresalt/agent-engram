@@ -33,6 +33,7 @@ const LOCAL_CLI_ALLOWLIST: &[&str] = &[
     "manifest",
     "verify",
     "migrate-down",
+    "preflight",
 ];
 
 #[derive(Debug)]
