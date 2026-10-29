@@ -1305,6 +1305,10 @@ path = "tests/contract/start_sh_launcher_test.rs"
 name = "contract_read_server_cli_mcp_parity"
 path = "tests/contract/read_server_cli_mcp_parity_test.rs"
 
+[[test]]
+name = "integration_read_server_activation_settle"
+path = "tests/integration/read_server_activation_settle_test.rs"
+
 [[example]]
 name = "cozo_api_spike"
 path = "examples/cozo_api_spike.rs"
