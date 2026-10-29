@@ -1,7 +1,4 @@
-//! Integration coverage for PRE-3F (142.063-T): a generation published before
-//! spawn is activated at startup, the activation settles, and the settled
-//! server is quiescent.
-
+//! Integration coverage for PRE-3F (142.063-T): activation settles and is quiescent.
 #![forbid(unsafe_code)]
 
 #[path = "../helpers/activation_settle.rs"]
@@ -207,6 +204,10 @@ async fn assert_quiescent(fixture: &SettleFixture) {
     let s2 = snapshot();
     let f2 = binding_fingerprint(&fixture.endpoint).await;
     assert_eq!(s1, s2, "{PRE3F_RED_MARKER}: (d) filesystem not quiescent");
+    assert!(
+        f1.is_some(),
+        "{PRE3F_RED_MARKER}: (d) no binding fingerprint"
+    );
     assert_eq!(f1, f2, "{PRE3F_RED_MARKER}: (d) binding not quiescent");
 }
 
@@ -226,7 +227,25 @@ async fn published_fixture_generation_activates_at_startup_and_quiesces() {
     .unwrap_or_else(|error| panic!("{PRE3F_RED_MARKER}: (b) activation did not settle: {error}"));
     assert_eq!(settled, Settled::Active, "{PRE3F_RED_MARKER}: (b)");
     let generation = status_generation(&fixture.endpoint).await;
-    assert_eq!(generation["active_revision"], 1, "PRE3F-RED: (c)");
+    assert_eq!(
+        generation["active_revision"], 1,
+        "{PRE3F_RED_MARKER}: (c) active"
+    );
+    assert_eq!(
+        generation["published_revision"], 1,
+        "{PRE3F_RED_MARKER}: (c) published"
+    );
+    let divergence = &generation["branch_divergence"];
+    assert_eq!(
+        divergence["served_branch"], "main",
+        "{PRE3F_RED_MARKER}: (c) branch"
+    );
+    assert_eq!(
+        divergence["diverged"], false,
+        "{PRE3F_RED_MARKER}: (c) diverged"
+    );
+    let copies = &generation["retained_runtime_copies"]["count"];
+    assert_eq!(*copies, 1, "{PRE3F_RED_MARKER}: (c) retained copies");
     let runtime = fixture.workspace.join(".engram/generations/runtime");
     let copy = runtime.join(EXPECTED_GENERATION).join("engram.db");
     assert!(copy.is_file(), "{PRE3F_RED_MARKER}: (c) no runtime copy");
