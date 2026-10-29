@@ -42,6 +42,15 @@ case "$(cat "$root/mode.txt")" in
         printf '%s\n' '{"state":"Failed","stage":"ReadServerReady"}'
         exit 5
         ;;
+    stubborn)
+        # Interrupt the launcher (our parent) while ignoring TERM ourselves.
+        sleep 60 >/dev/null 2>&1 &
+        printf '%s\n' "$!" > "$root/descendant.pid"
+        printf '%s\n' "$$" > "$root/owner.pid"
+        trap '' TERM
+        kill -TERM "$PPID"
+        while true; do sleep 0.1; done
+        ;;
     hang)
         sleep 60 >/dev/null 2>&1 &
         printf '%s\n' "$!" > "$root/descendant.pid"
@@ -430,6 +439,36 @@ fn launches_from_workspace_even_when_called_from_elsewhere_with_relative_agent_p
             event.starts_with("cwd:") && event.ends_with("launcher workspace with spaces")
         }),
         "{}",
+        run.describe()
+    );
+}
+
+#[test]
+fn interrupt_kills_a_term_resistant_own_child_but_not_its_descendant() {
+    let fixture = Fixture::new("stubborn");
+    let run = fixture.run_launcher(None);
+
+    let owner = fixture.pid("owner.pid");
+    let descendant = fixture.pid("descendant.pid");
+    assert!(
+        owner.is_some() && descendant.is_some(),
+        "{}",
+        run.describe()
+    );
+    let (owner, descendant) = (owner.unwrap_or_default(), descendant.unwrap_or_default());
+    let owner_alive = fixture.pid_alive(owner);
+    let descendant_alive = fixture.pid_alive(descendant);
+
+    assert!(!run.output.status.success(), "{}", run.describe());
+    assert!(!run.launched(), "{}", run.describe());
+    assert!(
+        !owner_alive,
+        "TERM-resistant child survived: {}",
+        run.describe()
+    );
+    assert!(
+        descendant_alive,
+        "unowned descendant was terminated: {}",
         run.describe()
     );
 }

@@ -54,11 +54,26 @@ now_ms() {
 	fi
 }
 
-# If the launcher is interrupted mid-preflight, stop only its own child and
-# remove its temp files. Cleared before the agent is launched.
+# Stop exactly one child PID this launcher started: TERM, a bounded grace
+# period, then KILL, then reap it. Descendants of the child are never signaled.
+stop_owned_child() {
+	local child="$1" grace=0
+	kill "$child" 2>/dev/null || true
+	while kill -0 "$child" 2>/dev/null && ((grace < 1000)); do
+		sleep 0.1
+		grace=$((grace + 100))
+	done
+	if kill -0 "$child" 2>/dev/null; then
+		kill -9 "$child" 2>/dev/null || true
+	fi
+	wait "$child" 2>/dev/null || true
+}
+
+# If the launcher is interrupted mid-preflight, stop only its own child (and
+# reap it before its output files are removed). Cleared before the agent starts.
 preflight_cleanup() {
 	if [[ -n "$preflight_child" ]] && kill -0 "$preflight_child" 2>/dev/null; then
-		kill "$preflight_child" 2>/dev/null || true
+		stop_owned_child "$preflight_child"
 	fi
 	[[ -z "$preflight_out_file" ]] || rm -f -- "$preflight_out_file"
 	[[ -z "$preflight_err_file" ]] || rm -f -- "$preflight_err_file"
@@ -105,15 +120,7 @@ run_engram_preflight() {
 			# Terminate only the child this launcher started ($child, owned by
 			# PID). Descendants it spawned are not owned by the launcher and are
 			# never terminated.
-			kill "$child" 2>/dev/null || true
-			local grace=0
-			while kill -0 "$child" 2>/dev/null && ((grace < 1000)); do
-				sleep 0.1
-				grace=$((grace + 100))
-			done
-			if kill -0 "$child" 2>/dev/null; then
-				kill -9 "$child" 2>/dev/null || true
-			fi
+			stop_owned_child "$child"
 			failure="engram preflight exceeded its ${budget_ms} ms budget."
 			break
 		fi
