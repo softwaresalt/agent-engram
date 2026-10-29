@@ -33,8 +33,12 @@ fn main() {
         "silent" => {}
         "lie" => println!("{{\"state\":\"Failed\",\"stage\":\"Build\"}}"),
         _ => {
+            // The descendant inherits this process' pipes and holds them open.
+            println!("partial-out");
+            eprintln!("partial-err");
+            fs::write(env::var("FIX_PID").unwrap(), std::process::id().to_string()).unwrap();
             Command::new(env::current_exe().unwrap()).env("FIX_MODE", "child")
-                .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+                .stdin(Stdio::null()).stdout(Stdio::inherit()).stderr(Stdio::inherit())
                 .spawn().unwrap();
             thread::sleep(Duration::from_secs(30));
         }
@@ -109,6 +113,7 @@ fn run_launcher(mode: Option<&str>, outer_ms: &str) -> Run {
         .env("FIX_MODE", mode.unwrap_or(""))
         .env("FIX_ARGS", dir.join("args.txt"))
         .env("FIX_MARKER", dir.join("descendant-survived.txt"))
+        .env("FIX_PID", dir.join("child.pid"))
         .env("ENGRAM_PREWARM_TIMEOUT_MS", outer_ms)
         .output()
         .expect("run launcher contract");
@@ -237,6 +242,20 @@ fn launcher_timeout_blocks_and_kills_only_its_own_child() {
         run.elapsed < Duration::from_secs(25),
         "bounded wait; elapsed {:?}",
         run.elapsed
+    );
+    assert!(
+        run.output.contains("partial-err") && run.output.contains("partial-out"),
+        "partial diagnostics survive an inherited open pipe; {}",
+        run.output
+    );
+    let pid = fs::read_to_string(run.dir.join("child.pid")).expect("child pid recorded");
+    let alive = Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {}", pid.trim()), "/NH"])
+        .output()
+        .expect("tasklist");
+    assert!(
+        !String::from_utf8_lossy(&alive.stdout).contains("engram.exe"),
+        "the launcher's direct child must be terminated; pid {pid}"
     );
     let deadline = Instant::now() + Duration::from_secs(15);
     while !run.descendant_marker().is_file() && Instant::now() < deadline {

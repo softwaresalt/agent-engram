@@ -9,6 +9,30 @@
 # globally with `copilot plugin install autoharness@autoharness`; do not run
 # `setup-copilot-cli` here (COPILOT_HOME is redirected to a workspace-local dir).
 
+if (-not ("EngramPipeCapture" -as [type])) {
+  Add-Type -TypeDefinition @"
+public sealed class EngramPipeCapture {
+  private readonly System.Text.StringBuilder buffer = new System.Text.StringBuilder();
+  private readonly System.Threading.Thread worker;
+  public EngramPipeCapture(System.IO.TextReader reader) {
+    worker = new System.Threading.Thread(() => {
+      var chunk = new char[4096];
+      try {
+        int count;
+        while ((count = reader.Read(chunk, 0, chunk.Length)) > 0) {
+          lock (buffer) { buffer.Append(chunk, 0, count); }
+        }
+      } catch (System.Exception) { }
+    });
+    worker.IsBackground = true;
+    worker.Start();
+  }
+  public bool Join(int milliseconds) { return worker.Join(milliseconds); }
+  public string Text { get { lock (buffer) { return buffer.ToString(); } } }
+}
+"@
+}
+
 function Invoke-EngramPreflight {
   # PA-2 launcher contract: `engram preflight <WORKSPACE> --timeout-ms <T>` replaces
   # the legacy sync/bind pre-warm under one budget. The exit status is authoritative;
@@ -50,8 +74,8 @@ function Invoke-EngramPreflight {
   $failure = $null
   try {
     $process = [System.Diagnostics.Process]::Start($startInfo)
-    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
-    $stderrTask = $process.StandardError.ReadToEndAsync()
+    $stdoutCapture = New-Object EngramPipeCapture -ArgumentList $process.StandardOutput
+    $stderrCapture = New-Object EngramPipeCapture -ArgumentList $process.StandardError
 
     if (-not $process.WaitForExit($BudgetMs)) {
       try {
@@ -71,9 +95,13 @@ function Invoke-EngramPreflight {
     }
 
     # Bounded drain: an unowned descendant may hold the pipes open after exit.
-    try { [void][System.Threading.Tasks.Task]::WaitAll(@($stdoutTask, $stderrTask), 2000) } catch { }
-    if ($stdoutTask.IsCompletedSuccessfully) { $stdout = $stdoutTask.Result }
-    if ($stderrTask.IsCompletedSuccessfully) { $stderr = $stderrTask.Result }
+    # The captures buffer incrementally, so output already emitted is kept even
+    # when a descendant holds a pipe open past the shared drain deadline.
+    $drainClock = [System.Diagnostics.Stopwatch]::StartNew()
+    [void]$stdoutCapture.Join(2000)
+    [void]$stderrCapture.Join([Math]::Max(0, 2000 - [int]$drainClock.ElapsedMilliseconds))
+    $stdout = $stdoutCapture.Text
+    $stderr = $stderrCapture.Text
 
     if ($null -eq $failure -and $process.ExitCode -ne 0) {
       $failure = "engram preflight failed with exit code $($process.ExitCode)."
