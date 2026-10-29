@@ -137,6 +137,8 @@ function Invoke-EngramPreflight {
   if ($stdout) { Write-Host $stdout.TrimEnd() }
   if ($null -ne $failure) {
     if ($stderr) { [Console]::Error.WriteLine($stderr.TrimEnd()) }
+    $failedStage = "Worker: 142.056-T"  # Worker: 142.056-T placeholder: typed-stage diagnostic not implemented
+    Write-Host "engram preflight failed at stage $failedStage."
     throw "$failure Copilot was not launched."
   }
 }
