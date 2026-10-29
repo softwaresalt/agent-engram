@@ -73,6 +73,7 @@ function Invoke-EngramPreflight {
   $stdout = ""
   $stderr = ""
   $failure = $null
+  $nonZeroExit = $false
   try {
     $process = [System.Diagnostics.Process]::Start($startInfo)
     $stdoutCapture = New-Object EngramPipeCapture -ArgumentList $process.StandardOutput
@@ -106,6 +107,7 @@ function Invoke-EngramPreflight {
 
     if ($null -eq $failure -and $process.ExitCode -ne 0) {
       $failure = "engram preflight failed with exit code $($process.ExitCode)."
+      $nonZeroExit = $true
     }
     if ($null -eq $failure) {
       # Exit 0 is necessary but not sufficient: a Succeeded verdict line must be
@@ -137,6 +139,20 @@ function Invoke-EngramPreflight {
   if ($stdout) { Write-Host $stdout.TrimEnd() }
   if ($null -ne $failure) {
     if ($stderr) { [Console]::Error.WriteLine($stderr.TrimEnd()) }
+    # The typed stage comes from the first non-Succeeded verdict line; when the
+    # process exited non-zero, any line carrying a stage is accepted.
+    $failedStage = $null
+    foreach ($line in ([string]$stdout -split "`r?`n")) {
+      if ($line -notmatch '"stage"\s*:\s*"([^"]*)"') { continue }
+      $lineStage = $matches[1]
+      $isSucceeded = ($line -match '"state"\s*:\s*"Succeeded"')
+      if ((-not $isSucceeded) -or $nonZeroExit) {
+        if ($lineStage) { $failedStage = $lineStage; break }
+      }
+    }
+    if ($failedStage) {
+      Write-Host "engram preflight failed at stage $failedStage."
+    }
     throw "$failure Copilot was not launched."
   }
 }
