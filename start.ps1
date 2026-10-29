@@ -16,11 +16,12 @@ public sealed class EngramPipeCapture {
   private readonly System.Threading.Thread worker;
   public EngramPipeCapture(System.IO.TextReader reader) {
     worker = new System.Threading.Thread(() => {
-      var chunk = new char[4096];
       try {
-        int count;
-        while ((count = reader.Read(chunk, 0, chunk.Length)) > 0) {
-          lock (buffer) { buffer.Append(chunk, 0, count); }
+        // One character at a time: a block Read can wait for more data while
+        // already-emitted output sits in the decoder buffer.
+        int next;
+        while ((next = reader.Read()) >= 0) {
+          lock (buffer) { buffer.Append((char)next); }
         }
       } catch (System.Exception) { }
     });

@@ -34,6 +34,7 @@ fn main() {
         "lie" => println!("{{\"state\":\"Failed\",\"stage\":\"Build\"}}"),
         _ => {
             // The descendant inherits this process' pipes and holds them open.
+            println!("{}", "\u{e9}".repeat(3000));
             println!("partial-out");
             eprintln!("partial-err");
             fs::write(env::var("FIX_PID").unwrap(), std::process::id().to_string()).unwrap();
