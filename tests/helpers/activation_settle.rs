@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use engram::daemon::protocol::{IpcRequest, IpcResponse};
 use engram::shim::ipc_client::send_request;
@@ -148,11 +148,60 @@ pub async fn await_activation_settled(
     snapshot_root: &Path,
     expected_revision: u64,
 ) -> Result<Settled, String> {
-    tokio::task::yield_now().await;
+    let at_revision = |generation: &Value, expected_revision: u64| {
+        let expected = Some(expected_revision);
+        generation["active_revision"].as_u64() == expected
+            && generation["published_revision"].as_u64() == expected
+    };
+    let started = Instant::now();
+    let mut last = Value::Null;
+    while started.elapsed() < SETTLE_TIMEOUT {
+        if let Some(generation) = poll_generation(endpoint).await {
+            last = generation.clone();
+            if generation.is_null() && started.elapsed() < SETTLE_TIMEOUT {
+                return Ok(report_settled(Settled::NoActivator, started));
+            }
+            if at_revision(&generation, expected_revision) {
+                // F1, S1, wait, S2, F2: no IPC call between the two snapshots.
+                let first = binding_fingerprint(endpoint).await;
+                // A transient snapshot error (a file vanishing or locked mid-read)
+                // counts as unsettled and re-polls instead of aborting.
+                let snapshot1 = filesystem_snapshot(snapshot_root).ok();
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                let snapshot2 = filesystem_snapshot(snapshot_root).ok();
+                let second = binding_fingerprint(endpoint).await;
+                if let (Some(first), Some(second)) = (first, second) {
+                    last = second["generation"].clone();
+                    if at_revision(&first["generation"], expected_revision)
+                        && at_revision(&second["generation"], expected_revision)
+                        && snapshot1.is_some()
+                        && snapshot1 == snapshot2
+                        && first == second
+                        && started.elapsed() < SETTLE_TIMEOUT
+                    {
+                        return Ok(report_settled(Settled::Active, started));
+                    }
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
     Err(format!(
-        "activation-settle barrier not implemented (PRE-3F); endpoint={endpoint}, \
-         root={}, revision={expected_revision}, timeout={SETTLE_TIMEOUT:?}, variants={:?}",
-        snapshot_root.display(),
-        [Settled::NoActivator, Settled::Active],
+        "activation-settle timed out after {SETTLE_TIMEOUT:?} waiting for revision \
+         {expected_revision}; last generation: {last}"
     ))
+}
+
+/// Returns the `generation` block of one status poll, or `None` when the
+/// call fails or the socket is not bound yet.
+async fn poll_generation(endpoint: &str) -> Option<Value> {
+    let response = send_ipc(endpoint, "get_workspace_status").await.ok()?;
+    let result = response.result?;
+    Some(result.get("generation").cloned().unwrap_or(Value::Null))
+}
+
+fn report_settled(settled: Settled, started: Instant) -> Settled {
+    let elapsed_ms = started.elapsed().as_millis();
+    eprintln!("F54 settle: {settled:?} after {elapsed_ms} ms");
+    settled
 }
