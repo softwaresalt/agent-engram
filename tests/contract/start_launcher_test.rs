@@ -9,7 +9,7 @@ use tempfile::TempDir;
 
 /// Fixture `engram.exe`: records its argv, prints a verdict per `FIX_MODE`, and
 /// (hang mode) spawns an unowned descendant that outlives a launcher kill.
-const FIXTURE_SRC: &str = r##"
+const FIXTURE_SRC: &str = r#"
 use std::{env, fs, process::{Command, Stdio}, thread, time::Duration};
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -36,7 +36,7 @@ fn main() {
         }
     }
 }
-"##;
+"#;
 
 struct Run {
     dir: PathBuf,
