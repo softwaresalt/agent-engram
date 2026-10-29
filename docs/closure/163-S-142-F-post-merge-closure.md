@@ -6,7 +6,7 @@ feature_id: "142-F"
 mode: post-merge
 date: 2026-10-29
 author: ship
-verdict: "READY (start.ps1 pre-warm replaced by fail-closed preflight; start.sh parity 142.057-T and docs 142.074-T pending) - PR #457 merged and 163-S safe-closed (non-cascading; 142-F unchanged)"
+verdict: "READY (start.ps1 pre-warm replaced by fail-closed preflight; start.sh parity 142.057-T and docs 142.059-T pending) - PR #457 merged and 163-S safe-closed (non-cascading; 142-F unchanged)"
 closure_status: "READY"
 releasability: "READY_WITH_CONDITIONS"
 compaction_status: "done"
@@ -76,6 +76,7 @@ a merge commit (P-009), merge SHA `eb9e481406e76a9511a47592f1c5b600a2e607d6`.
 * This closure document was reviewed and finalized before the `reconcile-shipped` call, which attests it as committed
   with that call; it is not edited afterwards.
 * Post-reconcile report: `.backlogit/reconcile/163-S-post-20261029T0330Z.md`.
+* Correction after Copilot review of the closure PR: the follow-up handoff named `142.074-T` (already done) instead of queued `142.059-T`; the four references were corrected. The `closure_content_hash` in the `shipment_reconciled_shipped` event (`7e17af1bd55e907af8457fe541491c425138b96e61f3aed2c39819d8b0d68392`) attests the text before that correction; `backlogit shipment reconcile-shipped` refuses a second attestation (exit 10, conflicting reconciliation), and `autoharness gate closure-evidence` still passes.
 
 ## 163-S
 
@@ -134,6 +135,5 @@ Compaction status: `done`.
 ## Follow-ups
 
 * No new stash entries.
-* Docs that still describe the fail-open pre-warm (compound note, README, `docs/configuration.md`) are covered by the
-  docs follow-up work in 142-F (`142.074-T`); `start.sh` parity is `142.057-T`.
+* The compound note that still says to treat fail-open as a requirement is covered by queued `142.059-T` (F55, Superseded by 142-F note). The README and `docs/configuration.md` descriptions of the `engram sync --direct` pre-warm are not owned by any queued task and are routed to Stage for ownership. `start.sh` parity is `142.057-T`.
 * Stage proceeds with the next 142-F slot.

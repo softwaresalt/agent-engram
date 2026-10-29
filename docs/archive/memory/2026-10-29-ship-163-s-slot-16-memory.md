@@ -21,4 +21,4 @@ feature: 142-F
 
 ## Next
 
-Stage continues the 142-F decomposition. `142.056-T` and `142.057-T` (F53) remain; docs still describing fail-open pre-warm are owned by `142.074-T` follow-ups.
+Stage continues the 142-F decomposition. `142.056-T` and `142.057-T` (F53) remain; the compound note is owned by queued `142.059-T`, and the README and `docs/configuration.md` fail-open descriptions are routed to Stage.
