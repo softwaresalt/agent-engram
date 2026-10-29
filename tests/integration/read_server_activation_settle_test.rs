@@ -170,12 +170,33 @@ fn publish_fixture_generation(workspace: &Path) -> SetupResult<()> {
 }
 
 async fn status_generation(endpoint: &str) -> Value {
-    let response = send_ipc(endpoint, "get_workspace_status").await;
-    response
-        .ok()
-        .and_then(|response| response.result)
-        .and_then(|result| result.get("generation").cloned())
-        .unwrap_or(Value::Null)
+    // Retry transport errors up to three times, 100 ms apart (R10.3 P2-10); a
+    // successful response, even with a null generation, is returned as is.
+    for attempt in 0..3 {
+        if attempt > 0 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        if let Some(result) = send_ipc(endpoint, "get_workspace_status")
+            .await
+            .ok()
+            .and_then(|response| response.result)
+        {
+            return result.get("generation").cloned().unwrap_or(Value::Null);
+        }
+    }
+    Value::Null
+}
+
+async fn fingerprint_with_retries(endpoint: &str) -> Option<Value> {
+    for attempt in 0..3 {
+        if attempt > 0 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        if let Some(fingerprint) = binding_fingerprint(endpoint).await {
+            return Some(fingerprint);
+        }
+    }
+    None
 }
 
 async fn wait_ready_with_generation(fixture: &SettleFixture) {
@@ -198,11 +219,11 @@ async fn wait_ready_with_generation(fixture: &SettleFixture) {
 async fn assert_quiescent(fixture: &SettleFixture) {
     let root = fixture.temporary_root.path();
     let snapshot = || filesystem_snapshot(root).unwrap_or_else(|error| block("snapshot", &error));
-    let f1 = binding_fingerprint(&fixture.endpoint).await;
+    let f1 = fingerprint_with_retries(&fixture.endpoint).await;
     let s1 = snapshot();
     tokio::time::sleep(QUIET_WINDOW).await;
     let s2 = snapshot();
-    let f2 = binding_fingerprint(&fixture.endpoint).await;
+    let f2 = fingerprint_with_retries(&fixture.endpoint).await;
     assert_eq!(s1, s2, "{PRE3F_RED_MARKER}: (d) filesystem not quiescent");
     assert!(
         f1.is_some(),
