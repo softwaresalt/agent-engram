@@ -53,6 +53,7 @@ The audit is grounded in the current source:
 | `-` | `engram verify <path>` | local | Local structural markdown and TMDL conformance gate; no daemon or database |
 | `-` | `engram migrate-down <target>` | local | Operator-invoked destructive down-migration; intentionally not exposed as MCP |
 | `-` | `engram preflight <WORKSPACE> --timeout-ms <MS>` | local | Local dev launcher only; hidden; relays to the separately distributed `engram-indexer` supervisor; one JSON verdict line; exit 0 only on Succeeded; requires `cargo build --workspace` |
+
 ## MCP tools without CLI commands
 
 Current MCP-only gaps are:
