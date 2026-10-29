@@ -31,11 +31,127 @@ set -euo pipefail
 export COPILOT_HOME="${COPILOT_HOME:-./.copilot}"
 # export ENGRAM_DATA_DIR="./.engram"   # Uncomment when the agent-engram capability pack is active
 #
-# Optional: pre-warm the Engram code graph before launching your agent. Direct
-# mode indexes in one process without leaving a daemon running, and is the
-# daemon-startup / IPC-timeout escape hatch:
-#   engram index --direct        # or: ENGRAM_DIRECT=1 engram sync
-# Reference: docs/configuration.md (Daemonless direct indexing).
+# Fail-closed Engram preflight (PA-2 launcher contract, parity with start.ps1).
+# `engram preflight "$WORKSPACE" --timeout-ms <T>` replaces the legacy sync/bind
+# pre-warm under ONE budget: T is the outer budget minus 3000 ms (2000 ms relay
+# grace plus 1000 ms margin). The exit status is authoritative: the agent is
+# launched only when the exit status is 0 AND a Succeeded verdict line is
+# present with no verdict line reporting any other state. Every failure blocks
+# the launch and prints the typed failing stage, stdout and stderr.
+# Optional: ENGRAM_PREWARM_TIMEOUT_MS overrides the outer budget (3001..30000).
+WORKSPACE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+preflight_state_re='"state"[[:space:]]*:[[:space:]]*"([^"]*)"'
+preflight_stage_re='"stage"[[:space:]]*:[[:space:]]*"([^"]*)"'
+
+run_engram_preflight() {
+	local workspace="$1" budget_ms="$2"
+	local timeout_ms=$((budget_ms - 3000))
+	local engram_exe="" candidate
+	for candidate in "$workspace/target/debug/engram" "$workspace/target/debug/engram.exe"; do
+		if [[ -f "$candidate" ]]; then
+			engram_exe="$candidate"
+			break
+		fi
+	done
+	if [[ -z "$engram_exe" ]]; then
+		echo "Engram preflight executable not found under $workspace/target/debug (build it with 'cargo build'). Copilot was not launched." >&2
+		return 1
+	fi
+
+	echo "Engram preflight — verifying workspace before Copilot startup"
+	local out_file err_file
+	out_file="$(mktemp)"
+	err_file="$(mktemp)"
+
+	# Run outside any pipeline so the exit status is read directly from $?.
+	# Output goes to files, so an unowned descendant holding a pipe open can
+	# never block the launcher.
+	"$engram_exe" preflight "$workspace" --timeout-ms "$timeout_ms" >"$out_file" 2>"$err_file" &
+	local child=$! waited=0 status=0 failure=""
+	while kill -0 "$child" 2>/dev/null; do
+		if ((waited >= budget_ms)); then
+			# Terminate only the child this launcher started ($child, owned by
+			# PID). Descendants it spawned are not owned by the launcher and are
+			# never terminated.
+			kill "$child" 2>/dev/null || true
+			local grace=0
+			while kill -0 "$child" 2>/dev/null && ((grace < 1000)); do
+				sleep 0.1
+				grace=$((grace + 100))
+			done
+			kill -9 "$child" 2>/dev/null || true
+			failure="engram preflight exceeded its ${budget_ms} ms budget."
+			break
+		fi
+		sleep 0.1
+		waited=$((waited + 100))
+	done
+	wait "$child" && status=0 || status=$?
+
+	local stdout stderr
+	stdout="$(<"$out_file")"
+	stderr="$(<"$err_file")"
+	rm -f -- "$out_file" "$err_file"
+
+	local non_zero_exit=0 succeeded=0 line
+	if [[ -z "$failure" && "$status" -ne 0 ]]; then
+		failure="engram preflight failed with exit code ${status}."
+		non_zero_exit=1
+	fi
+	if [[ -z "$failure" ]]; then
+		# Exit 0 is necessary but not sufficient.
+		while IFS= read -r line || [[ -n "$line" ]]; do
+			line="${line%$'\r'}"
+			if [[ "$line" =~ $preflight_state_re ]]; then
+				if [[ "${BASH_REMATCH[1]}" == "Succeeded" ]]; then
+					succeeded=1
+				else
+					failure="engram preflight reported state '${BASH_REMATCH[1]}': ${line}"
+					break
+				fi
+			fi
+		done <<<"$stdout"
+		if [[ -z "$failure" && "$succeeded" -eq 0 ]]; then
+			failure="engram preflight exited 0 without a Succeeded verdict line."
+		fi
+	fi
+
+	[[ -n "$stdout" ]] && printf '%s\n' "$stdout"
+	if [[ -n "$failure" ]]; then
+		[[ -n "$stderr" ]] && printf '%s\n' "$stderr" >&2
+		# The typed stage comes from the first non-Succeeded verdict line; when the
+		# process exited non-zero, any line carrying a stage is accepted.
+		local failed_stage=""
+		while IFS= read -r line || [[ -n "$line" ]]; do
+			line="${line%$'\r'}"
+			[[ "$line" =~ $preflight_stage_re ]] || continue
+			local line_stage="${BASH_REMATCH[1]}"
+			local is_succeeded=0
+			[[ "$line" =~ $preflight_state_re && "${BASH_REMATCH[1]}" == "Succeeded" ]] && is_succeeded=1
+			if [[ "$is_succeeded" -eq 0 || "$non_zero_exit" -eq 1 ]] && [[ -n "$line_stage" ]]; then
+				failed_stage="$line_stage"
+				break
+			fi
+		done <<<"$stdout"
+		[[ -n "$failed_stage" ]] && echo "engram preflight failed at stage ${failed_stage}."
+		echo "${failure} Copilot was not launched." >&2
+		return 1
+	fi
+	return 0
+}
+
+preflight_budget_ms=15000
+if [[ -n "${ENGRAM_PREWARM_TIMEOUT_MS:-}" ]]; then
+	if [[ ! "$ENGRAM_PREWARM_TIMEOUT_MS" =~ ^[0-9]+$ ]] ||
+		((10#$ENGRAM_PREWARM_TIMEOUT_MS <= 3000 || 10#$ENGRAM_PREWARM_TIMEOUT_MS > 30000)); then
+		echo "Invalid ENGRAM_PREWARM_TIMEOUT_MS; expected 3001..30000 milliseconds." >&2
+		exit 1
+	fi
+	preflight_budget_ms=$((10#$ENGRAM_PREWARM_TIMEOUT_MS))
+fi
+run_engram_preflight "$WORKSPACE" "$preflight_budget_ms" || exit 1
+
 if [ -z "${GITHUB_TOKEN:-}" ]; then
 	if command -v gh >/dev/null 2>&1; then
 		GITHUB_TOKEN="$(gh auth token 2>/dev/null || true)"
