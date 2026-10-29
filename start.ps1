@@ -1,3 +1,4 @@
+#Requires -Version 7.0
 # Runtime registration is handled by the setup commands.
 # This script only launches Copilot CLI with workspace-local state.
 #
@@ -8,82 +9,135 @@
 # globally with `copilot plugin install autoharness@autoharness`; do not run
 # `setup-copilot-cli` here (COPILOT_HOME is redirected to a workspace-local dir).
 
-function Invoke-EngramCommandWithProgress {
+if (-not ("EngramPipeCapture" -as [type])) {
+  Add-Type -TypeDefinition @"
+public sealed class EngramPipeCapture {
+  private readonly System.Text.StringBuilder buffer = new System.Text.StringBuilder();
+  private readonly System.Threading.Thread worker;
+  public EngramPipeCapture(System.IO.TextReader reader) {
+    worker = new System.Threading.Thread(() => {
+      try {
+        // One character at a time: a block Read can wait for more data while
+        // already-emitted output sits in the decoder buffer.
+        int next;
+        while ((next = reader.Read()) >= 0) {
+          lock (buffer) { buffer.Append((char)next); }
+        }
+      } catch (System.Exception) { }
+    });
+    worker.IsBackground = true;
+    worker.Start();
+  }
+  public bool Join(int milliseconds) { return worker.Join(milliseconds); }
+  public string Text { get { lock (buffer) { return buffer.ToString(); } } }
+}
+"@
+}
+
+function Invoke-EngramPreflight {
+  # PA-2 launcher contract: `engram preflight <WORKSPACE> --timeout-ms <T>` replaces
+  # the legacy sync/bind pre-warm under one budget. The exit status is authoritative;
+  # every failure path throws so Copilot is never launched after a failed preflight.
   param(
     [Parameter(Mandatory = $true)]
     [string]$Executable,
 
     [Parameter(Mandatory = $true)]
-    [string]$Subcommand,
-
-    [string[]]$GlobalArguments = @(),
-
-    [string[]]$Arguments = @(),
+    [string]$Workspace,
 
     [Parameter(Mandatory = $true)]
-    [string]$Activity,
-
-    [Parameter(Mandatory = $true)]
-    [string]$Status,
-
-    [Parameter(Mandatory = $true)]
-    [DateTimeOffset]$Deadline
+    [int]$BudgetMs
   )
 
-  Write-Host "$Activity — $Status"
+  # Outer budget minus (2000 ms relay grace + 1000 ms margin).
+  $preflightTimeoutMs = $BudgetMs - 3000
+  if (-not (Test-Path -LiteralPath $Executable -PathType Leaf)) {
+    throw "Engram preflight executable not found: $Executable (build it with 'cargo build')."
+  }
 
-  $engramArguments = @("--format", "text")
-  $engramArguments += $GlobalArguments
-  $engramArguments += $Subcommand
-  $engramArguments += $Arguments
+  Write-Host "Engram preflight — verifying workspace before Copilot startup"
 
-  $remainingMs = [Math]::Floor(($Deadline - [DateTimeOffset]::UtcNow).TotalMilliseconds)
-  if ($remainingMs -le 0) {
-    throw "Engram pre-warm exceeded its shared wall-clock budget before $Subcommand could start."
+  $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+  $startInfo.FileName = $Executable
+  $startInfo.UseShellExecute = $false
+  $startInfo.RedirectStandardOutput = $true
+  $startInfo.RedirectStandardError = $true
+  $startInfo.CreateNoWindow = $true
+  # One ArgumentList element per argument: paths with spaces or a trailing
+  # backslash are preserved. Never build a joined argument string.
+  foreach ($argument in @("preflight", $Workspace, "--timeout-ms", [string]$preflightTimeoutMs)) {
+    [void]$startInfo.ArgumentList.Add($argument)
   }
 
   $process = $null
+  $stdout = ""
+  $stderr = ""
+  $failure = $null
   try {
-    $processExecutable = $Executable
-    $processArguments = $engramArguments
-    if ([IO.Path]::GetExtension($Executable) -ieq ".ps1") {
-      $pwshCommand = Get-Command pwsh -ErrorAction Stop
-      $processExecutable = $pwshCommand.Source
-      $processArguments = @("-NoProfile", "-NonInteractive", "-File", $Executable)
-      $processArguments += $engramArguments
-    }
+    $process = [System.Diagnostics.Process]::Start($startInfo)
+    $stdoutCapture = New-Object EngramPipeCapture -ArgumentList $process.StandardOutput
+    $stderrCapture = New-Object EngramPipeCapture -ArgumentList $process.StandardError
 
-    $process = Start-Process `
-      -FilePath $processExecutable `
-      -ArgumentList $processArguments `
-      -NoNewWindow `
-      -PassThru
-
-    if (-not $process.WaitForExit([int]$remainingMs)) {
+    if (-not $process.WaitForExit($BudgetMs)) {
       try {
-        # Terminate only the command process started above. A daemon-backed
-        # command may auto-spawn a reusable daemon that outlives this pre-warm;
-        # the launcher does not own that descendant and must not kill it.
+        # Terminate only the child this launcher started ($process, owned by
+        # object identity). Descendants it spawned (for example a reusable daemon)
+        # are not owned by the launcher and are never terminated.
         $process.Kill()
         $cleanupTimeoutMs = 1000
         if (-not $process.WaitForExit($cleanupTimeoutMs)) {
-          Write-Warning "Timed-out Engram pre-warm process did not exit within $cleanupTimeoutMs ms; continuing fail-open."
+          Write-Host "Timed-out Engram preflight process did not exit within $cleanupTimeoutMs ms."
         }
       }
       catch {
-        Write-Warning "Timed-out Engram pre-warm process cleanup failed: $_"
+        Write-Host "Timed-out Engram preflight process cleanup failed: $_"
       }
-      throw "engram $Subcommand exceeded the shared Engram pre-warm wall-clock budget."
+      $failure = "engram preflight exceeded its $BudgetMs ms budget."
     }
 
-    if ($process.ExitCode -ne 0) {
-      throw "engram $Subcommand failed with exit code $($process.ExitCode)."
+    # Bounded drain: an unowned descendant may hold the pipes open after exit.
+    # The captures buffer incrementally, so output already emitted is kept even
+    # when a descendant holds a pipe open past the shared drain deadline.
+    $drainClock = [System.Diagnostics.Stopwatch]::StartNew()
+    [void]$stdoutCapture.Join(2000)
+    [void]$stderrCapture.Join([Math]::Max(0, 2000 - [int]$drainClock.ElapsedMilliseconds))
+    $stdout = $stdoutCapture.Text
+    $stderr = $stderrCapture.Text
+
+    if ($null -eq $failure -and $process.ExitCode -ne 0) {
+      $failure = "engram preflight failed with exit code $($process.ExitCode)."
     }
+    if ($null -eq $failure) {
+      # Exit 0 is necessary but not sufficient: a Succeeded verdict line must be
+      # present and no verdict line may report any other state.
+      $succeeded = $false
+      foreach ($line in ($stdout -split "`r?`n")) {
+        if ($line -match '"state"\s*:\s*"([^"]*)"') {
+          if ($matches[1] -eq "Succeeded") { $succeeded = $true }
+          else {
+            $failure = "engram preflight reported state '$($matches[1])': $line"
+            break
+          }
+        }
+      }
+      if ($null -eq $failure -and -not $succeeded) {
+        $failure = "engram preflight exited 0 without a Succeeded verdict line."
+      }
+    }
+  }
+  catch {
+    $failure = "engram preflight could not run: $_"
   }
   finally {
     if ($null -ne $process) {
       $process.Dispose()
     }
+  }
+
+  if ($stdout) { Write-Host $stdout.TrimEnd() }
+  if ($null -ne $failure) {
+    if ($stderr) { [Console]::Error.WriteLine($stderr.TrimEnd()) }
+    throw "$failure Copilot was not launched."
   }
 }
 
@@ -157,56 +211,20 @@ try {
     }
   }
 
-  $engramCmd = Get-Command engram -ErrorAction SilentlyContinue
-  if ($engramCmd) {
-    $prewarmTimeoutMs = 15000
-    if ($env:ENGRAM_PREWARM_TIMEOUT_MS) {
-      $configuredTimeoutMs = 0
-      if (
-        [int]::TryParse($env:ENGRAM_PREWARM_TIMEOUT_MS, [ref]$configuredTimeoutMs) -and
-        $configuredTimeoutMs -gt 0 -and
-        $configuredTimeoutMs -le 30000
-      ) {
-        $prewarmTimeoutMs = $configuredTimeoutMs
-      }
-      else {
-        Write-Warning "Ignoring invalid ENGRAM_PREWARM_TIMEOUT_MS; expected 1..30000 milliseconds."
-      }
+  $engramExe = Join-Path $PSScriptRoot "target\debug\engram.exe"
+  $preflightBudgetMs = 15000
+  if ($env:ENGRAM_PREWARM_TIMEOUT_MS) {
+    $configuredBudgetMs = 0
+    if (
+      -not [int]::TryParse($env:ENGRAM_PREWARM_TIMEOUT_MS, [ref]$configuredBudgetMs) -or
+      $configuredBudgetMs -le 3000 -or
+      $configuredBudgetMs -gt 30000
+    ) {
+      throw "Invalid ENGRAM_PREWARM_TIMEOUT_MS; expected 3001..30000 milliseconds."
     }
-    $prewarmDeadline = [DateTimeOffset]::UtcNow.AddMilliseconds($prewarmTimeoutMs)
-
-    try {
-      Invoke-EngramCommandWithProgress `
-        -Executable $engramCmd.Source `
-        -Subcommand "sync" `
-        -GlobalArguments @("--timeout", "300") `
-        -Arguments @("--direct") `
-        -Activity "Synchronizing Engram index" `
-        -Status "Direct pre-warm before Copilot startup" `
-        -Deadline $prewarmDeadline
-    }
-    catch {
-      Write-Warning "engram direct pre-warm failed; retrying via daemon sync: $_"
-      try {
-        Invoke-EngramCommandWithProgress `
-          -Executable $engramCmd.Source `
-          -Subcommand "bind" `
-          -Activity "Binding Engram workspace" `
-          -Status "Daemon-backed pre-warm fallback" `
-          -Deadline $prewarmDeadline
-        Invoke-EngramCommandWithProgress `
-          -Executable $engramCmd.Source `
-          -Subcommand "sync" `
-          -GlobalArguments @("--timeout", "300") `
-          -Activity "Synchronizing Engram index" `
-          -Status "Daemon-backed pre-warm fallback" `
-          -Deadline $prewarmDeadline
-      }
-      catch {
-        Write-Warning "engram sync failed (non-fatal): $_"
-      }
-    }
+    $preflightBudgetMs = $configuredBudgetMs
   }
+  Invoke-EngramPreflight -Executable $engramExe -Workspace $PSScriptRoot -BudgetMs $preflightBudgetMs
 
   # Forward caller arguments as-is. --remote (Copilot remote control, which streams
   # session output to GitHub and permits steering from authenticated remote devices)
