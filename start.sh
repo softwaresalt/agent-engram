@@ -189,6 +189,12 @@ elif [[ ! -x "$copilot_exe" ]]; then
 	exit 1
 fi
 
+# A relative executable path was resolved against the caller's directory above;
+# pin it to an absolute path before changing directory.
+if [[ "$copilot_exe" == */* && "$copilot_exe" != /* ]]; then
+	copilot_exe="$(cd "$(dirname "$copilot_exe")" && pwd)/$(basename "$copilot_exe")"
+fi
+
 # Anchor workspace operations to the repo dir, as start.ps1 does with
 # Push-Location, so the preflight verdict and the agent see the same state.
 cd "$WORKSPACE"

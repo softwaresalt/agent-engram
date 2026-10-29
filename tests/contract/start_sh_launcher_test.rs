@@ -55,6 +55,7 @@ esac
 const COPILOT_FIXTURE: &str = r#"#!/usr/bin/env bash
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 printf 'copilot\n' >> "$root/events.log"
+printf 'cwd:%s\n' "$(pwd)" >> "$root/events.log"
 for argument in "$@"; do printf 'copilot-arg:%s\n' "$argument" >> "$root/events.log"; done
 "#;
 
@@ -195,13 +196,17 @@ impl Fixture {
     }
 
     fn run_launcher(&self, budget_ms: Option<&str>) -> Run {
+        self.run_launcher_from(&self.workspace, &self.copilot_path(), budget_ms)
+    }
+
+    fn run_launcher_from(&self, cwd: &Path, copilot: &str, budget_ms: Option<&str>) -> Run {
         let mut command = Command::new(&self.bash);
         command
             .arg(forward_slashes(&self.workspace.join("start.sh")))
             .arg("--probe")
             .arg("argument with spaces")
-            .current_dir(&self.workspace)
-            .env("COPILOT_EXE_PATH", self.copilot_path())
+            .current_dir(cwd)
+            .env("COPILOT_EXE_PATH", copilot)
             .env("GITHUB_TOKEN", "fixture-token")
             .env_remove("ENGRAM_PREWARM_TIMEOUT_MS");
         if let Some(budget) = budget_ms {
@@ -401,6 +406,29 @@ fn missing_preflight_executable_blocks_launch() {
     assert!(!run.launched(), "{}", run.describe());
     assert!(
         run.stderr().contains("preflight executable not found"),
+        "{}",
+        run.describe()
+    );
+}
+
+#[test]
+fn launches_from_workspace_even_when_called_from_elsewhere_with_relative_agent_path() {
+    let fixture = Fixture::new("succeeded");
+    let parent = fixture
+        .workspace
+        .parent()
+        .expect("workspace has a parent directory")
+        .to_path_buf();
+    let relative_agent = "launcher workspace with spaces/GitHub Copilot/bin dir/copilot";
+    let run = fixture.run_launcher_from(&parent, relative_agent, None);
+
+    assert!(run.output.status.success(), "{}", run.describe());
+    assert!(run.launched(), "{}", run.describe());
+    // The agent starts in the workspace directory, as start.ps1 does.
+    assert!(
+        run.events.iter().any(|event| {
+            event.starts_with("cwd:") && event.ends_with("launcher workspace with spaces")
+        }),
         "{}",
         run.describe()
     );
