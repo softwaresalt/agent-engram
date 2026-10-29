@@ -1,166 +1,227 @@
 #![cfg(windows)]
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
 
-fn write_batch(path: &Path, body: &str) {
-    fs::write(path, body.replace('\n', "\r\n")).expect("write batch fixture");
+/// Fixture `engram.exe`: records its argv, prints a verdict per `FIX_MODE`, and
+/// (hang mode) spawns an unowned descendant that outlives a launcher kill.
+const FIXTURE_SRC: &str = r##"
+use std::{env, fs, process::{Command, Stdio}, thread, time::Duration};
+fn main() {
+    let args: Vec<String> = env::args().skip(1).collect();
+    let mode = env::var("FIX_MODE").unwrap_or_default();
+    if mode == "child" {
+        thread::sleep(Duration::from_millis(6000));
+        fs::write(env::var("FIX_MARKER").unwrap(), "survived").unwrap();
+        return;
+    }
+    if let Ok(p) = env::var("FIX_ARGS") { fs::write(p, args.join("\n")).unwrap(); }
+    match mode.as_str() {
+        "ok" => println!("{{\"state\":\"Succeeded\"}}"),
+        "fail" => {
+            println!("{{\"state\":\"Failed\",\"stage\":\"Seal\"}}");
+            eprintln!("boom-stderr");
+            std::process::exit(1);
+        }
+        "lie" => println!("{{\"state\":\"Failed\",\"stage\":\"Build\"}}"),
+        _ => {
+            Command::new(env::current_exe().unwrap()).env("FIX_MODE", "child")
+                .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+                .spawn().unwrap();
+            thread::sleep(Duration::from_secs(30));
+        }
+    }
+}
+"##;
+
+struct Run {
+    dir: PathBuf,
+    success: bool,
+    output: String,
+    elapsed: Duration,
+    _guard: TempDir,
+}
+
+impl Run {
+    fn copilot_marker(&self) -> PathBuf {
+        self.dir.join("copilot-invoked.txt")
+    }
+    fn descendant_marker(&self) -> PathBuf {
+        self.dir.join("descendant-survived.txt")
+    }
+}
+
+/// Runs a copy of `start.ps1` from a directory whose name contains spaces.
+/// `mode` of `None` installs no `target\debug\engram.exe` (missing executable).
+fn run_launcher(mode: Option<&str>, outer_ms: &str) -> Run {
+    let guard = TempDir::new().expect("launcher fixture");
+    let dir = guard.path().join("work space");
+    fs::create_dir_all(dir.join("target").join("debug")).expect("fixture dirs");
+    let launcher = dir.join("start.ps1");
+    fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("start.ps1"),
+        &launcher,
+    )
+    .expect("copy launcher");
+    fs::write(dir.join("backlogit.cmd"), "@echo off\r\nexit /b 0\r\n").expect("backlogit stub");
+    fs::write(
+        dir.join("copilot.ps1"),
+        "[IO.File]::WriteAllText($env:COPILOT_MARKER, 'invoked')\nexit 0\n",
+    )
+    .expect("copilot stub");
+    if mode.is_some() {
+        let src = dir.join("fixture.rs");
+        fs::write(&src, FIXTURE_SRC).expect("fixture source");
+        let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+        let built = Command::new(rustc)
+            .args(["--edition", "2021", "-C", "debuginfo=0", "-o"])
+            .arg(dir.join("target").join("debug").join("engram.exe"))
+            .arg(&src)
+            .status()
+            .expect("compile fixture engram");
+        assert!(built.success(), "fixture engram must compile");
+    }
+    let path = std::env::join_paths(std::iter::once(dir.clone()).chain(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )))
+    .expect("compose fixture PATH");
+    let started = Instant::now();
+    let out = Command::new("pwsh")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+        ])
+        .arg(&launcher)
+        .env("PATH", path)
+        .env("COPILOT_EXE_PATH", dir.join("copilot.ps1"))
+        .env("COPILOT_MARKER", dir.join("copilot-invoked.txt"))
+        .env("FIX_MODE", mode.unwrap_or(""))
+        .env("FIX_ARGS", dir.join("args.txt"))
+        .env("FIX_MARKER", dir.join("descendant-survived.txt"))
+        .env("ENGRAM_PREWARM_TIMEOUT_MS", outer_ms)
+        .output()
+        .expect("run launcher contract");
+    let output = format!(
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Run {
+        dir,
+        success: out.status.success(),
+        output,
+        elapsed: started.elapsed(),
+        _guard: guard,
+    }
 }
 
 #[test]
 fn launcher_timeout_cleanup_wait_is_explicitly_bounded() {
     let launcher = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("start.ps1"))
         .expect("read launcher");
-
+    assert!(launcher.contains("$process.WaitForExit($cleanupTimeoutMs)"));
+    assert!(!launcher.contains("$process.WaitForExit()"));
+    assert!(launcher.contains("ArgumentList"));
     assert!(
-        launcher.contains("$process.WaitForExit($cleanupTimeoutMs)"),
-        "timeout cleanup must use its explicit bounded wait"
-    );
-    assert!(
-        !launcher.contains("$process.WaitForExit()"),
-        "timeout cleanup must not wait indefinitely after killing the exact process"
+        !launcher.contains("Start-Process"),
+        "Start-Process -ArgumentList is forbidden"
     );
 }
 
 #[test]
-fn launcher_fails_open_to_copilot_within_one_prewarm_budget() {
-    let fixture = TempDir::new().expect("launcher fixture");
-    let launcher = fixture.path().join("start.ps1");
-    fs::copy(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("start.ps1"),
-        &launcher,
-    )
-    .expect("copy launcher");
-
-    write_batch(
-        &fixture.path().join("backlogit.cmd"),
-        "@echo off\nexit /b 0\n",
-    );
-    fs::write(
-        fixture.path().join("engram.ps1"),
-        "Start-Sleep -Seconds 10\nexit 1\n",
-    )
-    .expect("write slow Engram fixture");
-    fs::write(
-        fixture.path().join("copilot.ps1"),
-        "[IO.File]::WriteAllText($env:COPILOT_MARKER, 'invoked')\nexit 0\n",
-    )
-    .expect("write Copilot fixture");
-
-    let marker = fixture.path().join("copilot-invoked.txt");
-    let path = std::env::join_paths(std::iter::once(fixture.path().to_path_buf()).chain(
-        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
-    ))
-    .expect("compose fixture PATH");
-
-    let started = Instant::now();
-    let output = Command::new("pwsh")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-        ])
-        .arg(&launcher)
-        .env("PATH", path)
-        .env("COPILOT_EXE_PATH", fixture.path().join("copilot.ps1"))
-        .env("COPILOT_MARKER", &marker)
-        .env("ENGRAM_PREWARM_TIMEOUT_MS", "500")
-        .output()
-        .expect("run launcher contract");
-    let elapsed = started.elapsed();
-
+fn launcher_launches_copilot_after_succeeded_preflight() {
+    let run = run_launcher(Some("ok"), "15000");
     assert!(
-        output.status.success(),
-        "launcher must fail open to Copilot; stdout: {}; stderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        run.success,
+        "Succeeded preflight must launch; {}",
+        run.output
     );
     assert!(
-        marker.is_file(),
-        "Copilot fixture must be invoked after bounded pre-warm"
+        run.copilot_marker().is_file(),
+        "Copilot must launch; {}",
+        run.output
     );
+    let args = fs::read_to_string(run.dir.join("args.txt")).expect("preflight argv recorded");
+    let lines: Vec<&str> = args.lines().collect();
+    assert_eq!(lines.len(), 4, "one argv element per argument: {args:?}");
+    assert_eq!(lines[0], "preflight");
     assert!(
-        elapsed < Duration::from_secs(8),
-        "Engram direct/fallback pre-warm must share one wall-clock budget; the 8s limit allows \
-         hosted-runner process startup overhead while remaining below the >20s sequential path; \
-         elapsed: {elapsed:?}"
+        lines[1].ends_with("work space"),
+        "path with a space stays one argument: {args:?}"
+    );
+    assert_eq!(lines[2], "--timeout-ms");
+    assert_eq!(
+        lines[3], "12000",
+        "T = outer budget - (2000 grace + 1000 margin)"
     );
 }
 
 #[test]
-fn launcher_timeout_does_not_terminate_unowned_descendant() {
-    let fixture = TempDir::new().expect("launcher fixture");
-    let launcher = fixture.path().join("start.ps1");
-    fs::copy(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("start.ps1"),
-        &launcher,
-    )
-    .expect("copy launcher");
-
-    write_batch(
-        &fixture.path().join("backlogit.cmd"),
-        "@echo off\nexit /b 0\n",
-    );
-    fs::write(
-        fixture.path().join("engram.ps1"),
-        "$pwsh = (Get-Command pwsh -ErrorAction Stop).Source\n\
-         Start-Process -FilePath $pwsh -ArgumentList @('-NoProfile', '-NonInteractive', \
-         '-ExecutionPolicy', 'Bypass', '-File', $env:ENGRAM_DESCENDANT_SCRIPT) \
-         -WindowStyle Hidden\n\
-         Start-Sleep -Seconds 30\n",
-    )
-    .expect("write parent Engram fixture");
-    let descendant_script = fixture.path().join("engram-descendant.ps1");
-    fs::write(
-        &descendant_script,
-        "Start-Sleep -Milliseconds 4500\n\
-         [IO.File]::WriteAllText($env:ENGRAM_DESCENDANT_MARKER, 'survived')\n\
-         exit 0\n",
-    )
-    .expect("write descendant fixture");
-    fs::write(fixture.path().join("copilot.ps1"), "exit 0\n").expect("write Copilot fixture");
-
-    let descendant_marker = fixture.path().join("descendant-survived.txt");
-    let path = std::env::join_paths(std::iter::once(fixture.path().to_path_buf()).chain(
-        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
-    ))
-    .expect("compose fixture PATH");
-
-    let output = Command::new("pwsh")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-        ])
-        .arg(&launcher)
-        .env("PATH", path)
-        .env("COPILOT_EXE_PATH", fixture.path().join("copilot.ps1"))
-        .env("ENGRAM_DESCENDANT_SCRIPT", &descendant_script)
-        .env("ENGRAM_DESCENDANT_MARKER", &descendant_marker)
-        .env("ENGRAM_PREWARM_TIMEOUT_MS", "3000")
-        .output()
-        .expect("run launcher descendant contract");
-
+fn launcher_fails_closed_and_reports_typed_stage_on_failed_preflight() {
+    let run = run_launcher(Some("fail"), "15000");
+    assert!(!run.success, "failed preflight must block; {}", run.output);
     assert!(
-        output.status.success(),
-        "launcher must fail open after timing out its command process; stdout: {}; stderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        !run.copilot_marker().exists(),
+        "Copilot must not launch; {}",
+        run.output
     );
-    let marker_deadline = Instant::now() + Duration::from_secs(5);
-    while !descendant_marker.is_file() && Instant::now() < marker_deadline {
+    assert!(
+        run.output.contains(r#""stage":"Seal""#),
+        "typed stage reported; {}",
+        run.output
+    );
+    assert!(
+        run.output.contains("boom-stderr"),
+        "stderr reported; {}",
+        run.output
+    );
+}
+
+#[test]
+fn launcher_blocks_on_non_succeeded_verdict_despite_zero_exit() {
+    let run = run_launcher(Some("lie"), "15000");
+    assert!(
+        !run.success,
+        "non-Succeeded verdict must block; {}",
+        run.output
+    );
+    assert!(!run.copilot_marker().exists(), "{}", run.output);
+}
+
+#[test]
+fn launcher_blocks_when_preflight_executable_is_missing() {
+    let run = run_launcher(None, "15000");
+    assert!(
+        !run.success,
+        "missing executable must block; {}",
+        run.output
+    );
+    assert!(!run.copilot_marker().exists(), "{}", run.output);
+}
+
+#[test]
+fn launcher_timeout_blocks_and_kills_only_its_own_child() {
+    let run = run_launcher(Some("hang"), "4000");
+    assert!(!run.success, "timeout must block; {}", run.output);
+    assert!(!run.copilot_marker().exists(), "{}", run.output);
+    assert!(
+        run.elapsed < Duration::from_secs(15),
+        "bounded wait; elapsed {:?}",
+        run.elapsed
+    );
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while !run.descendant_marker().is_file() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
     }
     assert!(
-        descendant_marker.is_file(),
-        "the short-lived descendant must survive command timeout long enough to write its marker"
+        run.descendant_marker().is_file(),
+        "unowned descendant must survive cleanup"
     );
 }
