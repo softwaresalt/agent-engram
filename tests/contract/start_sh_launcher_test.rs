@@ -35,6 +35,13 @@ case "$(cat "$root/mode.txt")" in
     degraded)
         printf '%s\n' '{"state":"Degraded","stage":"IndexReady"}'
         ;;
+    silent)
+        ;;
+    mixed)
+        printf '%s\n' '{"state":"Succeeded"}'
+        printf '%s\n' '{"state":"Failed","stage":"ReadServerReady"}'
+        exit 5
+        ;;
     hang)
         sleep 60 >/dev/null 2>&1 &
         printf '%s\n' "$!" > "$root/descendant.pid"
@@ -55,6 +62,17 @@ struct Fixture {
     _directory: TempDir,
     bash: PathBuf,
     workspace: PathBuf,
+}
+
+impl Drop for Fixture {
+    /// Never leak fixture processes, even when an assertion fails.
+    fn drop(&mut self) {
+        for name in ["owner.pid", "descendant.pid"] {
+            if let Some(pid) = self.pid(name) {
+                let _ = self.bash_output(&format!("kill -9 {pid} 2>/dev/null"));
+            }
+        }
+    }
 }
 
 struct Run {
@@ -93,9 +111,20 @@ fn forward_slashes(path: &Path) -> String {
 fn git_bash_or_bash() -> PathBuf {
     if cfg!(windows) {
         // `bash.exe` on a Windows PATH is often the WSL shim; prefer Git Bash.
-        let git_bash = PathBuf::from(r"C:\Program Files\Git\bin\bash.exe");
-        if git_bash.is_file() {
-            return git_bash;
+        for var in ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"] {
+            let Some(base) = std::env::var_os(var) else {
+                continue;
+            };
+            let base = PathBuf::from(base);
+            let base = if var == "LOCALAPPDATA" {
+                base.join("Programs")
+            } else {
+                base
+            };
+            let git_bash = base.join("Git").join("bin").join("bash.exe");
+            if git_bash.is_file() {
+                return git_bash;
+            }
         }
     }
     PathBuf::from("bash")
@@ -111,7 +140,10 @@ impl Fixture {
             fs::create_dir_all(dir).expect("create fixture directory");
         }
         let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("start.sh");
-        fs::copy(source, workspace.join("start.sh")).expect("copy start.sh");
+        let script = fs::read_to_string(source).expect("read start.sh");
+        // Bash rejects CRLF scripts; normalise in case of a CRLF checkout.
+        fs::write(workspace.join("start.sh"), script.replace("\r\n", "\n"))
+            .expect("write start.sh copy");
         fs::write(engram_dir.join("engram"), ENGRAM_FIXTURE).expect("write engram fixture");
         fs::write(copilot_dir.join("copilot"), COPILOT_FIXTURE).expect("write copilot fixture");
         fs::write(workspace.join("mode.txt"), mode).expect("write mode");
@@ -154,7 +186,11 @@ impl Fixture {
             .map(|text| text.trim().to_owned())
     }
 
-    fn pid_alive(&self, pid: &str) -> bool {
+    fn pid(&self, name: &str) -> Option<u32> {
+        self.read(name)?.parse().ok()
+    }
+
+    fn pid_alive(&self, pid: u32) -> bool {
         self.bash_output(&format!("kill -0 {pid}")).status.success()
     }
 
@@ -196,9 +232,10 @@ fn launches_agent_only_after_preflight_succeeded() {
     assert_eq!(order, ["preflight", "copilot"], "{}", run.describe());
     // PA-2: `preflight "$WORKSPACE" --timeout-ms <outer budget 15000 - 3000>`,
     // with the spaced workspace path preserved as one argument.
-    let preflight_args: Vec<&String> = run
+    let preflight_args: Vec<&str> = run
         .events
         .iter()
+        .map(String::as_str)
         .filter(|event| event.starts_with("arg:"))
         .collect();
     assert_eq!(preflight_args.len(), 4, "{}", run.describe());
@@ -267,29 +304,104 @@ fn timeout_cleanup_terminates_only_the_launchers_own_child() {
     let fixture = Fixture::new("hang");
     // Smallest legal budget: the launcher waits 3001 ms, then must clean up.
     let run = fixture.run_launcher(Some("3001"));
-    // Give any (incorrect) signal delivery a moment to land before sampling.
-    thread::sleep(Duration::from_millis(300));
 
-    let owner = fixture.read("owner.pid").unwrap_or_default();
-    let descendant = fixture.read("descendant.pid").unwrap_or_default();
-    let owner_alive = !owner.is_empty() && fixture.pid_alive(&owner);
-    let descendant_alive = !descendant.is_empty() && fixture.pid_alive(&descendant);
-    if descendant_alive {
-        // Never leak the unowned descendant out of the test.
-        let _ = fixture.bash_output(&format!("kill {descendant}"));
-    }
-
+    let owner = fixture.pid("owner.pid");
+    let descendant = fixture.pid("descendant.pid");
     assert!(
-        !owner.is_empty() && !descendant.is_empty(),
+        owner.is_some() && descendant.is_some(),
         "{}",
         run.describe()
     );
+    let (owner, descendant) = (owner.unwrap_or_default(), descendant.unwrap_or_default());
+    // Poll: signal delivery and process teardown are asynchronous.
+    let mut owner_alive = true;
+    for _ in 0..40 {
+        owner_alive = fixture.pid_alive(owner);
+        if !owner_alive {
+            break;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    let descendant_alive = fixture.pid_alive(descendant);
+
     assert!(!run.output.status.success(), "{}", run.describe());
+    assert!(
+        run.stderr().contains("exceeded its 3001 ms budget"),
+        "{}",
+        run.describe()
+    );
     assert!(!run.launched(), "{}", run.describe());
     assert!(!owner_alive, "owned child survived: {}", run.describe());
     assert!(
         descendant_alive,
         "unowned descendant was terminated: {}",
+        run.describe()
+    );
+}
+
+#[test]
+fn nonzero_exit_blocks_launch_even_with_a_succeeded_line() {
+    let fixture = Fixture::new("mixed");
+    let run = fixture.run_launcher(None);
+
+    assert!(!run.output.status.success(), "{}", run.describe());
+    assert!(!run.launched(), "{}", run.describe());
+    assert!(
+        run.stdout()
+            .contains("engram preflight failed at stage ReadServerReady."),
+        "{}",
+        run.describe()
+    );
+}
+
+#[test]
+fn exit_zero_without_any_verdict_line_does_not_launch() {
+    let fixture = Fixture::new("silent");
+    let run = fixture.run_launcher(None);
+
+    assert!(!run.output.status.success(), "{}", run.describe());
+    assert!(!run.launched(), "{}", run.describe());
+    assert!(
+        run.stderr().contains("without a Succeeded verdict line"),
+        "{}",
+        run.describe()
+    );
+}
+
+#[test]
+fn invalid_budget_is_rejected_before_preflight_and_launch() {
+    for budget in ["3000", "30001", "abc", "99999999999999999999"] {
+        let fixture = Fixture::new("succeeded");
+        let run = fixture.run_launcher(Some(budget));
+
+        assert!(!run.output.status.success(), "{budget}: {}", run.describe());
+        assert!(run.events.is_empty(), "{budget}: {}", run.describe());
+        assert!(
+            run.stderr().contains("Invalid ENGRAM_PREWARM_TIMEOUT_MS"),
+            "{budget}: {}",
+            run.describe()
+        );
+    }
+}
+
+#[test]
+fn missing_preflight_executable_blocks_launch() {
+    let fixture = Fixture::new("succeeded");
+    fs::remove_file(
+        fixture
+            .workspace
+            .join("target")
+            .join("debug")
+            .join("engram"),
+    )
+    .expect("remove engram fixture");
+    let run = fixture.run_launcher(None);
+
+    assert!(!run.output.status.success(), "{}", run.describe());
+    assert!(!run.launched(), "{}", run.describe());
+    assert!(
+        run.stderr().contains("preflight executable not found"),
+        "{}",
         run.describe()
     );
 }

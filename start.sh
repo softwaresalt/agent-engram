@@ -43,6 +43,29 @@ WORKSPACE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 preflight_state_re='"state"[[:space:]]*:[[:space:]]*"([^"]*)"'
 preflight_stage_re='"stage"[[:space:]]*:[[:space:]]*"([^"]*)"'
+preflight_child="" preflight_out_file="" preflight_err_file=""
+
+now_ms() {
+	if [[ -n "${EPOCHREALTIME:-}" ]]; then
+		local t="${EPOCHREALTIME/[.,]/}"
+		echo $((10#$t / 1000))
+	else
+		echo $((SECONDS * 1000))
+	fi
+}
+
+# If the launcher is interrupted mid-preflight, stop only its own child and
+# remove its temp files. Cleared before the agent is launched.
+preflight_cleanup() {
+	if [[ -n "$preflight_child" ]] && kill -0 "$preflight_child" 2>/dev/null; then
+		kill "$preflight_child" 2>/dev/null || true
+	fi
+	[[ -z "$preflight_out_file" ]] || rm -f -- "$preflight_out_file"
+	[[ -z "$preflight_err_file" ]] || rm -f -- "$preflight_err_file"
+}
+trap preflight_cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 run_engram_preflight() {
 	local workspace="$1" budget_ms="$2"
@@ -62,15 +85,23 @@ run_engram_preflight() {
 	echo "Engram preflight — verifying workspace before Copilot startup"
 	local out_file err_file
 	out_file="$(mktemp)"
+	preflight_out_file="$out_file"
 	err_file="$(mktemp)"
+	preflight_err_file="$err_file"
 
 	# Run outside any pipeline so the exit status is read directly from $?.
 	# Output goes to files, so an unowned descendant holding a pipe open can
 	# never block the launcher.
 	"$engram_exe" preflight "$workspace" --timeout-ms "$timeout_ms" >"$out_file" 2>"$err_file" &
-	local child=$! waited=0 status=0 failure=""
+	local child=$! status=0 failure=""
+	preflight_child="$child"
+	# Wall-clock deadline (not summed sleep ticks). Bash without EPOCHREALTIME
+	# only has whole seconds, so it gets one second of slack to never kill early.
+	local slack_ms=0 started_ms
+	[[ -n "${EPOCHREALTIME:-}" ]] || slack_ms=1000
+	started_ms="$(now_ms)"
 	while kill -0 "$child" 2>/dev/null; do
-		if ((waited >= budget_ms)); then
+		if (($(now_ms) - started_ms >= budget_ms + slack_ms)); then
 			# Terminate only the child this launcher started ($child, owned by
 			# PID). Descendants it spawned are not owned by the launcher and are
 			# never terminated.
@@ -80,14 +111,16 @@ run_engram_preflight() {
 				sleep 0.1
 				grace=$((grace + 100))
 			done
-			kill -9 "$child" 2>/dev/null || true
+			if kill -0 "$child" 2>/dev/null; then
+				kill -9 "$child" 2>/dev/null || true
+			fi
 			failure="engram preflight exceeded its ${budget_ms} ms budget."
 			break
 		fi
 		sleep 0.1
-		waited=$((waited + 100))
 	done
 	wait "$child" && status=0 || status=$?
+	preflight_child=""
 
 	local stdout stderr
 	stdout="$(<"$out_file")"
@@ -141,17 +174,6 @@ run_engram_preflight() {
 	return 0
 }
 
-preflight_budget_ms=15000
-if [[ -n "${ENGRAM_PREWARM_TIMEOUT_MS:-}" ]]; then
-	if [[ ! "$ENGRAM_PREWARM_TIMEOUT_MS" =~ ^[0-9]+$ ]] ||
-		((10#$ENGRAM_PREWARM_TIMEOUT_MS <= 3000 || 10#$ENGRAM_PREWARM_TIMEOUT_MS > 30000)); then
-		echo "Invalid ENGRAM_PREWARM_TIMEOUT_MS; expected 3001..30000 milliseconds." >&2
-		exit 1
-	fi
-	preflight_budget_ms=$((10#$ENGRAM_PREWARM_TIMEOUT_MS))
-fi
-run_engram_preflight "$WORKSPACE" "$preflight_budget_ms" || exit 1
-
 if [ -z "${GITHUB_TOKEN:-}" ]; then
 	if command -v gh >/dev/null 2>&1; then
 		GITHUB_TOKEN="$(gh auth token 2>/dev/null || true)"
@@ -166,6 +188,22 @@ elif [[ ! -x "$copilot_exe" ]]; then
 	echo "Unable to locate Copilot CLI. Set COPILOT_EXE_PATH (or COPILOT_EXE for backward compatibility) or add 'copilot' to PATH." >&2
 	exit 1
 fi
+
+# Anchor workspace operations to the repo dir, as start.ps1 does with
+# Push-Location, so the preflight verdict and the agent see the same state.
+cd "$WORKSPACE"
+
+preflight_budget_ms=15000
+if [[ -n "${ENGRAM_PREWARM_TIMEOUT_MS:-}" ]]; then
+	if [[ ! "$ENGRAM_PREWARM_TIMEOUT_MS" =~ ^[0-9]{1,9}$ ]] ||
+		((10#$ENGRAM_PREWARM_TIMEOUT_MS <= 3000 || 10#$ENGRAM_PREWARM_TIMEOUT_MS > 30000)); then
+		echo "Invalid ENGRAM_PREWARM_TIMEOUT_MS; expected 3001..30000 milliseconds." >&2
+		exit 1
+	fi
+	preflight_budget_ms=$((10#$ENGRAM_PREWARM_TIMEOUT_MS))
+fi
+run_engram_preflight "$WORKSPACE" "$preflight_budget_ms" || exit 1
+trap - EXIT INT TERM
 
 exec "$copilot_exe" "$@"
 
