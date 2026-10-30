@@ -69,6 +69,8 @@ tmp/
 # Autoharness staging verification reports (machine-specific paths, not portable)
 .autoharness/backups/
 .autoharness/staging/
+.autoharness/gates/cascade-close/probe/
+.pytest_cache/
 
 # Autoharness tuning reports (machine-specific paths, not portable across environments)
 .autoharness/tuning-reports/*.json

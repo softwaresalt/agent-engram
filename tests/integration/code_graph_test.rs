@@ -35,6 +35,51 @@ fn test_db_params(path: &Path) -> (std::path::PathBuf, String) {
     (std::env::temp_dir().join("engram-test"), branch)
 }
 
+#[test]
+async fn hashes_are_reused_by_full_relative_path_across_index_and_sync() {
+    let temp = tempfile::tempdir().expect("workspace");
+    let workspace = temp.path();
+    write_sample_file(workspace, "left/item.rs", "pub fn left() {}\n");
+    write_sample_file(workspace, "right/item.rs", "pub fn right() {}\n");
+    let data_dir = workspace.join(".engram");
+    let config = CodeGraphConfig::default();
+    let initial = code_graph::index_workspace(workspace, &data_dir, "main", &config, false)
+        .await
+        .expect("initial index");
+    assert_eq!(initial.files_parsed, 2);
+    assert!(initial.errors.is_empty());
+
+    let unchanged = code_graph::index_workspace(workspace, &data_dir, "main", &config, false)
+        .await
+        .expect("non-forced scan");
+    assert_eq!(unchanged.files_parsed, 0);
+    assert_eq!(unchanged.files_skipped, 2);
+    assert_eq!(unchanged.embeddings_generated, 0);
+    assert!(unchanged.errors.is_empty());
+
+    write_sample_file(workspace, "left/item.rs", "pub fn changed() {}\n");
+    let changed = code_graph::sync_workspace(workspace, &data_dir, "main", &config)
+        .await
+        .expect("incremental sync");
+    assert_eq!(changed.files_modified, 1);
+    assert_eq!(changed.files_unchanged, 1);
+    assert!(changed.errors.is_empty());
+
+    fs::create_dir(workspace.join("moved")).expect("new parent");
+    fs::rename(
+        workspace.join("left/item.rs"),
+        workspace.join("moved/item.rs"),
+    )
+    .expect("move unchanged bytes");
+    let moved = code_graph::sync_workspace(workspace, &data_dir, "main", &config)
+        .await
+        .expect("sync move");
+    assert_eq!(moved.files_deleted, 1);
+    assert_eq!(moved.files_added, 1);
+    assert_eq!(moved.files_unchanged, 1);
+    assert!(moved.errors.is_empty());
+}
+
 /// Helper: resolve a function's node ID by name within a specific file.
 async fn function_id_in(q: &CodeGraphQueries, name: &str, file_path: &str) -> String {
     q.all_functions()

@@ -1,7 +1,7 @@
 ---
 title: "Operator glossary"
 description: "Plain-language meanings of the acronyms and labels that agents use in plans, status reports, and approval requests"
-last_updated: "2026-10-07T13:45-07:00"
+last_updated: "2026-10-30T01:00:21Z"
 ---
 
 This page explains the labels you see in agent status reports and approval
@@ -57,7 +57,8 @@ Agents (Orchestrator, Stage, and Ship) keep this page current:
 | **Daemon** | The background engram process that indexes the workspace and answers queries. |
 | **Read server** | A daemon mode that serves queries from a prebuilt, sealed index (a "generation") instead of indexing in-process. |
 | **Generation** | A published, sealed snapshot of the index that the read server serves. |
-| **Preflight** | The self-check that confirms your locally built engram works before a launcher starts Copilot. |
+| **Preflight** | An explicit maintenance command that builds a fresh candidate index and verifies daemon, CLI, and MCP readiness. Session launchers do not run it or wait for it. |
+| **Workspace-relative file identity** | A validated, normalized path from the workspace root, including parent directories and filename. Stored content hashes are compared for this exact path; equal basenames in different folders are different files. |
 | **Parity** | The requirement that the CLI and MCP behave the same for the same request. |
 | **PR / CI** | Pull request, and continuous integration (automated checks on GitHub). |
 

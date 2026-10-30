@@ -69,8 +69,9 @@ When indexing is the issue, use this order:
 3. `engram sync --full --format text` or `engram index --format text`
 4. `engram index --direct --format text` (or set `ENGRAM_DIRECT=1`) when daemon startup or the sync IPC call times out
 
-`engram index` and `engram sync --full` are both full rebuild paths. Use them
-when incremental sync is not enough.
+`engram index` and `engram sync --full` scan all eligible files but reuse the
+existing index and skip matching file hashes. Add `--force` only when you
+explicitly need to re-extract unchanged files.
 
 ### Daemon startup or IPC timeout
 
@@ -89,6 +90,42 @@ Direct mode acquires the workspace lock first, so stop any running daemon before
 you retry; otherwise the command exits with a lock error. See
 [configuration.md](configuration.md#daemonless-direct-indexing) for the full
 reference.
+
+### Keep index preparation outside session startup
+
+The repository launchers [start.ps1](../start.ps1) and
+[start.sh](../start.sh) start Copilot without running Engram preflight,
+indexing, or synchronization. They do not require a local indexer executable
+or an existing index. Old `ENGRAM_PREWARM_TIMEOUT_MS` and `ENGRAM_EXE_PATH`
+launcher settings are no longer used.
+
+Run index maintenance separately from MCP and Copilot startup. For a workspace
+without a running daemon, incremental preparation can use:
+
+```powershell
+engram --workspace "C:\path\to\workspace" sync --direct
+```
+
+For a complete file scan that still skips unchanged files:
+
+```powershell
+engram --workspace "C:\path\to\workspace" sync --full --direct
+```
+
+Direct mode refuses a workspace owned by a running daemon; do not bypass its
+lock. Existing runtime incremental updates remain hash-aware.
+
+File records use validated, normalized workspace-relative paths, including
+parent directories and filenames. Matching content hashes skip reindexing;
+`left/item.rs` and `right/item.rs` are different records. A move changes the
+file identity and is handled as deletion plus addition.
+Explicit forced runs and required parser or package-topology invalidation
+can still reprocess unchanged files.
+
+The standalone `engram preflight` command remains explicit maintenance. It
+builds and verifies a fresh generation, so do not put it back in a session
+startup hook. A historical `cause=relay_deadline` at `stage=Build` described
+that indexing deadline, not a Rust compilation failure.
 
 ## Runtime cleanup
 
