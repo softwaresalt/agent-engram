@@ -72,3 +72,10 @@ writing; even read-only probes can contend with the writer.
 Dependency advisory remediation is separate work. No startup or hash-reuse
 implementation remains open. Standalone full-generation preflight reliability
 is not claimed resolved by the launcher change.
+
+## Commit provenance
+
+Implementation commit: `984e7df9062f6903baa5120c25a94859e181c168`.
+The official completion transitions archived both work items automatically.
+Task 143.001-T records this commit through the supported backlog update
+operation. No PR or merge was requested.
