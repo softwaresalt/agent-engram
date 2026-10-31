@@ -95,3 +95,18 @@ commit `9f10775d` added `.autoharness/config.yaml` outside shipment scope.
 Hosted gates and merges remain unperformed. Merge is pre-authorized only
 within 167-S; admin fallback is not authorized. This runtime record is not a
 post-merge closure artifact and does not satisfy P-020 closure.
+
+## Confirmed resume
+
+The preceding halt is historical. On `2026-10-31`, the operator explicitly
+confirmed recovery of `checkpoint-20261031-054021.json` and authorized
+non-rewriting relocation of the routing update into the Step 6 closure PR.
+Restore, bounded pruning, resume and official checkpoint resolution succeeded.
+The feature branch now restores the configuration to its `origin/main` blob;
+the original operator commit remains in history.
+
+The resumed pinned-status sanity check passed 3/3. Rust and Cargo blobs are
+unchanged since `4c063863`; configuration and lockfile net diffs are empty.
+The lifecycle gate passed. Delivery resumes at Step 5, subject to current-HEAD
+review and hosted gates. `D74F9442` remains the accepted baseline follow-up.
+Both scoped merges are pre-authorized; admin fallback remains prohibited.
