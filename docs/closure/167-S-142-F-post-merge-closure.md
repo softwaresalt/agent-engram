@@ -6,7 +6,7 @@ feature_id: "142-F"
 mode: post-merge
 date: 2026-10-31
 author: ship
-verdict: "READY; governed safe-close verified"
+verdict: "READY for governed safe-close; final transaction verification pending"
 closure_status: READY
 releasability: READY_WITH_CONDITIONS
 compaction_status: done
@@ -18,11 +18,11 @@ head_commit_merged: "91991fef0502cceb948939d9c5303084db2ac1b6"
 closure_pr_number: null
 closure_pr_merge_commit: null
 runtime_verification_report: "docs/closure/2026-10-31-167-s-runtime-verification.md"
-follow_up_stash: ["D74F9442", "A5BEA885"]
+follow_up_stash: ["D74F9442"]
 blocking_stash: null
-shipment_record_status: "archived; archived_status shipped; governed reconciliation verified"
+shipment_record_status: "safe-close archive and governed reconcile-shipped pending"
 pre_reconcile: ".backlogit/reconcile/167-S-pre-20261031T060200Z.md"
-post_reconcile: ".backlogit/reconcile/167-S-post-20261031T061714Z.md"
+post_reconcile: null
 ---
 
 ## Summary
@@ -33,29 +33,11 @@ glue. PR #468 merged at `2026-10-31T05:59:59Z` with a merge commit (P-009).
 This is a merge-only slice, not a separately tagged or published release.
 Covering feature `142-F` remains active; this is not feature-wide completion.
 
-`closure_status: READY` records completed shipment reconciliation and passing
-post-mode checks. The closure PR merge and completed observation window are
-not claimed by this record.
-
-## Final transaction verification
-
-The required generic move returned exit 9. Backlogit 1.12.0 then archived only
-`167-S`; governed `reconcile-shipped` returned `outcome: reconciled` using actor
-`ship`, idempotency key `idem-167-s-1`, the feature merge SHA and this canonical
-closure document. The archive declares `status: archived` and
-`archived_status: shipped`, with reconciliation event digest
-`c13d7485317e49d15d24f51cae6295d3a9ab824f4d5c36e65c4a8e40da32188e`.
-
-All 120 observation fingerprints and the pre-archived manifest member remained
-unchanged after each mutation. Existing evidence JSON was not overwritten.
-Safe-close returned `CLOSED`; the planner matched the empty linked-deliberation
-snapshot and returned `DISPOSITION_COMPLETE`. Post-mode confirmed every archive
-present and no archive deletions, returning `PROCEED`. The single-writer lock
-was released after these checks.
-
-Post-report:
-`.backlogit/reconcile/167-S-post-20261031T061714Z.md`.
-Pre-mode agreement: `agreed`. No cascade or parent-feature mutation occurred.
+`closure_status: READY` records prepared closure evidence for the authorized
+safe-close path, not completed shipment reconciliation. The coordinator must
+add final archive/reconcile transaction verification after executing the
+commands. No shipment archive, `reconcile-shipped` success, post-report,
+closure PR merge or completed observation window is claimed here.
 
 ## Dark-mode decisions and gates
 
@@ -96,10 +78,9 @@ Pre-report `.backlogit/reconcile/167-S-pre-20261031T060200Z.md` recommends
 The original direct status move exited 9 with
 `RECONCILE_FAIL_NO_SAFE_RECORD_TRANSITION`. The earlier halt was correct under
 the then-installed contract; no alternate archive, cascade or hand-edit was
-substituted. Contract maintenance and explicit operator approval subsequently
-authorized shipment-record archive followed by governed `reconcile-shipped`.
-Both operations and their postconditions are now verified in the final
-transaction record above; the earlier pending instructions are superseded.
+substituted. Contract maintenance and explicit operator approval now authorize
+shipment-record archive followed by governed `reconcile-shipped`. Both
+operations remain pending coordinator execution and postcondition verification.
 Never invoke cascade for this task-only partial-feature close.
 
 ## 167-S
@@ -162,7 +143,7 @@ fallback; generation reads must not open a managed database.
 | Merge bounded lifecycle/dispatch/request-entry conversion | moderate | Operator scoped approval; applied through normal PR #468 merge |
 | Relocate operator config without rewriting history | destructive overwrite, scoped | Explicit operator approval; applied, original commit preserved |
 | Maintain scoped close contract/config | moderate | Explicit operator approval; applied; supplied verifier exit 0, five warnings |
-| Archive shipment record, then governed reconcile-shipped | moderate | Explicit operator approval; applied and verified by coordinator; parent, task provenance and JSON preserved; no cascade |
+| Archive shipment record, then governed reconcile-shipped | moderate | Explicit operator approval; planned, not executed by this leaf; preserve parent, task provenance and JSON; no cascade |
 | Consolidate completed 167-S memory and archive verbose originals | low | Explicit operator approval; applied with traceable archives and latest task checkpoint retained |
 | Merge reviewed closure delivery | moderate | P-017 scoped preauthorization true; planned, not executed; admin fallback forbidden |
 
@@ -192,26 +173,8 @@ No source-artifact retirement is authorized or performed for this task-only
 partial-feature slice. The shipped manifest has no top-level feature/chore;
 covering `142-F` is ongoing, not a shipped top-level member. No parent source
 stash or deliberation is retired. The linked-deliberation set is empty, so
-no disposition outcome or reason code is invented. Existing follow-ups
-`D74F9442` and `A5BEA885` are retained unchanged; this leaf performs no capture.
-
-## Residual risks
-
-`D74F9442` retains the accepted unchanged-lockfile audit risk.
-For task `142.080-T`, feature `142-F` and shipment `167-S`, existing capture
-`A5BEA885` records `DEFERRED SCOPE EXPANSION`: evaluate whether the Extended
-Operations table in `.github/instructions/backlog-integration.instructions.md`
-should list the newly registered `reconcile_shipped` operation. P-021 C1
-classifies this additional generated instruction surface as outside the
-authorized four files; it was not modified.
-
-`A5BEA885` is the single pre-PR, threadless capture with the full payload;
-PR/thread: N/A; kind: task; provisional priority: low;
-`requires_deliberation: true`. Active stash discovery returned zero matches;
-archived-stash enumeration was unavailable through the registry:
-`DISCOVERY-STATUS: LOOKUP-UNAVAILABLE`. The entry cannot be edited; this
-residual record preserves the capture token and discovery limitation without
-claiming exhaustive duplicate discovery or creating another capture.
+no disposition outcome or reason code is invented. Existing follow-up
+`D74F9442` is reused unchanged; no new P-021 capture is required.
 
 ## Compaction (P-020)
 
@@ -225,26 +188,20 @@ remains unchanged. All recovery JSON and active `142-F` memory/plans remain
 unchanged. No plans or closure records were consolidated. Compaction status:
 `done`. Archive-only retention reclaims no repository disk space.
 
-## Final transaction verification and delivery handoff
+## Final transaction verification handoff
 
-The coordinator completed the authorized archive/reconcile transaction and
-verified terminal shipment provenance, all 120 observation fingerprints, the
-unchanged pre-archived task and the active parent feature hash recorded above.
-Post-report `.backlogit/reconcile/167-S-post-20261031T061714Z.md` returned
-`PROCEED`, with agreement `agreed`; the empty linked-deliberation snapshot and
-live planner agreed on `DISPOSITION_COMPLETE`. The lock was released.
+The coordinator adds the actual archive/reconcile command outcomes, terminal
+shipment provenance, post-reconcile report, parent hash recheck and final
+closure-evidence gate result after running the authorized commands. Prepared
+evidence and `compaction_status: done` do not substitute for those checks.
+Do not declare the transaction complete or route a successor until the
+governed close, final gate and remaining delivery requirements are satisfied.
 
-Finalized-artifact validation: `autoharness gate closure-evidence --path
+Prepared-artifact validation: `autoharness gate closure-evidence --path
 docs/closure/167-S-142-F-post-merge-closure.md --shipment 167-S --json`
-returned `PASS` after finalization. `verify-workspace` reported zero blockers,
-zero strict schema blockers and five warnings; `CLOSURE_INDEX_SYNC_OK` was
-recorded. The unchanged pre-close evidence JSON supports the observation
-baseline; the transaction outcomes above establish completed safe-close.
-Earlier prepared-only validation and pending coordinator instructions are
-historical and superseded, not outstanding transaction work.
-
-The new closure PR has not been opened; pre-PR review is in progress and no
-closure PR merge is claimed. Observation-window reporting and downstream PA5
-validation remain separate releasability conditions. Existing risks `D74F9442`
-and `A5BEA885` are retained unchanged. Shipment archive/reconciliation is
-complete; no repeat transaction is pending.
+exited 0 with no warnings. This read-only check accepted the canonical
+frontmatter and unchanged pre-close observation evidence; it does not attest
+the pending archive/reconcile transaction. The coordinator reruns it after
+adding actual transaction evidence. Archive content hashes, preserved task and
+recovery checkpoint hashes, and the active parent feature hash also match
+their pre-edit baselines. YAML/frontmatter and whitespace checks passed.
