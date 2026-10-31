@@ -4,7 +4,7 @@ date: 2026-10-31
 agent: ship
 shipment: "167-S"
 feature: "142-F"
-status: resumed-verification
+status: resumed-step-5
 ---
 
 ## Execution boundary
@@ -162,3 +162,80 @@ separately from IC. No new telemetry epoch was invented at recovery close.
 Final gates are running with `RUST_TEST_THREADS=1` to avoid parallel scheduling
 contention; no test is excluded and no assertion or timeout is changed.
 Final formatting, clippy and `cargo build --all-targets` have passed.
+
+## Final validation and scope halt
+
+The final serial full suite completed successfully: 278 test binaries,
+2,604 passed, zero failed, 20 ignored, exit 0. Command:
+`CARGO_TARGET_DIR=target/validation RUST_TEST_THREADS=1 cargo dev-test --no-fail-fast`
+(environment variables set through PowerShell). Formatting, pedantic clippy,
+full all-targets build and coverage completeness oracle also passed.
+This successful run supersedes the earlier parallel suite failures, whose
+isolated reruns had already passed. No test exclusion was added.
+
+While verification was running, the operator externally edited and then
+committed `.autoharness/config.yaml` as
+`9f10775d118f3419e2b6a44954e5c51ec6e51766` (`Updated routing`).
+The change replaces the Orchestrator route with Gemini/Google/high.
+Ship did not edit, stage or commit that configuration. It is now an extra
+path in `origin/main...HEAD`, outside 167-S's authorized contract surface.
+
+`DARK_MODE_HALTED`: P-021 shipment-scope mismatch at Step 5 before PR creation.
+No push, feature PR, merge, or Step 6 closure was performed. No admin fallback
+or dependency change was attempted. No additional P-021 stash was captured:
+`D74F9442` remains the accepted baseline residual-risk reference.
+P-005 event: policy P-021; gate Ship Step 5; action halted; evidence external
+commit `9f10775d` and `.autoharness/config.yaml`. The MCP-only telemetry sink
+is unavailable in this session; this durable record carries the event.
+
+Operator/Stage must remove or relocate the routing change from this shipment
+branch under a separate governed work unit. Ship must not silently include,
+revert or rewrite an operator-authored commit. After scope correction, obtain
+explicit owner-exclusive restore confirmation for
+`checkpoint-20261031-054021.json`, revalidate current-HEAD review coverage and
+continue feature PR gates, authorized merge and mandatory post-merge closure.
+Do not reclaim the archived task.
+
+The covering feature remains active and byte-identical:
+`42FCA67C1407641C8F3CF4752B3431D978290B1342614A831DF463B572181770`.
+The original selected checkpoint is resolved; only the new halt checkpoint
+remains active. Branch remains
+`feat/167-s-142-f-slot-19-1-142-080-t-pa5-t1`.
+
+## Confirmed scope relocation and Step 5 resume
+
+The operator explicitly selected and confirmed restore, prune, resume and
+resolution of `checkpoint-20261031-054021.json` in this session.
+The full enumeration returned 49 valid records, zero quarantined records and
+one active Ship checkpoint. The selected checkpoint was loaded through the
+official CLI. Engram PID 43836 responded with the expected workspace binding.
+Bounded pruning retained the shipment/task cursor, unresolved checkpoint
+identity and every gate verdict; only superseded action traces were omitted.
+Resume succeeded at Step 5 without reclaiming archived task `142.080-T`.
+Official checkpoint resolution succeeded at `2026-10-31T05:44:24.1758523Z`;
+the subsequent full enumeration returned zero active checkpoints.
+
+Operator/Stage explicitly authorized non-rewriting relocation of the
+configuration update in `9f10775d118f3419e2b6a44954e5c51ec6e51766`.
+The feature branch restores `.autoharness/config.yaml` from `origin/main`;
+the same operator blob will be applied on the Step 6 closure branch.
+The original commit remains in history. After this commit the configuration
+must have zero net diff to `origin/main`.
+
+ProposedAction: overwrite only this configuration path with the approved
+Git blob, then carry the operator blob into the closure PR.
+ActionRisk: destructive file overwrite, explicitly operator-approved.
+ActionResult: feature-branch restoration applied; closure restoration pending.
+No history reset, rebase, dependency edit or scope expansion is authorized.
+The fresh Ship route resolved to `gpt-6.1-sol/openai/medium/long_context`.
+
+The unchanged Rust blobs retain the final 2,604/0/20 full-suite evidence.
+Current-HEAD review and a targeted pinned-status sanity run precede feature
+PR creation. `D74F9442` remains the accepted baseline audit follow-up.
+Feature and closure merges are explicitly pre-authorized within this
+activation scope; admin fallback remains prohibited.
+
+The resumed pinned-status sanity run passed 3/3 with
+`CARGO_TARGET_DIR=target/validation cargo test --test integration_generation_pinned_workspace_status`.
+The lifecycle topology gate passed with `167-S` the sole active shipment.
+The covering feature SHA-256 remains byte-identical to the recorded baseline.
