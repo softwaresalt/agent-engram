@@ -4,7 +4,7 @@ date: 2026-10-31
 agent: ship
 feature: "142-F"
 branch: chore/stage-142-f-pa5-p
-status: halted-awaiting-stage-planning-corrections
+status: resumed-awaiting-current-head-review
 ---
 
 ## Scope and authority
@@ -74,3 +74,34 @@ status: halted-awaiting-stage-planning-corrections
 * After a successful merge, confirm ancestry on remote `main`, pull `main`,
   and verify `167-S.md` exists
 * `142-F` and its execution shipments remain open; this is not release closure
+
+## Same-session resumption after Stage fixes
+
+* Stage supplied both requested corrections in
+  `7293ca1a6106c06fb54c102b85c6cc5ec5239699`
+* The operator explicitly authorized administrative resolution of the named
+  pause checkpoint without crash recovery, restore, or pruning
+* Commit `44ffc76eb75c3b4a5fa0766ca02ba55b8cbbad90` records that resolution;
+  checkpoint enumeration reports zero active records and no quarantine
+* Three independent report-only reviewers established no artifact P0/P1
+  defects; terminal verification supplements their historical-source and
+  whole-diff evidence limitations before readiness is declared
+* Terminal proof confirms the historical blob has 1,633 lines, the corrected
+  ranges include their required declarations and final braces, and
+  `54 + 71 = 125`; both managed-baseline references use `Some(json!({}))`
+* The complete Git file set contains only backlog, docs, and routing config;
+  the protected feature has no Git diff and retains its required worktree hash
+* Local readiness after these proofs is `READY`, with `P0=0, P1=0, P2=0,
+  P3=0`; `git diff --check origin/main` passes after whitespace cleanup
+* Removed one trailing blank line from Stage memory; no plan, task planning
+  field, source code, or execution state was changed by Ship
+* Full local build and runtime validation are not applicable to this staging
+  diff: only backlog, planning, memory, and routing configuration changed
+* Await current-HEAD Copilot completion, substantive replies and resolutions,
+  review-body dispositions, and all five readiness checks before merging
+* Dark-mode merge approval covers this staging PR only; no admin fallback,
+  execution shipment claim, feature completion, or release closure is allowed
+* No P-021 deferred expansion has been identified or captured
+* The PR readiness block and merge audit will record the final reviewed HEAD,
+  review results, gate results, and merge result without another bookkeeping
+  push after hosted review
