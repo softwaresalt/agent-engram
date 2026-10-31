@@ -1571,6 +1571,21 @@ pub async fn query_graph(state: SharedState, params: Option<Value>) -> Result<Va
     }
 }
 
+/// Execute a graph query from an optional pinned read generation.
+///
+/// Route (c) placeholder for PA5-T4a; the managed handler remains unchanged
+/// until build-feature replaces this stub and installs dispatch/admission glue.
+#[allow(clippy::unused_async)] // Stub preserves the async API for the GREEN implementation.
+pub async fn query_graph_with_context(
+    _state: SharedState,
+    _params: Option<Value>,
+    _read_context: Option<&Arc<ReadRequestContext>>,
+) -> Result<Value, EngramError> {
+    Err(EngramError::System(SystemError::InvalidParams {
+        reason: "Worker: 142.083-T".to_owned(),
+    }))
+}
+
 // ── query_changes (T041) ──────────────────────────────────────────────────────
 
 /// Parameters for the `query_changes` MCP tool.
