@@ -481,12 +481,14 @@ pub async fn dispatch_with_read_context(
         }
         "index_workspace" => write::index_workspace(state.clone(), params).await,
         "sync_workspace" => write::sync_workspace(state.clone(), params).await,
-        "map_code" => read::map_code(state.clone(), params).await,
+        "map_code" => read::map_code_with_context(state.clone(), params, read_context).await,
         "list_symbols" => {
             read::list_symbols_with_context(state.clone(), params, read_context).await
         }
         "unified_search" => read::unified_search(state.clone(), params).await,
-        "impact_analysis" => read::impact_analysis(state.clone(), params).await,
+        "impact_analysis" => {
+            read::impact_analysis_with_context(state.clone(), params, read_context).await
+        }
         "lint_dax" => lint::lint_dax(state.clone(), params).await,
         "get_health_report" => read::get_health_report(state.clone(), params).await,
         "get_branch_metrics" => read::get_branch_metrics(state.clone(), params).await,

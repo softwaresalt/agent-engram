@@ -298,29 +298,61 @@ const fn default_map_max_nodes() -> usize {
 /// Falls back to vector search when the exact symbol name is not found.
 /// Returns full source bodies for all nodes (FR-148).
 pub async fn map_code(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
-    let context = pinned_dispatch_context(&state, "map_code").await?;
+    map_code_with_context(state, params, None).await
+}
 
-    // Read-only: graph state may be partially written during a background
-    // index. Returning available symbol graph context is more useful than
-    // blocking with an IndexInProgress error.
+/// Read a code map from an optional opened generation context.
+///
+/// # Errors
+/// Returns parameter, workspace binding, or database query errors.
+pub async fn map_code_with_context(
+    state: SharedState,
+    params: Option<Value>,
+    read_context: Option<&Arc<ReadRequestContext>>,
+) -> Result<Value, EngramError> {
+    let (parsed, effective_depth, effective_max_nodes, cg_queries) = if let Some(ctx) = read_context
+    {
+        let parsed: MapCodeParams =
+            serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
+                EngramError::System(SystemError::InvalidParams {
+                    reason: format!("invalid params: {e}"),
+                })
+            })?;
+        let config = state
+            .workspace_config()
+            .await
+            .map(|c| c.code_graph)
+            .unwrap_or_default();
+        let effective_depth = parsed.depth.clamp(1, config.max_traversal_depth);
+        let effective_max_nodes = parsed.max_nodes.min(config.max_traversal_nodes);
+        let cg_queries = queries_from_read_context(ctx.as_ref()).await?;
+        (parsed, effective_depth, effective_max_nodes, cg_queries)
+    } else {
+        let context = pinned_dispatch_context(&state, "map_code").await?;
 
-    let parsed: MapCodeParams =
-        serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
-            EngramError::System(SystemError::InvalidParams {
-                reason: format!("invalid params: {e}"),
-            })
-        })?;
+        // Read-only: graph state may be partially written during a background
+        // index. Returning available symbol graph context is more useful than
+        // blocking with an IndexInProgress error.
 
-    let effective_depth = parsed
-        .depth
-        .clamp(1, context.config.code_graph.max_traversal_depth);
-    let effective_max_nodes = parsed
-        .max_nodes
-        .min(context.config.code_graph.max_traversal_nodes);
+        let parsed: MapCodeParams =
+            serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
+                EngramError::System(SystemError::InvalidParams {
+                    reason: format!("invalid params: {e}"),
+                })
+            })?;
 
-    // Params are well-formed — safe to open (and, on first access, bootstrap)
-    // storage now.
-    let cg_queries = queries_from_context(&context).await?;
+        let effective_depth = parsed
+            .depth
+            .clamp(1, context.config.code_graph.max_traversal_depth);
+        let effective_max_nodes = parsed
+            .max_nodes
+            .min(context.config.code_graph.max_traversal_nodes);
+
+        // Params are well-formed — safe to open (and, on first access, bootstrap)
+        // storage now.
+        let cg_queries = queries_from_context(&context).await?;
+        (parsed, effective_depth, effective_max_nodes, cg_queries)
+    };
 
     // Exact-name lookup across all symbol tables
     let matches = cg_queries.find_symbols_by_name(&parsed.symbol_name).await?;
@@ -830,29 +862,64 @@ pub async fn impact_analysis(
     state: SharedState,
     params: Option<Value>,
 ) -> Result<Value, EngramError> {
-    let context = pinned_dispatch_context(&state, "impact_analysis").await?;
+    impact_analysis_with_context(state, params, None).await
+}
 
-    // Read-only: graph may be partially populated during a background index.
-    // Returning available impact data is more useful than an IndexInProgress error.
+/// Read impact analysis from an optional opened generation context.
+///
+/// # Errors
+/// Returns parameter, workspace binding, database query, or symbol-not-found errors.
+pub async fn impact_analysis_with_context(
+    state: SharedState,
+    params: Option<Value>,
+    read_context: Option<&Arc<ReadRequestContext>>,
+) -> Result<Value, EngramError> {
+    let (parsed, effective_depth, effective_max_nodes, cg_queries) = if let Some(ctx) = read_context
+    {
+        let parsed: ImpactAnalysisParams = serde_json::from_value(params.unwrap_or_default())
+            .map_err(|e| {
+                EngramError::System(SystemError::InvalidParams {
+                    reason: format!("invalid params: {e}"),
+                })
+            })?;
+        let config = state
+            .workspace_config()
+            .await
+            .map(|c| c.code_graph)
+            .unwrap_or_default();
+        let effective_depth = parsed.depth.clamp(1, config.max_traversal_depth);
+        let effective_max_nodes = parsed
+            .max_nodes
+            .clamp(1, 100)
+            .min(config.max_traversal_nodes);
+        let cg_queries = queries_from_read_context(ctx.as_ref()).await?;
+        (parsed, effective_depth, effective_max_nodes, cg_queries)
+    } else {
+        let context = pinned_dispatch_context(&state, "impact_analysis").await?;
 
-    let parsed: ImpactAnalysisParams =
-        serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
-            EngramError::System(SystemError::InvalidParams {
-                reason: format!("invalid params: {e}"),
-            })
-        })?;
+        // Read-only: graph may be partially populated during a background index.
+        // Returning available impact data is more useful than an IndexInProgress error.
 
-    let effective_depth = parsed
-        .depth
-        .clamp(1, context.config.code_graph.max_traversal_depth);
-    let effective_max_nodes = parsed
-        .max_nodes
-        .clamp(1, 100)
-        .min(context.config.code_graph.max_traversal_nodes);
+        let parsed: ImpactAnalysisParams = serde_json::from_value(params.unwrap_or_default())
+            .map_err(|e| {
+                EngramError::System(SystemError::InvalidParams {
+                    reason: format!("invalid params: {e}"),
+                })
+            })?;
 
-    // Params are well-formed — safe to open (and, on first access, bootstrap)
-    // storage now.
-    let cg_queries = queries_from_context(&context).await?;
+        let effective_depth = parsed
+            .depth
+            .clamp(1, context.config.code_graph.max_traversal_depth);
+        let effective_max_nodes = parsed
+            .max_nodes
+            .clamp(1, 100)
+            .min(context.config.code_graph.max_traversal_nodes);
+
+        // Params are well-formed — safe to open (and, on first access, bootstrap)
+        // storage now.
+        let cg_queries = queries_from_context(&context).await?;
+        (parsed, effective_depth, effective_max_nodes, cg_queries)
+    };
 
     // Power BI root selection (C3): an explicit `powerbi_node_id` pins the root
     // to exactly one node and bypasses name resolution entirely.
