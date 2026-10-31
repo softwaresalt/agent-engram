@@ -4,7 +4,7 @@ date: 2026-10-31
 agent: ship
 shipment: "167-S"
 feature: "142-F"
-status: halted-quality-gate
+status: resumed-verification
 ---
 
 ## Execution boundary
@@ -92,3 +92,73 @@ records; no confirmed reusable identity existed.
 `DARK_MODE_HALTED`: mandatory audit gate failed. No policy override or
 administrative fallback was attempted. No PR number or merge SHA exists.
 P-020 is not yet due because no merge occurred.
+
+## Confirmed recovery and baseline disposition
+
+The operator explicitly selected and confirmed recovery of Ship checkpoint
+`checkpoint-20261031-041009.json`. Enumeration found no quarantined records
+and one active candidate. The selected record was valid and Ship-owned.
+Engram PID 43836 responded in read-server mode with the expected workspace
+binding. Bounded pruning retained the active cursor, checkpoint pointer and
+all gate verdicts; only superseded action traces were omitted.
+Resume succeeded and the selected checkpoint was resolved through backlogit.
+The subsequent enumeration found zero active checkpoints and zero anomalies.
+
+The operator/Stage accepted the eight unchanged-lockfile audit advisories as
+baseline residual risk under P-021 C3. `D74F9442` remains the authoritative
+follow-up, with predecessor `25A1BE9E`; neither entry was edited.
+`git diff origin/main -- Cargo.lock` is empty. No dependency upgrade is
+authorized. Carry `D74F9442` into PR readiness and post-merge closure.
+
+Fresh validation with `CARGO_TARGET_DIR=target/validation`:
+
+* `cargo build --all-targets`: PASS
+* Pinned workspace status: three consecutive runs, 3/3 PASS each
+* Generation wiring: three consecutive runs, 13/13 PASS each, identical
+  test-name/outcome maps
+* Lifecycle generation pin: 3/3 PASS
+* Pinning enforcement: 4/4 PASS
+* Pedantic clippy and formatting: PASS
+* Full `cargo dev-test --no-fail-fast`: still running; no PASS claimed
+
+Three-persona report-only review found one low-consensus P1 in this task's
+harness: `tempdir_in("tmp")` assumed its parent existed. A disposable,
+Git-ignored clean-cwd check reproduced the setup failure. P-021 C1 classifies
+parent creation as completion of the authorized harness, not scope expansion.
+The harness delegate added `fs::create_dir_all("tmp")?` without changing
+assertions or production code. Post-fix validation and review remain pending.
+No implementation commit, task completion, PR, or merge is claimed yet.
+
+## Implementation commit and post-review evidence
+
+IC: `5beae02c670d8410c5f5f0e125f3641185183428`.
+`git diff 5f1d8023..5beae02c --name-only` contains exactly the three
+production files. Harness repair `4c063863` is a separate subsequent commit.
+
+The complete no-fail-fast suite exited 101 with three failures. Exact isolated
+reruns of the cancellation/indexing library test, shim pre-initialize
+concurrency test and daemon startup-order timeout test each passed on the first
+retry. No production fix or test weakening was made for those failures.
+Post-fix harness verification passed 3/3 both through cargo and from the owned
+ignored scratch directory with no pre-existing `tmp` child.
+
+The bounded three-persona post-remediation review found no remaining
+P0/P1/P2/P3 in-scope findings. Review identity is preserved by the three
+production blob hashes and unchanged harness/Cargo blobs, mapped to IC plus
+the separate fixture repair. Readiness is `READY_WITH_FOLLOWUPS`, carrying
+`D74F9442` as accepted audit baseline risk.
+
+Runtime and monitoring evidence:
+`docs/closure/2026-10-31-167-s-runtime-verification.md`.
+Final quality gates, hosted checks, feature PR and merges remain pending.
+
+The official task operations completed: moved `142.080-T` to done, recorded
+IC through `backlogit update --commit`, and archived the task. Its archive
+declares `archived_status: done`, parent `142-F`, and the correct IC SHA.
+The covering feature remains active with the unchanged SHA-256 recorded above.
+The resolved recovery checkpoint, task relocation and this memory are committed
+separately from IC. No new telemetry epoch was invented at recovery close.
+
+Final gates are running with `RUST_TEST_THREADS=1` to avoid parallel scheduling
+contention; no test is excluded and no assertion or timeout is changed.
+Final formatting, clippy and `cargo build --all-targets` have passed.
