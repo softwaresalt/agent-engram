@@ -4,7 +4,7 @@ date: 2026-10-31
 agent: ship
 feature: "142-F"
 branch: chore/stage-142-f-pa5-p
-status: pre-merge-verification
+status: halted-awaiting-stage-planning-corrections
 ---
 
 ## Scope and authority
@@ -52,8 +52,25 @@ status: pre-merge-verification
 * Do not sync the divergent existing backlog cache or use it for semantic
   shipment selection; review used the authoritative Git diff
 * No P-021 deferred expansion was captured during local review
-* Open the staging PR with current-HEAD local readiness evidence, wait for CI
-  and any engaged Copilot review, then rerun all five readiness checks
-* Merge only through the normal merge-commit path; halt on a protection block
-* Confirm the merge on remote `main`, pull `main`, and verify `167-S.md` exists
+* PR [466](https://github.com/softwaresalt/agent-engram/pull/466) is open and
+  unmerged; retain the staging branch
+* Rust CI is intentionally skipped by `ci.yml` path exclusions; effective
+  repository rules declare no required status checks
+* Copilot review `5720433960` covers
+  `b62015013007ba9b53e7781c613f5a0059598bf4`; the deterministic P-018 gate
+  returned `UNRESOLVED_THREADS` with two open findings
+* Thread `PRRT_kwDORJEduc6yMYIg` requests explicit empty params instead of
+  `None` for the managed baseline in `142.081-T`
+* Thread `PRRT_kwDORJEduc6yMYIv` requests source ranges `1352..=1405` and
+  `1563..=1633` with a total of 125 lines in the PA5-P plan and `142.058-T`
+* These are in-scope staging corrections, not P-021 deferred expansions;
+  Ship cannot edit task planning fields or plan artifacts under P-010
+* Halt for Stage to verify and correct the findings; leave both threads open
+  until the corrections are pushed and explained
+* No merge, force override, admin fallback, shipment claim, or closure occurred
+* After Stage remediation, rerun local verification and review for the new
+  HEAD, obtain current-HEAD Copilot completion, disposition the review body,
+  and rerun all five readiness checks before any authorized merge
+* After a successful merge, confirm ancestry on remote `main`, pull `main`,
+  and verify `167-S.md` exists
 * `142-F` and its execution shipments remain open; this is not release closure
