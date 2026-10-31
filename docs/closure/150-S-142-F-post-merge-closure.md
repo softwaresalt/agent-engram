@@ -145,3 +145,7 @@ deliberation was archived; no `linked_deliberation_disposition` applies (manual 
 * Residual P3: harden the scenario 3 `query_memory` comparison to assert `Ok`; recorded here only.
 * `closure_pr_number` and `closure_pr_merge_commit` are `null` in this record because it ships in the
   closure PR itself; they are recorded in the session summary.
+
+## 150-S
+
+PR #431 (feature), commit b64e3d26d566e802237329e6af12c5ae24edeac8
