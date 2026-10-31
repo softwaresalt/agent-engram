@@ -1202,6 +1202,10 @@ name = "integration_generation_pinned_query_graph"
 path = "tests/integration/generation_pinned_query_graph_test.rs"
 
 [[test]]
+name = "integration_generation_pinned_unified_search"
+path = "tests/integration/generation_pinned_unified_search_test.rs"
+
+[[test]]
 name = "integration_report_read_generation_pin"
 path = "tests/integration/report_read_generation_pin_test.rs"
 

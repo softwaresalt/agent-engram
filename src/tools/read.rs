@@ -759,6 +759,27 @@ pub async fn unified_search(
     }))
 }
 
+/// Unified search using an optional caller-pinned read context (PA5-T4b harness).
+///
+/// Kept after the unchanged handler during HC so prefix-based source contracts
+/// still inspect the working managed path. IC moves this before the wrapper.
+///
+/// # Errors
+/// Returns the task marker until 142.084-T is implemented.
+#[allow(
+    clippy::unused_async,
+    reason = "HC stub preserves the planned async API"
+)]
+pub async fn unified_search_with_context(
+    _state: SharedState,
+    _params: Option<Value>,
+    _read_context: Option<&Arc<ReadRequestContext>>,
+) -> Result<Value, EngramError> {
+    Err(EngramError::System(SystemError::InvalidParams {
+        reason: "Worker: 142.084-T".to_owned(),
+    }))
+}
+
 /// Truncate text to `max_chars`, breaking at a word boundary when possible.
 fn truncate_summary(text: &str, max_chars: usize) -> String {
     if text.chars().count() <= max_chars {
