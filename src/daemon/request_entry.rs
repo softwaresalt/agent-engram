@@ -22,7 +22,7 @@ use crate::tools::capabilities::{self, CapabilityClass, InputOwnership};
 /// Read methods whose handler is pinned to a request-entry generation context
 /// (plan unit PRE-4, 142.066-T). A method joins only in the change that
 /// converts its handler.
-pub const GENERATION_PINNED_READS: &[&str] = &["get_workspace_statistics"];
+pub const GENERATION_PINNED_READS: &[&str] = &["get_workspace_statistics", "get_workspace_status"];
 
 /// A decoded IPC request frame awaiting admission.
 pub type Frame = IpcRequest;
@@ -313,6 +313,16 @@ pub async fn process_request(line: &str, state: &SharedState) -> (IpcResponse, b
             // Generation-pinned reads acquire their context here, at request
             // entry, and nowhere else (PRE-4, stash 6C5DF765).
             let Some(gate) = state.read_server_gate().await else {
+                if method == "get_workspace_status" {
+                    // Keep binding observability available before activation.
+                    return (
+                        match tools::dispatch(Arc::clone(state), method, request.params).await {
+                            Ok(result) => IpcResponse::success(id, result),
+                            Err(e) => error_transport::to_response(id, e),
+                        },
+                        false,
+                    );
+                }
                 return (
                     refusal(
                         &request,
@@ -333,6 +343,13 @@ pub async fn process_request(line: &str, state: &SharedState) -> (IpcResponse, b
                     )
                     .await
                     {
+                        Ok(result) => IpcResponse::success(id, result),
+                        Err(e) => error_transport::to_response(id, e),
+                    },
+                    false,
+                ),
+                ReadAdmission::Refused(_) if method == "get_workspace_status" => (
+                    match tools::dispatch(Arc::clone(state), method, request.params).await {
                         Ok(result) => IpcResponse::success(id, result),
                         Err(e) => error_transport::to_response(id, e),
                     },
