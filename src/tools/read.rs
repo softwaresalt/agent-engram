@@ -1502,31 +1502,68 @@ fn build_find_path_json(from: &str, to: &str, result: FindPathResult) -> Value {
 /// traverse all types.
 #[tracing::instrument(name = "tool.query_graph", skip(state, params))]
 pub async fn query_graph(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
-    let context = pinned_dispatch_context(&state, "query_graph").await?;
-    let raw = params.unwrap_or_default();
+    query_graph_with_context(state, params, None).await
+}
 
-    // Legacy compat: if `query` field is present without `operation`, return a helpful error
-    // rather than a confusing parse failure message.
-    if let Some(obj) = raw.as_object() {
-        if obj.contains_key("query") && !obj.contains_key("operation") {
-            return Err(EngramError::System(SystemError::InvalidParams {
-                reason: "query_graph now requires a structured operation. \
+/// Execute a graph query from an optional pinned read generation.
+///
+/// # Errors
+/// Returns parameter, workspace binding, or database query errors.
+pub async fn query_graph_with_context(
+    state: SharedState,
+    params: Option<Value>,
+    read_context: Option<&Arc<ReadRequestContext>>,
+) -> Result<Value, EngramError> {
+    let (gq, cg_queries) = if let Some(ctx) = read_context {
+        let raw = params.unwrap_or_default();
+
+        // Validate before accessing the admitted generation's database.
+        if let Some(obj) = raw.as_object() {
+            if obj.contains_key("query") && !obj.contains_key("operation") {
+                return Err(EngramError::System(SystemError::InvalidParams {
+                    reason: "query_graph now requires a structured operation. \
                          Use {\"operation\":\"neighborhood\",\"root\":\"fn:...\"} \
                          instead of a raw Datalog query string."
-                    .into(),
-            }));
+                        .into(),
+                }));
+            }
         }
-    }
 
-    let gq: GraphQuery = serde_json::from_value(raw).map_err(|e| {
-        EngramError::System(SystemError::InvalidParams {
-            reason: e.to_string(),
-        })
-    })?;
+        let gq: GraphQuery = serde_json::from_value(raw).map_err(|e| {
+            EngramError::System(SystemError::InvalidParams {
+                reason: e.to_string(),
+            })
+        })?;
+        let cg_queries = queries_from_read_context(ctx.as_ref()).await?;
+        (gq, cg_queries)
+    } else {
+        let context = pinned_dispatch_context(&state, "query_graph").await?;
+        let raw = params.unwrap_or_default();
 
-    // Params are well-formed — safe to open (and, on first access, bootstrap)
-    // storage now.
-    let cg_queries = queries_from_context(&context).await?;
+        // Legacy compat: if `query` field is present without `operation`, return a helpful error
+        // rather than a confusing parse failure message.
+        if let Some(obj) = raw.as_object() {
+            if obj.contains_key("query") && !obj.contains_key("operation") {
+                return Err(EngramError::System(SystemError::InvalidParams {
+                    reason: "query_graph now requires a structured operation. \
+                         Use {\"operation\":\"neighborhood\",\"root\":\"fn:...\"} \
+                         instead of a raw Datalog query string."
+                        .into(),
+                }));
+            }
+        }
+
+        let gq: GraphQuery = serde_json::from_value(raw).map_err(|e| {
+            EngramError::System(SystemError::InvalidParams {
+                reason: e.to_string(),
+            })
+        })?;
+
+        // Params are well-formed — safe to open (and, on first access, bootstrap)
+        // storage now.
+        let cg_queries = queries_from_context(&context).await?;
+        (gq, cg_queries)
+    };
 
     match gq {
         GraphQuery::Neighborhood {
@@ -1569,21 +1606,6 @@ pub async fn query_graph(state: SharedState, params: Option<Value>) -> Result<Va
             Ok(build_graph_json("transitive_closure", &root, result))
         }
     }
-}
-
-/// Execute a graph query from an optional pinned read generation.
-///
-/// Route (c) placeholder for PA5-T4a; the managed handler remains unchanged
-/// until build-feature replaces this stub and installs dispatch/admission glue.
-#[allow(clippy::unused_async)] // Stub preserves the async API for the GREEN implementation.
-pub async fn query_graph_with_context(
-    _state: SharedState,
-    _params: Option<Value>,
-    _read_context: Option<&Arc<ReadRequestContext>>,
-) -> Result<Value, EngramError> {
-    Err(EngramError::System(SystemError::InvalidParams {
-        reason: "Worker: 142.083-T".to_owned(),
-    }))
 }
 
 // ── query_changes (T041) ──────────────────────────────────────────────────────

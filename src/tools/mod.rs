@@ -496,7 +496,7 @@ pub async fn dispatch_with_read_context(
         "get_evaluation_report" => read::get_evaluation_report(state.clone(), params).await,
         "run_retrieval_eval" => eval::run_retrieval_eval(state.clone(), params).await,
         "get_retrieval_eval_report" => eval::get_retrieval_eval_report(state.clone(), params).await,
-        "query_graph" => read::query_graph(state.clone(), params).await,
+        "query_graph" => read::query_graph_with_context(state.clone(), params, read_context).await,
         "get_mutable_script_retry_metrics" => {
             read::get_mutable_script_retry_metrics(state.clone(), params).await
         }

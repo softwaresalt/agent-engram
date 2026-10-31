@@ -29,6 +29,7 @@ pub const GENERATION_PINNED_READS: &[&str] = &[
     "list_symbols",
     "map_code",
     "impact_analysis",
+    "query_graph",
 ];
 
 /// A decoded IPC request frame awaiting admission.
