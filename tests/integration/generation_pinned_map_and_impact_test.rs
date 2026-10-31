@@ -259,7 +259,7 @@ async fn pa5_t3_generation_graph_differs_from_unindexed_managed_data() -> Result
         EngramError::CodeGraph(CodeGraphError::SymbolNotFound { name }) if name == "alpha"
     ));
     let response = serde_json::to_value(error.to_response())?;
-    assert_eq!(response.get("code"), Some(&json!(7004)));
+    assert_eq!(response.pointer("/error/code"), Some(&json!(7004)));
     assert!(response.get("provenance").is_none());
     Ok(())
 }
