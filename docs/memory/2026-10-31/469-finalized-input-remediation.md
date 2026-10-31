@@ -104,3 +104,26 @@ Stage owns deliberation and prioritization; no runtime experiment was run.
 The follow-up capture and this memory update need a final continuity
 commit, current-HEAD local review and fresh hosted/P-014/P-018 gates.
 No prior PASS is reused after that HEAD change. Merge remains pending.
+
+## Final bounded scope clarification
+
+The capture-only continuity commit is
+`4dcc4d5387ebb02839a2e07442d966a906008089`.
+Three final reviewers found no introduced actionable defect but reported
+`REVIEW_INCOMPLETE` because terminal access was unavailable. Ship supplied
+the missing terminal certification: the only additional changes were the
+stash append and this memory record, all protected hashes matched, full
+diff whitespace passed and workspace/closure gates passed.
+
+Hosted review `5721903243` covers that HEAD and reports no open issues,
+but its body requests human assessment of possible SAFE_CLOSE requirements
+being applied to CASCADE shipments. This is a P-021 C1 same-contract
+clarification, not a deferred expansion. In the final bounded review-fix
+cycle, delegated fix-ci explicitly qualified the Step 6.2 finalized-input
+paragraph as applying to the governed SAFE_CLOSE reconciliation route
+only. The shared `cascade`/`safe_close` evidence contract is unchanged.
+
+This clarification and memory require a final commit, current-HEAD local
+review and hosted/P-014/P-018 gates. Further actionable defects after this
+bounded cycle require operator handoff, not another automatic fix cycle.
+No new stash capture is needed for this same-contract clarification.
