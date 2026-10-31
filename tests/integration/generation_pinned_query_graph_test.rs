@@ -186,16 +186,16 @@ fn assert_provenance(value: &Value) {
 fn assert_graph(value: &Value, alpha: &str, beta: &str) -> Result<()> {
     assert_eq!(value.get("operation"), Some(&json!("neighborhood")));
     assert_eq!(value.get("root"), Some(&json!(beta)));
-    assert_eq!(value.get("node_count"), Some(&json!(2)));
+    // Neighborhood nodes exclude the separately reported root.
+    assert_eq!(value.get("node_count"), Some(&json!(1)));
     let nodes = value
         .get("nodes")
         .and_then(Value::as_array)
         .context("graph nodes")?;
-    for (name, id) in [("alpha", alpha), ("beta", beta)] {
-        assert!(nodes.iter().any(|node| {
-            node.get("name") == Some(&json!(name)) && node.get("id") == Some(&json!(id))
-        }));
-    }
+    assert_eq!(nodes.len(), 1);
+    assert!(nodes.iter().any(|node| {
+        node.get("name") == Some(&json!("alpha")) && node.get("id") == Some(&json!(alpha))
+    }));
     let edges = value
         .get("edges")
         .and_then(Value::as_array)
