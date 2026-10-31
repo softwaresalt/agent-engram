@@ -1002,14 +1002,35 @@ completion.
      classifier `CASCADE` with `ENGINE_SEMANTICS_UNVERIFIED`), verify installed
      backlogit is 1.12.0+ and the registered `reconcile_shipped` operation is
      available before archiving anything further.
-     1. After merge confirmation, prepare/finalize the canonical attested input on disk at
-        `docs/closure/<shipment>-<feature>-post-merge-closure.md`, containing
-        `## <shipment>`, the feature PR number, and merge SHA. Record only
-        observed outcomes, never premature closure or compaction completion.
-        Use its canonical path as `closure_evidence`; a planned or missing
-        document is not evidence. It may be a truthful prepared input with
-        outstanding closure steps, or finalized closure plus completed P-020
-        before this transaction.
+     1. After merge confirmation, execute applicable source-artifact cleanup
+        and documentation gardening (Ship steps 6.3–6.7), then invoke P-020
+        `compact-context` with `target: all` (Ship step 6.8). Preserve INV-12:
+        never independently archive a linked deliberation or invent its later
+        disposition; record subsequently observed disposition outcomes in the
+        post-mode report. Finalize the canonical attested input on disk at
+        `docs/closure/<shipment>-<feature>-post-merge-closure.md` with
+        `closure_status: READY`, `compaction_status: done` or `degraded` from
+        the actual invocation, `close_path: safe_close`, and
+        `close_evidence: docs/closure/evidence/<shipment>-<feature>-close-evidence.json`.
+        Its delivery section must contain `## <shipment>`,
+        `PR #<n> (feature)`, and `commit <merge_sha>` for the actual feature
+        PR and merge commit. Do not claim unobserved transaction outcomes.
+        Use its canonical path as `closure_evidence`; missing, pending,
+        `BLOCKED`, unset, or unmet-conditions input is forbidden.
+        Write NEW canonical inputs with LF before attestation. Ensure the
+        committed Git blob is byte-identical to attested bytes even under
+        `autocrlf`, using scoped `eol=lf` or equivalent per-command
+        staging/checkout handling for NEW documents; verify staged and committed
+        blob bytes, and do not edit `.gitattributes`.
+        Before shipment-only archive, run the full gate:
+
+        ```text
+        autoharness gate closure-evidence --path docs/closure/<shipment>-<feature>-post-merge-closure.md --shipment <shipment> --json
+        ```
+
+        Require exit 0, `passed: true`, and `failed_check: null`; otherwise
+        halt before archive. A companion record cannot replace this PASS or
+        supply canonical completion.
      2. Verify the shipment is uniquely live `status: active`, then archive
         **ONLY** the shipment record via `backlogit archive <shipment_id>`.
         Verify interim `status: archived` and `archived_status: active`, with
@@ -1026,17 +1047,22 @@ completion.
         argument `reconcile-shipped <shipment_id>`.
      4. Re-read and verify `status: archived`, `archived_status: shipped`, and
         `shipment_reconciliation_event_digest`, with no live+archived
-        duplication. Compute the canonical file's disk SHA-256 and require
-        equality with `closure_content_hash` in the archive's transaction
-        evidence; a mismatch halts. A successful command alone is not sufficient
-        evidence.
+        duplication. Repeat the full closure-evidence gate from item 1 and
+        require exit 0, `passed: true`, and `failed_check: null`. Verify
+        `closure_content_hash` in the archive's transaction evidence against
+        exact disk bytes OR the LF/CRLF line-ending representation of the
+        COMMITTED Git blob. Only newline conversion is permitted, never
+        arbitrary whitespace or content normalization; never rewrite a
+        historical transaction digest. Any gate or hash mismatch halts.
+        A successful transaction command alone is not sufficient evidence.
      5. Treat the attested canonical input as immutable: never edit, relocate,
         or compact it after the transaction, including for finalization,
         source cleanup, agreement checks, or P-020. Write later outcomes to
         `.backlogit/reconcile/<shipment>-post-<UTC>.md` or session memory,
-        linking the input and verified transaction. When the input was prepared
-        before closure completed, that companion is the completion authority
-        for finalized closure and compaction status (Ship steps 6.2/6.8).
+        linking the finalized input and verified transaction. The post-mode
+        report records later transaction/reconciliation outcomes only; it
+        never substitutes for canonical completion or grants completion
+        authority to a pending or `BLOCKED` input (Ship steps 6.2/6.8).
    * If neither route succeeds, halt with
      `RECONCILE_FAIL_NO_SAFE_RECORD_TRANSITION`, retaining any specific
      live-status/provenance diagnostic above. Older runtimes remain blocked.
@@ -1995,7 +2021,7 @@ If pre-mode cannot acquire the lock because another process holds it:
 * `INV-8` (Manifest ordering is a Stage assembly convention, NOT a closure precondition). Stage may enforce feature-last ordering when assembling new shipments, but Ship MUST NOT treat manifest ordering as a closure precondition.
 * `INV-9` (DAG orthogonality): shipment sequencing and pipeline topology are orthogonal to closure scope; closure never consults the DAG when deciding what this shipment may transition.
 * `INV-10` (Close-path gate postconditions (evaluated before INV-12 disposition)): at the close-path gate, `archived_ids ⊆ allowed_ids(S)`; `required_ids(S) ⊆ archived_ids`; every artifact outside `allowed_ids(S)` is byte-identical to baseline, including `parent_id`; and the shipment record declares `status: archived` plus `archived_status: shipped`. INV-12's `archived` deliberations are the only artifacts outside `allowed_ids(S)` that may change after the gate, and only through INV-12.
-* `INV-11` (External runtime prerequisite): try the generic move to `shipped` first, verify live `shipped`, archive only the shipment record, and verify archived `shipped` provenance. On exit 9 with `SAFE_CLOSE` selected, installed backlogit 1.12.0+ permits Step 8's governed `reconcile_shipped` route: after merge confirmation prepare/finalize the canonical attested input on disk, archive only the shipment with interim `archived_status: active`, and supply the required reason, actor `ship`, idempotency key, merge SHA, canonical closure evidence, and exact confirmation. Verify final `status: archived`, `archived_status: shipped`, `shipment_reconciliation_event_digest`, and disk SHA-256 equal to the archive's transaction evidence `closure_content_hash`; never change the frozen input afterward. Later outcomes go in the companion post-report/session memory, the completion authority when the input preceded completed closure. Re-run Step 5 after either route. If neither succeeds, halt with `RECONCILE_FAIL_NO_SAFE_RECORD_TRANSITION`. Older runtimes remain blocked; never substitute cascade, retry, or hand-edit, and preserve all baseline safeguards.
+* `INV-11` (External runtime prerequisite): try the generic move to `shipped` first, verify live `shipped`, archive only the shipment record, and verify archived `shipped` provenance. On exit 9 with `SAFE_CLOSE` selected, installed backlogit 1.12.0+ permits only Step 8's governed `reconcile_shipped` route: after merge confirmation complete source-artifact cleanup/document gardening and P-020 `compact-context` with `target: all`, finalize the canonical input with `closure_status: READY`, `compaction_status: done`/`degraded`, `close_path: safe_close`, the canonical JSON `close_evidence`, and delivery markers `## <shipment>`, `PR #<n> (feature)`, `commit <merge_sha>`. Require full closure-evidence exit 0, `passed: true`, `failed_check: null` before shipment-only archive; pending/`BLOCKED` inputs are forbidden. Then verify interim `archived_status: active` and supply every required transaction argument. Verify final archived `shipped` provenance and event digest, repeat the full gate, and verify `closure_content_hash` using Step 8's exact-disk or newline-only COMMITTED-blob rule. NEW inputs use LF and scoped `eol=lf` or equivalent staging/checkout handling so committed bytes equal attested bytes under `autocrlf`; never edit `.gitattributes` or historical transaction digests. Never change frozen inputs; later transaction/reconciliation outcomes belong in the post-mode report/session memory, never as canonical completion authority. Re-run Step 5 after either route. If neither succeeds, halt with `RECONCILE_FAIL_NO_SAFE_RECORD_TRANSITION`. Older runtimes remain blocked; never substitute cascade, retry, or hand-edit, and preserve all baseline safeguards.
 * `INV-12` (Linked-deliberation disposition): after the selected close path's gate passes, the Linked-Deliberation Disposition step assigns each disposition-set member exactly one `LinkedDeliberationOutcome`: `archived`, `already-archived`, `retained_read_error`, `retained_engine_unverified`, `retained_ambiguous`, `retained_live_status`, `retained_shared_reference`, or `retained_description_mention`. Each outcome carries a `reason_code`, which defaults to the outcome value; `retained_read_error` also carries a workspace-relative `path` and a read-error `reason_code` (`path_escape`, `symlink_or_reparse_point`, `unreadable_file`, `malformed_frontmatter`, `body_unseparable`, `malformed_stash_entry`). A read or containment failure yields `retained_read_error` first. A disposition-set member is mutated only by a single-artifact, non-cascading archive, and only when the engine-semantics verdict is VERIFIED, the deliberation is linked from an explicit member's `source_deliberation_id`, its own status is not live (`active`, `blocked`, `review`), it resolves to exactly one record, and it has no live referrer. The step never widens `closure_scope(S)`, is independent of the selected close path, and reports retained outcomes, which never halt; a verification failure halts with P-005 and never advances to post-mode.
 
 ## Deterministic Safe-Close Scenario Matrix
@@ -2009,7 +2035,7 @@ If pre-mode cannot acquire the lock because another process holds it:
 * **Safe-Close step 4 status-keyed archive (D16452D7)**: an `.backlogit/archive/`-resident record declaring `done` (or `active`) is moved to `done` if needed and archived explicitly, classified `matched`, never skipped; a record declaring `archived` in either location is `pre-archived` and skipped; an engine refusal halts for operator review.
 * **Negative — changed during run**: any observation-set location/hash drift relative to baseline halts and enters the D6 sequence: capture evidence -> HALT -> emit P-005 -> request EXPLICIT operator approval -> REVALIDATE -> execute ONLY the approved rollback.
 * **Negative — refused transition with no safe substitution**: if the generic move is refused and Step 8's governed route is unavailable or fails, halt with `RECONCILE_FAIL_NO_SAFE_RECORD_TRANSITION`; the cascade op must NOT be substituted.
-* **Governed exit 9 success**: with `SAFE_CLOSE` selected, backlogit 1.12.0+, and the canonical final closure document on disk, archive only the active shipment record, verify interim `archived_status: active`, run the confirmed `reconcile_shipped` transaction, verify final archived `shipped` provenance and event digest, and re-run Step 5 before closure.
+* **Governed exit 9 success**: with `SAFE_CLOSE` selected and backlogit 1.12.0+, complete source-artifact cleanup/document gardening and P-020, finalize the LF canonical input with READY/done-or-degraded status and the required evidence/delivery markers, and require the full closure-evidence PASS before shipment-only archive. Verify interim `archived_status: active`, run the confirmed `reconcile_shipped` transaction, verify final archived `shipped` provenance and event digest, repeat the full gate and Step 8's newline-only hash verification, and re-run Step 5 before closure. Pending/`BLOCKED` inputs or companion-only completion halt; the finalized canonical input remains immutable.
 * **Negative — step 2b / Step 0(d) classifier disagreement**: the `--classify-only` record's `classifier_verdict` or `qualifying_feature_ids` differs from Pre-Mode step 2b's recorded values; halt with `RECONCILE_FAIL_PREMODE_CLASSIFIER_DRIFT` before acting on any routing row. Nothing is mutated and no path is substituted.
 * **Negative — closure evidence not provably pre-mutation**: the `--classify-only` record was captured after the invocation started (`pre_close.captured_at` is not before `invocation.started_at`), or the engine logs show an `archived` event, or a status change to `archived` or `shipped`, for the shipment or a manifest member between the merge commit and `pre_close.captured_at` (the 159-S post-hoc shape); `autoharness gate closure-evidence` rejects the closure (`failed_check close_evidence`) and no closure artifact is accepted.
 * **`pre_report_path` absent**: no pre-close Pre-Mode run returned a report within this lock hold (a standalone safe-close), so Step 0(d) records `agreement-check: not-applicable` and routing proceeds.
@@ -2039,7 +2065,7 @@ If pre-mode cannot acquire the lock because another process holds it:
 * The Cascade Close Sub-Procedure independently verifies `returned_ids` is empty, `archived_ids` against the flat two-set `allowed_ids` / `required_ids` gate (step 3: `allowed_ids` = every explicit manifest item regardless of `artifact_type` + the shipment record; `required_ids` = the shipment record and every qualifying feature member, both unconditionally, plus every other manifest item NOT truly `status: archived` in the Step 0(b) all-member pre-close declared-status snapshot; linked deliberations are handled only by INV-12 and enter `allowed_ids` / `required_ids` only when they are explicit manifest members under H10; `archived_ids - allowed_ids` non-empty halts with `HALT — cascade archived unexpected artifact {id}` — including a disposition-set deliberation that is not an explicit manifest member, because that is engine drift under the verified flat line; `required_ids - archived_ids` non-empty halts with `HALT — cascade did not archive required artifact {id}`, evaluated as two independent, never-merged conditions — a truly pre-archived **non-shipment, non-feature** manifest member (including an explicit-member deliberation under H10) has no transition to report and is correctly, expectedly absent from `archived_ids`, never a mismatch, but this tolerance never extends to the shipment record itself, which remains unconditionally required regardless of its own pre-close declared status, nor does it extend to a qualifying feature member itself, which is likewise unconditionally required regardless of its own pre-close declared status — since Backlogit's own `ShipShipment` forces every explicit qualifying feature member through `status: done` before archive-candidate collection ever runs, so it is never still `archived` by that point either), and no `parent_id` was cleared — a mismatch on any of these halts fail-closed with a P-005 violation even though the cascade path was itself permitted
 * Safe-close computes an observation set (parent feature + unshipped siblings outside `closure_scope(S)`) from expected IDs and records each member's baseline location/hash before archiving anything
 * Safe-close verifies the observation set remains baseline-invariant after every single-item archival and after the shipment-record close sequence
-* Safe-close tries the normal live `shipped` verification and shipment-only archive first; exit 9 may use only Step 8's backlogit 1.12.0+ governed reconciliation with canonical closure evidence on disk, all required transaction arguments, verified final archived `shipped` provenance and event digest, and Step 5's observation invariant
+* Safe-close tries the normal live `shipped` verification and shipment-only archive first; exit 9 may use only Step 8's backlogit 1.12.0+ governed reconciliation after source cleanup/document gardening, P-020, finalized canonical evidence, and full closure-evidence PASS before archive, with all required transaction arguments, verified final archived `shipped` provenance and event digest, repeated full gate and newline-only hash verification, and Step 5's observation invariant; no pending/`BLOCKED` attestation or companion completion authority
 * Safe-close archives the shipment record as its own single artifact and never via the cascade op
 * Safe-close detects off-scope drift, then follows the D6 approval-gated rollback sequence; it never auto-prunes the manifest
 * If neither Step 8 record-transition route succeeds, safe-close halts with `RECONCILE_FAIL_NO_SAFE_RECORD_TRANSITION`; no cascade substitution, no retry, no hand-edit
