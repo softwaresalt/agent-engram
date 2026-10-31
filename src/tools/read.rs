@@ -573,6 +573,7 @@ const fn default_unified_limit() -> usize {
 /// `region: "code"` restricts results to code symbols only.
 ///
 /// Returns summary text only, not full bodies (FR-148 exemption).
+/// Uses the caller-pinned read context when supplied, or pins managed state.
 ///
 /// # Errors
 /// - `QueryEmpty` (4001) for empty or whitespace-only queries (FR-157).
@@ -584,9 +585,10 @@ const fn default_unified_limit() -> usize {
 // This is intentional: the guard keeps the non-embeddings build from
 // pulling in embedding API call sites.
 #[allow(unreachable_code)]
-pub async fn unified_search(
+pub async fn unified_search_with_context(
     state: SharedState,
     params: Option<Value>,
+    read_context: Option<&Arc<ReadRequestContext>>,
 ) -> Result<Value, EngramError> {
     let parsed: UnifiedSearchParams =
         serde_json::from_value(params.unwrap_or_default()).map_err(|e| {
@@ -636,7 +638,10 @@ pub async fn unified_search(
     // pinning, causing this request to observe a newer generation than the one
     // current at handler entry — the same ordering `map_code` and
     // `impact_analysis` already follow.
-    let (_context, queries) = pinned_queries(&state, "unified_search").await?;
+    let queries = match read_context {
+        Some(context) => queries_from_read_context(context.as_ref()).await?,
+        None => pinned_queries(&state, "unified_search").await?.1,
+    };
 
     // Embed the query. FR-157: if embedding fails, return 5001.
     let query_embedding = embedding::embed_text(trimmed).map_err(|e| {
@@ -759,25 +764,16 @@ pub async fn unified_search(
     }))
 }
 
-/// Unified search using an optional caller-pinned read context (PA5-T4b harness).
-///
-/// Kept after the unchanged handler during HC so prefix-based source contracts
-/// still inspect the working managed path. IC moves this before the wrapper.
+/// Unified semantic search using a pinned managed-state read context.
 ///
 /// # Errors
-/// Returns the task marker until 142.084-T is implemented.
-#[allow(
-    clippy::unused_async,
-    reason = "HC stub preserves the planned async API"
-)]
-pub async fn unified_search_with_context(
-    _state: SharedState,
-    _params: Option<Value>,
-    _read_context: Option<&Arc<ReadRequestContext>>,
+/// Returns the validation, embedding, workspace, and database errors from
+/// [`unified_search_with_context`].
+pub async fn unified_search(
+    state: SharedState,
+    params: Option<Value>,
 ) -> Result<Value, EngramError> {
-    Err(EngramError::System(SystemError::InvalidParams {
-        reason: "Worker: 142.084-T".to_owned(),
-    }))
+    unified_search_with_context(state, params, None).await
 }
 
 /// Truncate text to `max_chars`, breaking at a word boundary when possible.
