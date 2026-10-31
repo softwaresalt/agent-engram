@@ -1186,6 +1186,10 @@ name = "integration_generation_pinned_statistics"
 path = "tests/integration/generation_pinned_statistics_test.rs"
 
 [[test]]
+name = "integration_generation_pinned_workspace_status"
+path = "tests/integration/generation_pinned_workspace_status_test.rs"
+
+[[test]]
 name = "integration_report_read_generation_pin"
 path = "tests/integration/report_read_generation_pin_test.rs"
 

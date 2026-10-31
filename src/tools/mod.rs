@@ -464,7 +464,8 @@ pub async fn dispatch_with_read_context(
             })
         }
         "get_workspace_status" => {
-            let inner = lifecycle::get_workspace_status(state.as_ref()).await?;
+            let inner =
+                lifecycle::get_workspace_status_with_context(state.as_ref(), read_context).await?;
             serde_json::to_value(inner).map_err(|e| {
                 EngramError::System(SystemError::DatabaseError {
                     reason: format!("failed to serialize response: {e}"),

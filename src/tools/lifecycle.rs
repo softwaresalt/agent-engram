@@ -11,6 +11,7 @@ use tokio::sync::oneshot;
 
 use crate::daemon::lifecycle_policy::record_offline_source_scan_call;
 use crate::db::connect_db;
+use crate::db::cozo_backend::CozoDb;
 use crate::db::queries::CodeGraphQueries;
 use crate::db::workspace::{
     canonicalize_workspace, load_or_create_workspace_id, resolve_data_dir, resolve_git_branch,
@@ -24,8 +25,8 @@ use crate::models::health::{HealthReport, ScanProgress};
 use crate::server::state::CoordinatorCell;
 use crate::server::state::{
     AdmissionGuard, AppState, CompletionOutcome, CoordinatorError, DispatchSnapshot,
-    DriverTaskGuard, OwnerKind, OwnerPermit, OwnerProgressScope, WorkspacePublicationGuard,
-    WorkspaceSnapshot,
+    DriverTaskGuard, OwnerKind, OwnerPermit, OwnerProgressScope, ReadRequestContext,
+    WorkspacePublicationGuard, WorkspaceSnapshot,
 };
 use crate::services::code_graph::sync_workspace as sync_code_graph;
 use crate::services::config::parse_config;
@@ -1112,7 +1113,15 @@ async fn generation_observability_status(
     })
 }
 
-pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, EngramError> {
+/// Read workspace status with an optional admitted generation for graph counts.
+///
+/// # Errors
+///
+/// Returns [`WorkspaceError::NotSet`] when no workspace is bound.
+pub async fn get_workspace_status_with_context(
+    state: &AppState,
+    read_context: Option<&Arc<ReadRequestContext>>,
+) -> Result<WorkspaceStatus, EngramError> {
     // 086.004-T: read the workspace binding AND its config TOGETHER at handler
     // entry via one `snapshot_dispatch_context()` (the pattern `tools/eval.rs`
     // uses), instead of reading the retrieval-eval flag from a separate
@@ -1154,9 +1163,11 @@ pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, E
     // commit-history tooling, so these counts must not be gated behind it.
     // Mirrors `get_workspace_statistics`, which reads the same counts
     // unconditionally.
-    let code_graph = match connect_db(&snapshot.data_dir, &snapshot.branch).await {
-        Ok(db) => {
-            let cg_queries = CodeGraphQueries::new(db);
+    let code_graph = match read_context.and_then(|ctx| ctx.generation()) {
+        Some(generation) => {
+            let cg_queries = CodeGraphQueries::new(CozoDb {
+                inner: Arc::new(generation.opened_generation().db().clone()),
+            });
             CodeGraphStats {
                 code_files: cg_queries.count_code_files().await.unwrap_or(0),
                 functions: cg_queries.count_functions().await.unwrap_or(0),
@@ -1165,13 +1176,30 @@ pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, E
                 edges: cg_queries.count_code_edges().await.unwrap_or(0),
             }
         }
-        Err(error) => {
-            tracing::warn!(
-                error = %error,
-                "get_workspace_status: code-graph DB connect failed; reporting zero counts"
-            );
-            CodeGraphStats::default()
+        None if state.mode() == DaemonMode::Managed => {
+            match connect_db(&snapshot.data_dir, &snapshot.branch).await {
+                Ok(db) => {
+                    let cg_queries = CodeGraphQueries::new(db);
+                    CodeGraphStats {
+                        code_files: cg_queries.count_code_files().await.unwrap_or(0),
+                        functions: cg_queries.count_functions().await.unwrap_or(0),
+                        classes: cg_queries.count_classes().await.unwrap_or(0),
+                        interfaces: cg_queries.count_interfaces().await.unwrap_or(0),
+                        edges: cg_queries.count_code_edges().await.unwrap_or(0),
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "get_workspace_status: code-graph DB connect failed; reporting zero counts"
+                    );
+                    CodeGraphStats::default()
+                }
+            }
         }
+        // Status remains observable before a read-server generation is active,
+        // without bootstrapping a managed database.
+        None => CodeGraphStats::default(),
     };
 
     let branch_safe = snapshot.branch.replace(['/', '\\', ':'], "_");
@@ -1199,6 +1227,15 @@ pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, E
         retrieval_eval_enabled,
         generation,
     })
+}
+
+/// Read workspace status without an admitted generation.
+///
+/// # Errors
+///
+/// Returns [`WorkspaceError::NotSet`] when no workspace is bound.
+pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, EngramError> {
+    get_workspace_status_with_context(state, None).await
 }
 
 #[cfg(test)]
