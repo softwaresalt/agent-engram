@@ -473,14 +473,18 @@ pub async fn dispatch_with_read_context(
             })
         }
         "flush_state" => write::flush_state(state.clone(), params).await,
-        "query_memory" => read::query_memory(state.clone(), params).await,
+        "query_memory" => {
+            read::query_memory_with_context(state.clone(), params, read_context).await
+        }
         "get_workspace_statistics" => {
             read::get_workspace_statistics_with_context(state.clone(), params, read_context).await
         }
         "index_workspace" => write::index_workspace(state.clone(), params).await,
         "sync_workspace" => write::sync_workspace(state.clone(), params).await,
         "map_code" => read::map_code(state.clone(), params).await,
-        "list_symbols" => read::list_symbols(state.clone(), params).await,
+        "list_symbols" => {
+            read::list_symbols_with_context(state.clone(), params, read_context).await
+        }
         "unified_search" => read::unified_search(state.clone(), params).await,
         "impact_analysis" => read::impact_analysis(state.clone(), params).await,
         "lint_dax" => lint::lint_dax(state.clone(), params).await,
