@@ -45,6 +45,20 @@ The covering feature hash is
 
 ## Delivery authority and next steps
 
+Local review's unique P2 harness observation was confirmed and remediated
+under P-021 C1 on the exact authorized target-registration surface.
+Only that Cargo target gained `required-features = ["cozo-backend", "embeddings"]`.
+Baseline all-targets check, target check, pedantic target clippy, metadata and
+format checks passed. The no-embeddings no-run command now rejects selection
+with the expected required-features message. No test assertion or production
+file changed and IC remains isolated.
+
+The unique P2 historical-document observation is acknowledged: the dated
+runtime/readiness handoffs preserve their earlier pending state. This newer
+record supersedes their full-suite disposition and follow-up inventory only;
+deployment and monitoring limitations remain pending. No duplicate stash
+capture or retrospective rewrite is required.
+
 `DARK_MODE_ACTIVE` covers only 171-S implementation completion, its feature
 PR and its post-merge closure PR. Merge approval is pre-authorized for both
 within scope after current-HEAD local readiness, required CI, P-018, P-009
