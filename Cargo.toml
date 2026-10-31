@@ -1194,6 +1194,10 @@ name = "integration_generation_pinned_memory_and_symbols"
 path = "tests/integration/generation_pinned_memory_and_symbols_test.rs"
 
 [[test]]
+name = "integration_generation_pinned_map_and_impact"
+path = "tests/integration/generation_pinned_map_and_impact_test.rs"
+
+[[test]]
 name = "integration_report_read_generation_pin"
 path = "tests/integration/report_read_generation_pin_test.rs"
 

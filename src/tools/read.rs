@@ -293,6 +293,21 @@ const fn default_map_max_nodes() -> usize {
     50
 }
 
+/// Read a code map from an optional opened generation context.
+///
+/// # Errors
+/// Returns the PA5-T3 task marker until the context-aware handler is implemented.
+#[allow(clippy::unused_async)] // Route (c) stub retains the async dispatch signature.
+pub async fn map_code_with_context(
+    _state: SharedState,
+    _params: Option<Value>,
+    _read_context: Option<&Arc<ReadRequestContext>>,
+) -> Result<Value, EngramError> {
+    Err(EngramError::System(SystemError::InvalidParams {
+        reason: "Worker: 142.082-T".to_owned(),
+    }))
+}
+
 /// Retrieve a code symbol's definition plus its graph neighborhood.
 ///
 /// Falls back to vector search when the exact symbol name is not found.
@@ -814,6 +829,21 @@ const fn default_impact_depth() -> usize {
 
 const fn default_impact_max_nodes() -> usize {
     50
+}
+
+/// Read impact analysis from an optional opened generation context.
+///
+/// # Errors
+/// Returns the PA5-T3 task marker until the context-aware handler is implemented.
+#[allow(clippy::unused_async)] // Route (c) stub retains the async dispatch signature.
+pub async fn impact_analysis_with_context(
+    _state: SharedState,
+    _params: Option<Value>,
+    _read_context: Option<&Arc<ReadRequestContext>>,
+) -> Result<Value, EngramError> {
+    Err(EngramError::System(SystemError::InvalidParams {
+        reason: "Worker: 142.082-T".to_owned(),
+    }))
 }
 
 /// Impact analysis: traverse the code graph to find symbols affected by
