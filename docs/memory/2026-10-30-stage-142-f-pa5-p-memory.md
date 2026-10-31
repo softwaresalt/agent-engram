@@ -72,7 +72,7 @@ Stage completed the final staging leg of Feature `142-F` on branch `chore/stage-
 | `04a` | `147-S` | `142.076-T` | PRE-3a | `40` | archived (`shipped`) |
 | `04b` | `148-S` | `142.077-T` | PRE-3b | `41` | archived (`shipped`) |
 | `04c` | `149-S` | `142.064-T` | PRE-3c | `42` | archived (`shipped`; subtasks `.001`..`.003-ST` closed `done` here) |
-| `05` | `150-S` | `142.065-T` | PRE-4b | `50` | archived (`shipped`) |
+| `05` | `150-S` | `142.065-T` | PRE-4b | `50` | archived (`done`; predecessor status must be checked at Ship intake) |
 | `06` | `151-S` | `142.066-T` | PRE-4 | `60` | archived (`shipped`) |
 | `07` | `152-S` | `142.067-T` | PRE-5 | `70` | archived (`shipped`) |
 | `08` | `153-S` | `142.068-T` | PRE-6 | `80` | archived (`shipped`) |
