@@ -27,6 +27,8 @@ pub const GENERATION_PINNED_READS: &[&str] = &[
     "get_workspace_status",
     "query_memory",
     "list_symbols",
+    "map_code",
+    "impact_analysis",
 ];
 
 /// A decoded IPC request frame awaiting admission.
