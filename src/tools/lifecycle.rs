@@ -24,8 +24,8 @@ use crate::models::health::{HealthReport, ScanProgress};
 use crate::server::state::CoordinatorCell;
 use crate::server::state::{
     AdmissionGuard, AppState, CompletionOutcome, CoordinatorError, DispatchSnapshot,
-    DriverTaskGuard, OwnerKind, OwnerPermit, OwnerProgressScope, WorkspacePublicationGuard,
-    WorkspaceSnapshot,
+    DriverTaskGuard, OwnerKind, OwnerPermit, OwnerProgressScope, ReadRequestContext,
+    WorkspacePublicationGuard, WorkspaceSnapshot,
 };
 use crate::services::code_graph::sync_workspace as sync_code_graph;
 use crate::services::config::parse_config;
@@ -1110,6 +1110,20 @@ async fn generation_observability_status(
             retained_runtime_copies: snapshot.retained_runtime_copy_bytes,
         },
     })
+}
+
+/// Read workspace status with an optional admitted generation for graph counts.
+///
+/// # Errors
+///
+/// Returns the task-specific RED marker until PA5-T1 is implemented.
+pub async fn get_workspace_status_with_context(
+    _state: &AppState,
+    _read_context: Option<&Arc<ReadRequestContext>>,
+) -> Result<WorkspaceStatus, EngramError> {
+    Err(EngramError::System(SystemError::InvalidParams {
+        reason: "Worker: 142.080-T".to_owned(),
+    }))
 }
 
 pub async fn get_workspace_status(state: &AppState) -> Result<WorkspaceStatus, EngramError> {
