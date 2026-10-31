@@ -226,7 +226,15 @@ fn default_limit() -> usize {
     10
 }
 
-pub async fn query_memory(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
+/// Query memory using an optional caller-pinned read context.
+///
+/// # Errors
+/// Returns parameter validation, context acquisition, or search errors.
+pub async fn query_memory_with_context(
+    state: SharedState,
+    params: Option<Value>,
+    read_context: Option<&Arc<ReadRequestContext>>,
+) -> Result<Value, EngramError> {
     // Read-only: content records may be partially written during a background
     // index. Returning available data is more useful than an error; the
     // caller can check scan_status.running in workspace_status if freshness matters.
@@ -241,7 +249,10 @@ pub async fn query_memory(state: SharedState, params: Option<Value>) -> Result<V
     // Validate query length before any DB or model work.
     embedding::validate_query_length(&parsed.query)?;
 
-    let context = pinned_read_request_context(&state, "query_memory").await?;
+    let context = match read_context {
+        Some(context) => Arc::clone(context),
+        None => pinned_read_request_context(&state, "query_memory").await?,
+    };
     let queries = queries_from_read_context(context.as_ref()).await?;
     let results = query_memory_results(
         context.as_ref(),
@@ -253,6 +264,14 @@ pub async fn query_memory(state: SharedState, params: Option<Value>) -> Result<V
     .await?;
 
     Ok(json!({ "results": results }))
+}
+
+/// Query memory using the managed request context.
+///
+/// # Errors
+/// Returns parameter validation, context acquisition, or search errors.
+pub async fn query_memory(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
+    query_memory_with_context(state, params, None).await
 }
 
 // ── map_code (T039) ─────────────────────────────────────────────────
@@ -429,6 +448,18 @@ const fn default_list_limit() -> usize {
 /// Enables agents to discover valid symbol names before invoking
 /// `map_code`, `link_task_to_code`, or `impact_analysis`.
 pub async fn list_symbols(state: SharedState, params: Option<Value>) -> Result<Value, EngramError> {
+    list_symbols_with_context(state, params, None).await
+}
+
+/// List symbols using an optional caller-pinned read context.
+///
+/// # Errors
+/// Returns parameter validation, context acquisition, query, or symbol-not-found errors.
+pub async fn list_symbols_with_context(
+    state: SharedState,
+    params: Option<Value>,
+    read_context: Option<&Arc<ReadRequestContext>>,
+) -> Result<Value, EngramError> {
     // Read-only: symbol list may be incomplete during a background index.
     // Returning partial results is more useful than an IndexInProgress error.
 
@@ -442,7 +473,11 @@ pub async fn list_symbols(state: SharedState, params: Option<Value>) -> Result<V
     // Clamp limit
     let limit = parsed.limit.clamp(1, 500);
 
-    let (_context, cg_queries) = pinned_queries(&state, "list_symbols").await?;
+    let context = match read_context {
+        Some(context) => Arc::clone(context),
+        None => pinned_read_request_context(&state, "list_symbols").await?,
+    };
+    let cg_queries = queries_from_read_context(context.as_ref()).await?;
 
     let filter = SymbolFilter {
         file_path: parsed.file_path,
