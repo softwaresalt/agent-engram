@@ -256,6 +256,17 @@ operations:
       item_id: "item_id"
       reason: "reason"
 
+  reconcile_shipped:
+    cli_command: "backlogit shipment reconcile-shipped {{shipment_id}} --reason {{reason}} --actor {{actor}} --idempotency-key {{idempotency_key}} --merge-sha {{merge_sha}} --closure-evidence {{closure_evidence}} --confirm {{confirm}}"
+    params:
+      shipment_id: "id"
+      reason: "reason"
+      actor: "actor"
+      idempotency_key: "idempotency_key"
+      merge_sha: "merge_sha"
+      closure_evidence: "closure_evidence"
+      confirm: "confirm"
+
   # --- Stash management ---
 
   stash:

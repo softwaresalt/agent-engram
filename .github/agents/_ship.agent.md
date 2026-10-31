@@ -853,6 +853,10 @@ lifecycle to transition out of. See
        proceeds; exit 1/2 halts immediately with the reported token/message (never inferred, never fail-open). Ambient
        git hooks independently cover the intervening commit/push activity in closure work; this lifecycle invocation is
        the shipment-scoped check immediately preceding the safe-close mutation itself.
+       Once Step 6.1 has archived {shipment_id}, {shipment_id} is no longer active; for the post-merge closure PR,
+       do NOT re-run `--phase lifecycle` (which requires an active shipment in `.backlogit/queue/`) -
+       use `autoharness gate pipeline-topology --mode manual --phase ambient --json` and
+       `autoharness gate closure-evidence` instead.
    a. **Pre-archive reconciliation gate (mandatory)**: Invoke the `shipment-reconcile`
       skill with `mode: pre`, `shipment_id`, and `expected_status: done`.
       This acquires the single-writer lock on `.backlogit/queue/{shipment_id}.md`
@@ -871,7 +875,9 @@ lifecycle to transition out of. See
       lock hold). Step 0(d) runs inside this call, so pre-mode (step 1.a) has no outcome
       to record: only after the `mode: safe-close` call returns `CLOSED`, carry the skill's
       Step 0(d) agreement-check outcome (`agreed` / `not-applicable`) forward and record it in the
-      body of the closure artifact when step 6.2 writes it. A
+      body of the closure artifact when step 6.2 writes it, or in the companion
+      post-report/session memory if Step 8's governed transaction has already
+      frozen that artifact. A
       `RECONCILE_FAIL_PREMODE_CLASSIFIER_DRIFT` halt yields no outcome to record and stops Ship at
       step 1.b. Keep this agent file at pointer level only — the full,
       step-by-step safe-close algorithm lives in the `shipment-reconcile` skill and
@@ -914,12 +920,26 @@ lifecycle to transition out of. See
         item IDs, one artifact at a time, via `backlogit move {item_id} --status done`
         -> `backlogit archive {item_id}` for each item — never the shipment-record
         commands below. Only after every manifest item is individually archived does
-        the skill close the shipment record itself as its own single artifact, via
-        the separate non-cascading sequence `backlogit move <shipment_id> --status
+        the skill first try closing the shipment record as its own single artifact via
+        the non-cascading sequence `backlogit move <shipment_id> --status
         shipped` -> verify live `status: shipped` -> `backlogit archive <shipment_id>`
-        -> verify `archived_status: shipped`, then re-verifies the observation set of
-        out-of-manifest artifacts is still baseline-invariant, then the skill's
-        Linked-Deliberation Disposition step.
+        -> verify `archived_status: shipped`. On exit 9, follow only the skill's
+        Step 8 governed backlogit 1.12.0+ `reconcile_shipped` route: after merge
+        confirmation, complete source-artifact cleanup/document gardening and
+        P-020 `compact-context` with `target: all`, finalize the canonical
+        attested input and pass the full closure-evidence gate (step 6.2)
+        -> shipment-only archive (interim
+        `archived_status: active`) -> confirmed reconciliation transaction ->
+        verify archived `shipped` provenance, `shipment_reconciliation_event_digest`,
+        repeat the full closure-evidence gate and verify the archive's
+        `closure_content_hash` under step 6.2's newline-only byte rule.
+        Never edit that frozen input afterward; later outcomes go in the
+        post-mode report/session memory, never as a substitute for canonical
+        completion (steps 6.2 and 6.8). Pending or `BLOCKED` canonical inputs
+        cannot enter the governed transaction.
+        Both routes re-run Step 5's baseline observation invariant before the
+        Linked-Deliberation Disposition step. If neither succeeds, halt with
+        `RECONCILE_FAIL_NO_SAFE_RECORD_TRANSITION`; never substitute cascade.
       * **`CASCADE` (the narrow P-015 exception)**: permitted only when every artifact
         in the `parent_id` descendant set the classifier enumerates from each
         qualifying root feature member — never every artifact reachable from the
@@ -984,9 +1004,12 @@ lifecycle to transition out of. See
       separate terminal commands:
       `git add .backlogit/`
       `git commit -m "chore: archive {shipment_id} backlog artifacts"`
-2. Invoke `operational-closure` in `mode=post-merge` to produce release-readiness, monitoring, and rollback artifacts in `docs/closure/`. The closure artifact carries a **compaction status** field (initialized `pending`) that step 8 finalizes to `done`/`degraded`; the Orchestrator's closure-gated routing treats a `pending`/unset compaction status as an incomplete post-merge closure (P-020).
-   **Closure-evidence contract**: write the closure artifact at the canonical path `docs/closure/{shipment_id}-{feature_id}-post-merge-closure.md` with the gate-relevant frontmatter keys `closure_status`, `compaction_status`, `close_path` (`cascade` or `safe_close`), and `close_evidence` (the `docs/closure/evidence/{shipment_id}-{feature_id}-close-evidence.json` record path written by `autoharness shipment cascade-close`, committed with the artifact), and run `autoharness gate closure-evidence --path docs/closure/{shipment_id}-{feature_id}-post-merge-closure.md --shipment {shipment_id} --json` before every commit of it (while `compaction_status` is `pending` or `closure_status` is `BLOCKED`, only a `frontmatter_predicate` failure is tolerated) and again once its compaction status is finalized, when exit 0 is required before closure is declared complete (a finalized `BLOCKED` or unmet-conditions record may still be committed as a truthful record when the gate's reported `failed_check` is `frontmatter_predicate`, but closure is not declared complete). Legacy date-prefixed closure names remain readable but are never written.
-   In dark mode, the closure summary must list decisions, gates, reviewed HEADs,
+2. Invoke `operational-closure` in `mode=post-merge` to produce release-readiness, monitoring, and rollback artifacts in `docs/closure/`. For Step 6.1.b's governed `SAFE_CLOSE` route, execute the applicable source-artifact cleanup and documentation gardening from steps 3–7 and P-020 compaction from step 8 **after merge confirmation and before** the shipment-only archive and `reconcile-shipped`, rather than waiting until those numbered steps. Preserve INV-12: never independently archive a linked deliberation or invent its not-yet-observed disposition; later transaction, linked-disposition, and reconciliation outcomes belong in the post-mode report.
+   **Final canonical input required**: For Step 6.1.b's governed `SAFE_CLOSE` reconciliation route only, finalize `docs/closure/{shipment_id}-{feature_id}-post-merge-closure.md` with `closure_status: READY`, `compaction_status: done` or `degraded` from the actual P-020 invocation, `close_path: safe_close`, and `close_evidence: docs/closure/evidence/{shipment_id}-{feature_id}-close-evidence.json`. Its delivery section must contain `## {shipment_id}`, `PR #<n> (feature)`, and `commit <merge_sha>` for the feature's actual PR and merge commit. Do not claim transaction or reconciliation outcomes before they occur. Pending, `BLOCKED`, unset, or unmet-conditions canonical inputs cannot be attested or establish completion; no companion record can complete them.
+   **Closure-evidence contract**: the same canonical path and gate-relevant frontmatter keys apply to either close path (`close_path` is `cascade` or `safe_close`); commit the command-written JSON evidence with the artifact. Run `autoharness gate closure-evidence --path docs/closure/{shipment_id}-{feature_id}-post-merge-closure.md --shipment {shipment_id} --json` before every commit and after compaction finalization. Require exit 0, `passed: true`, and `failed_check: null`. For the governed route, require this full result **before shipment-only archive**, then repeat the full gate and transaction hash verification afterward; any failure halts. A passing gate never replaces transaction hash verification or proves later outcomes. Legacy date-prefixed names remain readable but are never written.
+   **Cross-platform attestation**: write NEW canonical inputs with LF line endings before attestation. Ensure the committed Git blob is byte-identical to the attested bytes even under `autocrlf`, using scoped `eol=lf` or equivalent per-command staging/checkout handling for NEW documents; verify the staged and committed blob bytes, and do not edit `.gitattributes`. Never rewrite a historical transaction digest. Verification may match `closure_content_hash` to exact disk bytes OR the LF/CRLF line-ending representation of the COMMITTED Git blob. Only newline conversion is permitted, never arbitrary whitespace or content normalization; all other differences halt.
+   **Immutable attested input**: `reconcile-shipped` freezes the finalized canonical bytes. Never edit, relocate, or compact the input afterward, including for source cleanup, compaction, or finalization. Record later transaction/reconciliation outcomes in `.backlogit/reconcile/{shipment_id}-post-{UTC}.md` or session memory, referencing the frozen input and verified transaction. That post-mode report never substitutes for canonical completion or grants completion authority for a pending or `BLOCKED` input.
+   In dark mode, the finalized canonical closure summary must list decisions, gates, reviewed HEADs,
    merge/fallback status, admin fallback result if any, **compaction status (P-020)**,
    closure status, and follow-up items before `DARK_MODE_COMPLETE` can be emitted.
 3. Evaluate whether documentation or compound learnings need updates for the shipped scope:
@@ -1007,9 +1030,9 @@ lifecycle to transition out of. See
      * any `retained_*` outcome (including `retained_read_error`): **never archive**; record the outcome verbatim with its `reason_code` (and `path`, when present). An unknown `reason_code` is accepted and recorded verbatim.
      * any other outcome value: record it verbatim and never archive.
      * the deliberation is absent from the report (the report predates this contract, or the link was outside the disposition set): record `skipped_not_in_disposition_report` and never archive. This outcome has no disposition-report entry, so its `reason_code` is recorded as absent — never invent a synthetic code — unless the ID is listed in the close report's `unresolved_references`. When the ID is listed in the close report's `unresolved_references`, also copy that entry's `reason_code` verbatim; an explicit manifest member is outside the disposition set (H10) because the close path itself archives it, so it is never listed in `unresolved_references`, its `reason_code` is always recorded as absent, and Ship never archives it here.
-   * After processing the full shipped scope, record the archived and skipped source artifact IDs in the closure artifact's `Source artifact cleanup` section (each `source_deliberation_id` outcome and `reason_code` copied from the disposition report, never re-derived; a `skipped_not_in_disposition_report` outcome has no report entry, so its `reason_code` is recorded as absent unless the close report's `unresolved_references` lists the ID)    so the closure report remains the traceable system of record.
+   * After processing the full shipped scope, record the archived and skipped source artifact IDs in the closure artifact's `Source artifact cleanup` section (each `source_deliberation_id` outcome and `reason_code` copied from the disposition report, never re-derived; a `skipped_not_in_disposition_report` outcome has no report entry, so its `reason_code` is recorded as absent unless the close report's `unresolved_references` lists the ID). For the governed route, complete applicable source cleanup before attestation per step 6.2; copy subsequently observed linked-deliberation outcomes to the post-mode report, never edit the frozen canonical input.
       * Report `[SHIP] Source artifacts archived: {stash_count} stash, {delib_count} deliberations` in the session output, where `{delib_count}` counts the report's `archived` outcomes (archived by the INV-12 disposition step, never by Ship).
-   8. **Mandatory (P-020)**: Invoke **compact-context** with `target: all` to consolidate memory checkpoints, finalize any decided-plans, and compact closure artifacts, then record the outcome as the compaction status of the step-2 operational-closure artifact. This is required because built-in AI assistant memory features do not write to the repository's `docs/` directory — compact-context is the mechanism that ensures durable persistence. **Invocation is mandatory per merge; candidate selection stays threshold-gated** — the just-closed release unit's memory is the one intended candidate (eligible under the completed-work rule), so the guaranteed call is a bounded, cheap Tier-1 consolidation of that fresh memory and degrades to a scan-only no-op only when nothing else qualifies. **Failure semantics (P-020)**: SKIPPING this invocation is a P-020 violation recorded via P-005 telemetry. Because backlog/shipment archival ran in step 1, completeness is tracked by the operational-closure artifact's compaction status, not shipment active-state: skipping leaves that status unset so post-merge closure is **incomplete** and the Orchestrator's closure-gated routing (P-001 + P-020) holds the next shipment until compaction is completed — it does not strand the merged PR. A compact-context run that **FAILS** is **NON-BLOCKING**: record `compaction: degraded` in the closure artifact, log a warning, and continue closure (the merge already landed and the skill is non-destructive).
+   8. **Mandatory (P-020)**: Invoke **compact-context** with `target: all` to consolidate memory checkpoints and finalize decided-plans. For the governed `SAFE_CLOSE` route, execute this step before shipment-only archive and attestation, record `compaction_status: done`/`degraded` in the finalized canonical artifact, and require step 6.2's full closure-evidence PASS before archive. If already executed there, carry forward its observed result without modifying the frozen input; a later report cannot supply missing canonical completion. Exclude every frozen attested closure input from modification, relocation, or compaction. **Invocation is mandatory per merge; candidate selection stays threshold-gated** — the just-closed release unit's memory is the intended bounded candidate; when none qualifies, a scan-only no-op is sufficient. **Failure semantics (P-020)**: SKIPPING is a P-020 violation recorded via P-005 telemetry and leaves closure **incomplete**; the Orchestrator's closure-gated routing (P-001 + P-020) holds the next shipment, regardless of archived shipment status. A run that **FAILS** is **NON-BLOCKING**: record `compaction_status: degraded` in the canonical artifact before it is frozen, log a warning, and continue closure. Finalize `closure_status: READY` only when the remaining closure requirements pass. Built-in assistant memory is not repository persistence.
 9. **Backlog index resync** (backlogit only): After all archival, source-artifact mutations, and knowledge graduation are complete, call `backlogit_sync_index` (or CLI fallback `backlogit sync`) to rebuild the backlogit index so it reflects all closure mutations.
    - On success: log `CLOSURE_INDEX_SYNC_OK`.
    - On failure: log `CLOSURE_INDEX_SYNC_WARN` and write the warning to the session output: `[WARN] Closure index sync failed — backlogit index may not reflect archived items. Run \`backlogit sync\` manually.` Proceed — this is a degraded completion, not a halt.
