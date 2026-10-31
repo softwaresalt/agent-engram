@@ -255,6 +255,27 @@ pub async fn query_memory(state: SharedState, params: Option<Value>) -> Result<V
     Ok(json!({ "results": results }))
 }
 
+/// Query memory using an optional caller-pinned read context (PA5-T2 harness).
+///
+/// Kept after the unchanged handler during HC so prefix-based source contracts
+/// still inspect the working managed path. IC moves this before the wrapper.
+///
+/// # Errors
+/// Returns the task marker until 142.081-T is implemented.
+#[allow(
+    clippy::unused_async,
+    reason = "HC stub preserves the planned async API"
+)]
+pub async fn query_memory_with_context(
+    _state: SharedState,
+    _params: Option<Value>,
+    _read_context: Option<&Arc<ReadRequestContext>>,
+) -> Result<Value, EngramError> {
+    Err(EngramError::System(SystemError::InvalidParams {
+        reason: "Worker: 142.081-T".to_owned(),
+    }))
+}
+
 // ── map_code (T039) ─────────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -467,6 +488,24 @@ pub async fn list_symbols(state: SharedState, params: Option<Value>) -> Result<V
         "symbols": result.symbols,
         "total_count": result.total_count,
         "has_more": result.has_more,
+    }))
+}
+
+/// List symbols using an optional caller-pinned read context (PA5-T2 harness).
+///
+/// # Errors
+/// Returns the task marker until 142.081-T is implemented.
+#[allow(
+    clippy::unused_async,
+    reason = "HC stub preserves the planned async API"
+)]
+pub async fn list_symbols_with_context(
+    _state: SharedState,
+    _params: Option<Value>,
+    _read_context: Option<&Arc<ReadRequestContext>>,
+) -> Result<Value, EngramError> {
+    Err(EngramError::System(SystemError::InvalidParams {
+        reason: "Worker: 142.081-T".to_owned(),
     }))
 }
 
