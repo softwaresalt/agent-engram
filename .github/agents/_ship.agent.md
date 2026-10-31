@@ -914,12 +914,17 @@ lifecycle to transition out of. See
         item IDs, one artifact at a time, via `backlogit move {item_id} --status done`
         -> `backlogit archive {item_id}` for each item — never the shipment-record
         commands below. Only after every manifest item is individually archived does
-        the skill close the shipment record itself as its own single artifact, via
-        the separate non-cascading sequence `backlogit move <shipment_id> --status
+        the skill first try closing the shipment record as its own single artifact via
+        the non-cascading sequence `backlogit move <shipment_id> --status
         shipped` -> verify live `status: shipped` -> `backlogit archive <shipment_id>`
-        -> verify `archived_status: shipped`, then re-verifies the observation set of
-        out-of-manifest artifacts is still baseline-invariant, then the skill's
-        Linked-Deliberation Disposition step.
+        -> verify `archived_status: shipped`. On exit 9, follow only the skill's
+        Step 8 governed backlogit 1.12.0+ `reconcile_shipped` route: canonical final
+        closure document on disk -> shipment-only archive (interim
+        `archived_status: active`) -> confirmed reconciliation transaction ->
+        verify archived `shipped` provenance and `shipment_reconciliation_event_digest`.
+        Both routes re-run Step 5's baseline observation invariant before the
+        Linked-Deliberation Disposition step. If neither succeeds, halt with
+        `RECONCILE_FAIL_NO_SAFE_RECORD_TRANSITION`; never substitute cascade.
       * **`CASCADE` (the narrow P-015 exception)**: permitted only when every artifact
         in the `parent_id` descendant set the classifier enumerates from each
         qualifying root feature member — never every artifact reachable from the

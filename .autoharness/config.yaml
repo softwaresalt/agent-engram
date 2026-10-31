@@ -81,9 +81,9 @@ model_routing:
     model_family: "gemini-4-argon"
     context_tier: "long_context"
   orchestrator:
-    model_family: "claude-sonnet-5.5"             # Orchestrator model override
-    model_provider: "anthropic"
-    reasoning_effort: "medium"
+    model_family: "gemini-4-argon"
+    model_provider: "google"
+    reasoning_effort: "high"
     context_tier: "long_context"
   stage:
     model_family: "gemini-4-argon"             # Stage role route (falls back to tier3 when empty)
