@@ -130,20 +130,25 @@ impl Fixture {
         .await?)
     }
 
-    /// Use already-converted pinned `list_symbols`, never bootstrap generation DBs.
+    /// Pinned `map_code` exposes IDs; `list_symbols` exposes names but no IDs.
     async fn symbol_ids(&self, ctx: &Arc<ReadRequestContext>) -> Result<(String, String)> {
         let response = dispatch_with_read_context(
             Arc::clone(&self.state),
-            "list_symbols",
-            Some(json!({})),
+            "map_code",
+            Some(json!({"symbol_name": "alpha", "depth": 2, "max_nodes": 10})),
             Some(ctx),
         )
         .await?;
         assert_provenance(&response);
+        assert_eq!(response.pointer("/root/name"), Some(&json!("alpha")));
+        let alpha = response
+            .pointer("/root/id")
+            .and_then(Value::as_str)
+            .context("generation symbol ID for alpha")?;
         let symbols = response
-            .get("symbols")
+            .get("neighbors")
             .and_then(Value::as_array)
-            .context("generation symbols")?;
+            .context("generation map neighbors")?;
         let id = |name: &str| -> Result<String> {
             Ok(symbols
                 .iter()
@@ -153,7 +158,7 @@ impl Fixture {
                 .with_context(|| format!("generation symbol ID for {name}"))?
                 .to_owned())
         };
-        Ok((id("alpha")?, id("beta")?))
+        Ok((alpha.to_owned(), id("beta")?))
     }
 }
 
