@@ -42,6 +42,7 @@ fn state(mode: DaemonMode) -> Arc<AppState> {
 impl Fixture {
     async fn new() -> Result<Self> {
         let (dir, workspace, snapshot) = tokio::task::spawn_blocking(|| -> Result<_> {
+            fs::create_dir_all("tmp")?;
             let dir = tempfile::Builder::new()
                 .prefix("pinned-status-")
                 .tempdir_in("tmp")?;
