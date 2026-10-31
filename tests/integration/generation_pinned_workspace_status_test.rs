@@ -1,5 +1,5 @@
 //! PA5-T1 / 142.080-T, Route (c): real generation-backed workspace status.
-//! Each scenario propagates the stub's InvalidParams marker before publication
+//! Each scenario propagates the stub's `InvalidParams` marker before publication
 //! or activation. No daemon is started; PRE-1/PRE-2 build the real index.
 
 #![forbid(unsafe_code)]
