@@ -4,7 +4,7 @@ date: 2026-10-31
 agent: ship
 shipment_id: "167-S"
 feature_id: "142-F"
-status: review-and-merge-gates-pending
+status: final-follow-up-review-and-merge-gates-pending
 ---
 
 ## Recovery and scope
@@ -68,8 +68,39 @@ required before merge. No result from those future gates is claimed here.
 
 Existing residual IDs `D74F9442` and `A5BEA885` remain unchanged; historical
 newline portability is tracked by `D968583A`. No new P-021 capture was
-needed. Monitoring-window completion and downstream PA5 validation remain
+needed for the three round-2 fixes. Monitoring-window completion and downstream PA5 validation remain
 owner conditions, not claimed complete.
 
 After confirmed PR #469 merge, return to clean `main` and verify `168-S`
 pre-claim read-only. Do not claim or execute 168-S.
+
+## Current review outcome and deferred validation
+
+The corrective commit is `63949f6fa293f532e599f280667fd23e9b8f034e`.
+Three independent local reviewers returned `READY_WITH_FOLLOWUPS`,
+P0=0/P1=0, without writing artifacts. Parent terminal certification
+confirmed the full 22-path diff, protected hashes and docs-only boundary.
+The commit was pushed; all three round-2 comments received substantive
+replies before their threads were resolved. Review `5721823366` has
+trusted disposition comment `6540772002`.
+
+Current-HEAD Copilot review `5721874073` reported no open issues and all
+three findings resolved. P-018 returned `SATISFIED: PASS`; independent
+P-014 checks 1–4 passed. There are no CI checks on this documentation-only
+closure branch, and main is not branch-protected. Merge commits are
+enabled; squash and rebase are disabled.
+
+The review also recommends maintainer validation of fresh-shipment
+success and interrupted reconciliation in external tooling. This is
+threadless, out-of-scope validation work, not permission to mutate a live
+shipment or claim that preserved evidence proves a fresh runtime exercise.
+P-021 entry `8F97C148` captures it, was re-read successfully, and is cited
+in the `142.080-T` task comment and PR closure residual records.
+`DISCOVERY-STATUS: LOOKUP-UNAVAILABLE` records that active stash and
+current residual records were checked without a confirmed match, but
+archived-stash enumeration is unavailable through the registered surface.
+Stage owns deliberation and prioritization; no runtime experiment was run.
+
+The follow-up capture and this memory update need a final continuity
+commit, current-HEAD local review and fresh hosted/P-014/P-018 gates.
+No prior PASS is reused after that HEAD change. Merge remains pending.
