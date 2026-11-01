@@ -1752,6 +1752,23 @@ pub async fn query_changes(
     }))
 }
 
+/// Serve indexed git changes from an optional opened generation.
+///
+/// # Errors
+///
+/// Returns the Route (c) task marker until PA5-T5 is implemented.
+#[allow(clippy::unused_async)] // HC stub retains the eventual async API.
+#[cfg(feature = "git-graph")]
+pub async fn query_changes_with_context(
+    _state: SharedState,
+    _params: Option<Value>,
+    _read_context: Option<&Arc<ReadRequestContext>>,
+) -> Result<Value, EngramError> {
+    Err(EngramError::System(SystemError::InvalidParams {
+        reason: "Worker: 142.085-T".to_owned(),
+    }))
+}
+
 /// Compute and return an agent efficiency evaluation report.
 ///
 /// Reads recorded [`UsageEvent`]s for the active branch, scores agent
