@@ -503,7 +503,9 @@ pub async fn dispatch_with_read_context(
             read::get_mutable_script_retry_metrics(state.clone(), params).await
         }
         #[cfg(feature = "git-graph")]
-        "query_changes" => read::query_changes(state.clone(), params).await,
+        "query_changes" => {
+            read::query_changes_with_context(state.clone(), params, read_context).await
+        }
         #[cfg(feature = "git-graph")]
         "index_git_history" => write::index_git_history(state.clone(), params).await,
         _ => Err(not_implemented(method)),

@@ -1657,53 +1657,111 @@ pub async fn query_changes(
     state: SharedState,
     params: Option<Value>,
 ) -> Result<Value, EngramError> {
+    query_changes_with_context(state, params, None).await
+}
+
+/// Serve indexed git changes from an optional opened generation.
+///
+/// # Errors
+///
+/// Returns parameter, workspace binding, symbol resolution, or database query errors.
+#[cfg(feature = "git-graph")]
+pub async fn query_changes_with_context(
+    state: SharedState,
+    params: Option<Value>,
+    read_context: Option<&Arc<ReadRequestContext>>,
+) -> Result<Value, EngramError> {
     use chrono::DateTime;
 
-    let context = pinned_dispatch_context(&state, "query_changes").await?;
+    let (parsed, limit, since_dt, until_dt, queries) = if let Some(ctx) = read_context {
+        let parsed: QueryChangesParams =
+            serde_json::from_value(params.unwrap_or_else(|| json!({}))).map_err(|e| {
+                EngramError::System(SystemError::InvalidParams {
+                    reason: e.to_string(),
+                })
+            })?;
 
-    // Read-only: git-graph tables may be partially written during a background
-    // index. Returning available commit data is more useful than blocking the caller.
+        let limit = parsed.limit.unwrap_or(20);
 
-    let parsed: QueryChangesParams = serde_json::from_value(params.unwrap_or_else(|| json!({})))
-        .map_err(|e| {
-            EngramError::System(SystemError::InvalidParams {
-                reason: e.to_string(),
+        let since_dt = parsed
+            .since
+            .as_deref()
+            .map(|s| {
+                DateTime::parse_from_rfc3339(s)
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                    .map_err(|_| {
+                        EngramError::System(SystemError::InvalidParams {
+                            reason: format!("invalid `since` timestamp: {s}"),
+                        })
+                    })
             })
-        })?;
+            .transpose()?;
 
-    let limit = parsed.limit.unwrap_or(20);
-
-    let since_dt = parsed
-        .since
-        .as_deref()
-        .map(|s| {
-            DateTime::parse_from_rfc3339(s)
-                .map(|dt| dt.with_timezone(&chrono::Utc))
-                .map_err(|_| {
-                    EngramError::System(SystemError::InvalidParams {
-                        reason: format!("invalid `since` timestamp: {s}"),
+        let until_dt = parsed
+            .until
+            .as_deref()
+            .map(|s| {
+                DateTime::parse_from_rfc3339(s)
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                    .map_err(|_| {
+                        EngramError::System(SystemError::InvalidParams {
+                            reason: format!("invalid `until` timestamp: {s}"),
+                        })
                     })
-                })
-        })
-        .transpose()?;
+            })
+            .transpose()?;
 
-    let until_dt = parsed
-        .until
-        .as_deref()
-        .map(|s| {
-            DateTime::parse_from_rfc3339(s)
-                .map(|dt| dt.with_timezone(&chrono::Utc))
-                .map_err(|_| {
-                    EngramError::System(SystemError::InvalidParams {
-                        reason: format!("invalid `until` timestamp: {s}"),
+        // Validate before accessing the admitted generation's database.
+        let queries = queries_from_read_context(ctx.as_ref()).await?;
+        (parsed, limit, since_dt, until_dt, queries)
+    } else {
+        let context = pinned_dispatch_context(&state, "query_changes").await?;
+
+        // Read-only: git-graph tables may be partially written during a background
+        // index. Returning available commit data is more useful than blocking the caller.
+
+        let parsed: QueryChangesParams =
+            serde_json::from_value(params.unwrap_or_else(|| json!({}))).map_err(|e| {
+                EngramError::System(SystemError::InvalidParams {
+                    reason: e.to_string(),
+                })
+            })?;
+
+        let limit = parsed.limit.unwrap_or(20);
+
+        let since_dt = parsed
+            .since
+            .as_deref()
+            .map(|s| {
+                DateTime::parse_from_rfc3339(s)
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                    .map_err(|_| {
+                        EngramError::System(SystemError::InvalidParams {
+                            reason: format!("invalid `since` timestamp: {s}"),
+                        })
                     })
-                })
-        })
-        .transpose()?;
+            })
+            .transpose()?;
 
-    // Params are well-formed — safe to open (and, on first access, bootstrap)
-    // storage now.
-    let queries = queries_from_context(&context).await?;
+        let until_dt = parsed
+            .until
+            .as_deref()
+            .map(|s| {
+                DateTime::parse_from_rfc3339(s)
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                    .map_err(|_| {
+                        EngramError::System(SystemError::InvalidParams {
+                            reason: format!("invalid `until` timestamp: {s}"),
+                        })
+                    })
+            })
+            .transpose()?;
+
+        // Params are well-formed — safe to open (and, on first access, bootstrap)
+        // storage now.
+        let queries = queries_from_context(&context).await?;
+        (parsed, limit, since_dt, until_dt, queries)
+    };
 
     // If a symbol is provided, resolve its file path via the code graph so we
     // can filter commits by file. Symbol not found → CodeGraphError::SymbolNotFound.
@@ -1749,23 +1807,6 @@ pub async fn query_changes(
         "total": commits_json.len(),
         "file_path": effective_file_path,
         "symbol": parsed.symbol,
-    }))
-}
-
-/// Serve indexed git changes from an optional opened generation.
-///
-/// # Errors
-///
-/// Returns the Route (c) task marker until PA5-T5 is implemented.
-#[allow(clippy::unused_async)] // HC stub retains the eventual async API.
-#[cfg(feature = "git-graph")]
-pub async fn query_changes_with_context(
-    _state: SharedState,
-    _params: Option<Value>,
-    _read_context: Option<&Arc<ReadRequestContext>>,
-) -> Result<Value, EngramError> {
-    Err(EngramError::System(SystemError::InvalidParams {
-        reason: "Worker: 142.085-T".to_owned(),
     }))
 }
 
