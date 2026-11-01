@@ -35,6 +35,147 @@ const FEATURE_GATED_MCP_TOOLS: &[&str] = &["query_changes", "index_git_history"]
 /// CLI readiness workflow.
 const NON_CATALOG_DECLARATIONS: &[&str] = &[HEALTH_METHOD, SHUTDOWN_METHOD, DOCTOR_SMOKE];
 
+/// Independent OD-5 Q1 generation-DB read set for the current build.
+fn expected_generation_read_names() -> BTreeSet<&'static str> {
+    [
+        "get_workspace_status",
+        "get_workspace_statistics",
+        "query_memory",
+        "map_code",
+        "list_symbols",
+        "unified_search",
+        "impact_analysis",
+        "query_graph",
+        #[cfg(feature = "git-graph")]
+        "query_changes",
+    ]
+    .into_iter()
+    .collect()
+}
+
+// ── Generation provenance (142.086-T, Route (c)) ──────────────────────────────
+
+/// Scenario 1: new generation-backed classification; expected RED against
+/// the all-false declaration placeholder, not an unconditional failure stub.
+#[test]
+fn generation_backed_reads_match_exact_generation_db_set() {
+    const MARKER: &str = "Worker: 142.086-T:generation_backed_reads_match_exact_generation_db_set";
+    let actual: BTreeSet<&str> = capabilities::all_descriptors()
+        .into_iter()
+        .filter(|descriptor| descriptor.generation_backed)
+        .map(|descriptor| descriptor.name)
+        .collect();
+    assert_eq!(
+        actual,
+        expected_generation_read_names(),
+        "{MARKER}: generation-backed descriptors must be exactly the G1/G2 reads"
+    );
+}
+
+/// Scenario 2: characterization outside the expected-RED roster. Existing
+/// daemon-scoped reads retain their classification; all other non-generation
+/// descriptors (including writes, controls and workflows) retain false bits.
+#[test]
+fn non_generation_descriptors_retain_daemon_scoped_classification() {
+    const MARKER: &str =
+        "Worker: 142.086-T:non_generation_descriptors_retain_daemon_scoped_classification";
+    let generation_reads = expected_generation_read_names();
+    let descriptors = capabilities::all_descriptors();
+    for name in [
+        "get_daemon_status",
+        "get_health_report",
+        "get_branch_metrics",
+        "get_token_savings_report",
+        "get_evaluation_report",
+        "get_mutable_script_retry_metrics",
+        "get_retrieval_eval_report",
+        "lint_dax",
+    ] {
+        let descriptor = descriptors
+            .iter()
+            .find(|descriptor| descriptor.name == name);
+        assert!(
+            descriptor.is_some(),
+            "{MARKER}: missing descriptor `{name}`"
+        );
+        if let Some(descriptor) = descriptor {
+            assert_eq!(
+                descriptor.capability,
+                CapabilityClass::Read,
+                "{MARKER}: `{name}` must remain Read"
+            );
+            assert!(
+                descriptor.read_server_available,
+                "{MARKER}: `{name}` must remain available on a read-server"
+            );
+            assert_eq!(
+                descriptor.input_ownership,
+                InputOwnership::DaemonHandler,
+                "{MARKER}: `{name}` must remain daemon-handler owned"
+            );
+            assert!(
+                !descriptor.generation_backed,
+                "{MARKER}: `{name}` is daemon-scoped, not generation-backed"
+            );
+        }
+    }
+    for descriptor in descriptors
+        .iter()
+        .filter(|descriptor| !generation_reads.contains(descriptor.name))
+    {
+        assert!(
+            !descriptor.generation_backed,
+            "{MARKER}: non-generation descriptor `{}` must declare false",
+            descriptor.name
+        );
+    }
+}
+
+/// Scenario 3: new provenance parity; set equality prevents the invariant
+/// checks from passing vacuously against the all-false placeholder.
+#[test]
+fn generation_backed_reads_obey_invariants_and_pinned_read_parity() {
+    const MARKER: &str =
+        "Worker: 142.086-T:generation_backed_reads_obey_invariants_and_pinned_read_parity";
+    let descriptors = capabilities::all_descriptors();
+    let generation_reads: Vec<&ToolDescriptor> = descriptors
+        .iter()
+        .filter(|descriptor| descriptor.generation_backed)
+        .collect();
+    for descriptor in &generation_reads {
+        assert_eq!(
+            descriptor.capability,
+            CapabilityClass::Read,
+            "{MARKER}: `{}` must be Read",
+            descriptor.name
+        );
+        assert!(
+            descriptor.read_server_available,
+            "{MARKER}: `{}` must be available on a read-server",
+            descriptor.name
+        );
+        assert_eq!(
+            descriptor.input_ownership,
+            InputOwnership::DaemonHandler,
+            "{MARKER}: `{}` must be daemon-handler owned",
+            descriptor.name
+        );
+    }
+    let actual: BTreeSet<&str> = generation_reads
+        .iter()
+        .map(|descriptor| descriptor.name)
+        .collect();
+    let expected: BTreeSet<&str> = engram::daemon::request_entry::GENERATION_PINNED_READS
+        .iter()
+        .copied()
+        .filter(|name| cfg!(feature = "git-graph") || *name != "query_changes")
+        .collect();
+    assert_eq!(
+        actual, expected,
+        "{MARKER}: generation-backed names must match compiled-in GENERATION_PINNED_READS"
+    );
+}
+
 /// The agent-visible MCP catalog tool names for the current build.
 fn catalog_names() -> BTreeSet<String> {
     tools_catalog::all_tools()
