@@ -307,6 +307,19 @@ pub async fn process_request(line: &str, state: &SharedState) -> (IpcResponse, b
         // T052: `_shutdown` is signalled by the connection handler only after
         // this response has been written and flushed (S022, S037).
         "_shutdown" => {
+            if state.mode() == DaemonMode::ReadServer {
+                return (
+                    refusal(
+                        &request,
+                        EngramError::ReadServerRefusal(
+                            ReadServerRefusalError::WriteControlRefused {
+                                operation: "_shutdown".to_owned(),
+                            },
+                        ),
+                    ),
+                    false,
+                );
+            }
             info!("daemon received _shutdown IPC request — initiating graceful shutdown");
             (
                 IpcResponse::success(
@@ -368,12 +381,33 @@ pub async fn process_request(line: &str, state: &SharedState) -> (IpcResponse, b
                 ReadAdmission::Refused(response) => (*response, false),
             }
         }
-        method => (
-            match tools::dispatch(Arc::clone(state), method, request.params).await {
-                Ok(result) => IpcResponse::success(id, result),
-                Err(e) => error_transport::to_response(id, e),
-            },
-            false,
-        ),
+        method => {
+            if state.mode() == DaemonMode::ReadServer
+                && method != "set_workspace"
+                && !capabilities::descriptor(method).is_some_and(|descriptor| {
+                    descriptor.read_server_available
+                        && descriptor.capability == CapabilityClass::Read
+                })
+            {
+                return (
+                    refusal(
+                        &request,
+                        EngramError::ReadServerRefusal(
+                            ReadServerRefusalError::WriteControlRefused {
+                                operation: method.to_owned(),
+                            },
+                        ),
+                    ),
+                    false,
+                );
+            }
+            (
+                match tools::dispatch(Arc::clone(state), method, request.params).await {
+                    Ok(result) => IpcResponse::success(id, result),
+                    Err(e) => error_transport::to_response(id, e),
+                },
+                false,
+            )
+        }
     }
 }
