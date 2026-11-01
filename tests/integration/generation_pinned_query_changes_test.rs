@@ -13,7 +13,7 @@ fn source_contract(scenario: &str) {
         GENERATION_PINNED_READS.contains(&"query_changes"),
         "Worker: 142.085-T {scenario}: query_changes admission entry"
     );
-    let source = include_str!("../../src/tools/read.rs");
+    let source = include_str!("../../src/tools/read.rs").replace("\r\n", "\n");
     let wrapper = "#[cfg(feature = \"git-graph\")]\npub async fn query_changes(";
     let handler = "#[cfg(feature = \"git-graph\")]\npub async fn query_changes_with_context(";
     assert!(
