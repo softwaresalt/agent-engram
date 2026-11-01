@@ -485,7 +485,9 @@ pub async fn dispatch_with_read_context(
         "list_symbols" => {
             read::list_symbols_with_context(state.clone(), params, read_context).await
         }
-        "unified_search" => read::unified_search(state.clone(), params).await,
+        "unified_search" => {
+            read::unified_search_with_context(state.clone(), params, read_context).await
+        }
         "impact_analysis" => {
             read::impact_analysis_with_context(state.clone(), params, read_context).await
         }
