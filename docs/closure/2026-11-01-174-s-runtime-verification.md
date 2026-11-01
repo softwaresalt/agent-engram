@@ -103,7 +103,7 @@ and indexing assurance remain outside its verdict.
 | Failure signals | Any next-main parity or required-check failure; after deployment, any new IPC/handshake failure, restart loop, or unrecoverable sync/index error | Investigate on first occurrence |
 | Validation window | Observe the next main CI to completion; separately start a 30-minute window only after authorized deployment | softwaresalt; neither future window reported complete |
 | Rollback trigger | Confirmed regression attributable to this exact parity slot, or any listed post-deploy failure signal | Halt rollout and request separate rollback approval |
-| Rollback procedure | Revert only the exact slot change from IC, preserving unrelated work, through a separately authorized change; runtime binary restoration requires its own authorization and known prior asset | No rollback executed; no automatic flush or index deletion |
+| Rollback procedure | Prepare a separately approved and reviewed rollback restoring the complete Slot20a test-file change (HC + IC) to pre-HC contents, preserving unrelated work, shared 142-F, and tool-managed state; do not leave HC's unimplemented tests; validate the scoped contract and required gates before rollback merge; runtime binary restoration requires its own authorization and known prior asset | No rollback executed; no automatic flush or index deletion |
 
 The profile's generic reinstall-and-flush procedure is not executed or
 endorsed as necessary for this test-only change. No deployment binary was
