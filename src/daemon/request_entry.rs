@@ -30,6 +30,7 @@ pub const GENERATION_PINNED_READS: &[&str] = &[
     "map_code",
     "impact_analysis",
     "query_graph",
+    "query_changes",
     "unified_search",
 ];
 
