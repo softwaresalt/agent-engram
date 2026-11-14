@@ -14,18 +14,22 @@ branch: feat/175-s-142-f-slot-20b-142-088-t-f54b
   in `src/daemon/request_entry.rs` (`ef3201b5` + P0 fix `cd745e8b`) and Slot-20b
   contract parity tests in `tests/contract/read_server_cli_mcp_parity_test.rs`
   (`9f132201` + unbound `set_workspace` regression test `cd745e8b`).
-* Blocked items: none remaining for `142.088-T`. Prior `4F67A4D7` missing-target
-  halt was resolved by Stage updating `142.088-T` verification target to
-  `integration_request_entry_activation`.
+* Blocked items: none remaining for `142.088-T`. Prior `4F67A4D7`'s
+  missing-target defect was corrected in `142.088-T` by Stage on 2026-11-01
+  (updating the verification target to `integration_request_entry_activation`);
+  stash entry `4F67A4D7` remains active in `.backlogit/stash.jsonl` for Stage
+  triage/archival per Ship Role Boundary (P-010).
 
 ## Branch state and commits
 
 * Branch: `feat/175-s-142-f-slot-20b-142-088-t-f54b`
-* Commits prior to pre-PR docs/backlog commit:
+* Commits prior to final docs/closure update:
   * `b99deeb3` — `chore(backlog): carry forward pre-claim backlog state`
   * `9f132201` — `test: scaffold Slot-20b read-server refusal contracts (142.088-T)`
   * `ef3201b5` — `feat(142.088-T): F54b IC - enforce ReadServer refusal gating and assert parity refusal classes`
   * `cd745e8b` — `fix(142.088-T): refuse unbound ReadServer set_workspace at request entry`
+  * `46a165b0` — `chore(175-S): record backlog, runtime verification, memory, and P-011 intake`
+  * `a8272cf0` — `fix(142.088-T): collect stdio MCP responses before closing stdin`
 * Preserved untouched local edits (excluded from staging/commits): `start.ps1`
   and `.autoharness/config.yaml`.
 * P-011 carry-forward intake staged alongside `.backlogit/stash.jsonl`:
@@ -57,17 +61,17 @@ branch: feat/175-s-142-f-slot-20b-142-088-t-f54b
   * `2D026946` (`low`, `bug`): update `capabilities::descriptor("_shutdown")`
     `read_server_available` to `false` and refresh stale doc comment.
 
-## Verification summary (`cd745e8b`)
+## Verification summary (`cd745e8b` / `a8272cf0`)
 
-* `contract_read_server_cli_mcp_parity`: 7/7 PASS
-* `integration_request_entry_activation`: 12/12 PASS
-* `integration_lifecycle_read_generation_pin`: 3/3 PASS
-* `contract_read_server_dispatch_refusal`: 6/6 PASS
-* `cargo fmt --all -- --check`: PASS
-* `cargo clippy --all-targets -- -D warnings -D clippy::pedantic`: PASS
-* `cargo build --all-targets`: PASS
+* `contract_read_server_cli_mcp_parity`: 7/7 PASS (default features and `--no-default-features --features cozo-backend,embeddings` on `a8272cf0`)
+* `integration_request_entry_activation`: 12/12 PASS (`cd745e8b`; `src/` unchanged in `a8272cf0`)
+* `integration_lifecycle_read_generation_pin`: 3/3 PASS (`cd745e8b`; `src/` unchanged in `a8272cf0`)
+* `contract_read_server_dispatch_refusal`: 6/6 PASS (`cd745e8b`; `src/` unchanged in `a8272cf0`)
+* `cargo fmt --all -- --check`: PASS (`a8272cf0`)
+* `cargo clippy --all-targets -- -D warnings -D clippy::pedantic`: PASS (`a8272cf0`)
+* `cargo build --all-targets`: PASS (`a8272cf0`)
 * `pwsh scripts/test-coverage-oracle.ps1 --mode completeness`: PASS (281 targets, 14 modules, 0 unmapped)
-* `cargo dev-test --no-fail-fast`: 2,618 passed across 280/283 binaries (20 ignored);
+* `cargo dev-test --no-fail-fast` (`cd745e8b-dirty` working tree): 2,618 passed across 280/283 binaries (20 ignored);
   `integration_daemon_startup_order` passed 1/1 in isolation (13.21 s, `773841E3`);
   10 `start_launcher*` failures solely from uncommitted local `start.ps1` edit.
 * Protected `142-F.md` SHA-256: `42FCA67C1407641C8F3CF4752B3431D978290B1342614A831DF463B572181770`.

@@ -12,6 +12,7 @@ compaction_status: pending
 owner: softwaresalt
 follow_up_stash:
   - "4F67A4D7"
+  - "6F21E640"
   - "AD1350C2"
   - "B916A619"
   - "2D026946"
@@ -47,8 +48,9 @@ Changed code files (`b99deeb3..cd745e8b`):
   contracts (`non_read_descriptors_are_refused_without_side_effects`,
   `control_descriptors_are_refused_without_side_effects`,
   `unknown_ipc_methods_are_refused_without_side_effects`) plus
-  `unbound_read_server_refuses_set_workspace_without_side_effects` (total
-  authored/adapted lines <= 400 under R-A6).
+  `unbound_read_server_refuses_set_workspace_without_side_effects` and the
+  authorized `invoke_stdio_mcp` read-before-stdin-close adaptation (`a8272cf0`,
+  total diff <= 400 lines under R-A6).
 
 | Evidence | Recorded result | Provenance |
 |---|---|---|
@@ -56,15 +58,16 @@ Changed code files (`b99deeb3..cd745e8b`):
 | Harness commit (`HC`) | `9f1322012c54baf7272ab100f6e0baf75a27ad55` | Test-only scaffold (+242 lines) |
 | Initial IC (`ef3201b5`) | `ef3201b5e01ccf42d035e75c25530c1c3bf45c3e` | ReadServer `_shutdown` + fall-through guards |
 | P0 review-fix IC (`cd745e8b`) | `cd745e8b4a64ae6fc11a8a2d5519926a0f1089fb` | Unbound `ReadServer` `set_workspace` guard + regression test |
-| `contract_read_server_cli_mcp_parity` | PASS (7/7), including live `ReadServer` daemon probes | Verified on `cd745e8b` |
-| `integration_request_entry_activation` | PASS (12/12) | Verified on `cd745e8b` |
-| `integration_lifecycle_read_generation_pin` | PASS (3/3) | Verified on `cd745e8b` |
-| `contract_read_server_dispatch_refusal` | PASS (6/6) | Verified on `cd745e8b` |
-| `cargo fmt --all -- --check` | PASS | Verified on `cd745e8b` |
-| `cargo clippy --all-targets -- -D warnings -D clippy::pedantic` | PASS (0 warnings) | Verified on `cd745e8b` |
-| `cargo build --all-targets` | PASS (exit 0) | Verified on `cd745e8b` |
+| CI-fix commit (`a8272cf0`) | `a8272cf0b84858332c81d2ee353262cb3e975919` | `invoke_stdio_mcp` read-before-stdin-close adaptation |
+| `contract_read_server_cli_mcp_parity` (default + CI features) | PASS (7/7 default, 7/7 `--no-default-features --features cozo-backend,embeddings`), including live `ReadServer` daemon probes | Verified on `a8272cf0` |
+| `integration_request_entry_activation` | PASS (12/12) | Verified on `cd745e8b` (unchanged `src/` at `a8272cf0`) |
+| `integration_lifecycle_read_generation_pin` | PASS (3/3) | Verified on `cd745e8b` (unchanged `src/` at `a8272cf0`) |
+| `contract_read_server_dispatch_refusal` | PASS (6/6) | Verified on `cd745e8b` (unchanged `src/` at `a8272cf0`) |
+| `cargo fmt --all -- --check` | PASS | Verified on `a8272cf0` |
+| `cargo clippy --all-targets -- -D warnings -D clippy::pedantic` | PASS (0 warnings) | Verified on `a8272cf0` |
+| `cargo build --all-targets` | PASS (exit 0) | Verified on `a8272cf0` |
 | `pwsh scripts/test-coverage-oracle.ps1 --mode completeness` | PASS (281 targets, 14 modules, 0 unmapped) | Verified on `cd745e8b` |
-| `cargo dev-test --no-fail-fast` | 2,618 passed across 280/283 binaries (20 ignored); `integration_daemon_startup_order` passed 1/1 isolated (13.21s, preapproved `773841E3`); 10 `start_launcher*` failures solely from uncommitted local `start.ps1` edit | Verified on `cd745e8b` |
+| `cargo dev-test --no-fail-fast` (`cd745e8b-dirty` working tree) | 2,618 passed across 280/283 binaries (20 ignored); `integration_daemon_startup_order` passed 1/1 isolated (13.21s, preapproved `773841E3`); 10 `start_launcher*` failures solely from uncommitted local `start.ps1` edit | Dirty-tree evidence at `cd745e8b` |
 | Local Adversarial Review (`mode: report-only`, `reviewers: 3`) | `READY_WITH_FOLLOWUPS` (`P0=0, P1=0, P2=0, P3=1` advisory `stop_daemon` 3s timeout) | Verified on `cd745e8b` |
 
 Every cargo invocation used `CARGO_TARGET_DIR=target/validation`,
@@ -123,7 +126,7 @@ Every cargo invocation used `CARGO_TARGET_DIR=target/validation`,
 | Monitoring plan | Recorded manual handoff to softwaresalt |
 | Rollback trigger and procedure | Named source revert + asset-restore fallback |
 | Owner and validation window | softwaresalt; PR CI, next `main` CI, and 30-minute post-deploy window |
-| Follow-up | Deferred P-021 C2 stash entries: `AD1350C2` (high, `respawn_daemon`/`stop_daemon` reconciliation), `B916A619` (medium, same-workspace `set_workspace` contract), `2D026946` (low, `_shutdown` capability metadata), prior `4F67A4D7`, and P3 advisory (`ReadServerFixture::stop_daemon` 3s timeout) |
+| Follow-up | Deferred P-021 C2 stash entries: `AD1350C2` (high, `respawn_daemon`/`stop_daemon` reconciliation), `B916A619` (medium, same-workspace `set_workspace` contract), `2D026946` (low, `_shutdown` capability metadata), pre-existing `4F67A4D7` (active stash awaiting Stage triage/archival after Stage's 2026-11-01 verification-target update), pre-existing `6F21E640` (174-S `invoke_stdio_mcp` broader lifecycle redesign note; read-before-stdin-close adaptation landed in `a8272cf0`), and P3 advisory (`ReadServerFixture::stop_daemon` 3s timeout) |
 
 Runtime verdict: `PASS_WITH_FOLLOW_UP`.
 Merge-only releasability: `READY_WITH_CONDITIONS`.
