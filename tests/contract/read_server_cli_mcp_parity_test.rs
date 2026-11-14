@@ -14,11 +14,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
+use std::sync::Arc;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use chrono::Utc;
+use engram::config::StaleStrategy;
 use engram::daemon::ipc_server::ipc_endpoint;
 use engram::daemon::protocol::{IpcRequest, IpcResponse};
+use engram::daemon::request_entry::process_request;
+use engram::models::config::DaemonMode;
+use engram::server::state::AppState;
 use engram::services::generations::candidate_build::read_server_layout;
 use engram::services::generations::{
     BranchIdentity, GenerationId, GenerationManifest, GenerationProvenance, GenerationRevision,
@@ -1659,4 +1664,61 @@ async fn exercise_unknown_method(
         raw_response: raw.raw_response,
         surface_advertised: None,
     })
+}
+
+#[tokio::test]
+async fn unbound_read_server_refuses_set_workspace_without_side_effects() -> Result<(), String> {
+    let workspace = tempfile::tempdir().map_err(|e| format!("create temp workspace: {e}"))?;
+    fs::create_dir_all(workspace.path().join(".git"))
+        .map_err(|e| format!("create .git dir: {e}"))?;
+    fs::write(
+        workspace.path().join(".git").join("HEAD"),
+        "ref: refs/heads/main\n",
+    )
+    .map_err(|e| format!("write HEAD: {e}"))?;
+    fs::write(
+        workspace.path().join("lib.rs"),
+        "pub fn unbound_probe() {}\n",
+    )
+    .map_err(|e| format!("write lib.rs: {e}"))?;
+    assert!(!workspace.path().join(".engram").exists());
+
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::ReadServer,
+        1,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
+    assert!(state.snapshot_dispatch_context().await.is_none());
+    assert!(state.snapshot_workspace().await.is_none());
+
+    let temp_path = workspace
+        .path()
+        .to_str()
+        .ok_or_else(|| "temp path is not UTF-8".to_owned())?;
+    let line = serde_json::to_string(&json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "set_workspace",
+        "params": { "path": temp_path }
+    }))
+    .map_err(|e| format!("encode request: {e}"))?;
+
+    let (response, shutdown) = process_request(&line, &state).await;
+    assert!(!shutdown);
+    assert!(response.result.is_none());
+    assert_eq!(
+        response
+            .error
+            .as_ref()
+            .and_then(|e| e.data.as_ref())
+            .and_then(|d| d.get("engram_code"))
+            .and_then(Value::as_u64),
+        Some(u64::from(F38_WORKSPACE_RETARGET_REFUSAL))
+    );
+    assert!(state.snapshot_dispatch_context().await.is_none());
+    assert!(state.snapshot_workspace().await.is_none());
+    assert!(!workspace.path().join(".engram").exists());
+    Ok(())
 }

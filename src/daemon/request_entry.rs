@@ -382,24 +382,45 @@ pub async fn process_request(line: &str, state: &SharedState) -> (IpcResponse, b
             }
         }
         method => {
-            if state.mode() == DaemonMode::ReadServer
-                && method != "set_workspace"
-                && !capabilities::descriptor(method).is_some_and(|descriptor| {
-                    descriptor.read_server_available
-                        && descriptor.capability == CapabilityClass::Read
-                })
-            {
-                return (
-                    refusal(
-                        &request,
-                        EngramError::ReadServerRefusal(
-                            ReadServerRefusalError::WriteControlRefused {
-                                operation: method.to_owned(),
-                            },
+            if state.mode() == DaemonMode::ReadServer {
+                if method == "set_workspace" && state.snapshot_dispatch_context().await.is_none() {
+                    let requested_workspace = request
+                        .params
+                        .as_ref()
+                        .and_then(|params| params.get("path"))
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned();
+                    return (
+                        refusal(
+                            &request,
+                            EngramError::ReadServerRefusal(
+                                ReadServerRefusalError::WorkspaceRetargetRefused {
+                                    requested_workspace,
+                                },
+                            ),
                         ),
-                    ),
-                    false,
-                );
+                        false,
+                    );
+                }
+                if method != "set_workspace"
+                    && !capabilities::descriptor(method).is_some_and(|descriptor| {
+                        descriptor.read_server_available
+                            && descriptor.capability == CapabilityClass::Read
+                    })
+                {
+                    return (
+                        refusal(
+                            &request,
+                            EngramError::ReadServerRefusal(
+                                ReadServerRefusalError::WriteControlRefused {
+                                    operation: method.to_owned(),
+                                },
+                            ),
+                        ),
+                        false,
+                    );
+                }
             }
             (
                 match tools::dispatch(Arc::clone(state), method, request.params).await {
