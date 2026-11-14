@@ -39,7 +39,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sysinfo::{Pid, System};
 use tempfile::TempDir;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command as TokioCommand;
 
 const F38_READ_SERVER_WRITE_CONTROL_REFUSAL: u16 = 16_001;
@@ -938,17 +938,51 @@ async fn invoke_stdio_mcp(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| format!("cannot launch real stdio MCP shim: {error}"))?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| "stdio MCP shim has no piped stdin".to_owned())?;
+    let mut stdin = child.stdin.take().ok_or("MCP shim missing stdin")?;
+    let stdout = child.stdout.take().ok_or("MCP shim missing stdout")?;
+    let mut stderr = child.stderr.take().ok_or("MCP shim missing stderr")?;
+    let stderr_task = tokio::spawn(async move {
+        let mut buf = Vec::new();
+        stderr.read_to_end(&mut buf).await.map(|_| buf)
+    });
     write_mcp_request_frames(&mut stdin, method, arguments).await?;
+    stdin.flush().await.map_err(|e| format!("flush MCP: {e}"))?;
+    let (mut r, mut v) = (BufReader::new(stdout).lines(), Vec::new());
+    let read_res = tokio::time::timeout(IPC_TIMEOUT, async {
+        let mut seen = BTreeSet::new();
+        while let Some(l) = r.next_line().await.map_err(|e| format!("read: {e}"))? {
+            v.extend_from_slice(format!("{l}\n").as_bytes());
+            if let Ok(f) = serde_json::from_str::<Value>(&l)
+                && let Some(id) = f["id"].as_u64().filter(|n| (1..=3).contains(n))
+                && seen.insert(id)
+                && seen.len() == 3
+            {
+                break;
+            }
+        }
+        Ok::<(), String>(())
+    })
+    .await;
     drop(stdin);
-
-    let output = child
-        .wait_with_output()
+    let _ = tokio::time::timeout(Duration::from_secs(1), r.into_inner().read_to_end(&mut v)).await;
+    let Ok(waited) = tokio::time::timeout(Duration::from_secs(5), child.wait()).await else {
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+        return Err("stdio MCP shim did not exit within 5s after stdin EOF".to_owned());
+    };
+    let status = waited.map_err(|e| format!("reap MCP shim: {e}"))?;
+    let stderr = stderr_task
         .await
-        .map_err(|error| format!("cannot reap naturally-exiting MCP shim: {error}"))?;
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    if let Ok(error) = read_res {
+        error?;
+    }
+    let output = Output {
+        status,
+        stdout: v,
+        stderr,
+    };
     Ok(decode_mcp_output(&output, method))
 }
 
