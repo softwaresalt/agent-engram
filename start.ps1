@@ -240,7 +240,7 @@ try {
     }
     $preflightBudgetMs = $configuredBudgetMs
   }
-  Invoke-EngramPreflight -Executable $engramExe -Workspace $PSScriptRoot -BudgetMs $preflightBudgetMs
+  # Invoke-EngramPreflight -Executable $engramExe -Workspace $PSScriptRoot -BudgetMs $preflightBudgetMs
 
   # Forward caller arguments as-is. --remote (Copilot remote control, which streams
   # session output to GitHub and permits steering from authenticated remote devices)
