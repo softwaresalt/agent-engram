@@ -14,11 +14,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
+use std::sync::Arc;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use chrono::Utc;
+use engram::config::StaleStrategy;
 use engram::daemon::ipc_server::ipc_endpoint;
 use engram::daemon::protocol::{IpcRequest, IpcResponse};
+use engram::daemon::request_entry::process_request;
+use engram::models::config::DaemonMode;
+use engram::server::state::AppState;
 use engram::services::generations::candidate_build::read_server_layout;
 use engram::services::generations::{
     BranchIdentity, GenerationId, GenerationManifest, GenerationProvenance, GenerationRevision,
@@ -34,7 +39,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sysinfo::{Pid, System};
 use tempfile::TempDir;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command as TokioCommand;
 
 const F38_READ_SERVER_WRITE_CONTROL_REFUSAL: u16 = 16_001;
@@ -45,6 +50,12 @@ const EXPECTED_GENERATION: &str = "generation-142";
 const FIXTURE_BRANCH: &str = "main";
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
 const IPC_TIMEOUT: Duration = Duration::from_secs(10);
+const SLOT20B_NON_READ_MARKER: &str =
+    "Worker:142.088-T:non_read_descriptors_are_refused_without_side_effects";
+const SLOT20B_CONTROL_MARKER: &str =
+    "Worker:142.088-T:control_descriptors_are_refused_without_side_effects";
+const SLOT20B_UNKNOWN_MARKER: &str =
+    "Worker:142.088-T:unknown_ipc_methods_are_refused_without_side_effects";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Observation {
@@ -927,17 +938,51 @@ async fn invoke_stdio_mcp(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| format!("cannot launch real stdio MCP shim: {error}"))?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| "stdio MCP shim has no piped stdin".to_owned())?;
+    let mut stdin = child.stdin.take().ok_or("MCP shim missing stdin")?;
+    let stdout = child.stdout.take().ok_or("MCP shim missing stdout")?;
+    let mut stderr = child.stderr.take().ok_or("MCP shim missing stderr")?;
+    let stderr_task = tokio::spawn(async move {
+        let mut buf = Vec::new();
+        stderr.read_to_end(&mut buf).await.map(|_| buf)
+    });
     write_mcp_request_frames(&mut stdin, method, arguments).await?;
+    stdin.flush().await.map_err(|e| format!("flush MCP: {e}"))?;
+    let (mut r, mut v) = (BufReader::new(stdout).lines(), Vec::new());
+    let read_res = tokio::time::timeout(IPC_TIMEOUT, async {
+        let mut seen = BTreeSet::new();
+        while let Some(l) = r.next_line().await.map_err(|e| format!("read: {e}"))? {
+            v.extend_from_slice(format!("{l}\n").as_bytes());
+            if let Ok(f) = serde_json::from_str::<Value>(&l)
+                && let Some(id) = f["id"].as_u64().filter(|n| (1..=3).contains(n))
+                && seen.insert(id)
+                && seen.len() == 3
+            {
+                break;
+            }
+        }
+        Ok::<(), String>(())
+    })
+    .await;
     drop(stdin);
-
-    let output = child
-        .wait_with_output()
+    let _ = tokio::time::timeout(Duration::from_secs(1), r.into_inner().read_to_end(&mut v)).await;
+    let Ok(waited) = tokio::time::timeout(Duration::from_secs(5), child.wait()).await else {
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+        return Err("stdio MCP shim did not exit within 5s after stdin EOF".to_owned());
+    };
+    let status = waited.map_err(|e| format!("reap MCP shim: {e}"))?;
+    let stderr = stderr_task
         .await
-        .map_err(|error| format!("cannot reap naturally-exiting MCP shim: {error}"))?;
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    if let Ok(error) = read_res {
+        error?;
+    }
+    let output = Output {
+        status,
+        stdout: v,
+        stderr,
+    };
     Ok(decode_mcp_output(&output, method))
 }
 
@@ -1416,5 +1461,298 @@ async fn health_is_ready_on_direct_ipc_only() -> Result<(), String> {
     slot20a_assertion_boundary("health_is_ready_on_direct_ipc_only");
     assert_eq!(health.surfaces, [ToolSurface::DirectIpc]);
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn non_read_descriptors_are_refused_without_side_effects() -> Result<(), String> {
+    const MARKER: &str = SLOT20B_NON_READ_MARKER;
+    let markers = [MARKER, SLOT20B_CONTROL_MARKER, SLOT20B_UNKNOWN_MARKER];
+    assert_eq!(
+        markers.iter().collect::<BTreeSet<_>>().len(),
+        markers.len(),
+        "{MARKER}: roster markers must be pairwise distinct"
+    );
+    let mut fixture = ReadServerFixture::new().await;
+    fixture.ensure_daemon().await?;
+    let descriptors = all_descriptors();
+    let matrix = descriptor_parity_matrix(&descriptors);
+    let refusal_rows = matrix
+        .iter()
+        .filter(|row| {
+            matches!(
+                expected_outcome(row.descriptor),
+                ExpectedOutcome::Refusal { .. }
+            )
+        })
+        .collect::<Vec<_>>();
+    for capability in [CapabilityClass::Write, CapabilityClass::Control] {
+        assert!(
+            refusal_rows
+                .iter()
+                .any(|row| row.descriptor.capability == capability),
+            "{MARKER}: registry must cover {capability:?} refusal"
+        );
+    }
+    assert!(
+        refusal_rows
+            .iter()
+            .any(|row| row.descriptor.name == "set_workspace"),
+        "{MARKER}: unsafe lifecycle retarget must be covered"
+    );
+    for method in ["index_workspace", "sync_workspace", "flush_state"] {
+        assert!(
+            refusal_rows.iter().any(|row| row.descriptor.name == method),
+            "{MARKER}: direct mutation workflow {method} must be covered"
+        );
+    }
+    let expected_count = refusal_rows
+        .iter()
+        .map(|row| row.surfaces.len())
+        .sum::<usize>();
+    let mut cases = refusal_rows
+        .iter()
+        .flat_map(|row| {
+            row.surfaces
+                .iter()
+                .copied()
+                .map(move |expectation| (row.descriptor, expectation))
+        })
+        .collect::<Vec<_>>();
+    // A live `_shutdown` request must be last because incorrect acceptance stops the daemon.
+    cases.sort_by_key(|(descriptor, _)| descriptor.name == "_shutdown");
+    let mut failures = Vec::new();
+    let mut exercised = 0_usize;
+    for (descriptor, expectation) in cases {
+        let observation =
+            exercise_declared_surface(descriptor, expectation.surface, &mut fixture).await?;
+        exercised = exercised.saturating_add(1);
+        record_matrix_failures(descriptor, expectation, &observation, &mut failures);
+    }
+    fixture.stop_daemon().await?;
+    assert_eq!(
+        exercised, expected_count,
+        "{MARKER}: every declared refusal surface"
+    );
+    assert!(
+        failures.is_empty(),
+        "{MARKER}: descriptor-driven read-server refusal failures:\n{}",
+        failures.join("\n")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn control_descriptors_are_refused_without_side_effects() {
+    const MARKER: &str = SLOT20B_CONTROL_MARKER;
+    let descriptors = all_descriptors();
+    let matrix = descriptor_parity_matrix(&descriptors);
+    let control_rows = matrix
+        .into_iter()
+        .filter(|row| row.descriptor.capability == CapabilityClass::Control)
+        .collect::<Vec<_>>();
+    assert!(
+        !control_rows.is_empty(),
+        "{MARKER}: the F19 registry must declare Control descriptors"
+    );
+
+    for row in &control_rows {
+        let code = expected_refusal_code(row.descriptor);
+        assert_eq!(
+            expected_outcome(row.descriptor),
+            ExpectedOutcome::Refusal { code },
+            "{MARKER}: Control descriptor {} must be refusal-only",
+            row.descriptor.name
+        );
+        if row.descriptor.name == "set_workspace" {
+            assert_eq!(
+                code, F38_WORKSPACE_RETARGET_REFUSAL,
+                "{MARKER}: set_workspace must retain its retarget refusal code"
+            );
+        } else if row.descriptor.read_server_available {
+            assert_eq!(
+                code, F38_READ_SERVER_WRITE_CONTROL_REFUSAL,
+                "{MARKER}: read-server-available Control descriptors must use the \
+                 write/control refusal code"
+            );
+        }
+    }
+
+    let mut cases = control_rows
+        .iter()
+        .flat_map(|row| {
+            row.surfaces
+                .iter()
+                .copied()
+                .map(move |expectation| (row.descriptor, expectation))
+        })
+        .collect::<Vec<_>>();
+    // Keep `_shutdown` last in case the daemon incorrectly accepts it.
+    cases.sort_by_key(|(descriptor, _)| descriptor.name == "_shutdown");
+
+    let mut fixture = ReadServerFixture::new().await;
+    fixture
+        .ensure_daemon()
+        .await
+        .unwrap_or_else(|error| panic!("{F54_BLOCK_MARKER}: {error}"));
+    let mut failures = Vec::new();
+    for (descriptor, expectation) in cases {
+        let observation = exercise_declared_surface(descriptor, expectation.surface, &mut fixture)
+            .await
+            .unwrap_or_else(|error| {
+                panic!(
+                    "{F54_BLOCK_MARKER}: cannot exercise Control descriptor {} via {}: {error}",
+                    descriptor.name, expectation.surface
+                )
+            });
+        record_matrix_failures(descriptor, expectation, &observation, &mut failures);
+    }
+
+    fixture
+        .stop_daemon()
+        .await
+        .unwrap_or_else(|error| panic!("{F54_BLOCK_MARKER}: safe daemon cleanup failed: {error}"));
+    assert!(
+        failures.is_empty(),
+        "{MARKER}: Control descriptor refusal failures:\n{}",
+        failures.join("\n")
+    );
+}
+
+#[tokio::test]
+async fn unknown_ipc_methods_are_refused_without_side_effects() {
+    const MARKER: &str = SLOT20B_UNKNOWN_MARKER;
+    let mut fixture = ReadServerFixture::new().await;
+    fixture
+        .ensure_daemon()
+        .await
+        .unwrap_or_else(|error| panic!("{F54_BLOCK_MARKER}: {error}"));
+    let observation = exercise_unknown_method(
+        "not_a_declared_method",
+        ToolSurface::DirectIpc,
+        &mut fixture,
+    )
+    .await
+    .unwrap_or_else(|error| panic!("{F54_BLOCK_MARKER}: unknown IPC call failed: {error}"));
+    fixture
+        .stop_daemon()
+        .await
+        .unwrap_or_else(|error| panic!("{F54_BLOCK_MARKER}: safe daemon cleanup failed: {error}"));
+
+    let failures = [
+        observation
+            .accepted
+            .then_some("unknown method was accepted instead of refused".to_owned()),
+        (observation.refusal_code != Some(F38_READ_SERVER_WRITE_CONTROL_REFUSAL)).then_some(
+            "unknown method did not use read-server write/control refusal code 16_001".to_owned(),
+        ),
+        (observation.side_effect_count != 0).then_some(format!(
+            "unknown method changed isolated state {} times",
+            observation.side_effect_count
+        )),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    assert!(
+        failures.is_empty(),
+        "{MARKER}: {}: {}; response={:?}; raw_response={}",
+        "not_a_declared_method",
+        failures.join("; "),
+        observation.response,
+        observation.raw_response
+    );
+}
+
+async fn exercise_unknown_method(
+    method: &str,
+    surface: ToolSurface,
+    fixture: &mut ReadServerFixture,
+) -> Result<Observation, String> {
+    if surface != ToolSurface::DirectIpc {
+        return Err(format!(
+            "{F54_BLOCK_MARKER}: unknown methods have no descriptor; exercise direct IPC only"
+        ));
+    }
+    fixture.ensure_daemon().await?;
+    let binding_before = fixture
+        .workspace_binding_fingerprint()
+        .await
+        .ok_or_else(|| "cannot observe workspace binding before unknown-method probe".to_owned())?;
+    let files_before = fixture.filesystem_snapshot()?;
+    let raw = invoke_direct_ipc(method, None, fixture).await?;
+    let files_after = fixture.filesystem_snapshot()?;
+    let binding_after = fixture.workspace_binding_fingerprint().await;
+    let effects =
+        changed_entry_count(&files_before, &files_after).saturating_add(match binding_after {
+            Some(binding) => usize::from(binding_before != binding),
+            None => 1,
+        });
+
+    Ok(Observation {
+        accepted: raw.accepted,
+        refusal_code: raw.refusal_code,
+        generation: None,
+        side_effect_count: effects,
+        response: raw.response,
+        raw_response: raw.raw_response,
+        surface_advertised: None,
+    })
+}
+
+#[tokio::test]
+async fn unbound_read_server_refuses_set_workspace_without_side_effects() -> Result<(), String> {
+    let workspace = tempfile::tempdir().map_err(|e| format!("create temp workspace: {e}"))?;
+    fs::create_dir_all(workspace.path().join(".git"))
+        .map_err(|e| format!("create .git dir: {e}"))?;
+    fs::write(
+        workspace.path().join(".git").join("HEAD"),
+        "ref: refs/heads/main\n",
+    )
+    .map_err(|e| format!("write HEAD: {e}"))?;
+    fs::write(
+        workspace.path().join("lib.rs"),
+        "pub fn unbound_probe() {}\n",
+    )
+    .map_err(|e| format!("write lib.rs: {e}"))?;
+    assert!(!workspace.path().join(".engram").exists());
+
+    let state = Arc::new(AppState::with_mode(
+        DaemonMode::ReadServer,
+        1,
+        StaleStrategy::Warn,
+        20,
+        60,
+    ));
+    assert!(state.snapshot_dispatch_context().await.is_none());
+    assert!(state.snapshot_workspace().await.is_none());
+
+    let temp_path = workspace
+        .path()
+        .to_str()
+        .ok_or_else(|| "temp path is not UTF-8".to_owned())?;
+    let line = serde_json::to_string(&json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "set_workspace",
+        "params": { "path": temp_path }
+    }))
+    .map_err(|e| format!("encode request: {e}"))?;
+
+    let (response, shutdown) = process_request(&line, &state).await;
+    assert!(!shutdown);
+    assert!(response.result.is_none());
+    assert_eq!(
+        response
+            .error
+            .as_ref()
+            .and_then(|e| e.data.as_ref())
+            .and_then(|d| d.get("engram_code"))
+            .and_then(Value::as_u64),
+        Some(u64::from(F38_WORKSPACE_RETARGET_REFUSAL))
+    );
+    assert!(state.snapshot_dispatch_context().await.is_none());
+    assert!(state.snapshot_workspace().await.is_none());
+    assert!(!workspace.path().join(".engram").exists());
     Ok(())
 }
