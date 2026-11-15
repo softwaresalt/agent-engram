@@ -1756,3 +1756,101 @@ async fn unbound_read_server_refuses_set_workspace_without_side_effects() -> Res
     assert!(!workspace.path().join(".engram").exists());
     Ok(())
 }
+
+fn assert_slot20c_generation_read(marker: &str, tool_name: &str, observation: &Observation) {
+    assert!(
+        observation.accepted,
+        "{marker}: {tool_name} must be accepted: {}",
+        observation.raw_response
+    );
+    assert_eq!(
+        observation.generation.as_deref(),
+        Some(EXPECTED_GENERATION),
+        "{marker}: {tool_name} must report serving generation {EXPECTED_GENERATION}: {}",
+        observation.raw_response
+    );
+}
+
+fn extract_named_entries<'a>(response: Option<&'a Value>, pointer: &str) -> Vec<&'a str> {
+    response
+        .and_then(|value| value.pointer(pointer))
+        .and_then(Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| entry.get("name").and_then(Value::as_str))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn real_indexed_fixture_generation_activates_and_resolves_f54_symbols() -> Result<(), String>
+{
+    const MARKER: &str = "Worker: 142.089-T";
+    let stats_desc = descriptor("get_workspace_statistics")
+        .ok_or_else(|| format!("{MARKER}: F19 must declare get_workspace_statistics"))?;
+    let symbols_desc = descriptor("list_symbols")
+        .ok_or_else(|| format!("{MARKER}: F19 must declare list_symbols"))?;
+    let map_desc =
+        descriptor("map_code").ok_or_else(|| format!("{MARKER}: F19 must declare map_code"))?;
+
+    let mut fixture = ReadServerFixture::new().await;
+    let stats_obs =
+        exercise_declared_surface(&stats_desc, ToolSurface::DirectIpc, &mut fixture).await?;
+    let symbols_obs =
+        exercise_declared_surface(&symbols_desc, ToolSurface::DirectIpc, &mut fixture).await?;
+    let map_obs =
+        exercise_declared_surface(&map_desc, ToolSurface::DirectIpc, &mut fixture).await?;
+    fixture.stop_daemon().await?;
+
+    assert_slot20c_generation_read(MARKER, "get_workspace_statistics", &stats_obs);
+    let stats_response = stats_obs.response.as_ref();
+    assert_eq!(
+        stats_response
+            .and_then(|response| response.get("code_files"))
+            .and_then(Value::as_u64),
+        Some(1),
+        "{MARKER}: get_workspace_statistics must report code_files == 1: {stats_response:?}"
+    );
+    assert_eq!(
+        stats_response
+            .and_then(|response| response.get("functions"))
+            .and_then(Value::as_u64),
+        Some(2),
+        "{MARKER}: get_workspace_statistics must report functions == 2: {stats_response:?}"
+    );
+
+    assert_slot20c_generation_read(MARKER, "list_symbols", &symbols_obs);
+    let symbols_response = symbols_obs.response.as_ref();
+    assert_eq!(
+        symbols_response
+            .and_then(|response| response.get("total_count"))
+            .and_then(Value::as_u64),
+        Some(2),
+        "{MARKER}: list_symbols must report total_count == 2: {symbols_response:?}"
+    );
+    let symbol_names = extract_named_entries(symbols_response, "/symbols");
+    assert!(
+        symbol_names.contains(&"f54_fixture_root") && symbol_names.contains(&"f54_fixture_caller"),
+        "{MARKER}: list_symbols /symbols must contain f54_fixture_root and f54_fixture_caller: \
+         {symbol_names:?}"
+    );
+
+    assert_slot20c_generation_read(MARKER, "map_code", &map_obs);
+    let map_response = map_obs.response.as_ref();
+    assert_eq!(
+        map_response
+            .and_then(|response| response.pointer("/root/name"))
+            .and_then(Value::as_str),
+        Some("f54_fixture_root"),
+        "{MARKER}: map_code /root/name must equal f54_fixture_root: {map_response:?}"
+    );
+    let neighbor_names = extract_named_entries(map_response, "/neighbors");
+    assert!(
+        neighbor_names.contains(&"f54_fixture_caller"),
+        "{MARKER}: map_code /neighbors must contain f54_fixture_caller: {neighbor_names:?}"
+    );
+
+    Ok(())
+}
