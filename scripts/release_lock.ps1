@@ -88,13 +88,13 @@ public static class AutoharnessFileLockPathResolver
         {
             if (handle.IsInvalid)
             {
-                throw new IOException("autoharness-file-lock: unable to open path for real-path resolution: " + path);
+                throw new IOException("gsd-file-lock: unable to open path for real-path resolution: " + path);
             }
             StringBuilder sb = new StringBuilder(4096);
             uint result = GetFinalPathNameByHandle(handle, sb, (uint)sb.Capacity, 0);
             if (result == 0 || result >= sb.Capacity)
             {
-                throw new IOException("autoharness-file-lock: unable to resolve final real path for: " + path);
+                throw new IOException("gsd-file-lock: unable to resolve final real path for: " + path);
             }
             string resolved = sb.ToString();
             if (resolved.StartsWith(@"\\?\") && !resolved.StartsWith(@"\\?\UNC\"))
@@ -131,7 +131,7 @@ function Get-AutoharnessRealPath {
     }
     $resolved = & realpath $Path 2>$null
     if ($LASTEXITCODE -ne 0 -or -not $resolved) {
-        throw "autoharness-file-lock: unable to resolve real path via realpath: $Path"
+        throw "gsd-file-lock: unable to resolve real path via realpath: $Path"
     }
     return $resolved
 }
@@ -377,7 +377,7 @@ if ($tokenMalformed) {
     # V-c2: fail closed before any digest is computed -- a wrong-length or
     # wrong-charset token is a distinct, named validation error, not merely
     # a digest mismatch.
-    Write-Error "autoharness-file-lock: TOKEN_MALFORMED -- supplied token is not 64 lowercase hex characters; refusing to verify ownership without computing a digest. Supply the exact value returned at acquire time, or have the operator supply -Force."
+    Write-Error "gsd-file-lock: TOKEN_MALFORMED -- supplied token is not 64 lowercase hex characters; refusing to verify ownership without computing a digest. Supply the exact value returned at acquire time, or have the operator supply -Force."
     exit 1
 }
 
@@ -388,10 +388,10 @@ if (-not $ownershipVerified) {
         # Decision (iii): a refusal is a non-zero exit -- exit 0 would make
         # the refusal indistinguishable from success.
         $quotedPath = Get-AutoharnessSingleQuoted -Value $FilePath
-        Write-Error "autoharness-file-lock: refusing to release -- ownership could not be verified ($ownerReport). Supply -Token with the value returned at acquire time, or have the operator run: release_lock.ps1 $quotedPath -Force"
+        Write-Error "gsd-file-lock: refusing to release -- ownership could not be verified ($ownerReport). Supply -Token with the value returned at acquire time, or have the operator run: release_lock.ps1 $quotedPath -Force"
         exit 1
     }
-    Write-Warning "autoharness-file-lock: -Force supplied; breaking this lock without a verified token ($ownerReport). O3: this is an advisory lock, not an adversarial guarantee -- only the operator should do this."
+    Write-Warning "gsd-file-lock: -Force supplied; breaking this lock without a verified token ($ownerReport). O3: this is an advisory lock, not an adversarial guarantee -- only the operator should do this."
 }
 
 if ($ownershipVerified) {
@@ -408,13 +408,13 @@ if ($ownershipVerified) {
     # eliminate) that race window. This mitigation only applies to the
     # token-verified path; -Force remains an unconditional operator
     # override per O3 and is not re-checked here.
-    if ($env:AUTOHARNESS_TEST_RELEASE_RACE_DELAY_MS) {
+    if ($env:GSD_TEST_RELEASE_RACE_DELAY_MS) {
         # TEST-ONLY HOOK: deterministically widens the TOCTOU window so an
         # automated test can inject a concurrent lock change between this
         # verification and the recheck below. Never set outside test runs;
         # when the environment variable is absent (the default), this is a
         # complete no-op with zero behavioural or timing impact.
-        if ($env:AUTOHARNESS_TEST_RELEASE_RACE_SIGNAL) {
+        if ($env:GSD_TEST_RELEASE_RACE_SIGNAL) {
             # TEST-ONLY HOOK: signals the harness that this process has
             # entered the widened race window, so the test can perform the
             # concurrent swap deterministically instead of guessing at
@@ -427,10 +427,10 @@ if ($ownershipVerified) {
             # Never set outside test runs.
             New-Item -ItemType File -Path "$lockFile.race-signal" -Force | Out-Null
         }
-        Start-Sleep -Milliseconds ([int]$env:AUTOHARNESS_TEST_RELEASE_RACE_DELAY_MS)
+        Start-Sleep -Milliseconds ([int]$env:GSD_TEST_RELEASE_RACE_DELAY_MS)
     }
     if (-not (Test-Path -LiteralPath $lockFile)) {
-        Write-Warning "autoharness-file-lock: lock file disappeared before deletion could be confirmed (already released by another process): $lockFile"
+        Write-Warning "gsd-file-lock: lock file disappeared before deletion could be confirmed (already released by another process): $lockFile"
         exit 0
     }
     $recheckContent = Get-Content -LiteralPath $lockFile -Raw
@@ -451,7 +451,7 @@ if ($ownershipVerified) {
         }
     }
     if (-not ($recheckDigest -and $recheckDigest.Equals($recordedDigest, [System.StringComparison]::OrdinalIgnoreCase))) {
-        Write-Error "autoharness-file-lock: refusing to release -- the lock at '$lockFile' changed between verification and deletion (a different owner now holds it); this process's token no longer matches the current owner. Re-run release to re-verify against the new owner, or have the operator use -Force."
+        Write-Error "gsd-file-lock: refusing to release -- the lock at '$lockFile' changed between verification and deletion (a different owner now holds it); this process's token no longer matches the current owner. Re-run release to re-verify against the new owner, or have the operator use -Force."
         exit 1
     }
 }

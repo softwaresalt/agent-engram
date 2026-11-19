@@ -73,7 +73,7 @@ route rules (deliberation 042-DL):
 1. **Qualification**: the task declares explicit owned paths; every owned path
    is a regular prose `.md` file under the configured docs root (normalized: no
    traversal, drive, backslash, absolute path, symlink or reparse point); no
-   owned path is on the deny list (`.github/`, `.autoharness/`, the backlog
+   owned path is on the deny list (`.github/`, `.gsd/`, the backlog
    root, `templates/`, `schemas/`, `scripts/`, `src/`, `tests/`, or a policy,
    config, schema, template, script, build or test artifact), which wins over
    the docs root; and mixed scope disqualifies the whole task. Missing or

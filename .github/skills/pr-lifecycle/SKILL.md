@@ -205,7 +205,7 @@ local review readiness verification defined in
    - **Check 4**: Code-changing PRs include successful full local build evidence, or
      documentation-only/backlog-only PRs explicitly mark full-build non-applicability.
    - **Check 5 (P-018, fail-closed)**: When Copilot review is engaged, run
-     `autoharness gate copilot-review <pr_number> --repo softwaresalt/agent-engram --enforcement <mode>`
+     `gsd gate copilot-review <pr_number> --repo softwaresalt/agent-engram --enforcement <mode>`
      and require a PASS verdict — a Copilot review for the current HEAD plus resolution of
      every Copilot-authored thread and disposition of every review-body finding. A `COPILOT_REVIEW_BLOCK`, timeout, or unverifiable
      result halts; `--admin` never bypasses it.
@@ -251,7 +251,7 @@ After receiving operator approval, or after confirming a valid
 `DARK_MODE_ACTIVE` approval record, and before executing any normal merge or
 admin fallback:
 
-1. Re-run the P-018 copilot-review gate (`autoharness gate copilot-review <pr> --repo softwaresalt/agent-engram --enforcement <mode>`) unconditionally — a Copilot review can be dismissed or a thread reopened without advancing `headRefOid`.
+1. Re-run the P-018 copilot-review gate (`gsd gate copilot-review <pr> --repo softwaresalt/agent-engram --enforcement <mode>`) unconditionally — a Copilot review can be dismissed or a thread reopened without advancing `headRefOid`.
 2. Re-query the PR `headRefOid`.
 3. Confirm the `headRefOid` still matches the HEAD covered by the latest passed
    §1.9 gate and the PR body's `Reviewed HEAD` value.

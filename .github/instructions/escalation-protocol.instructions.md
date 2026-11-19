@@ -81,18 +81,64 @@ payload containing the following fields before handing off and halting:
 | `resolved_escalation_route` | The `(model_family, model_provider, reasoning_effort)` tuple actually resolved for this handoff, per the Escalation Route Resolution section below. Recorded here — not merely resolved in-memory — so a handoff consumer has a contract-defined route on which to run the promised independent analysis without re-deriving the resolution precedence itself. Present only when the resolution is not `ESCALATION_DEGRADED` (see below); a degraded route is never recorded in this field. |
 | `resolved_escalation_context_tier` | The escalation `context_tier` resolved for this handoff — a provider- and environment-agnostic capacity class (`default` or `long_context`) — recorded as its own field, never as a fourth member of the `resolved_escalation_route` tuple, so the same-route guard and every tuple consumer are unchanged. It resolves on the same source selection as the route: the acting role's nested `<role>.escalation.context_tier`, else the legacy flat `escalation.context_tier` only when the flat route is the selected source, else `tier3.context_tier`, else `default`. When the runtime cannot honor a non-`default` value, the agent records `ROUTING_DEGRADED: context_tier` and hands off at the default context; this never declares `ESCALATION_DEGRADED` and never blocks the handoff. Present whenever `resolved_escalation_route` is present. |
 
-## Escalation Route Resolution (P-013.6 / F02FD596 nested per-role hierarchy)
+## Escalation Route Resolution (P-013.6 / F02FD596 nested per-role hierarchy / 040-DL D7 ordered chain)
+
+**Primary normative resolver.** An acting agent resolves its escalation route by
+running:
+
+```text
+gsd routing resolve --workspace . --site <role> --kind escalation [--unavailable <failed_family>] --json
+```
+
+(`<role>` is `stage` or `ship`) and consuming the returned document
+(`resolved`, `resolution_chain`, `degraded`, `errors`, `exit_code`). Exit `0`
+is a dispatchable route, exit `1` is `ESCALATION_DEGRADED` (the `degraded`
+array names the cause), and exit `2` is a configuration error (`errors`, for
+example `AMBIGUOUS_ESCALATION_CONFIG` or `ROUTING_ESCALATION_CHAIN_INVALID`).
+The precedence below describes what the resolver computes; an agent MUST NOT
+re-derive it by hand.
+
+**Deterministic runtime chain advancement.** When the runtime cannot dispatch
+the returned `model_family` (a dispatchability failure), the agent re-invokes
+the same command with `--unavailable <failed_family>` added. The flag is
+repeatable and accepts comma-separated values, so the agent accumulates every
+family or route that failed to dispatch across re-invocations. The resolver
+merges these runtime tokens into `model_routing.unavailable_routes` and
+`model_routing.unavailable_families` after validating `.gsd/config.yaml`, skips
+every unavailable chain level, and returns the next dispatchable level. The
+agent MUST NOT re-execute the failed work operation while advancing the chain —
+it re-resolves only — and stops advancing as soon as a dispatchable level is
+selected or `ESCALATION_DEGRADED` is returned. A **chain-free** escalation route
+(a direct nested `<role>.escalation`, the legacy flat `escalation`, or the
+`tier3` fallback) has no next level: when its resolved `model_family` is passed
+via `--unavailable`, the resolver returns `ESCALATION_DEGRADED: chain-exhausted`
+immediately and the agent takes the operator-halt path.
 
 The escalation route resolves via a role-scoped precedence:
 
-1. **Nested per-role override**: `model_routing.<role>.escalation`
+1. **Ordered chain**: `model_routing.<role>.escalation.chain` — 1 to 3 levels
+   (`escalation.chain` requires `schema_version: "1.4.0"`; `max_cycles` is not
+   supported and is rejected as `ROUTING_ESCALATION_CHAIN_INVALID`). Each level
+   names a `route` (a `model_routing.routes` entry or a bare tier) and/or
+   direct `model_family` / `model_provider` / `reasoning_effort` /
+   `context_tier` fields; unset fields fall back per field to the route's tier
+   (`tier3` for a level without a route). The resolver selects the first level
+   that is dispatchable — its `route` is not in
+   `model_routing.unavailable_routes` and its resolved `model_family` is not in
+   `model_routing.unavailable_families` (lists declared in config and/or merged
+   at runtime by `--unavailable`) — and is not a same-route no-op against the
+   acting role's own route or an earlier skipped level. When every level is
+   skipped the result is `ESCALATION_DEGRADED: route-unavailable` (at least one
+   level was unavailable) or `ESCALATION_DEGRADED: same-route`.
+2. **Nested per-role override**: `model_routing.<role>.escalation`
    (`stage.escalation` or `ship.escalation`, matching the acting agent's own
-   role). When declared, the acting role resolves its escalation route from
-   this nested block. A nested override that declares only some fields falls
+   role). When declared without a `chain`, the acting role resolves its
+   escalation route from this nested block (direct fields and `chain` are
+   mutually exclusive on one block — see the both-present rule below). A nested override that declares only some fields falls
    back **per field** to `model_routing.tier3` for the missing fields —
    **never** to the legacy flat route below; an explicit nested override
    never silently defers to the shared legacy route.
-2. **Legacy flat fallback (DEPRECATED)**: when the acting role has no nested
+3. **Legacy flat fallback (DEPRECATED)**: when the acting role has no nested
    `escalation` override, `model_routing.escalation`
    (`gemini-4-argon` / `google` / `high`
    — the pre-F02FD596 flat, role-agnostic route) resolves instead, with a
@@ -103,7 +149,7 @@ The escalation route resolves via a role-scoped precedence:
    session-start reload time (H6) rather than assuming either shape from this
    static instruction text, which describes the general precedence rule for
    any workspace, not a fixed installed fact about this one.
-3. **Tier3 fallback**: any field still unresolved after (1)/(2) falls back
+4. **Tier3 fallback**: any field still unresolved after (1)-(3) falls back
    per-field to `model_routing.tier3`
    (`gemini-4-argon` / `google` / `high`).
    An unresolved escalation `context_tier` falls back the same way, per field,
@@ -113,13 +159,20 @@ The escalation route resolves via a role-scoped precedence:
 This mirrors the P-013.5 `stage`/`ship` role-route fallback pattern: a
 targeted override, never a parallel tier taxonomy.
 
-**Both-present fail-closed (H2)**: the legacy flat `model_routing.escalation`
+**Both-present fail-closed (H2, extended)**: the legacy flat `model_routing.escalation`
 and any nested `<role>.escalation` (for either role) MUST NOT both declare a
-non-empty field. When both are present, resolution is **AMBIGUOUS** and MUST
+non-empty field or a `chain`, and one `<role>.escalation` block MUST NOT
+declare `chain` alongside direct fields (`model_family`, `model_provider`,
+`reasoning_effort`, `context_tier`). When both are present, resolution is
+**AMBIGUOUS** (`AMBIGUOUS_ESCALATION_CONFIG`) and MUST
 fail closed — a schema-level constraint rejects this shape where expressible,
 and the loader/verification layer enforces the same rule as a backstop.
 Never auto-pick a winner; migrate fully to nested per-role escalation, or
-remove the nested override(s), to resolve the ambiguity.
+remove the nested override(s), to resolve the ambiguity. A malformed chain —
+`max_cycles`, an empty or more-than-3-level or non-list `chain`, a level with
+neither a `route` nor a route field, an unresolved `route`, or a non-list or
+blank-item `unavailable_routes` / `unavailable_families` — is
+`ROUTING_ESCALATION_CHAIN_INVALID` and also fails closed.
 
 ## `ESCALATION_DEGRADED` (canonical definition — defined once, referenced elsewhere)
 
@@ -127,6 +180,12 @@ remove the nested override(s), to resolve the ambiguity.
 
 1. **Route unavailable.** The resolved escalation route cannot be dispatched by
    the runtime (the model/provider is not available in this environment).
+   With an `escalation.chain`, the resolver advances to the next dispatchable
+   level (via `--unavailable <failed_family>`) and declares
+   `ESCALATION_DEGRADED: route-unavailable` only when every level is
+   unavailable or same-route; for a chain-free route whose resolved
+   `model_family` is unavailable it declares
+   `ESCALATION_DEGRADED: chain-exhausted` immediately (there is no next level).
 2. **Engram unavailable.** The terminal engram handoff surface cannot be reached
    (no MCP tool, no file-based fallback capable of receiving the handoff).
 3. **Same-route no-op (role-scoped, H3).** The fully-resolved escalation

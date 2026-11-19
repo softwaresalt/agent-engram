@@ -320,13 +320,13 @@ if [ "$OWNERSHIP_VERIFIED" -eq 1 ]; then
     # race window. This mitigation only applies to the token-verified path;
     # --force remains an unconditional operator override per O3 and is not
     # re-checked here.
-    if [ -n "${AUTOHARNESS_TEST_RELEASE_RACE_DELAY_MS:-}" ]; then
+    if [ -n "${GSD_TEST_RELEASE_RACE_DELAY_MS:-}" ]; then
         # TEST-ONLY HOOK: deterministically widens the TOCTOU window so an
         # automated test can inject a concurrent lock change between this
         # verification and the recheck below. Never set outside test runs;
         # when the environment variable is absent (the default), this is a
         # complete no-op with zero behavioural or timing impact.
-        if [ -n "${AUTOHARNESS_TEST_RELEASE_RACE_SIGNAL:-}" ]; then
+        if [ -n "${GSD_TEST_RELEASE_RACE_SIGNAL:-}" ]; then
             # TEST-ONLY HOOK: signals the harness that this process has
             # entered the widened race window, so the test can perform the
             # concurrent swap deterministically instead of guessing at
@@ -339,7 +339,7 @@ if [ "$OWNERSHIP_VERIFIED" -eq 1 ]; then
             # Never set outside test runs.
             : > "$LOCKFILE.race-signal"
         fi
-        _delay_seconds="$(awk -v ms="$AUTOHARNESS_TEST_RELEASE_RACE_DELAY_MS" 'BEGIN { printf "%f", ms / 1000 }')"
+        _delay_seconds="$(awk -v ms="$GSD_TEST_RELEASE_RACE_DELAY_MS" 'BEGIN { printf "%f", ms / 1000 }')"
         sleep "$_delay_seconds"
     fi
     if [ ! -e "$LOCKFILE" ]; then
