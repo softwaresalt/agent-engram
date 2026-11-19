@@ -373,7 +373,7 @@ mutated or repaired by this mode.
    The in-process run is deliberate: Pre-Mode runs before any closure
    evidence record exists, writes its verdict only to the Pre-Mode report
    (step 6), and only selects contract rows;
-   `autoharness shipment cascade-close --classify-only` (Step 0(c)) remains
+   `gsd shipment cascade-close --classify-only` (Step 0(c)) remains
    the only source of a recorded verdict that a close path acts on.
    Record:
    * the verdict, `CASCADE` or `SAFE_CLOSE` (a classifier error, exception,
@@ -596,7 +596,7 @@ completion.
       with a Python implementation installed reuse a
       `classify_shipment_close_path(manifest_items, workspace_backlog_dir)`-shaped
       function (this self-hosting repository's own implementation lives at
-      `src/autoharness/gates/shipment_closure.py`); other workspaces implement
+      `src/gsd/gates/shipment_closure.py`); other workspaces implement
       the equivalent check directly against `.backlogit/queue/` +
       `.backlogit/archive/`. The classifier has exactly two outcomes here:
       `CASCADE` and `SAFE_CLOSE`.
@@ -650,7 +650,7 @@ completion.
       | any | ancestor/parent of a manifest item | untouched (no upward walk) | **INDICATIVE / UNPROVEN** |
 
       An unproven row may never authorize `CASCADE`. Where engine behavior is
-      unproven, the dependent autoharness behavior is the fail-closed one.
+      unproven, the dependent gsd behavior is the fail-closed one.
       `returned_ids` remains a **secondary, insufficient** verification check:
       it is still checked after a live cascade runs, but it cannot stand as the
       primary guard because the live archival row above reportedly returned `[]`
@@ -738,7 +738,7 @@ completion.
       `probe_surface` (`mcp` or `cli`), `version`, and `commit` exactly as the
       probe returned them. Workspaces with a Python implementation installed
       apply `assess_cascade_engine_semantics` (this self-hosting repository's
-      own implementation lives at `src/autoharness/gates/shipment_closure.py`);
+      own implementation lives at `src/gsd/gates/shipment_closure.py`);
       other workspaces apply the equivalent rules: the probed version is a
       released `X.Y.Z` or `vX.Y.Z` build (no pre-release or build metadata); its `X.Y`
       minor line is listed in P-015's token "Verified engine-semantics lines:
@@ -786,7 +786,7 @@ completion.
       <!-- cascade-close-routing:BEGIN step-0c -->
       **Command routing (192-F): `--classify-only` first, on every close.**
       Every close, on either path, first runs
-      `autoharness shipment cascade-close --classify-only --shipment <shipment_id> --feature <feature_id> --sha <merge_commit_sha> --json`,
+      `gsd shipment cascade-close --classify-only --shipment <shipment_id> --feature <feature_id> --sha <merge_commit_sha> --json`,
       where `<feature_id>` is the shipment's covering feature (derived as
       safe-close step 2 derives it). That command performs (a)–(c) above:
       the manifest load, the Step 0(b) snapshot, the classification, the
@@ -803,7 +803,7 @@ completion.
       `pre_close.out_of_manifest_descendants` on either path. The prose in
       (a)–(c) above stays the specification the command implements; Ship
       never re-derives these values by hand. This `pre_close` record is the
-      Step 0(c) pre-mutation evidence record, and `autoharness gate
+      Step 0(c) pre-mutation evidence record, and `gsd gate
       closure-evidence` rejects the closure when the record is not provably
       pre-mutation (its ordering checks are named in that gate's help).
 
@@ -812,7 +812,7 @@ completion.
       creates a new record. `--classify-only --replace-pre-close` overwrites
       an existing `pre_close` record and needs the same destructive-command
       approval as the mutating run. The mutating
-      `autoharness shipment cascade-close` invocation (no `--classify-only`)
+      `gsd shipment cascade-close` invocation (no `--classify-only`)
       **is** the destructive command: it needs the same operator approval
       that a direct `backlogit shipment ship` call needs (explicit operator
       clearance through the workspace's native approval path). A direct
@@ -845,11 +845,11 @@ completion.
       `invoking` (or a `--poll` exit 7 with `recovery_available`) means a run
       was killed or its supervisor died, and `backlogit` may have mutated the
       backlog. Ship never removes the lock. It reports to the operator, runs
-      the read-only `autoharness shipment cascade-close --recover --dry-run --shipment <shipment_id> --feature <feature_id> --json`
+      the read-only `gsd shipment cascade-close --recover --dry-run --shipment <shipment_id> --feature <feature_id> --json`
       (no approval needed, writes nothing), and presents the reported recovery
       mode. Only after explicit operator approval does it run `--recover`
       (adding the owner-dead or engine-stopped operator-assertion flags
-      named in `autoharness shipment --help` only when
+      named in `gsd shipment --help` only when
       the operator asserts those facts). A recovered record (`recovery.recovered:
       true`, mode `journal_complete`, `journal_partial`, or
       `postconditions_only`) is real evidence but carries facts marked
@@ -873,15 +873,15 @@ completion.
       `--caller-wait`, and `--detach`, and `--replace-pre-close` requires
       `--classify-only`. `--wait` is accepted only with `--poll`;
       `--dry-run` and the owner-dead and engine-stopped operator-assertion
-      flags named in `autoharness shipment --help` only with `--recover`. The
+      flags named in `gsd shipment --help` only with `--recover`. The
       mutating mode requires `--message` and `--author`;
-      an invalid `--caller-wait` or `AUTOHARNESS_CALLER_WAIT_SECONDS` exits 2
+      an invalid `--caller-wait` or `GSD_CALLER_WAIT_SECONDS` exits 2
       even with `--detach`.
 
-      **Minimum version**: `autoharness shipment cascade-close` first ships
-      in the autoharness release containing 192-F (the first release after
+      **Minimum version**: `gsd shipment cascade-close` first ships
+      in the gsd release containing 192-F (the first release after
       1.5.0). An older CLI does not recognize the `shipment` command and
-      exits 1, which the last row routes to HALT. Upgrade autoharness before
+      exits 1, which the last row routes to HALT. Upgrade gsd before
       closing; there is no hand-run fallback.
       <!-- cascade-close-routing:END step-0c -->
 
@@ -1025,7 +1025,7 @@ completion.
         Before shipment-only archive, run the full gate:
 
         ```text
-        autoharness gate closure-evidence --path docs/closure/<shipment>-<feature>-post-merge-closure.md --shipment <shipment> --json
+        gsd gate closure-evidence --path docs/closure/<shipment>-<feature>-post-merge-closure.md --shipment <shipment> --json
         ```
 
         Require exit 0, `passed: true`, and `failed_check: null`; otherwise
@@ -1099,7 +1099,7 @@ sub-procedure.** The pre-invocation revalidation below (the classifier
 re-run, the linked-deliberation re-collection, and the engine-semantics
 re-probe), the baseline-fingerprint capture, step 1's invocation, and
 steps 2–6 are performed by the mutating
-`autoharness shipment cascade-close --shipment <shipment_id> --feature <feature_id> --sha <merge_commit_sha> --message <merge_commit_message> --author <merge_commit_author> --json`.
+`gsd shipment cascade-close --shipment <shipment_id> --feature <feature_id> --sha <merge_commit_sha> --message <merge_commit_message> --author <merge_commit_author> --json`.
 Ship runs it only after the Step 0(c) `--classify-only` run exited 0
 (`CASCADE` selected) and only with the destructive-command approval Step
 0(c) names. Before it invokes anything, the command re-checks the
@@ -1161,7 +1161,7 @@ to the run until the command exits (or, with `--detach`, until `--poll`
 reports a final exit code) and never abandons or kills it on an agent-tool
 wait or before the supervision budget elapses. For this run
 the supervision budget is the stall bound: the circuit-breaker Stall
-Detection table's `autoharness shipment cascade-close` (mutating mode) row
+Detection table's `gsd shipment cascade-close` (mutating mode) row
 sets it in place of the "Other commands" 5-minute stall timeout.
 <!-- cascade-close-routing:END cascade-sub-procedure -->
 
@@ -1358,7 +1358,7 @@ classification and invocation are not atomic. Retain this snapshot in
 memory for step 5's verification below; it is never reconstructed after
 the fact.
 
-1. The mutating `autoharness shipment cascade-close` invokes the cascade
+1. The mutating `gsd shipment cascade-close` invokes the cascade
    operation `backlogit_ship_shipment(shipment_id, merge_commit_sha)` itself,
    over its CLI form (`backlogit shipment ship <shipment_id> --sha
    <merge_commit_sha> --message <merge_commit_message> --author
@@ -1483,7 +1483,7 @@ archive, one ID at a time.
    <!-- cascade-close-routing:BEGIN disposition-inputs -->
    It takes every input from the evidence record
    (`docs/closure/evidence/{shipment_id}-{feature_id}-close-evidence.json`,
-   written by the Step 0(c) `autoharness shipment cascade-close` run), never
+   written by the Step 0(c) `gsd shipment cascade-close` run), never
    from in-session Step 0(c) state, and never recomputes one:
    <!-- cascade-close-routing:END disposition-inputs -->
    * the selected close path and its reason (Step 0(c) close-path selection),
@@ -1492,7 +1492,7 @@ archive, one ID at a time.
      `commit`, and verdict/reason), from `pre_close.engine_semantics`,
      rebuilt with `engine_semantics_from_record` (this self-hosting
      repository's own implementation lives at
-     `src/autoharness/gates/cascade_evidence.py`);
+     `src/gsd/gates/cascade_evidence.py`);
    * the Step 0(c) linked-deliberation disposition snapshot (the
      **disposition snapshot**), from
      `pre_close.linked_deliberation_disposition`;
@@ -1511,7 +1511,7 @@ archive, one ID at a time.
    disposition-set deliberation's outcome with
    `compute_linked_deliberation_disposition(manifest_items, shipment_id, workspace_backlog_dir, engine=<the Step 0(c) engine-semantics decision>)`
    (this self-hosting repository's own implementation lives at
-   `src/autoharness/gates/shipment_closure.py`). The call passes no
+   `src/gsd/gates/shipment_closure.py`). The call passes no
    `stash_path`, so the planner reads the active stash file at
    `.backlogit/stash.jsonl`. The planner result is consumed in this order. Check `planning_error` first: when `planning_error` is present, it
    is exempt from the planner-vs-snapshot equality check because the
@@ -1926,7 +1926,7 @@ When this mode reports a mixed-role signature or a per-item anomaly, include
 this guidance verbatim (adapted with the specific ids/anomaly found) in the
 report:
 
-> autoharness performs **NO auto-repair** of this inconsistency. A
+> gsd performs **NO auto-repair** of this inconsistency. A
 > record-only forward re-claim (`queued` → `active` on
 > the shipment record alone) is **UNSUPPORTED** by backlogit 1.8.0: evidence
 > (read-only inspection of `C:\Source\GitHub\backlogit`, NOT mutated) —
@@ -1956,15 +1956,15 @@ report:
 #### Mixed-Role Detection Audit + Telemetry
 
 Mirrors the `pipeline-topology` force-audit + telemetry pattern
-(`src/autoharness/cli.py` `_audit_pipeline_topology_force` /
+(`src/gsd/cli.py` `_audit_pipeline_topology_force` /
 `_emit_pipeline_topology_telemetry`), adapted for a detection-only outcome —
 there is NO repair/mutation/confirm/post-condition field, because nothing is
 ever mutated.
 
 1. **Audit log**: for EVERY candidate outcome (`DETECTED` / `REPORTED` /
    `DEGRADED`), append one structured JSON line to
-   `.autoharness/gates/shipment-reconcile-detection-audit.log` (creating the
-   `.autoharness/gates/` directory if needed), containing: `timestamp`
+   `.gsd/gates/shipment-reconcile-detection-audit.log` (creating the
+   `.gsd/gates/` directory if needed), containing: `timestamp`
    (UTC ISO-8601), `actor` (the invoking operator/session identity, e.g. from
    `USERNAME`/`USER`), `shipment_id`, `record_status`, `outcome` (`DETECTED` \|
    `REPORTED` \| `DEGRADED`), `per_task_roles` (an array of
@@ -1987,8 +1987,8 @@ ever mutated.
    schema's structural requirements, `shipment_id`/`backlog_item_id` set to
    the candidate shipment id, and `artifact_refs` including the audit log
    path and the report path. When invoked inside an active Ship task epoch
-   with a live `context_ref` (from `autoharness telemetry begin`), emit via
-   `autoharness telemetry event --context-ref <ref> --from-json <payload>`;
+   with a live `context_ref` (from `gsd telemetry begin`), emit via
+   `gsd telemetry event --context-ref <ref> --from-json <payload>`;
    when invoked standalone (e.g. an ad-hoc operator audit outside any Ship
    task loop, the most common case for this mode) there is no `context_ref`
    to attach to, so telemetry emission for that invocation is skipped and the
@@ -2037,7 +2037,7 @@ If pre-mode cannot acquire the lock because another process holds it:
 * **Negative — refused transition with no safe substitution**: if the generic move is refused and Step 8's governed route is unavailable or fails, halt with `RECONCILE_FAIL_NO_SAFE_RECORD_TRANSITION`; the cascade op must NOT be substituted.
 * **Governed exit 9 success**: with `SAFE_CLOSE` selected and backlogit 1.12.0+, complete source-artifact cleanup/document gardening and P-020, finalize the LF canonical input with READY/done-or-degraded status and the required evidence/delivery markers, and require the full closure-evidence PASS before shipment-only archive. Verify interim `archived_status: active`, run the confirmed `reconcile_shipped` transaction, verify final archived `shipped` provenance and event digest, repeat the full gate and Step 8's newline-only hash verification, and re-run Step 5 before closure. Pending/`BLOCKED` inputs or companion-only completion halt; the finalized canonical input remains immutable.
 * **Negative — step 2b / Step 0(d) classifier disagreement**: the `--classify-only` record's `classifier_verdict` or `qualifying_feature_ids` differs from Pre-Mode step 2b's recorded values; halt with `RECONCILE_FAIL_PREMODE_CLASSIFIER_DRIFT` before acting on any routing row. Nothing is mutated and no path is substituted.
-* **Negative — closure evidence not provably pre-mutation**: the `--classify-only` record was captured after the invocation started (`pre_close.captured_at` is not before `invocation.started_at`), or the engine logs show an `archived` event, or a status change to `archived` or `shipped`, for the shipment or a manifest member between the merge commit and `pre_close.captured_at` (the 159-S post-hoc shape); `autoharness gate closure-evidence` rejects the closure (`failed_check close_evidence`) and no closure artifact is accepted.
+* **Negative — closure evidence not provably pre-mutation**: the `--classify-only` record was captured after the invocation started (`pre_close.captured_at` is not before `invocation.started_at`), or the engine logs show an `archived` event, or a status change to `archived` or `shipped`, for the shipment or a manifest member between the merge commit and `pre_close.captured_at` (the 159-S post-hoc shape); `gsd gate closure-evidence` rejects the closure (`failed_check close_evidence`) and no closure artifact is accepted.
 * **`pre_report_path` absent**: no pre-close Pre-Mode run returned a report within this lock hold (a standalone safe-close), so Step 0(d) records `agreement-check: not-applicable` and routing proceeds.
 * **`pre_report_path` present and agreeing**: the report's `classifier_verdict` and `qualifying_feature_ids` equal the evidence record's; Step 0(d) records `agreed` and routing proceeds.
 * **`pre_report_path` present and differing**: the verdict or ID set differs, or the report cannot be read; halt with `RECONCILE_FAIL_PREMODE_CLASSIFIER_DRIFT` before acting on any routing row.
@@ -2106,11 +2106,11 @@ If pre-mode cannot acquire the lock because another process holds it:
 * `mode: detect-mixed-role` produces exactly one outcome per candidate
   shipment — `DETECTED` / `REPORTED` / `DEGRADED` — with NO
   `succeeded`/`repaired`/`refused`/two-active outcome, and writes a
-  structured audit entry (`.autoharness/gates/shipment-reconcile-detection-audit.log`)
+  structured audit entry (`.gsd/gates/shipment-reconcile-detection-audit.log`)
   plus a best-effort telemetry event for every outcome, mirroring the
   `pipeline-topology` force-audit + telemetry pattern
 * `mode: detect-mixed-role` includes inline Operator-Remediation Guidance on
-  any `REPORTED`/`DEGRADED` outcome, explicitly stating autoharness performs
+  any `REPORTED`/`DEGRADED` outcome, explicitly stating gsd performs
   NO auto-repair and that a record-only forward re-claim is UNSUPPORTED by
   backlogit 1.8.0 (`ClaimShipment` is manifest-wide + all-or-nothing +
   STRICTLY SINGLE-SHOT; NO `active`→`queued` edge; NO
@@ -2126,11 +2126,11 @@ If pre-mode cannot acquire the lock because another process holds it:
 * `.github/agents/_ship.agent.md` — integration points (Step 0.5, Step 6 safe-close)
 * `.github/agents/_stage.agent.md` — scope guard (Step 5.5)
 * `.github/policies/workflow-policies.md` — P-007 archive integrity policy; P-015 single-artifact closure (cascade prohibition) plus the flat-manifest `CASCADE` exception
-* `src/autoharness/gates/shipment_closure.py` — this self-hosting repository's own `classify_shipment_close_path` implementation, reused by Step 0 of Safe-Close Mode and, advisory and in-process, by Pre-Mode step 2b
+* `src/gsd/gates/shipment_closure.py` — this self-hosting repository's own `classify_shipment_close_path` implementation, reused by Step 0 of Safe-Close Mode and, advisory and in-process, by Pre-Mode step 2b
 
 ## Model Routing
 
 This skill operates at **Tier 2 (Standard)** — file scanning and frontmatter
 comparison do not require frontier-level reasoning.
 
-Generated by autoharness | Template: shipment-reconcile/SKILL.md.tmpl
+Generated by gsd | Template: shipment-reconcile/SKILL.md.tmpl

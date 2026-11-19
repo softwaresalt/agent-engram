@@ -90,13 +90,13 @@ public static class AutoharnessFileLockPathResolver
         {
             if (handle.IsInvalid)
             {
-                throw new IOException("autoharness-file-lock: unable to open path for real-path resolution: " + path);
+                throw new IOException("gsd-file-lock: unable to open path for real-path resolution: " + path);
             }
             StringBuilder sb = new StringBuilder(4096);
             uint result = GetFinalPathNameByHandle(handle, sb, (uint)sb.Capacity, 0);
             if (result == 0 || result >= sb.Capacity)
             {
-                throw new IOException("autoharness-file-lock: unable to resolve final real path for: " + path);
+                throw new IOException("gsd-file-lock: unable to resolve final real path for: " + path);
             }
             string resolved = sb.ToString();
             if (resolved.StartsWith(@"\\?\") && !resolved.StartsWith(@"\\?\UNC\"))
@@ -156,7 +156,7 @@ function Get-AutoharnessRealPath {
     }
     $resolved = & realpath $Path 2>$null
     if ($LASTEXITCODE -ne 0 -or -not $resolved) {
-        throw "autoharness-file-lock: unable to resolve real path via realpath: $Path"
+        throw "gsd-file-lock: unable to resolve real path via realpath: $Path"
     }
     return $resolved
 }
@@ -306,7 +306,7 @@ function Resolve-AutoharnessWorkspaceRoot {
 
     if ($ExplicitRoot) {
         if (-not (Test-Path -LiteralPath $ExplicitRoot)) {
-            Write-Error "autoharness-file-lock: -WorkspaceRoot does not exist: $ExplicitRoot"
+            Write-Error "gsd-file-lock: -WorkspaceRoot does not exist: $ExplicitRoot"
             exit 1
         }
         return Get-AutoharnessRealPath (Resolve-Path -LiteralPath $ExplicitRoot).Path
@@ -318,7 +318,7 @@ function Resolve-AutoharnessWorkspaceRoot {
     # task 0's case-7 matrix entry for the exact rationale).
     $scriptDir = $PSScriptRoot
     if (-not $scriptDir) {
-        Write-Error "autoharness-file-lock: cannot derive a default workspace root (no script directory available); pass -WorkspaceRoot explicitly."
+        Write-Error "gsd-file-lock: cannot derive a default workspace root (no script directory available); pass -WorkspaceRoot explicitly."
         exit 1
     }
     $realScriptDir = Get-AutoharnessRealPath $scriptDir
@@ -335,7 +335,7 @@ function Resolve-AutoharnessWorkspaceRoot {
     }
 
     if (-not $gitTopLevel) {
-        Write-Error "autoharness-file-lock: no -WorkspaceRoot supplied and no git repository found from this script's directory; pass -WorkspaceRoot explicitly."
+        Write-Error "gsd-file-lock: no -WorkspaceRoot supplied and no git repository found from this script's directory; pass -WorkspaceRoot explicitly."
         exit 1
     }
 
@@ -348,7 +348,7 @@ function Resolve-AutoharnessWorkspaceRoot {
     }
 
     if (-not $realExpectedScriptsDir.Equals($realScriptDir, $autoharnessPathComparisonMode)) {
-        Write-Error "autoharness-file-lock: git-derived root '$realGitTopLevel' does not match this script's own installed location; this workspace is likely a nested checkout without its own .git (widening guard, finding 2). Pass -WorkspaceRoot explicitly."
+        Write-Error "gsd-file-lock: git-derived root '$realGitTopLevel' does not match this script's own installed location; this workspace is likely a nested checkout without its own .git (widening guard, finding 2). Pass -WorkspaceRoot explicitly."
         exit 1
     }
 
@@ -382,7 +382,7 @@ $resolvedPath = (Resolve-Path -LiteralPath $FilePath).Path
 $realTargetPath = Get-AutoharnessRealPath $resolvedPath
 
 if (-not (Test-AutoharnessPathContained -RealRoot $realWorkspaceRoot -RealCandidate $realTargetPath)) {
-    Write-Error "autoharness-file-lock: target path escapes the workspace root and was rejected (root=$realWorkspaceRoot, target=$realTargetPath)."
+    Write-Error "gsd-file-lock: target path escapes the workspace root and was rejected (root=$realWorkspaceRoot, target=$realTargetPath)."
     exit 1
 }
 

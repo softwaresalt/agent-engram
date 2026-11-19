@@ -95,9 +95,9 @@ two independent axes, never a single combined scalar. This section is
 self-contained — the rules below (structured-emission capability gate, enum
 validation gate, two-axis granularity gate, provenance-completeness rule) are
 the complete normative contract for this skill and do not depend on any file
-outside this template. When the autoharness repository's own
+outside this template. When the gsd repository's own
 `docs/size-complexity-reference.md` is present in the current workspace (as it
-is in the autoharness dogfood repository itself), treat it as supplementary
+is in the gsd dogfood repository itself), treat it as supplementary
 rationale and worked examples only — it is not copied into every installed
 target workspace, so it must never be a required read for following the
 rules here.

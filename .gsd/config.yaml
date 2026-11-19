@@ -1,7 +1,7 @@
-# autoharness Configuration
+# gsd Configuration
 #
 # Resolved harness configuration for this workspace.
-# Written by autoharness install; updated by autoharness tune.
+# Written by gsd install; updated by gsd tune.
 # Operator edits to this file are preserved on re-install and tuning.
 #
 # Schema: schemas/harness-config.schema.json
@@ -19,12 +19,21 @@ stack_packs: ["rust-mcp-daemon", "rust-surrealdb-embedded", "rust-tree-sitter", 
 install_layers: ["foundation", "instructions", "workflow", "review", "runtime", "backlog", "knowledge", "overlays"]
 
 # Capability packs enabled for this workspace
-capability_packs: ["agent-engram", "backlogit", "strict-safety", "release-observability", "continuous-learning", "adversarial-review"]
+capability_packs: ["agent-engram", "backlogit"]
 
 # Backlog tool configuration
 backlog:
   tool: backlogit
   directory: .backlogit
+  verified_cascade_minor_lines:
+    - "1.11"
+    - "1.12"
+    - "1.13"
+  verified_minor_lines:
+    - "1.10"
+    - "1.11"
+    - "1.12"
+    - "1.13"
   suffix_map:
     feature: "F"
     chore: "C"
@@ -50,7 +59,7 @@ docs:
 
 # Optional continuous-learning capability-pack configuration
 continuous_learning:
-  directory: ".autoharness/continuous-learning"
+  directory: ".gsd/continuous-learning"
   capture_hooks: false
   environment_adapter: "none"
   promotion_threshold: 3
@@ -115,7 +124,7 @@ model_routing:
 
 # AI CLI tool startup configuration
 # Resolves the copilot executable in the generated start.ps1 and start.sh scripts,
-# and is read directly by `autoharness run`. Set exe_path to the full path if
+# and is read directly by `gsd run`. Set exe_path to the full path if
 # copilot is not on PATH. Use args for flags that should always be passed.
 ai_tools:
   copilot_cli:
@@ -123,7 +132,7 @@ ai_tools:
                                       # Example: "C:\\Tools\\ghcpcli\\copilot.exe"
     args: []             # Default: []
 
-# Sidecar syncs `autoharness run` performs before launching the AI CLI tool.
+# Sidecar syncs `gsd run` performs before launching the AI CLI tool.
 # Derived from the capability packs enabled for this workspace.
 sidecars: ["backlogit", "engram"]
 
@@ -178,13 +187,13 @@ overrides: {}
 #
 # telemetry:                           # Phase 2 sink — repo-local Execution Epochs
 #   mode: "sqlite"                     # sqlite | none (default none = kill-switch)
-#   database_path: ".autoharness/metrics/execution_epochs.db"
+#   database_path: ".gsd/metrics/execution_epochs.db"
 #   emit_jsonl: true                   # append one JSON epoch per line (emit-only)
 #
 # ACTIVATION: set mode: "sqlite" to record execution epochs to the repo-local
 # SQLite aggregator at database_path (parent dirs auto-created, WAL journaling).
 # Set emit_jsonl: true to also append a JSONL stream alongside the DB for the
 # external agent-engram ingestion boundary. The runtime artifacts under
-# .autoharness/metrics/ are gitignored so emission never dirties the tree.
+# .gsd/metrics/ are gitignored so emission never dirties the tree.
 # KILL-SWITCH: mode: "none" (or removing this block) disables all telemetry with
 # zero code change (fail-open-to-current). See docs/telemetry-reference.md.
