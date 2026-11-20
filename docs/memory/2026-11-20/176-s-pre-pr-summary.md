@@ -8,8 +8,8 @@ agent: ship
 branch: feat/176-s-142-f-slot-20c-142-089-t-f54c
 phase: pre-pr
 status: ready-with-conditions
-last_code_affecting_head: "8b4f96c5"
-reviewed_subject_sha: "8b4f96c5"
+last_code_affecting_head: "a6c827eaad01cc924911199cd81f34b20462480f"
+reviewed_subject_sha: "a6c827eaad01cc924911199cd81f34b20462480f"
 ---
 
 ## Outcome
@@ -26,6 +26,7 @@ Ship completed the PA-7 Slot-20c implementation and moved `142.089-T` to
 | Harness route label | `5dd5054a` |
 | Implementation commit (`IC`) | `06ecddcf` |
 | Review fix | `8b4f96c5` |
+| Copilot test-fix commit | `a6c827ea` |
 | P-021 follow-up capture | `8e92d44a` |
 
 ## Verified evidence
@@ -33,11 +34,13 @@ Ship completed the PA-7 Slot-20c implementation and moved `142.089-T` to
 * Harness resolver accepted `HARNESS_READY ALL_SURFACES_PRESENT 0`
 * RED witness compiled and failed on the missing `function_meta` table with
   marker `Worker: 142.089-T`
-* Default parity suite passed 8/8
-* `cozo-backend,embeddings` parity suite passed 8/8
-* Clippy passed for default and CI feature sets
+* Default parity suite passed 8/8 at `a6c827ea`
+* `cozo-backend,embeddings` parity suite passed 8/8 at `a6c827ea`
+* Clippy passed for default and CI feature sets at `a6c827ea`
+* `cargo build --all-targets` passed at `a6c827ea` after the disk-space
+  constraint was cleared
 * MCP initialize and tool-catalog validators passed 19/19 and 6/6
-* Local review of immutable subject `8b4f96c5` finished with `P0=0, P1=0`,
+* Local delta review of immutable subject `a6c827eaad01cc924911199cd81f34b20462480f` finished with `P0=0, P1=0`,
   followed by `READY_WITH_FOLLOWUPS`; this is not a readiness claim for a
   future PR head
 * Pattern retrieval found concrete matching classes; the historical taxonomy
@@ -49,6 +52,13 @@ Ship completed the PA-7 Slot-20c implementation and moved `142.089-T` to
 * `8C21E5DA`: current dependency audit remediation
 * `B84562A2`: Stage-owned backlog evidence reconciliation
 * `2B051681`: downstream full CLI/MCP equivalence coverage
+
+## Rollback boundary
+
+Revert the complete merged `176-S` PR with a reviewed merge-commit revert, not
+only the two implementation/review-fix commits. The code-affecting stack
+includes HC `951112fd`, `06ecddcf`, `8b4f96c5`, and `a6c827ea`; predecessor
+slots `174-S` and `175-S` and shared feature `142-F` remain intact.
 
 ## Conditions and next step
 

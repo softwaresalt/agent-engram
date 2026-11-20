@@ -10,7 +10,7 @@ verification_status: PASS_WITH_FOLLOW_UP
 closure_status: READY_WITH_CONDITIONS
 compaction_status: pending
 owner: softwaresalt
-last_code_affecting_head: "8b4f96c5"
+last_code_affecting_head: "a6c827eaad01cc924911199cd81f34b20462480f"
 follow_up_stash:
   - "ACC1FDDD"
   - "8C21E5DA"
@@ -19,7 +19,7 @@ follow_up_stash:
 conditions:
   - condition: "GitHub Actions CI is green on the PR's final head"
     satisfied: false
-    evidence: "PR has not yet been created"
+    evidence: "PR #487 is open; its final head is not yet verified"
     owner: softwaresalt
     due_utc: "2026-11-20T23:59:59Z"
     attestation_evidence: "All required checks pass on the final head"
@@ -27,7 +27,7 @@ conditions:
     backlog_item_id: "N/A"
   - condition: "Copilot review is satisfied for the final head"
     satisfied: false
-    evidence: "PR and Copilot review do not yet exist"
+    evidence: "Review 5991074059 exposed three findings; a6c827ea addresses its two test findings and the current candidate addresses its rollback-doc finding; the final-head review remains open"
     owner: softwaresalt
     due_utc: "2026-11-20T23:59:59Z"
     attestation_evidence: "gsd gate copilot-review status PASS with zero unresolved threads and zero undispositioned body findings"
@@ -56,7 +56,7 @@ conditions:
 This record is pre-merge runtime-verification and operational-readiness evidence
 for Shipment `176-S` (`142-F` Slot-20c, Task `142.089-T`). It is not merge
 approval, a deployment record, or post-merge canonical closure. The last code
-affecting revision is `8b4f96c5`.
+affecting revision is `a6c827eaad01cc924911199cd81f34b20462480f`.
 
 The code change is confined to
 `tests/contract/read_server_cli_mcp_parity_test.rs`. It replaces the manual
@@ -69,12 +69,14 @@ ID, and proves generation-backed direct IPC, CLI, and MCP parity inputs.
 | Harness commit (`HC`) | `951112fd` | RED witness, 98 additions |
 | Implementation commit (`IC`) | `06ecddcf` | 51 additions, 66 deletions |
 | Review-fix commit | `8b4f96c5` | 49 additions, 20 deletions |
+| Copilot test-fix commit | `a6c827ea` | Post-shutdown Cozo absence and `query_graph` caller-node assertions |
 | `cargo check --tests` | PASS | RED harness compiles |
 | RED witness | PASS as RED | `Worker: 142.089-T` failed because `function_meta` was absent from the `probe_row` fixture |
-| Contract parity, default | PASS (8/8) | Real isolated ReadServer daemon |
-| Contract parity, CI features | PASS (8/8) | `cozo-backend,embeddings` |
-| `cargo fmt --all -- --check` | PASS | Zero formatting findings |
-| Clippy, default and CI features | PASS | `--all-targets -D warnings -D clippy::pedantic` |
+| Contract parity, default | PASS (8/8) at `a6c827ea` | Real isolated ReadServer daemon |
+| Contract parity, CI features | PASS (8/8) at `a6c827ea` | `cozo-backend,embeddings` |
+| `cargo fmt --all -- --check` | PASS at `a6c827ea` | Zero formatting findings |
+| Clippy, default and CI features | PASS at `a6c827ea` | `--all-targets -D warnings -D clippy::pedantic` |
+| Full local build | PASS at `a6c827ea` | `cargo build --all-targets` completed successfully with 37.36 GB free |
 | MCP initialize contract | PASS (19/19) | `contract_shim_stdio_initialize` |
 | MCP tool catalog contract | PASS (6/6) | `contract_tools_catalog` |
 | Line-ending gate | PASS | Zero CRLF, BOM, lone-CR, mixed-newline, or EOF findings |
@@ -112,11 +114,13 @@ IC adaptation is below R-A6's 400-line bound.
 * The local `cargo dev-test` run is not green on this Windows host because
   pre-existing `contract_verify` cases cannot resolve relative fixture files
   and exit 2; this is captured in `ACC1FDDD`.
-* `cargo audit` is installed and reports 19 dependency vulnerabilities; the
-  dependency upgrade scope is captured in `8C21E5DA`.
-* `cargo build --all-targets` could not complete because the host had 232 MB
-  free and the linker reported `LNK1180` insufficient disk space. No
-  production source changed, and focused build, test, and Clippy gates passed.
+* The 2026-11-20 local `cargo audit` run reports 10 dependency vulnerabilities
+  and 13 allowed warnings. This is a newer observation than the
+  19-vulnerability count captured in `8C21E5DA`; Stage retains the temporal
+  count reconciliation with that dependency-remediation scope.
+* `cargo build --all-targets` completed successfully after the host disk-space
+  constraint was cleared. No production source changed, and the focused test,
+  formatting, and Clippy gates passed.
 
 ## Monitoring and rollback handoff
 
@@ -126,7 +130,7 @@ IC adaptation is below R-A6's 400-line bound.
 | Failure signal | Any generation parity, MCP handshake, catalog, provenance, or activation regression | softwaresalt |
 | Monitoring plan | Observe GitHub Actions PR checks, the next `main` CI run, and the first authorized release smoke check | softwaresalt |
 | Rollback trigger | A confirmed false generation-backed read, managed-state contamination, or indexed root-resolution regression | softwaresalt |
-| Rollback procedure | Prepare a reviewed merge-commit revert of `06ecddcf` and `8b4f96c5`, preserving HC `951112fd` and predecessor slots | softwaresalt |
+| Rollback procedure | Revert the complete merged `176-S` PR with a reviewed merge-commit revert. Its code-affecting stack includes HC `951112fd`, `06ecddcf`, `8b4f96c5`, and `a6c827ea`; preserve predecessor slots `174-S` and `175-S` plus shared feature `142-F` | softwaresalt |
 | Validation window | PR CI, next `main` CI, and 30 minutes after any separately authorized deployment | softwaresalt |
 
 ## Risky action record
