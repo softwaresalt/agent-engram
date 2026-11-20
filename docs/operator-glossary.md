@@ -1,7 +1,7 @@
 ---
 title: "Operator glossary"
 description: "Plain-language meanings of the acronyms and labels that agents use in plans, status reports, and approval requests"
-last_updated: "2026-10-07T13:45-07:00"
+last_updated: "2026-11-20T05:50:00Z"
 ---
 
 This page explains the labels you see in agent status reports and approval

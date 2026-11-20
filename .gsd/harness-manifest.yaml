@@ -874,7 +874,7 @@ artifacts:
     artifact_type: "script"
     primitive: 5
     template: "templates/scripts/pre-commit-pipeline-topology.ps1.tmpl"
-    checksum: "d530e7fdc5816433a6ad3927e0bd736ff3458515fb16e084dd49fe1ac7002b29"
+    checksum: "1e0e40d363b3fb1b6e495181fda354914c6a928c9a5fd09c693383432cece88c"
   - path: "scripts/pre-commit-pipeline-topology.sh"
     artifact_type: "script"
     primitive: 5
@@ -884,7 +884,7 @@ artifacts:
     artifact_type: "script"
     primitive: 5
     template: "templates/scripts/pre-push-quality-gates.ps1.tmpl"
-    checksum: "254928a0bdc6bc14505d2dd6eb83c4818f39f336c0080434b57df4a787a2bbbf"
+    checksum: "fd005fac9b203a7e560a40999a8aa79d03ad8608c9f552a93dbda45d47c02235"
   - path: "scripts/pre-push-quality-gates.sh"
     artifact_type: "script"
     primitive: 5

@@ -47,8 +47,12 @@ $GsdExe = if ($GsdCmd) {
     $GsdCmd.Source
 } elseif (Test-Path -LiteralPath (Join-Path $RepoRoot ".gsd\gsd.exe") -PathType Leaf) {
     Join-Path $RepoRoot ".gsd\gsd.exe"
+} elseif (Test-Path -LiteralPath (Join-Path $RepoRoot ".gsd\gsd") -PathType Leaf) {
+    Join-Path $RepoRoot ".gsd\gsd"
 } elseif (Test-Path -LiteralPath (Join-Path $RepoRoot ".bin\gsd.exe") -PathType Leaf) {
     Join-Path $RepoRoot ".bin\gsd.exe"
+} elseif (Test-Path -LiteralPath (Join-Path $RepoRoot ".bin\gsd") -PathType Leaf) {
+    Join-Path $RepoRoot ".bin\gsd"
 } else {
     $null
 }
