@@ -125,10 +125,9 @@ operations:
       summary: "summary"
 
   create_checkpoint:
-    mcp_tool: "backlogit_create_checkpoint"
-    cli_command: "backlogit checkpoint create --state-dump {{state_dump}}"
+    cli_command: "gsd checkpoint create --state-dump-file {{state_dump_file}}"
     params:
-      state_dump: "state_dump"
+      state_dump_file: "state_dump_file"
 
   list_checkpoints:
     mcp_tool: "backlogit_list_checkpoints"
@@ -255,17 +254,6 @@ operations:
       shipment_id: "shipment_id"
       item_id: "item_id"
       reason: "reason"
-
-  reconcile_shipped:
-    cli_command: "backlogit shipment reconcile-shipped {{shipment_id}} --reason {{reason}} --actor {{actor}} --idempotency-key {{idempotency_key}} --merge-sha {{merge_sha}} --closure-evidence {{closure_evidence}} --confirm {{confirm}}"
-    params:
-      shipment_id: "id"
-      reason: "reason"
-      actor: "actor"
-      idempotency_key: "idempotency_key"
-      merge_sha: "merge_sha"
-      closure_evidence: "closure_evidence"
-      confirm: "confirm"
 
   # --- Stash management ---
 

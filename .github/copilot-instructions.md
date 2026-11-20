@@ -1,6 +1,6 @@
 # agent-engram Development Guidelines
 
-Last updated: 2026-10-24
+Last updated: 2026-11-19
 
 agent-engram is a local-first Model Context Protocol daemon providing code graph indexing, symbol navigation, and semantic search for AI coding assistants. It runs as a single Rust binary, persists state to .engram/ files via embedded CozoDB, and communicates over IPC (named pipes on Windows, Unix domain sockets on Linux/macOS).
 
@@ -24,7 +24,7 @@ agent-engram is a local-first Model Context Protocol daemon providing code graph
 ## Project Structure
 
 ```text
-src/ (149 .rs files across 12 modules: bin, cli, config, daemon, db, errors, installer, models, server, services, shim, tools), tests/ (270 files: contract/64, integration/140, unit/62, helpers/3), docs/ (architecture, ADRs, compound learnings, exec-plans, research), .github/ (agents, skills, instructions, policies, prompts)
+src/ (152 .rs files across 12 modules: bin, cli, config, daemon, db, errors, installer, models, server, services, shim, tools), crates/ (engram-indexer, powerbi-tmdl-parser; 12 .rs files), tests/ (284 files: contract/66, integration/152, unit/62, helpers/4), docs/ (architecture, ADRs, compound learnings, exec-plans, research), .github/ (agents, skills, instructions, policies, prompts)
 ```
 
 ## Commands
@@ -62,7 +62,7 @@ snake_case for functions and variables, PascalCase for types and traits, SCREAMI
 
 * TDD required: write tests first, verify they fail, then implement
 * Test tiers in `tests/` directory:
-Contract: MCP tool schema and error code verification (64 files). Integration: end-to-end flows with real DB/IPC (140 files). Unit: isolated logic and property-based tests via proptest (62 files).
+Contract: MCP tool schema and error code verification (66 files). Integration: end-to-end flows with real DB/IPC (152 files). Unit: isolated logic and property-based tests via proptest (62 files). Helpers: shared test fixtures (4 files).
 
 ## Search Strategy
 
@@ -135,12 +135,27 @@ When the workspace enabled the `backlogit` capability pack:
 * append significant task comments and associate commits with task IDs for execution traceability when those operations are available
 * if backlog content was edited outside the normal mutation flow, refresh the backlogit index before relying on query results
 
+## Core Workflow Protocols
+
+These protocols are part of the core harness and are always active; they are not capability packs. Each applies when its surface condition is met.
+
+### browser-verification
+
+When verifying browser-visible UI flows (core protocol):
+
+* follow `.github/instructions/browser-verification.instructions.md`
+* verify the target server or preview environment is reachable before launching browser work
+* choose headed vs headless mode intentionally and record the reason
+* derive browser routes from changed pages, components, or affected user journeys
+* treat OAuth, email, SMS, payments, CAPTCHAs, or other external flows as explicit human checkpoints
+* carry browser findings into runtime verification and operational closure rather than leaving them as informal notes
+
 ### continuous-learning
 
-When the workspace enabled the `continuous-learning` capability pack:
+When recurring practice is observed across sessions (core protocol):
 
 * follow `.github/instructions/continuous-learning.instructions.md`
-* store observation state under `.autoharness/continuous-learning/`
+* store observation state under `.gsd/continuous-learning/`
 * keep hook capture optional and environment-specific; manual capture is still valid
 * use `observe` to capture recurring workflow signals, `learn` to infer instincts, and `evolve` to promote mature patterns into `learned-*` artifacts
 * do not harden a rule into a learned instruction or skill until it has enough corroborating observations to justify the promotion
@@ -148,7 +163,7 @@ When the workspace enabled the `continuous-learning` capability pack:
 
 ### strict-safety
 
-When the workspace enabled the `strict-safety` capability pack:
+For elevated-risk or destructive work (core protocol):
 
 * follow `.github/instructions/strict-safety.instructions.md`
 * express risky work as `ProposedAction` entries with `ActionRisk` and `ActionResult`
@@ -157,7 +172,7 @@ When the workspace enabled the `strict-safety` capability pack:
 
 ### release-observability
 
-When the workspace enabled the `release-observability` capability pack:
+For runtime-affecting or deployment-sensitive release units (core protocol):
 
 * follow `.github/instructions/release-observability.instructions.md`
 * produce monitoring plans with SLIs, dashboards, baselines, and alert thresholds before merge
@@ -168,7 +183,7 @@ When the workspace enabled the `release-observability` capability pack:
 
 ### adversarial-review
 
-When the workspace enabled the `adversarial-review` capability pack:
+When a review surfaces 3+ P0/P1 findings or touches security-sensitive work (core protocol):
 
 * follow `.github/instructions/adversarial-review.instructions.md`
 * escalate from standard review when 3+ P0/P1 findings appear or the work is security-sensitive
@@ -179,20 +194,7 @@ When the workspace enabled the `adversarial-review` capability pack:
 
 ## Remote Operator Integration
 
-### agent-intercom
-
-When `agent-intercom` is available:
-
-* Call `ping` at the start of any multi-step session to confirm liveness.
-* Broadcast progress at meaningful phase transitions — do not broadcast every trivial step.
-* Route approval for destructive actions through the intercom approval workflow before executing.
-* If intercom becomes unreachable mid-task, warn that operator visibility is degraded and continue only with safe, non-destructive work.
-
-The `agent-intercom` capability pack is **not enabled** in this workspace, so no intercom tool
-surface, heartbeat prompt, or remote approval path is installed. Treat the guidance above as
-inert unless the pack is explicitly re-enabled; route destructive-action approval through local
-operator confirmation instead.
-
+<!-- pack-scope:agent-engram:begin -->
 ### agent-engram
 
 When `agent-engram` is available:
@@ -200,6 +202,7 @@ When `agent-engram` is available:
 * Verify workspace binding before relying on indexed results.
 * If the workspace is not bound or indexed, run `sync_workspace` or the workspace's equivalent freshness operation before searching.
 * Fall back to grep, glob, or direct file reads only when indexed results are unavailable or insufficient.
+<!-- pack-scope:agent-engram:end -->
 
 ## Backlog Workflow Expectations
 
@@ -210,7 +213,11 @@ When a backlog tool is active in the workspace:
 * refresh the backlog index or query cache after out-of-band edits before trusting query results
 * avoid inventing parallel markdown trackers outside the configured backlog tool surface
 
-Generated by autoharness | Template: copilot-instructions.md.tmpl
+## Workspace-Local `.gsd/` Runtime
+
+Target workspaces provision the `gsd` executable (`.gsd/gsd` or `.gsd/gsd.exe`), pre-built versioned release archives (`.gsd/gsd-assets-v<version>.zip` and `.gsd/gsd-assets.zip`), and `.gsd/runtime-manifest.json` inside `<workspace>/.gsd/` (ignored by Git via `# gsd-runtime-ignore`) so all CLI and install/tune operations stay inside the workspace sandbox without unpacking `templates/` or `schemas/` into the repository.
+
+Generated by gsd | Template: copilot-instructions.md.tmpl
 
 <!-- engram:start -->
 ## Engram Agent Memory — GitHub Copilot Integration

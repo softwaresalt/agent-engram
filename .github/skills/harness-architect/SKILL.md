@@ -73,7 +73,7 @@ route rules (deliberation 042-DL):
 1. **Qualification**: the task declares explicit owned paths; every owned path
    is a regular prose `.md` file under the configured docs root (normalized: no
    traversal, drive, backslash, absolute path, symlink or reparse point); no
-   owned path is on the deny list (`.github/`, `.autoharness/`, the backlog
+   owned path is on the deny list (`.github/`, `.gsd/`, the backlog
    root, `templates/`, `schemas/`, `scripts/`, `src/`, `tests/`, or a policy,
    config, schema, template, script, build or test artifact), which wins over
    the docs root; and mixed scope disqualifies the whole task. Missing or
@@ -134,9 +134,9 @@ Write harness files into the module that matches the work item's scope:
 
 * **Unit harnesses**: colocated with the production code in the
   appropriate src/ subdirectory
-* **Integration harnesses**: in `tests//integration/` when the
+* **Integration harnesses**: in `tests/integration/` when the
   task spans modules or runtime boundaries
-* **Contract harnesses**: in `tests//contract/` when the task
+* **Contract harnesses**: in `tests/contract/` when the task
   defines API, CLI, or schema behavior
 
 Write companion stub files into the production module that the tests
@@ -169,16 +169,26 @@ task's expected-RED roster, as P-004 defines it:
   the roster (Marker Convention below). A task declaring
   `harness-surface:none` has no roster and no RED obligation.
   `harness-surface:none` is allowed only for a task whose file budget
-  contains no Python production module under `src/`; if the current task
+  contains no production code module (`src/` in Python workspaces, `cmd/`
+  or `internal/` in Go workspaces, or the target workspace's configured
+  src/); if the current task
   declares it but its file budget contains one, halt and report without
-  applying `harness-ready`. A docs-route task (Step 2a) also declares
+  applying `harness-ready`. A code-route `harness-surface:none` task (one
+  touching only non-docs harness artifacts such as templates, installed
+  mirrors, registries, or the harness manifest) stays on the code route and
+  receives `harness-ready` after compilation and structural verification,
+  without a RED roster. A docs-route task (Step 2a) also declares
   `harness-surface:none`; it never reaches this step.
-* **RED (R2)**: RED for a roster test is that test reported as `ERROR`
-  in the canonical command's output with its own unique
-  `NotImplementedError` marker. Attribution is roster-relative (R2):
-  each roster test is checked against the named `ERROR` set by its own
-  marker. A roster test absent from the named `ERROR` set, or named
-  with a different marker, is refused.
+* **RED (R2)**: RED for a roster test in a Python workspace is that test
+  reported as `ERROR` in the canonical command's output with its own unique
+  `NotImplementedError` marker. RED in a Go workspace follows the Go RED
+  convention in the Marker Convention below. Attribution is roster-relative
+  (R2): each roster test is checked against the named `ERROR` set (or, in
+  Go, the named failing-test set) by its own marker. A roster test absent
+  from that named set, or named with a different marker, is refused. In both
+  languages the marker or failure must originate from a production
+  RED-phase stub; a test body that raises or panics its own marker directly,
+  without exercising the production stub, is refused.
 
 **Marker Convention** (P-004, stated verbatim from the governing plan,
 where FI-9 is the RED-evidence rule P-004 states and a Proof G case ID is
@@ -195,6 +205,20 @@ marker is a cross-test marker, which FI-9 refuses. Structural tests that
 reach no stub (API, docstring, schema parity, pinned hash, alias, audit)
 are recorded outside the roster, like characterization tests.
 
+**Go RED convention**: in Go workspaces (`go test`), each roster test `t`
+reaches a production RED-phase stub. An unrecovered stub panic aborts the
+Go package test binary, so later roster tests could not produce the evidence
+required by the canonical whole-suite run; a stub must never be left to
+abort the package. Either the stub returns an unimplemented sentinel or zero
+value, so that the roster test fails on its specification assertion with a
+marker-bearing failure message, or the stub calls `panic("<prefix>:<t>")`
+and the roster test recovers that expected stub panic (`defer`/`recover`)
+and reports it as a marker-bearing `t.Fatalf`, so that later roster tests
+still run. Collect the RED evidence through the canonical whole-suite
+command; a scoped `go test -run '^TestName$'` run is at most a diagnostic,
+never the evidence. Record the `<prefix>:<t>` marker per roster test
+in the RED evidence record.
+
 The following outcomes are NEVER valid red-phase evidence for a roster
 test and MUST be treated as harness defects requiring a fix before
 proceeding:
@@ -204,10 +228,12 @@ proceeding:
 * **Wrong-reason failure**: a roster test fails for a reason other than
   its own expected failure marker (a different exception type or
   message).
-* **Marker-bearing `AssertionError`**: a roster test reported as a
-  failure whose `AssertionError` carries its marker is refused; RED
-  requires the test's own `NotImplementedError` marker reported as
-  `ERROR`.
+* **Marker-bearing `AssertionError` (Python)**: a Python roster test
+  reported as a failure whose `AssertionError` carries its marker is
+  refused; Python RED requires the test's own `NotImplementedError` marker
+  reported as `ERROR`. This refusal does not apply to Go, where a named
+  `FAIL` carrying its own marker from a production RED-phase stub is RED
+  under the Go RED convention.
 * **Cross-test marker**: two roster tests sharing one marker, or a
   roster test credited with another test's marker, is refused.
 * **Collection/import/syntax failure**: the run aborts during
@@ -223,8 +249,10 @@ proceeding:
   harness does not yet exercise the not-yet-implemented behavior.
 
 If any roster test exhibits one of these outcomes, fix the harness until
-every roster test is discovered and is reported as `ERROR` with its own
-marker. Passing characterization tests are not harness defects.
+every roster test is discovered and is red with its own marker: in a Python
+workspace reported as `ERROR` with its own `NotImplementedError` marker; in a
+Go workspace reported as a named `FAIL` carrying its own marker from a
+production RED-phase stub under the Go RED convention. Passing characterization tests are not harness defects.
 
 ### Step 6: Apply harness-ready label to the current task
 
@@ -255,14 +283,16 @@ The skill is complete only when the current task has:
 * harness files in the correct modules
 * structural stubs with intentional not-implemented behavior
 * a successful `cargo check --all-targets` result after scaffolding
-* every roster test reported as `ERROR` with its own marker, and its
+* every roster test red with its own marker (Python: reported as `ERROR`
+  with its own `NotImplementedError` marker; Go: a named `FAIL` carrying its
+  own stub-originated marker under the Go RED convention), and its
   characterization tests listed apart from the roster
 * clear mapping from backlog task to harness command
 
 Docs route (Step 2a): the skill is complete when the current task has a valid
 qualification record and a valid verification record, `harness-surface:none`, and
 the exclusive `harness-verification-gated` label. The harness files, structural
-stubs, compilation result and roster `ERROR` evidence above do not apply.
+stubs, compilation result and roster RED evidence above do not apply.
 
 ## Guardrails
 

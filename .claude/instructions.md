@@ -1,3 +1,5 @@
+# Claude Code Instructions
+
 <!-- engram:start -->
 ## Engram Agent Memory — Claude Code Integration
 

@@ -1,7 +1,7 @@
-# autoharness Configuration
+# gsd Configuration
 #
 # Resolved harness configuration for this workspace.
-# Written by autoharness install; updated by autoharness tune.
+# Written by gsd install; updated by gsd tune.
 # Operator edits to this file are preserved on re-install and tuning.
 #
 # Schema: schemas/harness-config.schema.json
@@ -19,12 +19,21 @@ stack_packs: ["rust-mcp-daemon", "rust-surrealdb-embedded", "rust-tree-sitter", 
 install_layers: ["foundation", "instructions", "workflow", "review", "runtime", "backlog", "knowledge", "overlays"]
 
 # Capability packs enabled for this workspace
-capability_packs: ["agent-engram", "backlogit", "strict-safety", "release-observability", "continuous-learning", "adversarial-review"]
+capability_packs: ["agent-engram", "backlogit"]
 
 # Backlog tool configuration
 backlog:
   tool: backlogit
   directory: .backlogit
+  verified_cascade_minor_lines:
+    - "1.11"
+    - "1.12"
+    - "1.13"
+  verified_minor_lines:
+    - "1.10"
+    - "1.11"
+    - "1.12"
+    - "1.13"
   suffix_map:
     feature: "F"
     chore: "C"
@@ -50,7 +59,7 @@ docs:
 
 # Optional continuous-learning capability-pack configuration
 continuous_learning:
-  directory: ".autoharness/continuous-learning"
+  directory: ".gsd/continuous-learning"
   capture_hooks: false
   environment_adapter: "none"
   promotion_threshold: 3
@@ -64,57 +73,65 @@ strict_safety:
 model_routing:
   tier1:
     model: claude-haiku-5.5              # Fast/cheap: memory, docs, compaction (e.g., gpt-5.4-mini)
-    reasoning_effort: "xhigh"  # Leave empty to use model default
     model_provider: "anthropic"       # e.g., openai, anthropic — leave empty for default
     model_family: "claude-haiku-5.5"           # Resolved into Tier 1 agent frontmatter
+    reasoning_effort: "high"  # Leave empty to use model default
     context_tier: "long_context"        # context-capacity class (default | long_context)
   tier2:
-    model: claude-sonnet-5.5              # Standard: orchestration, code, review (e.g., claude-sonnet-5)
+    model: mai-code-2              # Standard: orchestration, code, review (e.g., claude-sonnet-5)
     reasoning_effort: "high"
-    model_provider: "anthropic"
-    model_family: "claude-sonnet-5.5"
-    context_tier: "long_context"
+    model_provider: "microsoft"
+    model_family: "mai-code-2"
+    context_tier: "long_context"     # default | long_context
   tier3:
-    model: gemini-4-argon              # Frontier: planning, architecture, analysis (e.g., claude-sonnet-5)
+    model: gemini-4-carbon              # Frontier: planning, architecture, analysis (e.g., claude-opus-5)
     reasoning_effort: "high"
     model_provider: "google"
-    model_family: "gemini-4-argon"
-    context_tier: "long_context"
+    model_family: "gemini-4-carbon"
+    context_tier: "long_context"     # default | long_context
   orchestrator:
-    model_family: "gemini-4-argon"
-    model_provider: "google"
-    reasoning_effort: "high"
-    context_tier: "long_context"
-  stage:
-    model_family: "gemini-4-argon"             # Stage role route (falls back to tier3 when empty)
-    model_provider: "google"
-    reasoning_effort: "high"
-    context_tier: "long_context"
-    escalation:
-      model_family: "claude-sonnet-5.5"
-      model_provider: "anthropic"
-      reasoning_effort: "high"
-      context_tier: "long_context"
-  ship:
-    model_family: "gpt-6.1-sol"
-    model_provider: "openai"
+    model_family: "gemini-4-carbon"     # Orchestrator model override (default: gpt-5.4)
     reasoning_effort: "medium"
-    context_tier: "long_context"
+    model_provider: "google"
+    context_tier: "long_context"  # Falls back to tier2, then default
+  stage:
+    model_family: "gemini-4-carbon"             # Stage role route (falls back to tier3 when empty)
+    model_provider: "google"
+    reasoning_effort: "medium"
+    context_tier: "long_context"       # Falls back to tier3, then default
+    # F02FD596: optional nested per-role escalation override for Stage.
+    # Takes precedence over the legacy flat model_routing.escalation below;
+    # missing sub-fields fall back per-field to tier3 (never to the legacy
+    # flat route). MUST NOT be declared alongside a non-empty legacy flat
+    # escalation (both-present is AMBIGUOUS and fails closed, H2). Always
+    # rendered (like the flat escalation block below) so Step 3.4 can
+    # preserve an existing operator value through re-render/tune; leave
+    # sub-fields empty to omit this override.
     escalation:
-      model_family: "claude-sonnet-5.5"
-      model_provider: "anthropic"
+      model_family: "gpt-6.2-sol"
+      model_provider: "openai"
       reasoning_effort: "high"
-      context_tier: "long_context"
-  anchor_review:
-    model_provider: "openai"
-    model_family: "gpt-6.1-sol"
+      context_tier: "long_context"  # Raw; empty inherits at resolution time
+  ship:
+    model_family: "mai-code-2"               # Ship role route (falls back to tier2 when empty)
+    model_provider: "microsoft"
     reasoning_effort: "high"
+    context_tier: "long_context"         # Falls back to tier2, then default
+    # F02FD596: optional nested per-role escalation override for Ship. Same
+    # precedence/ambiguity/always-rendered rules as Stage's nested
+    # escalation above.
+    escalation:
+      model_family: "gpt-6.2-sol"
+      model_provider: "openai"
+      reasoning_effort: "high"
+      context_tier: "long_context"   # Raw; empty inherits at resolution time
+
   routes: {}
   bindings: {}
 
 # AI CLI tool startup configuration
 # Resolves the copilot executable in the generated start.ps1 and start.sh scripts,
-# and is read directly by `autoharness run`. Set exe_path to the full path if
+# and is read directly by `gsd run`. Set exe_path to the full path if
 # copilot is not on PATH. Use args for flags that should always be passed.
 ai_tools:
   copilot_cli:
@@ -122,7 +139,7 @@ ai_tools:
                                       # Example: "C:\\Tools\\ghcpcli\\copilot.exe"
     args: []             # Default: []
 
-# Sidecar syncs `autoharness run` performs before launching the AI CLI tool.
+# Sidecar syncs `gsd run` performs before launching the AI CLI tool.
 # Derived from the capability packs enabled for this workspace.
 sidecars: ["backlogit", "engram"]
 
@@ -177,13 +194,13 @@ overrides: {}
 #
 # telemetry:                           # Phase 2 sink — repo-local Execution Epochs
 #   mode: "sqlite"                     # sqlite | none (default none = kill-switch)
-#   database_path: ".autoharness/metrics/execution_epochs.db"
+#   database_path: ".gsd/metrics/execution_epochs.db"
 #   emit_jsonl: true                   # append one JSON epoch per line (emit-only)
 #
 # ACTIVATION: set mode: "sqlite" to record execution epochs to the repo-local
 # SQLite aggregator at database_path (parent dirs auto-created, WAL journaling).
 # Set emit_jsonl: true to also append a JSONL stream alongside the DB for the
 # external agent-engram ingestion boundary. The runtime artifacts under
-# .autoharness/metrics/ are gitignored so emission never dirties the tree.
+# .gsd/metrics/ are gitignored so emission never dirties the tree.
 # KILL-SWITCH: mode: "none" (or removing this block) disables all telemetry with
 # zero code change (fail-open-to-current). See docs/telemetry-reference.md.

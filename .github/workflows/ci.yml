@@ -30,7 +30,7 @@ on:
     paths-ignore:
       - '.backlogit/**'
       - 'docs/**'
-      - '.autoharness/**'
+      - '.gsd/**'
       - '*.md'                # root README/CHANGELOG/AGENTS.md
       - '.github/**/*.md'     # instructions/prompts/agents
       - 'scripts/**/*.md'     # scripts/metrics/README.md
@@ -38,7 +38,7 @@ on:
     paths-ignore:
       - '.backlogit/**'
       - 'docs/**'
-      - '.autoharness/**'
+      - '.gsd/**'
       - '*.md'                # root README/CHANGELOG/AGENTS.md
       - '.github/**/*.md'     # instructions/prompts/agents
       - 'scripts/**/*.md'     # scripts/metrics/README.md

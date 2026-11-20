@@ -16,9 +16,6 @@ reviewers_requested: 3
 reviewers_consensus_eligible: 0
 ---
 
-# PR 363 Mandatory Adversarial Escalation Review
-
-
 > [!IMPORTANT]
 > **CURRENT FAIL-CLOSED AUTHORITY.** This closure remains escalation evidence, not claim authority. The complete 131 task chain is blocked, no consensus is claimed, and no additional adversarial review is attempted for this PR. See [PR #363 fail-closed planning authority](../decisions/2026-08-25-pr-363-fail-closed-planning-authority.md).
 
@@ -59,7 +56,7 @@ docs/closure/2026-08-25-pr-363-mandatory-escalation-review.md
 .backlogit/queue/131.001-T.md through .backlogit/queue/131.016-T.md, lexical order
 ```
 
-The final range expands to sixteen individual task entries, yielding exactly 32 manifest entries. The manifest list and hash were embedded in every invocation. Slot-specific prompt hashes below bind the exact invocation text without retaining transcripts.
+The final range expands to sixteen individual task entries, yielding exactly 32 manifest entries. The manifest list and hash were embedded in every invocation. Slot-specific prompt hashes below bind the exact invocation text without retaining transcripts. (Note: `.backlogit/queue/131.001-R-mandatory-adversarial-review-gate-for-pr-363-otlp-planning-s.md` in the frozen manifest block above was subsequently renamed to `.backlogit/queue/131.001-R-mandatory-adversarial-review-gate-for-pr-363-otlp-planning.md` during GSD v1.6.0 migration hygiene; the fenced block above is preserved verbatim for SHA-256 prompt-hash integrity.)
 
 The prompt bound every invocation to `git diff <base>...<review-commit>` and `git show <review-commit>:<path>`, the exact blocker bodies, all 32 manifest entries, and all 83 changed files. Writes, nested agent dispatch, build, test, lint, commit, push, and GitHub mutation were denied or prohibited. Each top-level result reports zero modified files.
 

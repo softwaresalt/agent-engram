@@ -10,7 +10,7 @@ verified_distinct_session_ids: 0
 promotion_threshold: 3
 next_action: keep-observing
 citations:
-  - ".autoharness/continuous-learning/observations/2026-11-01.jsonl"
+  - ".gsd/continuous-learning/observations/2026-11-01.jsonl"
   - "docs/archive/memory/174-s-quality-gate-resource-halt.md"
   - "docs/archive/memory/174-s-build-validation.md"
   - "docs/closure/174-S-142-F-post-merge-closure.md"
