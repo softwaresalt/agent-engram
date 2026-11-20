@@ -3,7 +3,7 @@ name: learn
 description: "Cluster observations in .gsd/continuous-learning/ into reusable instincts with evidence and confidence"
 ---
 
-## Learn
+# Learn
 
 Analyze captured observations and infer recurring instincts that may become
 future learned instructions or skills.

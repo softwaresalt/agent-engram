@@ -22,7 +22,7 @@ if (-not $StagedMd) {
 
 # Verify markdownlint-cli is available
 if (-not (Get-Command markdownlint -ErrorAction SilentlyContinue)) {
-    Write-Warning "markdownlint-cli not found — skipping Markdown lint check."
+    Write-Warning "markdownlint-cli not found -- skipping Markdown lint check."
     Write-Warning "Install with: npm install -g markdownlint-cli"
     exit 0
 }

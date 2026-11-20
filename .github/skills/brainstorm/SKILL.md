@@ -3,7 +3,7 @@ name: brainstorm
 description: "Front-door requirements intake — frame the problem, elicit stable requirements, define success criteria and scope, separate blocking from deferred questions, and hand a durable requirements artifact to impl-plan before any implementation"
 ---
 
-## Brainstorm
+# Brainstorm
 
 Explore WHAT to build and WHY as a product-shaped requirements intake, before
 `impl-plan` decides HOW. Brainstorm produces a durable requirements artifact —
@@ -17,6 +17,13 @@ rather than replacing it: `deliberate` selects between options and captures
 rationale; brainstorm shapes requirements and readiness. When trade-off analysis
 is needed, brainstorm escalates to `deliberate` rather than duplicating its
 mechanics.
+
+Brainstorm also pairs with `grill-me`. `grill-me` conducts the Socratic
+design-tree frontier interview — it exposes hidden assumptions, separates
+repository facts from operator decisions, and crystallizes intent with runnable
+objective acceptance checks. Brainstorm then structures that crystallized intent
+into stable requirement IDs `R1..Rn`, scope boundaries, and a durable
+product-spec artifact at `docs/research/{YYYY-MM-DD}-{slug}-requirements.md`.
 
 This skill MUST NOT perform implementation, template/source/config mutation,
 shipment claim, PR preparation, or Ship execution. See **Non-Goals and Role
@@ -134,7 +141,19 @@ before eliciting detailed requirements.
 
 Ask single, focused questions — prefer multiple-choice when it reduces operator
 effort. Do not batch many open questions at once. Let each answer inform the next
-question.
+question. The one exception is a `grill-me` frontier round (below), which asks up to
+4 independent, prerequisite-settled questions at once.
+
+When a `Standard` or `Deep` scope has branching design decisions or hidden
+assumptions across Outcome, Boundaries, Constraints, or Context, and no
+`GRILL_ME_INTENT_CRYSTALLIZED` block was passed in, apply the `grill-me`
+**Design-Tree Frontier** discipline instead of ad hoc questioning: research
+repository facts first (**GROUND**), ask only frontier questions whose
+prerequisites are settled, format each as `❓ **Q#**` with an `➡️ **Recommended**`
+default, and converge on runnable objective acceptance checks `AC1..ACn` that feed
+Phase 3 Success Criteria. When a `GRILL_ME_INTENT_CRYSTALLIZED` block is supplied,
+adopt its settled decisions `D1..Dn`, glossary, and acceptance checks rather than
+re-asking them.
 
 When the operator is unavailable in already-authorized dark mode, do NOT block on
 interactive questions. Instead, convert unresolved product questions into
@@ -216,11 +235,13 @@ brainstorm requirements doc
   capability pack (or another backlog tool) is installed, create the entry
   through the backlog tool with a title derived from the topic, a description
   linking the artifact path, status `queued`, and a
-  `brainstorm-outcome` label. When `backlog-md` is the installed backlog tool,
-  create the entry using `backlogit_create_item` with `title` derived from
+  `brainstorm-outcome` label.
+  When `backlog-md` is the installed backlog tool,
+  create the entry using `task_create` with `title` derived from
   the topic, `description` linking the requirements-artifact path,
-  `status: "queued"`, and
-  `labels: ["brainstorm-outcome"]`. When no backlog tool is available
+  `status: "To Do"`, and
+  `labels: ["brainstorm-outcome"]`.
+  When no backlog tool is available
   (manual backlog mode), append a structured entry to
   `.backlogit/queue/.stash.md`
   instead — a bullet carrying the date, topic, the `docs/research`

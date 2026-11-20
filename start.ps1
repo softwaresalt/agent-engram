@@ -1,4 +1,4 @@
-# Agent CLI Startup Script — agent-engram
+# Agent CLI Startup Script — gsd
 #
 # This script is self-contained: it loads .env.local, resolves workspace-local
 # AI-tool state directories, runs the sidecar syncs enabled for this workspace
@@ -50,6 +50,17 @@ if (Test-Path -LiteralPath $envLocalPath -PathType Leaf) {
         }
     }
 }
+
+$workspaceBinDirectory = Join-Path $PSScriptRoot ".bin"
+$inheritedPath = @($env:PATH -split [IO.Path]::PathSeparator | Where-Object { $_ -ne $workspaceBinDirectory })
+$env:PATH = (@($workspaceBinDirectory) + $inheritedPath) -join [IO.Path]::PathSeparator
+$env:BUN_INSTALL = Join-Path $workspaceBinDirectory "bun"
+$env:BUN_INSTALL_CACHE_DIR = Join-Path $workspaceBinDirectory "bun-cache"
+$env:BUN_RUNTIME_TRANSPILER_CACHE_PATH = "0"
+$env:TEMP = Join-Path $workspaceBinDirectory "tmp"
+$env:TMP = $env:TEMP
+$env:TMPDIR = $env:TEMP
+New-Item -ItemType Directory -Path $env:BUN_INSTALL_CACHE_DIR, $env:TEMP -Force | Out-Null
 
 # COPILOT_HOME/ENGRAM_DATA_DIR redirect AI-tool state to workspace-local hidden
 # directories so agent memories, checkpoints, and database files are
@@ -109,58 +120,76 @@ if (-not $copilotExe) {
 
 # Sidecar syncs -- derived at install time from the capability packs enabled
 # for this workspace (backlogit/agent-engram/kbdb).
-$enabledSidecars = @("backlogit", "engram")
+$enabledSidecars = @("backlogit", "engram", "kbdb")
+
+$sidecarExecutables = @{
+    backlogit = (Join-Path $workspaceBinDirectory "backlogit.exe")
+    engram = (Join-Path $workspaceBinDirectory "engram.exe")
+    # engram = "C:\\Source\\GitHub\\engram\\target\\debug\\engram.exe"
+    kbdb = (Join-Path $workspaceBinDirectory "kbdb.exe")
+}
+foreach ($tool in @("backlogit", "engram", "kbdb", "bun", "bunx", "github-mcp-server", "gsd")) {
+    $toolExe = Join-Path $workspaceBinDirectory "$tool.exe"
+    if (-not (Test-Path -LiteralPath $toolExe -PathType Leaf)) {
+        Write-Error "Workspace-local $tool executable is missing: $toolExe. Restore the local runtime before starting; global PATH fallback is disabled."
+        exit 1
+    }
+}
+foreach ($entrypoint in @("tools\mcp\node_modules\@upstash\context7-mcp\dist\index.js", "tools\mcp\node_modules\tavily-mcp\build\index.js")) {
+    $runtimePath = Join-Path $PSScriptRoot $entrypoint
+    if (-not (Test-Path -LiteralPath $runtimePath -PathType Leaf)) {
+        Write-Error "Workspace-local MCP runtime is missing: $runtimePath. Run tools\mcp\install.ps1 before starting."
+        exit 1
+    }
+}
 
 if ($enabledSidecars -contains "backlogit") {
-    $backlogitCmd = Get-Command backlogit -ErrorAction SilentlyContinue
-    if ($backlogitCmd) {
-        try {
-            & $backlogitCmd.Source sync
-        } catch {
-            Write-Warning "backlogit sync failed (non-fatal): $_"
+    try {
+        & $sidecarExecutables.backlogit sync
+        if ($LASTEXITCODE -ne 0) {
+            throw "backlogit sync failed with exit code $LASTEXITCODE."
         }
+    } catch {
+        Write-Warning "backlogit sync failed (non-fatal): $_"
     }
 }
 
 if ($enabledSidecars -contains "engram") {
-    $engramCmd = Get-Command engram -ErrorAction SilentlyContinue
-    if ($engramCmd) {
+    try {
+        Write-Host "Synchronizing Engram index -- Direct pre-warm before Copilot startup"
+        & $sidecarExecutables.engram --format text sync --timeout 300 --direct
+        if ($LASTEXITCODE -ne 0) {
+            throw "engram sync failed with exit code $LASTEXITCODE."
+        }
+    } catch {
+        Write-Warning "engram direct pre-warm failed; retrying via daemon sync: $_"
         try {
-            Write-Host "Synchronizing Engram index -- Direct pre-warm before Copilot startup"
-            & $engramCmd.Source --format text sync --timeout 300 --direct
+            & $sidecarExecutables.engram --format text bind
+            Write-Host "Synchronizing Engram index -- Daemon-backed pre-warm fallback"
+            & $sidecarExecutables.engram --format text sync --timeout 300
             if ($LASTEXITCODE -ne 0) {
                 throw "engram sync failed with exit code $LASTEXITCODE."
             }
         } catch {
-            Write-Warning "engram direct pre-warm failed; retrying via daemon sync: $_"
-            try {
-                & $engramCmd.Source --format text bind
-                Write-Host "Synchronizing Engram index -- Daemon-backed pre-warm fallback"
-                & $engramCmd.Source --format text sync --timeout 300
-                if ($LASTEXITCODE -ne 0) {
-                    throw "engram sync failed with exit code $LASTEXITCODE."
-                }
-            } catch {
-                Write-Warning "engram sync failed (non-fatal): $_"
-            }
+            Write-Warning "engram sync failed (non-fatal): $_"
         }
     }
 }
 
 if (($enabledSidecars -contains "kbdb") -or ($enabledSidecars -contains "graphtor-docs")) {
-    $kbdbCmd = Get-Command kbdb -ErrorAction SilentlyContinue
-    if (-not $kbdbCmd) {
-        $localKbdb = Join-Path $PSScriptRoot ".kbdb\bin\kbdb.exe"
-        if (Test-Path -LiteralPath $localKbdb -PathType Leaf) {
-            $kbdbCmd = [pscustomobject]@{ Source = $localKbdb }
+    # This explicit sync step is required even though .mcp.json launches
+    # kbdb directly with `serve --read-only`:
+    # `serve --read-only` deliberately disables its own background sync path
+    # (even against a resolvable local source), so without this step the
+    # index would never refresh and an unpopulated ingestion workspace would
+    # stay empty for the whole interactive session.
+    try {
+        & $sidecarExecutables.kbdb sync
+        if ($LASTEXITCODE -ne 0) {
+            throw "kbdb sync failed with exit code $LASTEXITCODE."
         }
-    }
-    if ($kbdbCmd) {
-        try {
-            & $kbdbCmd.Source sync
-        } catch {
-            Write-Warning "kbdb sync failed (non-fatal): $_"
-        }
+    } catch {
+        Write-Warning "kbdb sync failed (non-fatal): $_"
     }
 }
 

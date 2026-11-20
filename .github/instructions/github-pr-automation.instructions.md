@@ -34,16 +34,25 @@ Tool: mcp_github_request_copilot_review
   pullNumber: <pr_number>
 ```
 
-If the MCP tool is unavailable, use a repository-approved GitHub API or CLI
-wrapper only when one is explicitly configured for Copilot review requests. Do
-not treat `gh pr edit --add-reviewer` as a required fallback for Copilot review:
-GitHub CLI reviewer flags do not reliably support Copilot's special reviewer
-identity across versions. When no supported fallback is configured, record
-shadow review as unavailable/advisory and continue to the local readiness gate.
+If the MCP tool is unavailable, request the review with `gh api graphql`,
+using the PR's GraphQL node ID:
 
-Shadow review is advisory by default. It can help catch residual issues after the
-local review gate, but it is not a required dependency for merge readiness unless
-the operator explicitly elevates it for the current PR.
+```bash
+gh api graphql -f query='
+  mutation RequestCopilotReview($prId: ID!, $botId: ID!) {
+    requestReviews(input: { pullRequestId: $prId, botIds: [$botId], union: true }) {
+      pullRequest { reviewRequests(first: 5) { nodes { requestedReviewer { __typename ... on Bot { login } } } } }
+    }
+  }
+' -f prId="<pr_node_id>" -f botId="BOT_kgDOCnlnWA"
+```
+
+Do not use `gh pr edit --add-reviewer` as a fallback: GitHub CLI reviewer
+flags do not reliably support Copilot's special reviewer identity.
+
+Shadow review is advisory when Copilot has not engaged and enforcement is
+`auto`. Once engaged, or when enforcement is `required`, P-018 applies in
+addition to the current-HEAD local review gate.
 
 **Conditional hard gate when Copilot review is enabled (P-018).** When Copilot
 review IS enabled for this PR — Copilot is a requested reviewer, a Copilot review
@@ -105,47 +114,13 @@ sections (see §1.3 and §1.6.1).
 `state` is `COMMENTED`, `CHANGES_REQUESTED`, or `APPROVED`. `PENDING` and `DISMISSED`
 reviews are not completion.
 
-**Merge-gate invariant — `commit_id == current HEAD` (load-bearing)**: A review
-merely *existing* is sufficient to consider a *review cycle* complete, but it is
-**NOT** sufficient to **merge**. Copilot review is asynchronous and is
-re-triggered by every push; each push re-adds Copilot to `requested_reviewers`
-and the fresh review takes ~4–5 minutes to post. In the window after the final
-push but before that review lands, the PR transiently shows **0 unresolved
-threads** and **`mergeable_state == clean`** even though the review for the
-current HEAD has not posted yet. Before merging you MUST therefore confirm a
-Copilot review exists whose `commit_id` equals the current HEAD sha:
-
-```bash
-# HEAD sha the merge would land
-gh api repos/<owner>/<repo>/pulls/<n> --jq '.head.sha'
-# Copilot review commit_ids (must include the HEAD sha above). Use a PREFIX
-# match: the REST `/reviews` endpoint returns the login
-# `copilot-pull-request-reviewer[bot]`, while the GraphQL/`gh pr view`
-# surface normalizes it to `copilot-pull-request-reviewer` (no `[bot]`
-# suffix). An exact `==` match against either form silently drops the review
-# and the load-bearing gate can never be satisfied.
-#
-# `--paginate` is REQUIRED: `gh api` returns only the first 30 reviews by
-# default, and the list is ordered oldest-first, so the newest review (the one
-# at HEAD) is LAST. After a multi-cycle review loop (>30 total reviews) the HEAD
-# review spills onto page 2+ and an un-paginated call silently reports a stale
-# commit_id, falsely failing the gate. See
-# `docs/compound/gh-reviews-endpoint-paginate-hides-head-review-2026-07-22.md`.
-gh api --paginate repos/<owner>/<repo>/pulls/<n>/reviews \
-  --jq '.[]|select(.user.login|startswith("copilot-pull-request-reviewer"))|{state,commit_id}'
-```
-
-This binds the merge to a review of the exact commit being merged. Re-check the
-full 4-point merge gate — (1) a Copilot review with `commit_id == HEAD`, (2)
-Copilot removed from `requested_reviewers`, (3) 0 unresolved review threads, (4)
-`mergeable_state == clean` — after **every** push, including a one-line review-nit
-fix, because any push resets the review clock. Rationale and post-mortem:
-`docs/compound/copilot-review-merge-gate-wait-for-head-review-2026-07-11.md`
-(PRs #239/#240 were merged in this exact gap).
-
-**Timeout**: If no Copilot review appears after 15 minutes (5 poll
-attempts), proceed without it. Log a warning and note in the PR
-description that shadow review was unavailable.
+**Timeout**: If Copilot is engaged or enforcement is `required`, a bounded
+15-minute wait without a completed review for the current HEAD results in
+`REVIEW_TIMEOUT` from `gsd gate copilot-review <pr> --repo <owner/name> --max-wait 900`. This **BLOCKS**
+merge under P-018; `--admin` does not bypass it. Halt and escalate to the
+operator. With `enforcement: auto` and no Copilot request or review, the gate
+is not applicable: proceed without shadow review, log a warning, and note its
+unavailability in the PR description. A zero `--max-wait` does not wait.
 
 ### 1.3 Categorize Shadow Review Comments
 
@@ -164,6 +139,38 @@ body, or an open finding with no `#discussion_r` link. Classify each one with th
 same table above. The overview risk line (for example `Needs a closer look`) is a
 risk note, not a finding, and items under `resolved since last review` are not
 findings.
+
+**Suppressed-findings enumeration (REQUIRED)**: thread-only reads miss findings that a hosted
+review lists only inside its review body. Every categorization pass MUST also enumerate review
+bodies with this GraphQL query, replacing `{owner}`, `{repo}`, and `{number}` with the PR's values:
+
+```graphql
+query($cursor: String) {
+  repository(owner: "{owner}", name: "{repo}") {
+    pullRequest(number: {number}) {
+      reviews(last:50, before: $cursor){pageInfo{hasPreviousPage startCursor} nodes{id databaseId body submittedAt commit{oid} author{login}}}
+    }
+  }
+}
+```
+
+Start with no `$cursor`; while `pageInfo.hasPreviousPage` is true, re-run with `$cursor` set to the returned
+`startCursor` until every review has been read.
+
+Parse each review `body` for a `### Suppressed comments (N)` heading and extract every `path:line`
+plus the bullet text beneath it. Classify each extracted item with the table above, exactly like a
+thread comment. Evidence: PR 436 read clean five times (one round generated zero comments and rounds
+7-9 opened zero threads) while carrying 36 suppressed findings, 64 percent of all its finding
+utterances, all invisible to thread-only reads.
+
+**A ROUND IS NOT CLEAN UNTIL BOTH THREAD COUNT AND SUPPRESSED COUNT ARE ZERO.**
+
+The thread count is the number of unresolved review threads; the suppressed count is the number of suppressed
+findings not yet dispositioned (fixed with a commit, deferred with a P-021 stash ID, or declined with
+rationale, per §1.6.1) across ALL reviews on the PR, whichever commit each review covered. A finding stays
+counted until its §1.6.1 disposition marker is recorded, including a finding fixed by a later push; only
+review-completion freshness is specific to the current `headRefOid`. Findings already dispositioned stay in the
+pr-lifecycle Step 3c inventory but do not keep a round dirty.
 
 ### 1.4 Address and Fix Comments
 
@@ -341,8 +348,10 @@ nothing to resolve. Handle it as follows:
 3. The review ID is the GraphQL `databaseId`. It equals the REST review `id`
    returned by `mcp_github_pull_request_read`, and it is the number in
    `#pullrequestreview-<id>` URLs.
-4. Post the comment from the operator's repository account. The gate honours a
-   marker only from an `OWNER`, `MEMBER`, or `COLLABORATOR` author.
+4. Post the comment from a `User`-typed (`__typename == "User"`) repository
+   `OWNER`, `MEMBER`, or `COLLABORATOR` with verified effective repository
+   permission `write`, `maintain`, or `admin`. The gate returns `VERIFY_FAILED`
+   if that permission cannot be verified.
 5. A review whose findings were all fixed by later pushes still needs its marker.
 6. Build the comment with the §1.5 Shell-Safe Comment Body Construction rules.
 7. Post the comment only after the fixing push, as §1.4 step 6 requires.
@@ -461,7 +470,8 @@ When Copilot review **is** enabled (P-018), exhausting the cycle limit with
 unresolved Copilot-authored threads is a **BLOCK**, not an "accept as follow-up":
 `gsd gate copilot-review` returns `UNRESOLVED_THREADS` and the merge is
 held. Escalate to the operator rather than merging. The bounded `--max-wait`
-`REVIEW_TIMEOUT` outcome is likewise a BLOCK; only an audited `--force` overrides it.
+`REVIEW_TIMEOUT` outcome is likewise a BLOCK; only an operator-authorized,
+audited `--force --operator-reason "<reason>"` overrides it.
 With Copilot review enabled, undispositioned Copilot review-body findings BLOCK the
 merge as `UNDISPOSITIONED_BODY_FINDINGS` until each affected review has a trusted
 disposition marker (§1.6.1); the same escalation applies.
@@ -486,12 +496,12 @@ comments are surfaced as follow-ups unless elevated by policy or operator.
 
 #### 1.9.1 Readiness Query
 
-Run a single GraphQL query to fetch PR head SHA, PR body, review decision,
-shadow-review requests/reviews, and review threads:
+Run a GraphQL query to fetch PR head SHA, PR body, review decision,
+shadow-review requests/reviews, PR conversation comments, and review threads:
 
 ```bash
 gh api graphql -f query='
-  query PRReviewReadiness($owner: String!, $repo: String!, $pr: Int!, $threadCursor: String) {
+  query PRReviewReadiness($owner: String!, $repo: String!, $pr: Int!, $threadCursor: String, $reviewCursor: String, $commentCursor: String) {
     repository(owner: $owner, name: $repo) {
       pullRequest(number: $pr) {
         headRefOid
@@ -507,7 +517,8 @@ gh api graphql -f query='
             }
           }
         }
-        reviews(last: 50) {
+        reviews(last: 50, before: $reviewCursor) {
+          pageInfo { hasPreviousPage startCursor }
           nodes {
             databaseId
             author { login }
@@ -516,6 +527,10 @@ gh api graphql -f query='
             commit { oid }
             body
           }
+        }
+        comments(last: 100, before: $commentCursor) {
+          nodes { databaseId body author { login __typename } authorAssociation }
+          pageInfo { hasPreviousPage startCursor }
         }
         reviewThreads(first: 100, after: $threadCursor) {
           nodes {
@@ -533,17 +548,12 @@ gh api graphql -f query='
 ' -f owner="softwaresalt" -f repo="agent-engram" -F pr=<pr_number>
 ```
 
-Omit `threadCursor` entirely on the first request — passing an empty string
-supplies an invalid Relay cursor and the query can fail before pagination
-starts. Declare it as `$threadCursor: String` (nullable, no default) so the
-initial call resolves it to `null`.
-
-If `pageInfo.hasNextPage` is true, re-run the query with
-`-f threadCursor="{endCursor}"` and merge the `reviewThreads.nodes`
-results. Repeat until `hasNextPage` is false. **Do not skip
-pagination** — a hard gate that misses operator-visible review data is unsafe. If
-pagination cannot complete (API error, rate limit), fail closed and
-halt rather than declaring readiness.
+Paginate `reviewThreads` forward using `threadCursor` and `endCursor` until
+`hasNextPage` is false; paginate `reviews` and `comments` backward using their
+respective cursors and `startCursor` until each `hasPreviousPage` is false.
+Merge each page's nodes. **Do not skip pagination**; on an API or pagination
+failure, fail closed and halt rather than declaring readiness. Verify marker
+authors' effective repository permissions separately as required by §1.6.1.
 
 #### 1.9.2 Local Readiness Record
 
@@ -637,21 +647,27 @@ Evaluate five checks in order. All five must pass for merge readiness.
    (integer ≥ 0, default `0`).
 2. Run the deterministic gate:
    `gsd gate copilot-review <pr_number> --repo softwaresalt/agent-engram --enforcement <mode> [--max-wait <max_wait_seconds>]`.
+   `--enforcement disabled` and a custom `--gh` also require explicit
+   operator authorization via `--operator-reason "<reason>"` and audit logging.
 3. Interpret the verdict / exit code:
    * `SATISFIED` or `NOT_APPLICABLE` (exit 0) — Copilot review is complete for the
      current HEAD with no open Copilot threads and every Copilot review-body finding
      dispositioned, or Copilot is not in play. Proceed.
+   * `DISABLED` (exit 0) — explicitly operator-authorized disabled enforcement
+     was audited; it is not evidence that a review was completed.
    * `WAITING_FOR_REVIEW`, `UNRESOLVED_THREADS`, `UNDISPOSITIONED_BODY_FINDINGS`,
      `REVIEW_TIMEOUT`,
      `DETECTION_AMBIGUOUS`, or `VERIFY_FAILED` (non-zero) — **GATE FAILS.** Halt.
      `--admin` does not bypass this. Wait for review completion, resolve every
      Copilot thread, then re-run. `REVIEW_TIMEOUT` still blocks; only an explicit,
-     audited `gsd gate copilot-review ... --force` (logged under
-     `.gsd/gates/`) may override, and only with operator authority.
+     `gsd gate copilot-review ... --force --operator-reason "<reason>"` may
+     override with explicit operator authority, recorded in
+     `.gsd/gates/copilot-review-force.jsonl`. Audit failure blocks.
    * `UNDISPOSITIONED_BODY_FINDINGS` — handle each threadless body finding per
      §1.6.1, post the trusted disposition comment, then re-run. `--admin` does not
      bypass this block.
-4. Only when the gate returns a PASS verdict (or an audited `--force` is recorded)
+4. Only when the gate returns a PASS verdict (including an explicitly authorized,
+   audited `--force --operator-reason "<reason>"` override)
    does the readiness gate reach **GATE PASSES**. The PR is ready for merge presentation.
 
 **Human review threads (Check 5 precedence)**: Human review threads are surfaced
@@ -677,7 +693,7 @@ and should be reported in the merge-readiness summary.
 | Local readiness outcome is `BLOCKED` or blocking findings remain | **Halt.** List blocking findings. Do not proceed to merge. |
 | `READY_WITH_FOLLOWUPS` omits follow-up handling | **Halt.** Report missing follow-up IDs or residual-risk notes. |
 | Code-changing PR omits successful full local build evidence | **Halt.** Run the full local build successfully or explain non-applicability only for documentation-only/backlog-only work. |
-| Copilot review enabled but incomplete for HEAD, Copilot threads unresolved, or Copilot review-body findings undispositioned (`gsd gate copilot-review` returns non-zero) | **Halt (P-018).** Wait for Copilot review completion, resolve every Copilot thread, and disposition every review-body finding (§1.6.1). `--admin` does not bypass. `REVIEW_TIMEOUT` blocks; only an audited `--force` overrides. |
+| Copilot review enabled but incomplete for HEAD, Copilot threads unresolved, or Copilot review-body findings undispositioned (`gsd gate copilot-review` returns non-zero) | **Halt (P-018).** Wait for Copilot review completion, resolve every Copilot thread, and disposition every review-body finding (§1.6.1). `--admin` does not bypass. `REVIEW_TIMEOUT` blocks; only an operator-authorized, audited `--force --operator-reason "<reason>"` overrides. |
 | Shadow review unavailable or still pending, Copilot not engaged (gate returns `NOT_APPLICABLE`) | **Warning.** Note in PR summary. Shadow review remains advisory when Copilot is not in play. |
 | All 5 checks pass | **Ready.** Present PR for merge approval. |
 
@@ -698,8 +714,9 @@ the P-014 operator approval signal only when all of these are true:
 4. Required CI/checks are green or explicitly marked non-applicable.
 5. P-009 merge-commit-only and P-016 worktree topology checks passed.
 6. The §1.9.4 Check 5 copilot-review gate returned a PASS verdict for the current
-   `headRefOid` (or an audited `--force` override is recorded). A
-   `COPILOT_REVIEW_BLOCK` is never satisfied by the activation record.
+   `headRefOid`. A `COPILOT_REVIEW_BLOCK` is never satisfied by the activation
+   record; an agent under `DARK_MODE_ACTIVE` must never self-authorize `--force`
+   without explicit in-session operator authorization (`--operator-reason`).
 
 If any condition is false or ambiguous, fail closed and wait for an explicit
 operator approval signal.

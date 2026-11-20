@@ -5,8 +5,8 @@ applyTo: '**'
 
 # Adversarial Review Instructions
 
-Use these rules when the workspace has enabled the `adversarial-review`
-capability pack. This pack provides multi-model parallel review for higher
+These rules are part of the core harness and apply whenever multi-model review
+escalation is in play. They provide multi-model parallel review for higher
 review confidence on security-sensitive, compliance-critical, or large-scale
 code changes. It also supports a first-class Anchor Reviewer route and alternate model providers
 (e.g., Gemini) so reviewer diversity is not limited to the standard tier routing set.
@@ -32,9 +32,9 @@ instances across different model tiers:
 
 ## Anchor Reviewer Support
 
-When `openai` and `gpt-6.1-sol` are configured,
+When `` and `` are configured,
 launch an **Anchor Reviewer** as a separately identified reviewer slot before
-standard Tier 1/2/3 assignment. Pass `high` to the
+standard Tier 1/2/3 assignment. Pass `` to the
 anchor reviewer when it is non-empty; an empty value means use the model default.
 The default anchor route is OpenAI GPT-5.6 Sol, but generated artifacts stay
 environment-agnostic by using the configured provider and family identifiers
@@ -47,11 +47,13 @@ Anchor Reviewer from the report.
 
 ## Alternate Model Provider Support
 
-When `openai` and `gpt-5.6-sol` are configured,
+When `` and `` are configured,
 one reviewer slot (Reviewer-B, the Tier 2 slot by default) is reassigned to
 the alternate provider and family. This allows a Gemini model, a different
 Anthropic family, or any registered provider to participate in the reviewer
-pool without requiring additional reviewer count.
+pool without requiring additional reviewer count. When either value resolves to
+an empty string or `"none"`, alternate-provider routing is inactive and
+Reviewer-B uses the standard Tier 2 model.
 
 **Escalation path**: If the standard tier routing set produces repeated
 disagreements (no consensus after 3 invocations on the same change), consider

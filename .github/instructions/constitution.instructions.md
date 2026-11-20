@@ -98,12 +98,28 @@ or large blast radius, agents MUST switch into an explicit safety mode before pr
 * **Freeze-scope mode** — constrain work to a declared path or subsystem boundary
 * **Investigate-first mode** — gather evidence and causal understanding before proposing fixes
 
-When the `strict-safety` capability pack is installed, agents MUST also follow
+For elevated-risk or destructive work, agents MUST also follow
 `.github/instructions/strict-safety.instructions.md` and record risky work using
 `ProposedAction`, `ActionRisk`, and `ActionResult` entries.
 
 **Rationale**: Guardrails are more reliable when they are interactive and legible. Safety modes
 translate policy into an operating posture that both the agent and the operator can reason about.
+
+### Core Protocol — Browser Verification
+
+When verifying browser-visible UI flows, agents MUST follow `.github/instructions/browser-verification.instructions.md` for server readiness, route selection, headed/headless choice, and explicit human checkpoints.
+
+### Core Protocol — Continuous Learning
+
+When recurring workflow practice is observed across sessions, agents MUST follow `.github/instructions/continuous-learning.instructions.md` to store observations under `.gsd/continuous-learning/`, cluster instincts, and promote corroborated rules only after meeting the promotion threshold.
+
+### Core Protocol — Release Observability
+
+For runtime-affecting or deployment-sensitive release units, agents MUST follow `.github/instructions/release-observability.instructions.md` to produce monitoring plans, observation windows, rollback triggers, and releasability evidence before closure.
+
+### Core Protocol — Adversarial Review
+
+When review surfaces 3+ P0/P1 findings or touches security-sensitive work, agents MUST follow `.github/instructions/adversarial-review.instructions.md` for multi-model parallel consensus review.
 
 ### Capability Overlay — agent-engram
 

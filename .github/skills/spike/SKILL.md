@@ -3,7 +3,7 @@ name: spike
 description: "Time-boxed investigation of a technical question, feasibility study, or proof-of-concept — produces a findings artifact with a recommendation and optional backlog linkage"
 ---
 
-## Spike
+# Spike
 
 Execute a focused, time-boxed investigation to answer a specific technical
 question or evaluate feasibility. Produces a findings artifact that captures
@@ -251,10 +251,10 @@ When the `backlogit` capability pack is installed and `create_task` is available
 
 When `backlog-md` is the installed backlog tool:
 
-* If promoting to queue, create a spike item using `backlogit_create_item` with
+* If promoting to queue, create a spike item using `task_create` with
   `title` from the goal question (shortened to 5-10 words),
   `description` linking to the findings artifact path,
-  `status: "done"`, and `labels: ["spike"]`.
+  `status: "Done"`, and `labels: ["spike"]`.
 
 When no backlog tool is available:
 

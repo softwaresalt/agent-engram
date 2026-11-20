@@ -124,7 +124,7 @@ fi
 # would only terminate that subshell, not the script -- callers detect the
 # "no resolvable parent" case via this function's non-zero return status
 # instead, and perform the warn-and-exit-0 themselves at the top level.
-resolve_autoharness_best_effort_real_path() {
+resolve_gsd_best_effort_real_path() {
     local candidate="$1"
     local depth="${2:-0}"
     if [ "$depth" -gt 20 ]; then
@@ -142,7 +142,7 @@ resolve_autoharness_best_effort_real_path() {
             /*) ;;
             *) raw_target="$(dirname "$candidate")/${raw_target}" ;;
         esac
-        resolve_autoharness_best_effort_real_path "$raw_target" "$((depth + 1))"
+        resolve_gsd_best_effort_real_path "$raw_target" "$((depth + 1))"
         return $?
     fi
     local parent_dir leaf_name
@@ -161,7 +161,7 @@ resolve_autoharness_best_effort_real_path() {
     fi
     printf '%s/%s\n' "$(realpath "$parent_dir")" "$leaf_name"
 }
-if ! TARGET_PATH="$(resolve_autoharness_best_effort_real_path "$FILEPATH")"; then
+if ! TARGET_PATH="$(resolve_gsd_best_effort_real_path "$FILEPATH")"; then
     echo "Warning: No lock file found for: $FILEPATH (parent directory does not exist; already released or never locked)" >&2
     exit 0
 fi

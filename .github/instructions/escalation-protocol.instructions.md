@@ -140,7 +140,7 @@ The escalation route resolves via a role-scoped precedence:
    never silently defers to the shared legacy route.
 3. **Legacy flat fallback (DEPRECATED)**: when the acting role has no nested
    `escalation` override, `model_routing.escalation`
-   (`gemini-4-argon` / `google` / `high`
+   (`gemini-4-carbon` / `google` / `high`
    — the pre-F02FD596 flat, role-agnostic route) resolves instead, with a
    deprecation notice. This is retained, unremoved, for backward
    compatibility. Whether this fallback is actually active for the acting
@@ -151,7 +151,7 @@ The escalation route resolves via a role-scoped precedence:
    any workspace, not a fixed installed fact about this one.
 4. **Tier3 fallback**: any field still unresolved after (1)-(3) falls back
    per-field to `model_routing.tier3`
-   (`gemini-4-argon` / `google` / `high`).
+   (`gemini-4-carbon` / `google` / `high`).
    An unresolved escalation `context_tier` falls back the same way, per field,
    to `model_routing.tier3.context_tier`, and then to the terminal default
    `default` when `tier3` declares none.

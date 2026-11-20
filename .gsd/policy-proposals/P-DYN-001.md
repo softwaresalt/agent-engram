@@ -10,7 +10,7 @@ evidence_count: 8
 
 ## Status: Proposed
 
-This policy was auto-proposed by `auto-tune` based on recurring patterns in the compound
+This policy was auto-proposed by `auto-tune` / `tune-harness` based on recurring patterns in the compound
 learning library. Review and decide: accept (copy to `.github/policies/` or append to
 `workflow-policies.md`) or reject (delete this file with a note in the tuning report).
 
@@ -50,7 +50,7 @@ To accept this policy:
 1. Review the evidence references and validate the pattern is real and recurring.
 2. Copy this file to `.github/policies/` or append a new entry to `.github/policies/workflow-policies.md`.
 3. Update any agents or skills that should enforce this policy gate.
-4. Run `autoharness verify-workspace` to confirm no dangling cross-references remain.
+4. Run `gsd verify-workspace` to confirm no dangling cross-references remain.
 5. Record acceptance in the tuning report.
 
 To reject: delete this file and note the rejection in the tuning report with a reason.

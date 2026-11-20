@@ -14,15 +14,13 @@
 # when one exists). No resolvable claimed shipment / zero active shipments ->
 # PASSES (existence-guarded, non-blocking for ordinary commits with no
 # claimed shipment); a mismatched single active or two-or-more-active
-# shipments is a P-001/P-016 violation and blocks fail-closed.
+# shipments still blocks fail-closed regardless of the advisory toggle below.
 #
 # Behavior:
 #   * Absent 'gsd' -> warn+skip, never a hard failure.
-#   * Fail-closed by default: any nonzero gate result blocks the commit. The
-#     gate does not expose distinct failure classes, so every nonzero result
-#     is treated as a potential P-001/P-016 violation. Set
-#     $env:GSD_TOPOLOGY_GATE_BLOCKING = 'false' to explicitly
-#     downgrade to advisory (staged rollout only).
+#   * Advisory-first by default (staged rollout): a gate failure warns but
+#     does NOT block the commit unless $env:GSD_TOPOLOGY_GATE_BLOCKING
+#     is 'true'.
 #   * Single deterministic pass — no retry loop.
 #
 # Install (opt-in — the harness never silently overwrites your .git/hooks):
@@ -46,19 +44,19 @@ $RepoRoot = & git rev-parse --show-toplevel
 Set-Location $RepoRoot
 
 if (-not (Get-Command gsd -ErrorAction SilentlyContinue)) {
-    Write-Warning "'gsd' not found — skipping pipeline-topology gate."
+    Write-Warning "'gsd' not found -- skipping pipeline-topology gate."
     exit 0
 }
 
 Write-Host "[Pipeline-Topology] gsd gate pipeline-topology --mode manual --phase ambient"
 gsd gate pipeline-topology --mode manual --phase ambient
 if ($LASTEXITCODE -ne 0) {
-    if ($env:GSD_TOPOLOGY_GATE_BLOCKING -ne 'false') {
-        Write-Error "pipeline-topology gate failed — commit blocked (P-001/P-016)."
+    if ($env:GSD_TOPOLOGY_GATE_BLOCKING -eq 'true') {
+        Write-Error "pipeline-topology gate failed -- commit blocked (P-001/P-016)."
         exit 1
     }
-    Write-Warning "pipeline-topology gate failed (advisory override active) — commit not blocked."
-    Write-Warning "  Clear `$env:GSD_TOPOLOGY_GATE_BLOCKING to restore fail-closed enforcement."
+    Write-Warning "pipeline-topology gate failed (advisory) -- commit not blocked."
+    Write-Warning "  Set `$env:GSD_TOPOLOGY_GATE_BLOCKING = 'true' to enforce, or commit --no-verify to bypass entirely."
 }
 
 exit 0

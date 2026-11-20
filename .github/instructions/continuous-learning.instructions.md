@@ -5,8 +5,9 @@ applyTo: '**'
 
 # Continuous Learning Instructions
 
-Use these rules when the workspace enabled the `continuous-learning`
-capability pack. This pack captures **observed recurring practice**, not just
+These rules are part of the core harness and apply whenever recurring-practice
+observation and instinct promotion is in play. They capture **observed
+recurring practice**, not just
 explicit solved problems.
 
 ## Storage Layout

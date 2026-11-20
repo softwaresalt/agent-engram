@@ -3,7 +3,7 @@ name: compact-context
 description: "Compact and consolidate memory, plan, and tracking artifacts into durable summaries in docs/ — mandatory workflow step, not advisory"
 ---
 
-## Compact Context
+# Compact Context
 
 Scan `docs/memory/`, `docs/exec-plans/`, and `docs/closure/` for stale or oversized artifacts, produce compacted summaries, and archive verbose originals. For plans with appended reviews, consolidate into a decided-plan that replaces the original plan + review verbosity.
 
@@ -103,11 +103,11 @@ The `{YYYY-MM-DD}` date in every compacted, decided-plan, and closure-summary fi
 
 Summarize in the session output:
 
-* Files compacted: {{count}}
-* Space recovered: {{size_reduction}}
-* Active task checkpoints preserved: {{count}}
-* Plans consolidated into decided-plans: {{count}}
-* Closure records compacted: {{count}}
+* Files compacted: `{count}`
+* Space recovered: `{size_reduction}`
+* Active task checkpoints preserved: `{count}`
+* Plans consolidated into decided-plans: `{count}`
+* Closure records compacted: `{count}`
 
 ## Behavioral Constraints
 

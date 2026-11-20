@@ -11,6 +11,10 @@
 #   * Absent gates are omitted at install time (only discovered gates appear).
 #   * If a gate's tool is not installed on this machine, the gate is SKIPPED
 #     with a warning (tool-not-found -> warn+skip), never a hard failure.
+#   * EXCEPTION (P-019 required-gate carve-out): a gate declared REQUIRED
+#     (Invoke-RequiredGate) FAILS when its tool is absent, naming the install
+#     command and the `git push --no-verify` escape. markdownlint is the
+#     first and only required gate.
 #   * Single deterministic pass — NO retry loop, so the hook cannot spin
 #     (circuit-breaker compatible). A failing gate surfaces immediately.
 #
@@ -37,8 +41,73 @@
 $ErrorActionPreference = 'Continue'
 
 # Run from repo root so repo-root-relative gate commands are valid.
-$RepoRoot = & git rev-parse --show-toplevel
-Set-Location $RepoRoot
+$rawTop = (& git rev-parse --show-toplevel).Trim()
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($rawTop)) {
+    Write-Error "git rev-parse --show-toplevel failed."
+    exit 1
+}
+$RepoRoot = [IO.Path]::GetFullPath($rawTop)
+Set-Location -LiteralPath $RepoRoot
+
+$DefaultAgentTempDir = Join-Path $RepoRoot ".gsd\runtime\tmp"
+$repoPrefix = $RepoRoot.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+$fullTemp = $DefaultAgentTempDir
+if (-not [string]::IsNullOrWhiteSpace($env:AGENT_TEMP_DIR) -and $env:AGENT_TEMP_DIR.IndexOf([IO.Path]::PathSeparator) -lt 0) {
+    $rawTemp = $env:AGENT_TEMP_DIR.Trim()
+    $candidate = if ([IO.Path]::IsPathRooted($rawTemp)) {
+        [IO.Path]::GetFullPath($rawTemp)
+    } else {
+        [IO.Path]::GetFullPath((Join-Path $RepoRoot $rawTemp))
+    }
+    $pathCmp = if ([IO.Path]::DirectorySeparatorChar -eq '\') { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+    if ($candidate.StartsWith($repoPrefix, $pathCmp)) {
+        $relCand = $candidate.Substring($repoPrefix.Length).TrimEnd('\', '/')
+        $relSlash = $relCand.Replace('\', '/')
+        if ($relSlash -ne '.git' -and -not $relSlash.StartsWith('.git/', [StringComparison]::OrdinalIgnoreCase)) {
+            $safeAncestors = $true
+            $cur = $RepoRoot
+            foreach ($seg in ($relCand -split '[/\\]')) {
+                if ([string]::IsNullOrWhiteSpace($seg)) { continue }
+                $cur = Join-Path $cur $seg
+                $item = Get-Item -LiteralPath $cur -Force -ErrorAction SilentlyContinue
+                if ($null -ne $item -and ((($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) -or -not $item.PSIsContainer)) {
+                    $safeAncestors = $false
+                    break
+                }
+            }
+            if ($safeAncestors) {
+                $fullTemp = $candidate
+            }
+        }
+    }
+}
+$env:AGENT_TEMP_DIR = $fullTemp
+
+$relFinal = $env:AGENT_TEMP_DIR.Substring($repoPrefix.Length).TrimEnd('\', '/')
+$curCheck = $RepoRoot
+foreach ($seg in ($relFinal -split '[/\\]')) {
+    if ([string]::IsNullOrWhiteSpace($seg)) { continue }
+    $curCheck = Join-Path $curCheck $seg
+    $item = Get-Item -LiteralPath $curCheck -Force -ErrorAction SilentlyContinue
+    if ($null -ne $item -and ((($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) -or -not $item.PSIsContainer)) {
+        Write-Error "Refusing symlink, reparse point, or non-directory ancestor in AGENT_TEMP_DIR: $curCheck"
+        exit 1
+    }
+}
+
+New-Item -ItemType Directory -Force -Path $env:AGENT_TEMP_DIR -ErrorAction Stop | Out-Null
+$env:TEMP = $env:AGENT_TEMP_DIR
+$env:TMP = $env:AGENT_TEMP_DIR
+$env:TMPDIR = $env:AGENT_TEMP_DIR
+$ceilingSep = [IO.Path]::PathSeparator
+if ([string]::IsNullOrWhiteSpace($env:GIT_CEILING_DIRECTORIES)) {
+    $env:GIT_CEILING_DIRECTORIES = $env:AGENT_TEMP_DIR
+} else {
+    $existingCeilings = @($env:GIT_CEILING_DIRECTORIES -split [regex]::Escape($ceilingSep) | Where-Object { $_ })
+    if ($existingCeilings -notcontains $env:AGENT_TEMP_DIR) {
+        $env:GIT_CEILING_DIRECTORIES = ($existingCeilings + $env:AGENT_TEMP_DIR) -join $ceilingSep
+    }
+}
 
 $script:Failed = $false
 
@@ -71,14 +140,49 @@ function Invoke-Gate {
     }
 
     if ($probe -and -not (Get-Command $probe -ErrorAction SilentlyContinue)) {
-        Write-Warning "'$probe' not found — skipping $Label gate."
+        Write-Warning "'$probe' not found -- skipping $Label gate."
         return
     }
 
     Write-Host "[$Label] $Command"
     Invoke-Expression $Command
     if ($LASTEXITCODE -ne 0) {
-        Write-Error "$Label gate failed — push blocked (P-019)."
+        Write-Error "$Label gate failed -- push blocked (P-019)."
+        $script:Failed = $true
+    }
+}
+
+# Invoke-RequiredGate <label> <tool> <install> <scriptblock>
+# P-019 required-gate carve-out: identical to Invoke-Gate EXCEPT that an absent
+# <tool> is a FAILURE (not a skip), naming the install command and the
+# `git push --no-verify` escape. The gate body is a SCRIPTBLOCK, never a command
+# string, so file names can never be re-parsed as PowerShell.
+function Invoke-RequiredGate {
+    param(
+        [string]$Label,
+        [string]$Tool,
+        [string]$Install,
+        [scriptblock]$Run
+    )
+
+    if (-not (Get-Command $Tool -ErrorAction SilentlyContinue)) {
+        Write-Error "required tool '$Tool' not found -- $Label gate cannot run (P-019). Install with: $Install. Or bypass this gate with: git push --no-verify"
+        $script:Failed = $true
+        return
+    }
+
+    Write-Host "[$Label] $Tool"
+    $global:LASTEXITCODE = 0
+    $ok = $true
+    try {
+        & $Run
+        if (-not $? -or $LASTEXITCODE -ne 0) { $ok = $false }
+    } catch {
+        Write-Warning "$Label gate invocation error: $_"
+        $ok = $false
+    }
+    if (-not $ok) {
+        Write-Error "$Label gate failed -- push blocked (P-019)."
         $script:Failed = $true
     }
 }
@@ -87,9 +191,36 @@ Write-Host "Running local pre-push quality gates..."
 
 Invoke-Gate "Lint" "cargo" "cargo clippy --all-targets -- -D warnings -D clippy::pedantic"
 Invoke-Gate "Format" "cargo" "cargo fmt --all -- --check"
-Invoke-Gate "Typecheck" "" ""
+Invoke-Gate "Typecheck" "cargo" "cargo check --all-targets"
 Invoke-Gate "Test" "cargo" "cargo dev-test"
 Invoke-Gate "Build" "cargo" "cargo check --all-targets"
+
+# Markdown lint (P-019 REQUIRED gate, P-008). Scope S1 -- identical to CI so the
+# local hook and CI cannot disagree: Markdown files changed vs the merge-base
+# with the default branch, config .markdownlint.json, one pinned
+# markdownlint-cli version. A missing linter FAILS the push (required gate).
+if (Test-Path '.markdownlint.json') {
+    # Default-branch ref is resolved at RUN time and passed only as an argument
+    # (never rendered into the script text), so a branch name cannot execute.
+    $mdRef = (& git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>$null)
+    if (-not $mdRef) {
+        foreach ($cand in @('origin/main', 'origin/master')) {
+            & git rev-parse --verify --quiet $cand 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) { $mdRef = $cand; break }
+        }
+    }
+    $mdBase = $null
+    if ($mdRef) { $mdBase = (& git merge-base $mdRef HEAD 2>$null) }
+    if ($mdBase) {
+        $mdRaw = (& git diff -z --name-only --diff-filter=ACMR $mdBase HEAD -- '*.md' ':(exclude).backlogit') -join ''
+    } else {
+        $mdRaw = (& git ls-files -z -- '*.md' ':(exclude).backlogit') -join ''
+    }
+    $mdFiles = @($mdRaw -split "`0" | Where-Object { $_ })
+    if ($mdFiles.Count -gt 0) {
+        Invoke-RequiredGate "Docs" "markdownlint" "npm install -g markdownlint-cli@0.49.1" { & markdownlint --config .markdownlint.json -- @mdFiles }
+    }
+}
 
 # Pipeline-topology gate (P-001/P-016 ambient invariant check).
 #
@@ -99,30 +230,27 @@ Invoke-Gate "Build" "cargo" "cargo check --all-targets"
 # runs `--phase ambient` here (at-most-one-active, validating the
 # resolved target when one exists). No resolvable claimed shipment / zero
 # active shipments -> PASSES (existence-guarded, non-blocking); a
-# mismatched single active or two-or-more-active shipments is a
-# P-001/P-016 violation and blocks fail-closed.
+# mismatched single active or two-or-more-active shipments still blocks
+# fail-closed regardless of the advisory toggle below.
 #
-# Fail-closed by default: any nonzero gate result blocks the push. The gate
-# does not expose distinct failure classes, so every nonzero result is
-# treated as a potential P-001/P-016 violation. Set
-# $env:GSD_TOPOLOGY_GATE_BLOCKING = 'false' to explicitly downgrade
-# to advisory (staged rollout only). Single deterministic pass — no retry
-# loop (circuit-breaker compatible).
-# Absent 'gsd' -> warn+skip, never a hard failure.
+# Advisory-first by default (staged rollout): a gate failure warns but
+# does NOT block the push unless $env:GSD_TOPOLOGY_GATE_BLOCKING
+# is 'true'. Single deterministic pass — no retry loop (circuit-breaker
+# compatible). Absent 'gsd' -> warn+skip, never a hard failure.
 if (Get-Command gsd -ErrorAction SilentlyContinue) {
     Write-Host "[Pipeline-Topology] gsd gate pipeline-topology --mode manual --phase ambient"
     gsd gate pipeline-topology --mode manual --phase ambient
     if ($LASTEXITCODE -ne 0) {
-        if ($env:GSD_TOPOLOGY_GATE_BLOCKING -ne 'false') {
-            Write-Error "pipeline-topology gate failed — push blocked (P-001/P-016)."
+        if ($env:GSD_TOPOLOGY_GATE_BLOCKING -eq 'true') {
+            Write-Error "pipeline-topology gate failed -- push blocked (P-001/P-016)."
             $script:Failed = $true
         } else {
-            Write-Warning "pipeline-topology gate failed (advisory override active) — push not blocked."
-            Write-Warning "  Clear `$env:GSD_TOPOLOGY_GATE_BLOCKING to restore fail-closed enforcement."
+            Write-Warning "pipeline-topology gate failed (advisory) -- push not blocked."
+            Write-Warning "  Set `$env:GSD_TOPOLOGY_GATE_BLOCKING = 'true' to enforce, or push --no-verify to bypass entirely."
         }
     }
 } else {
-    Write-Warning "'gsd' not found — skipping pipeline-topology gate."
+    Write-Warning "'gsd' not found -- skipping pipeline-topology gate."
 }
 
 if ($script:Failed) {

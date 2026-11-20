@@ -88,11 +88,10 @@ advisory shadow mode immediately after PR creation or after pushing new commits:
 
 1. Request shadow review per `.github/instructions/github-pr-automation.instructions.md` §1.1 when the operator or workflow enables migration shadow mode.
 2. Poll for completion using the back-off cadence in §1.2.
-3. Requesting shadow review is optional; **engagement is not**. Until a review is requested or one exists, shadow review is not a merge dependency. Once Copilot review IS engaged, P-018 applies: the §1.9.4 Check 5 copilot-review gate becomes a fail-closed dependency, and timeout or unavailability blocks rather than remaining advisory.
-4. When `DARK_MODE_ACTIVE` is present, local review readiness remains authoritative
-   for *findings*, but P-018 is preserved: if Copilot review is engaged, a review for
-   the current HEAD and resolution of every Copilot-authored thread are still required
-   before merge. Dark mode does not downgrade an engaged Copilot review to advisory.
+3. Do not treat shadow review as a required dependency for merge readiness unless the operator explicitly elevates it for the current PR.
+4. When `DARK_MODE_ACTIVE` is present, keep shadow review advisory by default:
+   local review readiness remains authoritative, and timeout/unavailability is
+   recorded in the PR readiness summary instead of blocking merge readiness.
 
 ### Step 3: Handle review feedback
 
@@ -112,7 +111,8 @@ advisory shadow mode immediately after PR creation or after pushing new commits:
    circuit-breaker limits.
 3. For non-GitHub repositories, apply bounded fixes directly when they
    are clearly actionable and pass the same P-021 C1 test.
-4. Re-run the relevant validation after each fix cycle.
+4. Re-run the relevant validation after each fix cycle, including the review skill's Post-Fix Delta Check
+   before each review-fix commit is pushed (this applies whether or not shadow review is enabled; see Step 4b item 4).
 5. Before every code-changing fix push, require successful full local build
    evidence. Documentation-only/backlog-only fixes may record full-build
    non-applicability. Halt on missing or failed build evidence.
@@ -162,6 +162,45 @@ advisory shadow mode immediately after PR creation or after pushing new commits:
      SINGLE-WRITE CAPTURE INVARIANT and LATE-SURFACING THREAD rule (both
      authored in 134.004-T).
 
+### Step 3c: Hosted-review finding inventory
+
+After each hosted review round completes (and again before the merge approval gate), build a finding
+inventory so recurring classes are visible instead of rediscovered one round at a time:
+
+1. Enumerate findings from BOTH sources: the `reviewThreads` of the PR AND the `body` field of every
+   hosted review (the "Suppressed comments" lists inside a review body never open a thread; thread-only
+   reads miss them). Use the §1.3 enumeration recipe in
+   `.github/instructions/github-pr-automation.instructions.md`.
+2. Classify each finding into one of the 12 taxonomy root-cause classes (RC-1 through RC-12) defined in
+   `docs/compound/2026-09-07-copilot-review-finding-pattern-taxonomy.md`. A finding that fits no class is
+   recorded as `unclassified` and is a candidate for a genuinely new class at Step 6b. When the taxonomy file is
+   absent from this workspace's compound library, record every finding as `unclassified` instead of inventing classes.
+3. Record one inventory row per finding: round and reviewed HEAD, source (`thread` or `suppressed`),
+   root-cause class, severity, and disposition (fixed with commit SHA, deferred with the P-021 stash ID, or
+   declined with rationale).
+4. A round is not clean until both the unresolved thread count and the undispositioned suppressed-finding
+   count are zero, counted across ALL reviews on the PR until each finding's §1.6.1 disposition marker is
+   recorded (only review-completion freshness is specific to the current HEAD); dispositioned findings stay in the inventory.
+
+The inventory is workflow evidence only: no runtime telemetry engine, no new schema, and no new CLI surface.
+
+### PR-Body Concision Contract
+
+The PR body is a **mutable surface** and therefore the owner of current-HEAD readiness claims. Committed evidence
+records only an immutable `last_code_affecting_head` or an explicitly named observed revision and never names its own
+commit; this split prevents the self-referential `reviewed_head` fixed-point loop. The documentation consistency
+audit is defined once in `.github/instructions/shipment-documentation-audit.instructions.md`.
+
+For the audit, a PR body carries ONLY:
+
+* the audit verdict (the recorded outcome),
+* a pointer to the committed audit evidence record, and
+* any deferred follow-up IDs.
+
+A PR body MUST NOT contain the audit category list or any paraphrase of it, and an agent MUST NOT paste the
+checklist into a PR body or restore one that was removed. State the verdict and point at the instruction instead.
+Omitting the list is not enough to prevent recurrence; this prohibition is the rule.
+
 ### Step 4: Handle CI failures
 
 1. If CI fails, invoke the `fix-ci` skill with the active PR or branch
@@ -185,7 +224,11 @@ is enabled:
    §1.7.
 2. Poll for the new review using the same back-off cadence.
 3. Resolve any remaining bot-authored threads per §1.6.
-4. Repeat until the review is clean or the review-fix cycle limit is
+4. For each review-fix commit, run the review skill's Post-Fix Delta Check before that commit is pushed (if a
+   fix was already pushed, run it against the pushed commit and push any correction as a follow-up commit). It is
+   not a review-fix cycle and does not consume circuit-breaker budget; paste its 4-line result into the PR
+   Review History.
+5. Repeat until the review is clean or the review-fix cycle limit is
    reached.
 
 ### Step 5: Merge approval gate
@@ -198,30 +241,22 @@ local review readiness verification defined in
 
 1. Execute the §1.9 readiness query with full pagination until `hasNextPage`
    is false. If pagination cannot complete, fail closed and halt.
-2. Evaluate all five gate checks in order:
+2. Evaluate all four gate checks in order:
    - **Check 1**: A local review readiness record exists for the current `headRefOid`.
    - **Check 2**: The local review outcome is `READY` or `READY_WITH_FOLLOWUPS`.
    - **Check 3**: Any residual P2/P3 findings are explicitly tracked as follow-up items or residual-risk notes.
    - **Check 4**: Code-changing PRs include successful full local build evidence, or
      documentation-only/backlog-only PRs explicitly mark full-build non-applicability.
-   - **Check 5 (P-018, fail-closed)**: When Copilot review is engaged, run
-     `gsd gate copilot-review <pr_number> --repo softwaresalt/agent-engram --enforcement <mode>`
-     and require a PASS verdict — a Copilot review for the current HEAD plus resolution of
-     every Copilot-authored thread and disposition of every review-body finding. A `COPILOT_REVIEW_BLOCK`, timeout, or unverifiable
-     result halts; `--admin` never bypasses it.
 3. If any check fails, **halt immediately**. Do not present the PR as
    merge-ready. Report the blocking condition to the operator.
-4. Advisory shadow-review feedback that is *not* yet engaged is surfaced in the
-   merge-readiness summary without blocking. Once engaged, Check 5 governs and the
-   feedback is no longer advisory.
+4. If advisory shadow-review feedback exists, surface it in the merge-readiness summary without treating it as merge-blocking by default.
 5. Surface human review threads, `reviewDecision`, and any
    `CHANGES_REQUESTED` reviews in the merge-readiness summary — these
    may independently block merge at the GitHub level.
 6. In dark mode, this local readiness gate is the authoritative merge-readiness
-   gate for findings: unresolved local P0/P1 findings block, `READY_WITH_FOLLOWUPS`
-   requires explicit follow-up handling, and unengaged shadow-review unavailability
-   does not block unless elevated by the activation contract or operator. Once
-   Copilot review IS engaged on the PR, Check 5 (P-018) applies fail-closed.
+   gate: unresolved local P0/P1 findings block, `READY_WITH_FOLLOWUPS` requires
+   explicit follow-up handling, and shadow-review unavailability does not block
+   unless elevated by the activation contract or operator.
 
 #### Step 5b: Present merge readiness
 
@@ -251,16 +286,15 @@ After receiving operator approval, or after confirming a valid
 `DARK_MODE_ACTIVE` approval record, and before executing any normal merge or
 admin fallback:
 
-1. Re-run the P-018 copilot-review gate (`gsd gate copilot-review <pr> --repo softwaresalt/agent-engram --enforcement <mode>`) unconditionally — a Copilot review can be dismissed or a thread reopened without advancing `headRefOid`.
-2. Re-query the PR `headRefOid`.
-3. Confirm the `headRefOid` still matches the HEAD covered by the latest passed
+1. Re-query the PR `headRefOid`.
+2. Confirm the `headRefOid` still matches the HEAD covered by the latest passed
    §1.9 gate and the PR body's `Reviewed HEAD` value.
-4. If the branch advanced, the PR body reviewed SHA differs from `headRefOid`, or
+3. If the branch advanced, the PR body reviewed SHA differs from `headRefOid`, or
    the latest passed §1.9 gate covered a different SHA, re-run §1.9 in full
    before merge or fallback — the prior gate result is stale.
-5. If the branch HEAD and review state are unchanged from the §1.9 gate run and P-018 passed,
+4. If the branch HEAD and review state are unchanged from the §1.9 gate run,
    log `P-014 LAST-MILE CHECK PASSED: branch unchanged, local readiness still covers HEAD`.
-6. Execute the merge or admin fallback only after this check passes.
+5. Execute the merge or admin fallback only after this check passes.
 
 This last-mile check closes the race window between approval receipt and merge
 execution. It is a lightweight incremental query (not a full §1.9 re-run) when the
@@ -280,36 +314,52 @@ branch has not changed.
    * `CHECKS_BLOCK`
    * `MERGE_STRATEGY_BLOCK`
    * `MISSING_ADMIN_RIGHTS`
-   * `COPILOT_REVIEW_BLOCK`
    * `UNKNOWN_MERGE_BLOCK`
 5. In dark mode, admin fallback may be attempted only for branch-protection
    review/conversation blocks explicitly covered by `admin_fallback_pre_authorized`.
    Before fallback, run Step 5c's immediate `headRefOid` re-query/comparison and
-   re-confirm required checks, P-009 merge-commit strategy, P-016 topology, P-018
-   copilot-review gate, and scope match.
+   re-confirm required checks, P-009 merge-commit strategy, P-016 topology, and
+   scope match.
 6. Never use admin fallback for failed/pending/missing required checks, stale
-   local review readiness, unresolved local P0/P1 findings, a P-018
-   `COPILOT_REVIEW_BLOCK`, squash/rebase-only merge strategy, secrets-safety
-   risk, scope mismatch, or unknown merge blocks.
+   local review readiness, unresolved local P0/P1 findings, squash/rebase-only
+   merge strategy, secrets-safety risk, scope mismatch, or unknown merge blocks.
 7. Record every normal merge and admin fallback attempt in the PR summary or
-   merge evidence with state, reason, command/API used, and result; emit
-   `ADMIN_FALLBACK_ATTEMPTED` after any authorized fallback call and
-   `DARK_MODE_HALTED` for uncovered blocks. If fallback fails because
-   credentials lack bypass rights, halt with `MISSING_ADMIN_RIGHTS`.
+   merge evidence with state, reason, command/API used, and result. If fallback
+   fails because credentials lack bypass rights, halt with `MISSING_ADMIN_RIGHTS`.
 
 ### Step 6: Post-merge cleanup
 
 After a user-approved merge:
 
 1. Report the merge result and resulting default-branch state.
-2. **Do NOT checkout `main` and start working on it.**
-   Post-merge closure work belongs on a dedicated `post-merge/` branch
-   created by the Ship agent. This skill's responsibility ends at
-   reporting the merge result.
+1a. **Confirmed single-checkpoint finalization (`HG-3`)**: Immediately after `gh pr merge --merge` succeeds and `state == "MERGED"` (with a verified two-parent `mergeCommit.oid` ancestor of `origin/main`) is confirmed, run `gsd checkpoint finalize-merged --role <calling_role> [--checkpoint <filename> --confirm] --pr <pr_number>` (`--role stage` or `--role ship`). Without `--checkpoint` and `--confirm`, `gsd checkpoint finalize-merged` runs in strictly read-only inspection mode; when an explicit single checkpoint for the PR session has been selected and confirmed (`--checkpoint <filename> --confirm`), it resolves that named PR-phase checkpoint.
+2. **Branch transition distinction (Ship implementation PRs vs. plan-publication and staging PRs, `HG-5`)**:
+   * **Ship implementation PRs (`feat/*`, non-staging `chore/*`)**: **Do NOT checkout `main` and start working on it.** Post-merge closure work belongs on a dedicated `post-merge/` branch created by the Ship agent. This skill's responsibility ends at reporting the merge result.
+   * **Plan-publication and staging PRs (`plan/*`, `chore/stage-*`)**: Automatically invoke `gsd op git sync-main --default-branch main` to stash dirty P-011 carry-forward files, switch back to `main`, fast-forward `main` via `git pull --ff-only origin main`, and restore stashed carry-forward state with `git stash apply --index` and digest verification so the workspace returns to synchronized `main` ready for downstream handoff.
 3. Delete the feature branch only when that cleanup is requested or
    already part of the chosen PR flow.
 4. Summarize any follow-up items, release notes, or residual risks
    that remain after merge.
+
+### Step 6b: Compound checkpoint and review metrics
+
+Runs during post-merge closure, using the Step 3c inventory. It is bounded: it promotes only classes
+that earn promotion and writes no new schema, CLI surface, or telemetry engine.
+
+1. Apply the 5-signal promotion threshold (any one signal suffices) to each inventoried class, counting
+   only confirmed Valid findings and the confirmed portion of Partial findings; Invalid or declined reports stay in the
+   inventory for audit only and never count toward promotion or become future review guidance. A class is promotable when at
+   least one signal holds: (a) recurrence of two or more findings in the class; (b) a
+   cross-contract invariant was violated; (c) the finding escaped both local review and CI; (d) the finding was P0/P1
+   or concerned a fail-closed gate; (e) the reviewer-declared recurrence.
+2. For each promotable class, APPEND to the existing `docs/compound/` entry whose `root_cause` matches
+   (start from `docs/compound/2026-09-07-copilot-review-finding-pattern-taxonomy.md`). Create a new
+   file ONLY for a genuinely new class that matches no existing entry.
+3. Emit five workflow-evidence metrics into the review section of the closure record: recurrence
+   rate, first-detected phase, escaped-to-hosted-review count, time-to-disposition (which MUST be
+   >= 0; a negative value is a date-ordering defect to fix, not to record), and class coverage.
+4. Record the promoted classes and metric values in the closure record. When nothing meets the
+   threshold, record that explicitly rather than omitting the section.
 
 ## Completion Criteria
 

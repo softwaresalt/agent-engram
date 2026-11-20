@@ -3,11 +3,11 @@ name: _Stage
 id: gsd/pipeline/stage
 description: "Manages the stash-to-backlog pipeline: triage, deliberation, planning, risk hardening, review gating, and harvest orchestration"
 maturity: stable
-tools: vscode, execute, read, agent, edit, search, todo, memory, gsd/review_record-result, gsd/review_recover-recording, backlogit/backlogit_abandon_checkpoint, backlogit/backlogit_ack_hook_events, backlogit/backlogit_add_dependency, backlogit/backlogit_add_link, backlogit/backlogit_add_to_shipment, backlogit/backlogit_adopt_item, backlogit/backlogit_append_comment, backlogit/backlogit_archive_item, backlogit/backlogit_block_shipment, backlogit/backlogit_claim_shipment, backlogit/backlogit_cleanup_checkpoints, backlogit/backlogit_correct_stash_provenance, backlogit/backlogit_create_item, backlogit/backlogit_create_shipment, backlogit/backlogit_delete_item, backlogit/backlogit_deliberate, backlogit/backlogit_dispose_shipment, backlogit/backlogit_docs_classify, backlogit/backlogit_docs_lint, backlogit/backlogit_docs_migrate, backlogit/backlogit_docs_scope, backlogit/backlogit_doctor, backlogit/backlogit_export_command_map, backlogit/backlogit_fetch_stash, backlogit/backlogit_get_checkpoint, backlogit/backlogit_get_dependencies, backlogit/backlogit_get_item, backlogit/backlogit_get_links, backlogit/backlogit_get_metadata_catalog, backlogit/backlogit_get_queue, backlogit/backlogit_get_shipment, backlogit/backlogit_get_version, backlogit/backlogit_get_wit_metadata, backlogit/backlogit_harvest_stash, backlogit/backlogit_list_checkpoints, backlogit/backlogit_list_items, backlogit/backlogit_list_shipments, backlogit/backlogit_list_templates, backlogit/backlogit_list_types, backlogit/backlogit_log_telemetry, backlogit/backlogit_merge_sync, backlogit/backlogit_move_item, backlogit/backlogit_normalize_blocked_shipment, backlogit/backlogit_poll_hook_events, backlogit/backlogit_quarantine_checkpoint, backlogit/backlogit_query_sql, backlogit/backlogit_reconcile_archived_lifecycle, backlogit/backlogit_remove_dependency, backlogit/backlogit_remove_link, backlogit/backlogit_resolve_checkpoint, backlogit/backlogit_return_blocked, backlogit/backlogit_save_memory, backlogit/backlogit_search_items, backlogit/backlogit_ship_shipment, backlogit/backlogit_stash, backlogit/backlogit_stash_archive, backlogit/backlogit_stash_edit, backlogit/backlogit_stash_get, backlogit/backlogit_stash_remove, backlogit/backlogit_sync_index, backlogit/backlogit_telemetry_harvest, backlogit/backlogit_track_commit, backlogit/backlogit_unblock_shipment, backlogit/backlogit_update_item
+tools: vscode, execute, read, agent, edit, search, todo, memory, 'engram/*', gsd/review_record-result, gsd/review_recover-recording, backlogit/backlogit_abandon_checkpoint, backlogit/backlogit_ack_hook_events, backlogit/backlogit_add_dependency, backlogit/backlogit_add_link, backlogit/backlogit_add_to_shipment, backlogit/backlogit_adopt_item, backlogit/backlogit_append_comment, backlogit/backlogit_archive_item, backlogit/backlogit_block_shipment, backlogit/backlogit_claim_shipment, backlogit/backlogit_cleanup_checkpoints, backlogit/backlogit_correct_stash_provenance, backlogit/backlogit_create_item, backlogit/backlogit_create_shipment, backlogit/backlogit_delete_item, backlogit/backlogit_deliberate, backlogit/backlogit_dispose_shipment, backlogit/backlogit_docs_classify, backlogit/backlogit_docs_lint, backlogit/backlogit_docs_migrate, backlogit/backlogit_docs_scope, backlogit/backlogit_doctor, backlogit/backlogit_export_command_map, backlogit/backlogit_fetch_stash, backlogit/backlogit_get_checkpoint, backlogit/backlogit_get_dependencies, backlogit/backlogit_get_item, backlogit/backlogit_get_links, backlogit/backlogit_get_metadata_catalog, backlogit/backlogit_get_queue, backlogit/backlogit_get_shipment, backlogit/backlogit_get_version, backlogit/backlogit_get_wit_metadata, backlogit/backlogit_harvest_stash, backlogit/backlogit_list_checkpoints, backlogit/backlogit_list_items, backlogit/backlogit_list_shipments, backlogit/backlogit_list_templates, backlogit/backlogit_list_types, backlogit/backlogit_log_telemetry, backlogit/backlogit_merge_sync, backlogit/backlogit_move_item, backlogit/backlogit_normalize_blocked_shipment, backlogit/backlogit_poll_hook_events, backlogit/backlogit_quarantine_checkpoint, backlogit/backlogit_query_sql, backlogit/backlogit_reconcile_archived_lifecycle, backlogit/backlogit_remove_dependency, backlogit/backlogit_remove_link, backlogit/backlogit_resolve_checkpoint, backlogit/backlogit_return_blocked, backlogit/backlogit_save_memory, backlogit/backlogit_search_items, backlogit/backlogit_ship_shipment, backlogit/backlogit_stash, backlogit/backlogit_stash_archive, backlogit/backlogit_stash_edit, backlogit/backlogit_stash_get, backlogit/backlogit_stash_remove, backlogit/backlogit_sync_index, backlogit/backlogit_telemetry_harvest, backlogit/backlogit_track_commit, backlogit/backlogit_unblock_shipment, backlogit/backlogit_update_item
 max_subagent_tier: 3
-reasoning_effort: "high"
+reasoning_effort: "medium"
 model_provider: "google"
-model_family: "gemini-4-argon"
+model_family: "gemini-4-carbon"
 context_tier: "long_context"
 subagent_depth: 2
 ---
@@ -986,7 +986,7 @@ halt without first following this auto-escalation directive
 2. **Resolve the escalation route**: run
    `gsd routing resolve --workspace . --site stage --kind escalation --json`
    and consume the returned route (this workspace's currently-effective
-   resolution is `gpt-6.1-sol` / `openai` /
+   resolution is `gpt-6.2-sol` / `openai` /
    `high`). The resolver applies the documented
    fallback defined in `escalation-protocol.instructions.md`:
    `stage.escalation.chain` (ordered 1..3-level dispatchability and per-level
@@ -1019,7 +1019,7 @@ halt without first following this auto-escalation directive
    schema-failing config — Stage MUST NOT continue on a stale/baked route
    carried over from this file's frontmatter or a prior session's resolved
    value, and MUST NOT invent a last-known-good fallback. Falls back per field to
-   `gemini-4-argon` / `google` /
+   `gemini-4-carbon` / `google` /
    `high` when no override for a field is declared at
    any tier.
    Separately, the escalation `context_tier` resolves to `long_context`

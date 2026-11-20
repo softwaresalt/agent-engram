@@ -49,7 +49,7 @@ Determine what is installed before running any checks.
    * If absent: record **MISSING MANIFEST** — set scope-detection grade to F and skip Phases 2 and 3. Phases 4–6 proceed using directory heuristics.
 2. If the manifest is present, load it and extract:
    * `schema_version`
-   * `GSD_version` (the version that performed the install)
+   * `gsd_version` (the version that performed the install)
    * `installed_at` timestamp
    * `artifacts` — the array of installed artifact objects; each has a `path` (workspace-relative), `checksum`, `primitive`, `template`, and optional `artifact_type`
 3. Enumerate artifact directories on disk: `.github/agents`, `.github/skills`, `.github/instructions`, `.github/prompts`, `.github/policies`.
@@ -68,7 +68,7 @@ Determine what is installed before running any checks.
 
 Compare the version that performed the install against the current gsd version.
 
-1. Read `GSD_version` from the manifest (the version that performed the install).
+1. Read `gsd_version` from the manifest (the version that performed the install).
 2. Resolve the **current** gsd version live by running the `gsd version` CLI at diagnostic time (this is the version that would perform upgrades).
    * If the CLI is unavailable, current-version resolution has **failed** — do NOT substitute the install-time `1.6.0` value as the current version (comparing install-time against install-time would report a false match). Record **WARN — current gsd version could not be resolved; drift undetectable** and skip the drift classification below.
 3. When the current version is resolved, compare it against the manifest version and classify the drift:

@@ -78,46 +78,53 @@ model_routing:
     reasoning_effort: "high"  # Leave empty to use model default
     context_tier: "long_context"        # context-capacity class (default | long_context)
   tier2:
-    model: claude-sonnet-5.5              # Standard: orchestration, code, review (e.g., claude-sonnet-5)
-    model_provider: "anthropic"
+    model: mai-code-2              # Standard: orchestration, code, review (e.g., claude-sonnet-5)
     reasoning_effort: "high"
-    model_family: "claude-sonnet-5.5"
-    context_tier: "default"
+    model_provider: "microsoft"
+    model_family: "mai-code-2"
+    context_tier: "long_context"     # default | long_context
   tier3:
-    model: gemini-4-argon              # Frontier: planning, architecture, analysis (e.g., claude-sonnet-5)
+    model: gemini-4-carbon              # Frontier: planning, architecture, analysis (e.g., claude-opus-5)
     reasoning_effort: "high"
     model_provider: "google"
-    model_family: "gemini-4-argon"
-    context_tier: "long_context"
+    model_family: "gemini-4-carbon"
+    context_tier: "long_context"     # default | long_context
   orchestrator:
+    model_family: "gemini-4-carbon"     # Orchestrator model override (default: gpt-5.4)
+    reasoning_effort: "medium"
     model_provider: "google"
-    model_family: "gemini-4-argon"
-    reasoning_effort: "high"
-    context_tier: "long_context"
+    context_tier: "long_context"  # Falls back to tier2, then default
   stage:
+    model_family: "gemini-4-carbon"             # Stage role route (falls back to tier3 when empty)
     model_provider: "google"
-    model_family: "gemini-4-argon"             # Stage role route (falls back to tier3 when empty)
-    reasoning_effort: "high"
-    context_tier: "long_context"
+    reasoning_effort: "medium"
+    context_tier: "long_context"       # Falls back to tier3, then default
+    # F02FD596: optional nested per-role escalation override for Stage.
+    # Takes precedence over the legacy flat model_routing.escalation below;
+    # missing sub-fields fall back per-field to tier3 (never to the legacy
+    # flat route). MUST NOT be declared alongside a non-empty legacy flat
+    # escalation (both-present is AMBIGUOUS and fails closed, H2). Always
+    # rendered (like the flat escalation block below) so Step 3.4 can
+    # preserve an existing operator value through re-render/tune; leave
+    # sub-fields empty to omit this override.
     escalation:
+      model_family: "gpt-6.2-sol"
       model_provider: "openai"
-      model_family: "gpt-6.1-sol"
       reasoning_effort: "high"
-      context_tier: "long_context"
+      context_tier: "long_context"  # Raw; empty inherits at resolution time
   ship:
-    model_family: "gemini-4-hydrogen"
-    model_provider: "google"
+    model_family: "mai-code-2"               # Ship role route (falls back to tier2 when empty)
+    model_provider: "microsoft"
     reasoning_effort: "high"
-    context_tier: "long_context" 
+    context_tier: "long_context"         # Falls back to tier2, then default
+    # F02FD596: optional nested per-role escalation override for Ship. Same
+    # precedence/ambiguity/always-rendered rules as Stage's nested
+    # escalation above.
     escalation:
-      model_family: "gpt-6.1-sol"
+      model_family: "gpt-6.2-sol"
       model_provider: "openai"
-      reasoning_effort: "medium"
-      context_tier: "long_context"
-  anchor_review:
-    model_provider: "openai"
-    model_family: "gpt-6.1-sol"
-    reasoning_effort: "high"
+      reasoning_effort: "high"
+      context_tier: "long_context"   # Raw; empty inherits at resolution time
 
   routes: {}
   bindings: {}

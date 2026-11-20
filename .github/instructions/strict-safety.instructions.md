@@ -5,8 +5,9 @@ applyTo: '**'
 
 # Strict Safety Instructions
 
-Use these rules when the workspace enabled the `strict-safety` capability pack.
-This pack does not create an executor or command broker. It makes risky work
+These rules are part of the core harness and apply whenever elevated-risk or
+destructive work must be classified. They do not create an executor or command
+broker. They make risky work
 more legible and more reviewable.
 
 ## Action Contract

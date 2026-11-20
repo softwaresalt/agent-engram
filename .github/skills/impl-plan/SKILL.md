@@ -3,7 +3,7 @@ name: impl-plan
 description: "Transform feature or chore descriptions and requirements into structured implementation plans grounded in repo patterns and research"
 ---
 
-## Implementation Plan
+# Implementation Plan
 
 Transform WHAT (requirements document) into HOW (implementation plan). Produces a structured plan that the stage agent decomposes into tasks via the harvest skill.
 
@@ -13,11 +13,15 @@ Invoke when a deliberation outcome, brainstorm requirements document, or spike f
 
 ## Inputs
 
-* `source`: (Required) Path to source document — `docs/decisions/{file}.md` for deliberation outcomes or spike findings, or `docs/research/{file}.md` for brainstorm requirements documents.
+* `source`: (Required) Path to source document — `docs/decisions/{file}.md` for deliberation outcomes or spike findings, or `docs/research/{file}.md` for brainstorm requirements documents or `grill-me` intent specs (`docs/research/{YYYY-MM-DD}-{slug}-intent.md`).
+
+The source may embed a `GRILL_ME_INTENT_CRYSTALLIZED` block (settled design-tree decisions `D1..Dn`, domain glossary, and runnable objective acceptance checks `AC1..ACn`) produced by the `grill-me` skill.
 
 ## Output
 
 A plan file at `docs/exec-plans/{YYYY-MM-DD}-{slug}-plan.md`.
+
+The plan's YAML frontmatter MUST carry `plan_id: "{slug}"` and an integer `revision: 1` at creation; the revision is incremented on each substantive plan edit.
 
 ## Required Protocol
 
@@ -35,6 +39,8 @@ kbdb for documentation and API questions.
 1. Read and parse the source document
 2. Extract: problem frame, requirements, success criteria, scope boundaries
 3. Identify any outstanding questions that need resolution before planning
+4. When the source carries a `GRILL_ME_INTENT_CRYSTALLIZED` block, extract its settled design-tree decisions (`D1..Dn`), domain glossary, and runnable objective acceptance checks (`AC1..ACn`), and map each `AC#` into the Requirements Trace and into the failure-first (`saw_red` -> `green_after_red`) verification expectations of the Implementation Units
+5. When invoked interactively and critical design-tree branches remain unresolved, route back to the `grill-me` skill before decomposing units rather than guessing
 
 ### Phase 2: Research the Codebase
 
@@ -57,7 +63,7 @@ for code relationships.
 
 ### Phase 3: Structure the Plan
 
-Produce a plan with these sections:
+Begin the plan file with YAML frontmatter containing `plan_id: "{slug}"` and an integer `revision: 1` (never a string or omitted), then produce a plan with these sections:
 
 #### Problem Frame
 

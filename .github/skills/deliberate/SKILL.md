@@ -3,7 +3,7 @@ name: deliberate
 description: "Interactively deliberate on a request, feature, or chore — frame the problem, research options, compare trade-offs, and produce a decision artifact that links into the backlog queue"
 ---
 
-## Deliberate
+# Deliberate
 
 Explore WHAT to build and WHY through structured operator dialogue. Produces a
 decision artifact that captures the problem frame, research findings, evaluated
@@ -14,7 +14,9 @@ work item for future pursuit.
 This skill focuses on option selection and rationale: research synthesis, option
 comparison, and queue/stash linkage. It complements `brainstorm`, the front-door
 requirements-intake skill that shapes WHAT to build (stable requirements, success
-criteria, scope) before planning. Use `brainstorm` for requirements intake and
+criteria, scope) before planning, and `grill-me`, the front-door intent-engineering
+interview that surfaces hidden assumptions and crystallizes intent before options
+are generated. Use `brainstorm` for requirements intake and
 `deliberate` for architectural, policy, or tooling trade-off decisions; either
 may hand off to `impl-plan`.
 
@@ -83,6 +85,16 @@ Ask focused questions to establish:
 * Scope boundaries (what is explicitly out of scope?)
 
 Capture the operator's answers as the **problem frame** section of the artifact.
+
+When the request arrives with underspecified intent or unasked branching
+decisions, and no prior `GRILL_ME_INTENT_CRYSTALLIZED` block exists, run the
+`grill-me` skill (or apply its **GROUND -> ELICIT -> CRYSTALLIZE** frontier rounds
+with `❓ **Q#**` + `➡️ **Recommended**` questions and fact-versus-decision
+separation) before generating options in Phase 3. Carry the settled design-tree
+decisions `D1..Dn`, the domain glossary, and the runnable objective acceptance
+checks `AC1..ACn` into the Problem Frame and Decision sections of the
+deliberation artifact. Under P-017 `DARK_MODE_ACTIVE`, use `grill-me`'s
+non-blocking `[ASSUMED]` fallback when the operator is unattended.
 
 ### Phase 2: Research
 
@@ -200,9 +212,9 @@ When the `backlogit` capability pack is installed and the backlog tool supports
 * Reference the artifact path in the description or a comment
 
 When `backlog-md` is the installed backlog tool, create a queue entry using
-`backlogit_create_item` with `title` derived from the deliberation topic,
+`task_create` with `title` derived from the deliberation topic,
 `description` linking to the decision artifact path,
-`status: "queued"`, and `labels: ["deliberation-outcome"]`.
+`status: "To Do"`, and `labels: ["deliberation-outcome"]`.
 
 When no backlog tool is available, append a structured entry to
 `.backlogit/queue/.stash.md`:
