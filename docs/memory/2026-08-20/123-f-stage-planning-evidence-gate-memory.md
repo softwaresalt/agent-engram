@@ -7,7 +7,7 @@ shipment: "119-S"
 status: completed
 ---
 
-# Stage 123-F planning/evidence-gate checkpoint
+## Checkpoint Summary
 
 - External fork: `softwaresalt/tree-sitter-sql` revision `50837582b5ba15c7acff3be7bf585a1082d90528`
 - CI run `32412941837` passed on Linux, Windows, and macOS

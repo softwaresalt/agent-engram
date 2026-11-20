@@ -22,7 +22,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$skillsRoot = Join-Path (Get-Location) '.github' 'skills'
+$skillsRoot = Join-Path (Join-Path (Get-Location) '.github') 'skills'
 
 if (-not (Test-Path -LiteralPath $skillsRoot)) {
     Write-Error "Skills directory not found: $skillsRoot"

@@ -54,16 +54,16 @@ $ErrorActionPreference = 'Stop'
 # in one call and works identically under Windows PowerShell 5.1 and
 # PowerShell 7+ (H5). This resolver is Windows-only (kernel32.dll does not
 # exist on Linux/macOS); on non-Windows platforms (reachable only via
-# PowerShell 7+/pwsh) `Get-AutoharnessRealPath` below shells out to the
+# PowerShell 7+/pwsh) `Get-GSDRealPath` below shells out to the
 # external `realpath` command instead, mirroring the sibling `.sh` scripts.
-$autoharnessResolverSource = @'
+$gsdResolverSource = @'
 using System;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using Microsoft.Win32.SafeHandles;
 
-public static class AutoharnessFileLockPathResolver
+public static class GSDFileLockPathResolver
 {
     private const uint FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
     private const uint GENERIC_READ = 0x80000000;
@@ -90,13 +90,13 @@ public static class AutoharnessFileLockPathResolver
         {
             if (handle.IsInvalid)
             {
-                throw new IOException("autoharness-file-lock: unable to open path for real-path resolution: " + path);
+                throw new IOException("gsd-file-lock: unable to open path for real-path resolution: " + path);
             }
             StringBuilder sb = new StringBuilder(4096);
             uint result = GetFinalPathNameByHandle(handle, sb, (uint)sb.Capacity, 0);
             if (result == 0 || result >= sb.Capacity)
             {
-                throw new IOException("autoharness-file-lock: unable to resolve final real path for: " + path);
+                throw new IOException("gsd-file-lock: unable to resolve final real path for: " + path);
             }
             string resolved = sb.ToString();
             if (resolved.StartsWith(@"\\?\") && !resolved.StartsWith(@"\\?\UNC\"))
@@ -117,7 +117,7 @@ public static class AutoharnessFileLockPathResolver
 # rather than inside the function so `Add-Type` (an expensive, one-time,
 # process-wide type registration) is skipped entirely on non-Windows instead
 # of merely guarding the call site.
-$autoharnessIsWindowsPlatform = if (Test-Path variable:IsWindows) { $IsWindows } else { $true }
+$gsdIsWindowsPlatform = if (Test-Path variable:IsWindows) { $IsWindows } else { $true }
 
 # Shared path-equality comparison mode, derived from the same platform flag:
 # Windows filesystems (NTFS) are case-preserving but case-insensitive, so
@@ -125,19 +125,19 @@ $autoharnessIsWindowsPlatform = if (Test-Path variable:IsWindows) { $IsWindows }
 # case-sensitive by default, so any path-equality/prefix check on those
 # platforms must use Ordinal instead, or a case-only sibling path (e.g.
 # "/tmp/WS" vs root "/tmp/ws") would be wrongly treated as identical/contained.
-$autoharnessPathComparisonMode = if ($autoharnessIsWindowsPlatform) {
+$gsdPathComparisonMode = if ($gsdIsWindowsPlatform) {
     [System.StringComparison]::OrdinalIgnoreCase
 } else {
     [System.StringComparison]::Ordinal
 }
 
-if ($autoharnessIsWindowsPlatform) {
-    if (-not ('AutoharnessFileLockPathResolver' -as [type])) {
-        Add-Type -TypeDefinition $autoharnessResolverSource -ErrorAction Stop
+if ($gsdIsWindowsPlatform) {
+    if (-not ('GSDFileLockPathResolver' -as [type])) {
+        Add-Type -TypeDefinition $gsdResolverSource -ErrorAction Stop
     }
 }
 
-function Get-AutoharnessRealPath {
+function Get-GSDRealPath {
     # On Windows: the kernel32 P/Invoke resolver above, which fully
     # dereferences symlinks/junctions/8.3 short paths and works identically
     # under Windows PowerShell 5.1 and PowerShell 7+ (H5).
@@ -151,17 +151,17 @@ function Get-AutoharnessRealPath {
     # on the same platform. This requires the target to already exist, same
     # as the Windows CreateFile-based resolver (OPEN_EXISTING).
     param([Parameter(Mandatory = $true)][string]$Path)
-    if ($autoharnessIsWindowsPlatform) {
-        return [AutoharnessFileLockPathResolver]::GetRealPath($Path)
+    if ($gsdIsWindowsPlatform) {
+        return [GSDFileLockPathResolver]::GetRealPath($Path)
     }
     $resolved = & realpath $Path 2>$null
     if ($LASTEXITCODE -ne 0 -or -not $resolved) {
-        throw "autoharness-file-lock: unable to resolve real path via realpath: $Path"
+        throw "gsd-file-lock: unable to resolve real path via realpath: $Path"
     }
     return $resolved
 }
 
-function Get-AutoharnessContainmentComparisonMode {
+function Get-GSDContainmentComparisonMode {
     # H4 containment-check comparison mode, queried per-root rather than
     # assumed from the OS alone (round-8 review fix). Windows 10 1803+
     # supports PER-DIRECTORY case sensitivity (`fsutil file
@@ -184,7 +184,7 @@ function Get-AutoharnessContainmentComparisonMode {
     # Ordinal, unchanged from before -- this helper is only consulted on
     # Windows.
     param([Parameter(Mandatory = $true)][string]$RootPath)
-    if (-not $autoharnessIsWindowsPlatform) {
+    if (-not $gsdIsWindowsPlatform) {
         return [System.StringComparison]::Ordinal
     }
     $parentOfRoot = Split-Path -Parent $RootPath
@@ -214,7 +214,7 @@ function Get-AutoharnessContainmentComparisonMode {
     return [System.StringComparison]::OrdinalIgnoreCase
 }
 
-function Test-AutoharnessPathContained {
+function Test-GSDPathContained {
     # Path-segment containment check (H4): a candidate is contained only when
     # it begins with the root followed by a directory separator. A bare
     # string-prefix check (`StartsWith($root)` with no separator) is
@@ -229,8 +229,8 @@ function Test-AutoharnessPathContained {
     # root is a valid lock target.
     #
     # Round-8 review fix: the comparison mode is now derived PER-ROOT via
-    # Get-AutoharnessContainmentComparisonMode instead of the coarser
-    # OS-only $autoharnessPathComparisonMode -- a blanket "Windows means
+    # Get-GSDContainmentComparisonMode instead of the coarser
+    # OS-only $gsdPathComparisonMode -- a blanket "Windows means
     # OrdinalIgnoreCase" assumption misses per-directory case sensitivity
     # (fsutil file setCaseSensitiveInfo), under which a case-only sibling
     # (e.g. "ws" vs "WS") can genuinely coexist even on Windows. This script
@@ -240,7 +240,7 @@ function Test-AutoharnessPathContained {
         [Parameter(Mandatory = $true)][string]$RealRoot,
         [Parameter(Mandatory = $true)][string]$RealCandidate
     )
-    $comparisonMode = Get-AutoharnessContainmentComparisonMode -RootPath $RealRoot
+    $comparisonMode = Get-GSDContainmentComparisonMode -RootPath $RealRoot
     $normalizedRoot = $RealRoot.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
     $normalizedCandidate = $RealCandidate.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
     # Round-6/7 review fix: reject equality BEFORE the prefix check. For a
@@ -267,7 +267,7 @@ function Test-AutoharnessPathContained {
 # V-a (docs/research/2026-09-10-ship3-file-lock-behavior-matrix-and-token-vectors.md)
 # fixes the concrete choice: 32 bytes (256 bits), lowercase hex, fixed length
 # 64 characters.
-function New-AutoharnessLockToken {
+function New-GSDLockToken {
     # RandomNumberGenerator.Fill() is .NET-Core-only (added 3.0+) and is
     # unavailable under Windows PowerShell 5.1's .NET Framework runtime --
     # the portable choice (works on both pwsh and powershell.exe, mirroring
@@ -288,7 +288,7 @@ function New-AutoharnessLockToken {
 # trailing newline -- V-a/V-b). `Encoding.UTF8.GetBytes` does not add a BOM
 # (only file-writing APIs do, per task 0's empirical finding); this operates
 # on the in-memory string directly, never via a file.
-function Get-AutoharnessTokenDigest {
+function Get-GSDTokenDigest {
     param([Parameter(Mandatory = $true)][string]$Token)
     $tokenBytes = [System.Text.Encoding]::UTF8.GetBytes($Token)
     $sha = [System.Security.Cryptography.SHA256]::Create()
@@ -301,15 +301,15 @@ function Get-AutoharnessTokenDigest {
     return -join ($digestBytes | ForEach-Object { $_.ToString('x2') })
 }
 
-function Resolve-AutoharnessWorkspaceRoot {
+function Resolve-GSDWorkspaceRoot {
     param([Parameter(Mandatory = $false)][string]$ExplicitRoot)
 
     if ($ExplicitRoot) {
         if (-not (Test-Path -LiteralPath $ExplicitRoot)) {
-            Write-Error "autoharness-file-lock: -WorkspaceRoot does not exist: $ExplicitRoot"
+            Write-Error "gsd-file-lock: -WorkspaceRoot does not exist: $ExplicitRoot"
             exit 1
         }
-        return Get-AutoharnessRealPath (Resolve-Path -LiteralPath $ExplicitRoot).Path
+        return Get-GSDRealPath (Resolve-Path -LiteralPath $ExplicitRoot).Path
     }
 
     # No explicit root supplied: derive a default via git, but only trust it
@@ -318,10 +318,10 @@ function Resolve-AutoharnessWorkspaceRoot {
     # task 0's case-7 matrix entry for the exact rationale).
     $scriptDir = $PSScriptRoot
     if (-not $scriptDir) {
-        Write-Error "autoharness-file-lock: cannot derive a default workspace root (no script directory available); pass -WorkspaceRoot explicitly."
+        Write-Error "gsd-file-lock: cannot derive a default workspace root (no script directory available); pass -WorkspaceRoot explicitly."
         exit 1
     }
-    $realScriptDir = Get-AutoharnessRealPath $scriptDir
+    $realScriptDir = Get-GSDRealPath $scriptDir
 
     $gitTopLevel = $null
     try {
@@ -335,20 +335,20 @@ function Resolve-AutoharnessWorkspaceRoot {
     }
 
     if (-not $gitTopLevel) {
-        Write-Error "autoharness-file-lock: no -WorkspaceRoot supplied and no git repository found from this script's directory; pass -WorkspaceRoot explicitly."
+        Write-Error "gsd-file-lock: no -WorkspaceRoot supplied and no git repository found from this script's directory; pass -WorkspaceRoot explicitly."
         exit 1
     }
 
-    $realGitTopLevel = Get-AutoharnessRealPath $gitTopLevel
+    $realGitTopLevel = Get-GSDRealPath $gitTopLevel
     $expectedScriptsDir = Join-Path $realGitTopLevel 'scripts'
     $realExpectedScriptsDir = if (Test-Path -LiteralPath $expectedScriptsDir) {
-        Get-AutoharnessRealPath $expectedScriptsDir
+        Get-GSDRealPath $expectedScriptsDir
     } else {
         $expectedScriptsDir
     }
 
-    if (-not $realExpectedScriptsDir.Equals($realScriptDir, $autoharnessPathComparisonMode)) {
-        Write-Error "autoharness-file-lock: git-derived root '$realGitTopLevel' does not match this script's own installed location; this workspace is likely a nested checkout without its own .git (widening guard, finding 2). Pass -WorkspaceRoot explicitly."
+    if (-not $realExpectedScriptsDir.Equals($realScriptDir, $gsdPathComparisonMode)) {
+        Write-Error "gsd-file-lock: git-derived root '$realGitTopLevel' does not match this script's own installed location; this workspace is likely a nested checkout without its own .git (widening guard, finding 2). Pass -WorkspaceRoot explicitly."
         exit 1
     }
 
@@ -357,7 +357,7 @@ function Resolve-AutoharnessWorkspaceRoot {
 
 # --- Resolve workspace root and target -------------------------------------
 
-$realWorkspaceRoot = Resolve-AutoharnessWorkspaceRoot -ExplicitRoot $WorkspaceRoot
+$realWorkspaceRoot = Resolve-GSDWorkspaceRoot -ExplicitRoot $WorkspaceRoot
 
 # FilePath is documented as workspace-root-relative (round-9 review fix):
 # anchor a relative value to the resolved workspace root instead of the
@@ -379,10 +379,10 @@ if (-not (Test-Path -LiteralPath $FilePath)) {
 }
 
 $resolvedPath = (Resolve-Path -LiteralPath $FilePath).Path
-$realTargetPath = Get-AutoharnessRealPath $resolvedPath
+$realTargetPath = Get-GSDRealPath $resolvedPath
 
-if (-not (Test-AutoharnessPathContained -RealRoot $realWorkspaceRoot -RealCandidate $realTargetPath)) {
-    Write-Error "autoharness-file-lock: target path escapes the workspace root and was rejected (root=$realWorkspaceRoot, target=$realTargetPath)."
+if (-not (Test-GSDPathContained -RealRoot $realWorkspaceRoot -RealCandidate $realTargetPath)) {
+    Write-Error "gsd-file-lock: target path escapes the workspace root and was rejected (root=$realWorkspaceRoot, target=$realTargetPath)."
     exit 1
 }
 
@@ -415,8 +415,8 @@ if (Test-Path -LiteralPath $lockFile) {
 $agentName = if ($env:AGENT_NAME) { $env:AGENT_NAME } else { "unknown" }
 $timestamp = Get-Date -Format 'o'
 $pid_val = $PID
-$lockToken = New-AutoharnessLockToken
-$ownerDigest = Get-AutoharnessTokenDigest -Token $lockToken
+$lockToken = New-GSDLockToken
+$ownerDigest = Get-GSDTokenDigest -Token $lockToken
 
 # O1: `agent`/`pid` remain a courtesy/anti-accident identity only (never
 # authorisation -- see TC5/O2). O2: `owner_digest` is the capability check;

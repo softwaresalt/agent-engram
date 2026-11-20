@@ -17,8 +17,6 @@ shipment_id: 125-S
 replacement_stash_id: 8AD4BFE8
 ---
 
-# PR 363 Fail-Closed Planning Authority
-
 ## Authority and decision
 
 This document is the current authority for PR #363. It supersedes every earlier PR #363 memory, closure, checkpoint, decision, title/body proposal, and handoff statement that describes `131-F`, any `131.*-T` task, or `125-S` as queued or executable, or that uses the older seven-, eight-, or thirteen-task rosters.
@@ -88,5 +86,5 @@ Stage does not mutate the live PR title or body. A durable PR comment carries th
 - [Blocked implementation plan](../exec-plans/2026-08-24-44e573bc-otlp-api-drift-plan.md)
 - [Mandatory escalation evidence](../closure/2026-08-25-pr-363-mandatory-escalation-review.md)
 - `.backlogit/queue/131-F.md`
-- `.backlogit/queue/131.001-R-mandatory-adversarial-review-gate-for-pr-363-otlp-planning-s.md`
+- `.backlogit/queue/131.001-R-mandatory-adversarial-review-gate-for-pr-363-otlp-planning.md` (renamed from `...-otlp-planning-s.md` in GSD v1.6.0 migration hygiene)
 - `.backlogit/queue/125-S.md`

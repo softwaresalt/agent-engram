@@ -2,12 +2,11 @@
 # Runtime registration is handled by the setup commands.
 # This script only launches Copilot CLI with workspace-local state.
 #
-# Auto-MergeInstall / Auto-Tune are GLOBAL agents provided by the autoharness
-# marketplace plugin. They are the versions used when upgrading autoharness and
+# Auto-MergeInstall / Auto-Tune are GLOBAL agents provided by the gsd
+# global CLI. They are the versions used when upgrading gsd and
 # are intentionally NOT copied into this workspace's local .copilot — a stale
 # local copy would shadow the global agent during an upgrade. Upgrade them
-# globally with `copilot plugin install autoharness@autoharness`; do not run
-# `setup-copilot-cli` here (COPILOT_HOME is redirected to a workspace-local dir).
+# globally with `gsd setup-copilot-cli` outside workspace-local COPILOT_HOME.
 
 if (-not ("EngramPipeCapture" -as [type])) {
   Add-Type -TypeDefinition @"
@@ -175,6 +174,20 @@ if (Test-Path -LiteralPath $envLocalPath -PathType Leaf) {
       }
     }
   }
+}
+
+foreach ($localDir in @((Join-Path $PSScriptRoot ".gsd"), (Join-Path $PSScriptRoot ".kbdb\bin"), (Join-Path $PSScriptRoot ".bin"))) {
+  if (Test-Path -LiteralPath $localDir -PathType Container) {
+    $remainingPath = @($env:PATH -split [IO.Path]::PathSeparator | Where-Object { $_ -and ($_ -ne $localDir) })
+    $env:PATH = (@($localDir) + $remainingPath) -join [IO.Path]::PathSeparator
+  }
+}
+$workspaceBinDir = Join-Path $PSScriptRoot ".bin"
+if (Test-Path -LiteralPath $workspaceBinDir -PathType Container) {
+  $env:BUN_INSTALL = Join-Path $workspaceBinDir "bun"
+  $env:BUN_INSTALL_CACHE_DIR = Join-Path $workspaceBinDir "bun-cache"
+  $env:BUN_RUNTIME_TRANSPILER_CACHE_PATH = "0"
+  New-Item -ItemType Directory -Path $env:BUN_INSTALL_CACHE_DIR -Force | Out-Null
 }
 
 $env:COPILOT_HOME = if ($env:COPILOT_HOME) { $env:COPILOT_HOME } else { Join-Path $PSScriptRoot ".copilot" }
