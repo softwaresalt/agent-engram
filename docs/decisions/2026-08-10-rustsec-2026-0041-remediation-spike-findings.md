@@ -13,8 +13,6 @@ references:
   - .autoharness/config.yaml
 ---
 
-# RUSTSEC-2026-0041 remediation spike findings
-
 ## Scope and result
 
 This is the U1 admission record for shipment `115-S`, batch

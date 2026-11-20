@@ -16,9 +16,6 @@ reviewers_requested: 3
 reviewers_consensus_eligible: 0
 ---
 
-# PR 363 Mandatory Adversarial Escalation Review
-
-
 > [!IMPORTANT]
 > **CURRENT FAIL-CLOSED AUTHORITY.** This closure remains escalation evidence, not claim authority. The complete 131 task chain is blocked, no consensus is claimed, and no additional adversarial review is attempted for this PR. See [PR #363 fail-closed planning authority](../decisions/2026-08-25-pr-363-fail-closed-planning-authority.md).
 

@@ -17,8 +17,6 @@ shipment_id: 125-S
 replacement_stash_id: 8AD4BFE8
 ---
 
-# PR 363 Fail-Closed Planning Authority
-
 ## Authority and decision
 
 This document is the current authority for PR #363. It supersedes every earlier PR #363 memory, closure, checkpoint, decision, title/body proposal, and handoff statement that describes `131-F`, any `131.*-T` task, or `125-S` as queued or executable, or that uses the older seven-, eight-, or thirteen-task rosters.

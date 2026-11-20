@@ -414,7 +414,7 @@ artifacts:
     artifact_type: "agent"
     primitive: 7
     template: "templates/agents/review/evidence-consistency-reviewer.agent.md.tmpl"
-    checksum: "248b6bd15e71f5770b7be83af57ea4e543f644065dfae578932b651d5dd505e3"
+    checksum: "0ffca83f5d4bc50f23f1fe646d9188ad792facee9fab10ac47d27b8648f9f91d"
   - path: ".github/agents/subagents/learnings-researcher.agent.md"
     artifact_type: "agent"
     primitive: 4
@@ -564,7 +564,7 @@ artifacts:
     artifact_type: "instruction"
     primitive: 7
     template: "templates/instructions/copilot-code-review.instructions.md.tmpl"
-    checksum: "4f40ea8c117d89b20e21c17726e98b1a70d256e78a5fee5a77e7f86ccb8b5ad7"
+    checksum: "f70742de2b4ada172c2f5ca5b1045a2e7daacfbf86edfa8bf64a745009edc2d1"
   - path: ".github/instructions/escalation-protocol.instructions.md"
     artifact_type: "instruction"
     primitive: 4
@@ -839,7 +839,7 @@ artifacts:
     artifact_type: "config"
     primitive: 5
     template: "templates/scripts/.markdownlint.json.tmpl"
-    checksum: "5cb328173ca286c34d6eacb60cf58fe6f579fc4843d2cd6b47533bb5b1965e16"
+    checksum: "de9a315cd312f77be3be520a8e3d1e2cb8f9c972e93dc333e172ea9f382fff03"
   - path: "AGENTS.md"
     artifact_type: "foundation"
     primitive: 9
