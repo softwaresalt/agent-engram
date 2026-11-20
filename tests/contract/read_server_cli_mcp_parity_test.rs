@@ -17,18 +17,16 @@ use std::process::{Child, Command, Output, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-use chrono::Utc;
 use engram::config::StaleStrategy;
 use engram::daemon::ipc_server::ipc_endpoint;
 use engram::daemon::protocol::{IpcRequest, IpcResponse};
 use engram::daemon::request_entry::process_request;
-use engram::models::config::DaemonMode;
+use engram::models::config::{CodeGraphConfig, DaemonMode};
 use engram::server::state::AppState;
-use engram::services::generations::candidate_build::read_server_layout;
-use engram::services::generations::{
-    BranchIdentity, GenerationId, GenerationManifest, GenerationProvenance, GenerationRevision,
-    GenerationStore, ManifestFileDigest, SUPPORTED_MANIFEST_SCHEMA_VERSION, SealedInventory,
-    WorkspaceIdentity, publish_generation_manifest,
+use engram::services::generations::GenerationId;
+use engram::services::generations::candidate_build::{
+    build_candidate_generation, open_generation_store, publish_sealed_candidate,
+    read_server_layout, seal_candidate_inventory,
 };
 use engram::shim::ipc_client::send_request;
 use engram::tools::capabilities::{
@@ -36,7 +34,6 @@ use engram::tools::capabilities::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use sysinfo::{Pid, System};
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -47,7 +44,8 @@ const F38_WORKSPACE_RETARGET_REFUSAL: u16 = 16_003;
 const F54_RED_MARKER: &str = "F54-RED";
 const F54_BLOCK_MARKER: &str = "F54-BLOCK";
 const EXPECTED_GENERATION: &str = "generation-142";
-const FIXTURE_BRANCH: &str = "main";
+const F54_FIXTURE_ROOT: &str = "f54_fixture_root";
+const F54_FIXTURE_CALLER: &str = "f54_fixture_caller";
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
 const IPC_TIMEOUT: Duration = Duration::from_secs(10);
 const SLOT20B_NON_READ_MARKER: &str =
@@ -170,6 +168,7 @@ struct ReadServerFixture {
     alternate_workspace: PathBuf,
     endpoint: String,
     executable: PathBuf,
+    f54_fixture_root_id: String,
     daemon: Option<MarkedDaemon>,
 }
 
@@ -213,21 +212,13 @@ impl ReadServerFixture {
             .unwrap_or_else(|error| panic!("{F54_BLOCK_MARKER}: create source fixture: {error}"));
         fs::write(
             source_dir.join("f54_fixture.rs"),
-            "pub fn f54_fixture_root() {}\n\
-             pub fn f54_fixture_caller() { f54_fixture_root(); }\n",
+            format!(
+                "pub fn {F54_FIXTURE_ROOT}() {{}}\n\
+                 pub fn {F54_FIXTURE_CALLER}() {{ {F54_FIXTURE_ROOT}(); }}\n"
+            ),
         )
         .unwrap_or_else(|error| panic!("{F54_BLOCK_MARKER}: write source fixture: {error}"));
-        engram::services::code_graph::sync_workspace(
-            &workspace,
-            &workspace.join(".engram"),
-            FIXTURE_BRANCH,
-            &engram::models::config::CodeGraphConfig::default(),
-        )
-        .await
-        .unwrap_or_else(|error| {
-            panic!("{F54_BLOCK_MARKER}: seed isolated code graph fixture: {error}")
-        });
-        publish_fixture_generation(&workspace);
+        let f54_fixture_root_id = publish_fixture_generation(&workspace).await;
 
         Self {
             temporary_root,
@@ -235,6 +226,7 @@ impl ReadServerFixture {
             alternate_workspace,
             endpoint,
             executable,
+            f54_fixture_root_id,
             daemon: None,
         }
     }
@@ -493,54 +485,57 @@ fn create_workspace(path: &Path, read_server: bool) {
     }
 }
 
-fn publish_fixture_generation(workspace: &Path) {
-    let generations_root = workspace.join(".engram").join("generations");
+async fn publish_fixture_generation(workspace: &Path) -> String {
     let layout = read_server_layout(&workspace.to_string_lossy()).unwrap_or_else(|error| {
         panic!("{F54_BLOCK_MARKER}: derive fixture read-server layout: {error}")
     });
-    let generation_directory = generations_root.join(EXPECTED_GENERATION);
-    fs::create_dir_all(&generation_directory).unwrap_or_else(|error| {
-        panic!("{F54_BLOCK_MARKER}: create published-generation fixture: {error}")
+    let store = open_generation_store(&layout, true).unwrap_or_else(|error| {
+        panic!("{F54_BLOCK_MARKER}: open fixture generation store: {error}")
     });
-
-    let database_path = generation_directory.join("engram.db");
-    {
-        let database =
-            cozo::DbInstance::new("sqlite", database_path.to_string_lossy().as_ref(), "")
-                .unwrap_or_else(|error| {
-                    panic!("{F54_BLOCK_MARKER}: create published-generation database: {error}")
-                });
-        database
-            .run_default(":create probe_row {id => val}")
-            .unwrap_or_else(|error| {
-                panic!("{F54_BLOCK_MARKER}: initialize published-generation database: {error}")
-            });
-    }
-
-    let database_bytes = fs::read(&database_path).unwrap_or_else(|error| {
-        panic!("{F54_BLOCK_MARKER}: read published-generation database: {error}")
+    let id = GenerationId::new(EXPECTED_GENERATION).unwrap_or_else(|error| {
+        panic!("{F54_BLOCK_MARKER}: validate fixture generation ID: {error}")
     });
-    let database_relative_path = format!("{EXPECTED_GENERATION}/engram.db");
-    let generation_store = GenerationStore::new(&generations_root).unwrap_or_else(|error| {
-        panic!("{F54_BLOCK_MARKER}: construct published-generation store: {error}")
-    });
-    let manifest = GenerationManifest::new(
-        GenerationId::new(EXPECTED_GENERATION).unwrap_or_else(|error| {
-            panic!("{F54_BLOCK_MARKER}: validate fixture generation ID: {error}")
-        }),
-        GenerationRevision::new(1),
-        SUPPORTED_MANIFEST_SCHEMA_VERSION,
-        BranchIdentity::new(FIXTURE_BRANCH, None),
-        WorkspaceIdentity::new(layout.workspace_id),
-        SealedInventory::new(vec![ManifestFileDigest::new(
-            database_relative_path,
-            hex::encode(Sha256::digest(&database_bytes)),
-        )]),
-        GenerationProvenance::new("f54-contract-fixture", Utc::now()),
+    let built = build_candidate_generation(&layout, &store, &id, &CodeGraphConfig::default())
+        .await
+        .unwrap_or_else(|error| panic!("{F54_BLOCK_MARKER}: build fixture generation: {error}"));
+    let root_id = indexed_symbol_id(&built.database_path(), F54_FIXTURE_ROOT);
+    let sealed = seal_candidate_inventory(built)
+        .unwrap_or_else(|error| panic!("{F54_BLOCK_MARKER}: seal fixture generation: {error}"));
+    let revision = publish_sealed_candidate(&layout, &store, sealed, "f54-contract-fixture")
+        .unwrap_or_else(|error| panic!("{F54_BLOCK_MARKER}: publish fixture generation: {error}"));
+    assert_eq!(
+        revision.value(),
+        1,
+        "{F54_BLOCK_MARKER}: fixture generation must publish at revision 1"
     );
-    publish_generation_manifest(&generation_store, &manifest).unwrap_or_else(|error| {
-        panic!("{F54_BLOCK_MARKER}: publish active fixture generation: {error}")
-    });
+    root_id
+}
+
+fn indexed_symbol_id(database_path: &Path, symbol_name: &str) -> String {
+    let database = cozo::DbInstance::new(
+        "sqlite",
+        database_path.to_string_lossy().as_ref(),
+        Default::default(),
+    )
+    .unwrap_or_else(|error| panic!("{F54_BLOCK_MARKER}: open indexed fixture database: {error}"));
+    let mut params = BTreeMap::new();
+    params.insert("name".to_owned(), cozo::DataValue::from(symbol_name));
+    let rows = database
+        .run_script(
+            "?[id] := *function_meta { id, name }, name = $name",
+            params,
+            cozo::ScriptMutability::Immutable,
+        )
+        .unwrap_or_else(|error| {
+            panic!("{F54_BLOCK_MARKER}: resolve indexed fixture symbol {symbol_name}: {error}")
+        });
+    let [row] = rows.rows.as_slice() else {
+        panic!("{F54_BLOCK_MARKER}: indexed fixture symbol {symbol_name} is missing or ambiguous");
+    };
+    let [cozo::DataValue::Str(id)] = row.as_slice() else {
+        panic!("{F54_BLOCK_MARKER}: indexed fixture symbol {symbol_name} has an invalid ID");
+    };
+    id.as_str().to_owned()
 }
 
 fn engram_binary() -> PathBuf {
@@ -574,13 +569,13 @@ fn request_parameters(descriptor: &ToolDescriptor, fixture: &ReadServerFixture) 
         "impact_analysis" => {
             arguments.insert(
                 "symbol_name".to_owned(),
-                Value::String("f54_fixture_root".to_owned()),
+                Value::String(F54_FIXTURE_ROOT.to_owned()),
             );
         }
         "query_graph" => {
             arguments.insert(
                 "root".to_owned(),
-                Value::String("fn:f54-missing".to_owned()),
+                Value::String(fixture.f54_fixture_root_id.clone()),
             );
         }
         "get_branch_metrics" => {
@@ -615,9 +610,9 @@ fn sample_schema_value(
                 }
                 "path" => fixture.workspace.to_string_lossy().into_owned(),
                 "query" | "search_query" | "query_text" => "isolated F54 fixture query".to_owned(),
-                "symbol" | "symbol_name" => "f54_fixture_root".to_owned(),
+                "symbol" | "symbol_name" => F54_FIXTURE_ROOT.to_owned(),
                 "operation" => "neighborhood".to_owned(),
-                "root" | "from" | "to" => "fn:f54-missing".to_owned(),
+                "root" | "from" | "to" => fixture.f54_fixture_root_id.clone(),
                 "branch" => "main".to_owned(),
                 _ => "f54-fixture-value".to_owned(),
             };
@@ -883,16 +878,16 @@ fn cli_arguments(
         "sync_workspace" => vec!["sync".to_owned()],
         "query_memory" => vec!["query-memory".to_owned(), "F54 fixture".to_owned()],
         "get_workspace_statistics" => vec!["stats".to_owned()],
-        "map_code" => vec!["map-code".to_owned(), "F54FixtureSymbol".to_owned()],
+        "map_code" => vec!["map-code".to_owned(), F54_FIXTURE_ROOT.to_owned()],
         "list_symbols" => vec!["symbols".to_owned()],
         "unified_search" => vec!["search".to_owned(), "F54 fixture".to_owned()],
-        "impact_analysis" => vec!["impact".to_owned(), "f54_fixture_root".to_owned()],
+        "impact_analysis" => vec!["impact".to_owned(), F54_FIXTURE_ROOT.to_owned()],
         "query_graph" => vec![
             "query-graph".to_owned(),
             "--operation".to_owned(),
             "neighborhood".to_owned(),
             "--root".to_owned(),
-            "fn:f54-missing".to_owned(),
+            fixture.f54_fixture_root_id.clone(),
         ],
         "lint_dax" => vec!["lint-dax".to_owned()],
         "get_health_report" => vec!["health".to_owned()],
@@ -1754,5 +1749,131 @@ async fn unbound_read_server_refuses_set_workspace_without_side_effects() -> Res
     assert!(state.snapshot_dispatch_context().await.is_none());
     assert!(state.snapshot_workspace().await.is_none());
     assert!(!workspace.path().join(".engram").exists());
+    Ok(())
+}
+
+fn assert_slot20c_generation_read(marker: &str, tool_name: &str, observation: &Observation) {
+    assert!(
+        observation.accepted,
+        "{marker}: {tool_name} must be accepted: {}",
+        observation.raw_response
+    );
+    assert_eq!(
+        observation.generation.as_deref(),
+        Some(EXPECTED_GENERATION),
+        "{marker}: {tool_name} must report serving generation {EXPECTED_GENERATION}: {}",
+        observation.raw_response
+    );
+}
+
+fn extract_named_entries<'a>(response: Option<&'a Value>, pointer: &str) -> Vec<&'a str> {
+    response
+        .and_then(|value| value.pointer(pointer))
+        .and_then(Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| entry.get("name").and_then(Value::as_str))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn real_indexed_fixture_generation_activates_and_resolves_f54_symbols() -> Result<(), String>
+{
+    const MARKER: &str = "Worker: 142.089-T";
+    let stats_desc = descriptor("get_workspace_statistics")
+        .ok_or_else(|| format!("{MARKER}: F19 must declare get_workspace_statistics"))?;
+    let symbols_desc = descriptor("list_symbols")
+        .ok_or_else(|| format!("{MARKER}: F19 must declare list_symbols"))?;
+    let map_desc =
+        descriptor("map_code").ok_or_else(|| format!("{MARKER}: F19 must declare map_code"))?;
+    let query_desc = descriptor("query_graph")
+        .ok_or_else(|| format!("{MARKER}: F19 must declare query_graph"))?;
+
+    let mut fixture = ReadServerFixture::new().await;
+    assert!(
+        !fixture.workspace.join(".engram").join("cozo").exists(),
+        "{MARKER}: managed .engram/cozo index must remain absent"
+    );
+    let stats_obs =
+        exercise_declared_surface(&stats_desc, ToolSurface::DirectIpc, &mut fixture).await?;
+    let symbols_obs =
+        exercise_declared_surface(&symbols_desc, ToolSurface::DirectIpc, &mut fixture).await?;
+    let map_obs =
+        exercise_declared_surface(&map_desc, ToolSurface::DirectIpc, &mut fixture).await?;
+    let query_obs =
+        exercise_declared_surface(&query_desc, ToolSurface::DirectIpc, &mut fixture).await?;
+    fixture.stop_daemon().await?;
+    assert!(
+        !fixture.workspace.join(".engram").join("cozo").exists(),
+        "{MARKER}: managed .engram/cozo index must remain absent after daemon shutdown"
+    );
+
+    assert_slot20c_generation_read(MARKER, "get_workspace_statistics", &stats_obs);
+    let stats_response = stats_obs.response.as_ref();
+    assert_eq!(
+        stats_response
+            .and_then(|response| response.get("code_files"))
+            .and_then(Value::as_u64),
+        Some(1),
+        "{MARKER}: get_workspace_statistics must report code_files == 1: {stats_response:?}"
+    );
+    assert_eq!(
+        stats_response
+            .and_then(|response| response.get("functions"))
+            .and_then(Value::as_u64),
+        Some(2),
+        "{MARKER}: get_workspace_statistics must report functions == 2: {stats_response:?}"
+    );
+
+    assert_slot20c_generation_read(MARKER, "list_symbols", &symbols_obs);
+    let symbols_response = symbols_obs.response.as_ref();
+    assert_eq!(
+        symbols_response
+            .and_then(|response| response.get("total_count"))
+            .and_then(Value::as_u64),
+        Some(2),
+        "{MARKER}: list_symbols must report total_count == 2: {symbols_response:?}"
+    );
+    let symbol_names = extract_named_entries(symbols_response, "/symbols");
+    assert!(
+        symbol_names.contains(&F54_FIXTURE_ROOT) && symbol_names.contains(&F54_FIXTURE_CALLER),
+        "{MARKER}: list_symbols /symbols must contain F54 fixture symbols: \
+         {symbol_names:?}"
+    );
+
+    assert_slot20c_generation_read(MARKER, "map_code", &map_obs);
+    let map_response = map_obs.response.as_ref();
+    assert_eq!(
+        map_response
+            .and_then(|response| response.pointer("/root/name"))
+            .and_then(Value::as_str),
+        Some(F54_FIXTURE_ROOT),
+        "{MARKER}: map_code /root/name must equal the fixture root: {map_response:?}"
+    );
+    let neighbor_names = extract_named_entries(map_response, "/neighbors");
+    assert!(
+        neighbor_names.contains(&F54_FIXTURE_CALLER),
+        "{MARKER}: map_code /neighbors must contain the fixture caller: {neighbor_names:?}"
+    );
+
+    assert_slot20c_generation_read(MARKER, "query_graph", &query_obs);
+    assert_eq!(
+        query_obs
+            .response
+            .as_ref()
+            .and_then(|response| response.get("root"))
+            .and_then(Value::as_str),
+        Some(fixture.f54_fixture_root_id.as_str()),
+        "{MARKER}: query_graph /root must equal the indexed generation root ID"
+    );
+    let graph_nodes = extract_named_entries(query_obs.response.as_ref(), "/nodes");
+    assert!(
+        graph_nodes.contains(&F54_FIXTURE_CALLER),
+        "{MARKER}: query_graph /nodes must contain the fixture caller: {graph_nodes:?}"
+    );
+
     Ok(())
 }
