@@ -54,14 +54,14 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 # --- Real-path resolution (same rationale as acquire_lock.ps1) ------------
-$gsdResolverSource = @'
+$autoharnessResolverSource = @'
 using System;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using Microsoft.Win32.SafeHandles;
 
-public static class GSDFileLockPathResolver
+public static class AutoharnessFileLockPathResolver
 {
     private const uint FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
     private const uint GENERIC_READ = 0x80000000;
@@ -88,13 +88,13 @@ public static class GSDFileLockPathResolver
         {
             if (handle.IsInvalid)
             {
-                throw new IOException("gsd-file-lock: unable to open path for real-path resolution: " + path);
+                throw new IOException("autoharness-file-lock: unable to open path for real-path resolution: " + path);
             }
             StringBuilder sb = new StringBuilder(4096);
             uint result = GetFinalPathNameByHandle(handle, sb, (uint)sb.Capacity, 0);
             if (result == 0 || result >= sb.Capacity)
             {
-                throw new IOException("gsd-file-lock: unable to resolve final real path for: " + path);
+                throw new IOException("autoharness-file-lock: unable to resolve final real path for: " + path);
             }
             string resolved = sb.ToString();
             if (resolved.StartsWith(@"\\?\") && !resolved.StartsWith(@"\\?\UNC\"))
@@ -112,32 +112,32 @@ public static class GSDFileLockPathResolver
 # platform but does not exist under Windows PowerShell 5.1 (Desktop
 # edition), which only ever runs on Windows -- so an undefined `$IsWindows`
 # variable means "Windows PowerShell 5.1", which is unconditionally Windows.
-$gsdIsWindowsPlatform = if (Test-Path variable:IsWindows) { $IsWindows } else { $true }
+$autoharnessIsWindowsPlatform = if (Test-Path variable:IsWindows) { $IsWindows } else { $true }
 
-if ($gsdIsWindowsPlatform) {
-    if (-not ('GSDFileLockPathResolver' -as [type])) {
-        Add-Type -TypeDefinition $gsdResolverSource -ErrorAction Stop
+if ($autoharnessIsWindowsPlatform) {
+    if (-not ('AutoharnessFileLockPathResolver' -as [type])) {
+        Add-Type -TypeDefinition $autoharnessResolverSource -ErrorAction Stop
     }
 }
 
-function Get-GSDRealPath {
+function Get-AutoharnessRealPath {
     # On Windows: the kernel32 P/Invoke resolver above. On non-Windows
     # (Linux/macOS, reachable only via PowerShell 7+/pwsh): kernel32.dll does
     # not exist, so shell out to the external `realpath` command instead --
     # the same tool and invocation form used by the sibling `.sh` scripts.
     param([Parameter(Mandatory = $true)][string]$Path)
-    if ($gsdIsWindowsPlatform) {
-        return [GSDFileLockPathResolver]::GetRealPath($Path)
+    if ($autoharnessIsWindowsPlatform) {
+        return [AutoharnessFileLockPathResolver]::GetRealPath($Path)
     }
     $resolved = & realpath $Path 2>$null
     if ($LASTEXITCODE -ne 0 -or -not $resolved) {
-        throw "gsd-file-lock: unable to resolve real path via realpath: $Path"
+        throw "autoharness-file-lock: unable to resolve real path via realpath: $Path"
     }
     return $resolved
 }
 
 # TC3: same digest computation as acquire_lock.ps1 (V-b canonicalization).
-function Get-GSDTokenDigest {
+function Get-AutoharnessTokenDigest {
     param([Parameter(Mandatory = $true)][string]$Token)
     $tokenBytes = [System.Text.Encoding]::UTF8.GetBytes($Token)
     $sha = [System.Security.Cryptography.SHA256]::Create()
@@ -156,7 +156,7 @@ function Get-GSDTokenDigest {
 # token to be rejected outright -- non-zero exit, a NAMED validation error,
 # no digest ever computed -- rather than silently hashed and compared, which
 # would let a truncating or charset-loose implementation slip through.
-$gsdTokenShapeRegex = '^[0-9a-f]{64}$'
+$autoharnessTokenShapeRegex = '^[0-9a-f]{64}$'
 
 # 1-hour staleness heuristic (concurrency.instructions.md): report the lock
 # age so an operator deciding whether to -Force has the same information
@@ -165,7 +165,7 @@ $gsdTokenShapeRegex = '^[0-9a-f]{64}$'
 # `Get-Date -Format 'o'`, or POSIX `date -u +%Y-%m-%dT%H:%M:%SZ`);
 # DateTimeOffset.Parse handles both forms. When parsing fails, report the
 # age as unknown rather than fabricating a value.
-function Get-GSDLockAgeReport {
+function Get-AutoharnessLockAgeReport {
     param([Parameter(Mandatory = $true)][string]$RecordedTimestamp)
     try {
         $lockTime = [System.DateTimeOffset]::Parse(
@@ -185,7 +185,7 @@ function Get-GSDLockAgeReport {
     }
 }
 
-function Get-GSDSingleQuoted {
+function Get-AutoharnessSingleQuoted {
     # The refusal remedy embeds the caller-supplied path inside a
     # single-quoted PowerShell command that the operator is expected to
     # copy and paste verbatim. A path containing an embedded "'" would
@@ -210,7 +210,7 @@ if ($WorkspaceRoot) {
         Write-Error "--workspace-root does not exist: $WorkspaceRoot"
         exit 1
     }
-    $realWorkspaceRootForAnchoring = Get-GSDRealPath (Resolve-Path -LiteralPath $WorkspaceRoot).Path
+    $realWorkspaceRootForAnchoring = Get-AutoharnessRealPath (Resolve-Path -LiteralPath $WorkspaceRoot).Path
     if (-not [System.IO.Path]::IsPathRooted($FilePath)) {
         $FilePath = Join-Path $realWorkspaceRootForAnchoring $FilePath
     }
@@ -245,17 +245,17 @@ if (-not (Test-Path -LiteralPath $FilePath)) {
 # release_lock.sh gets for free from the shell's own $PWD.
 $absolutePath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($FilePath)
 
-function Resolve-GSDBestEffortRealPath {
+function Resolve-AutoharnessBestEffortRealPath {
     # Best-effort REAL path resolution for a lock target that may not fully
     # exist, used by the missing-target recovery below so release agrees
     # with acquire's choice of fully-dereferenced lock location. Tried in
     # order:
     #
     #  1. The path fully exists and fully resolves (symlinks/junctions and
-    #     all) -- delegate straight to Get-GSDRealPath.
+    #     all) -- delegate straight to Get-AutoharnessRealPath.
     #
     #  2. Round-8 review fix: the path exists as a filesystem ENTRY (Test-
-    #     Path reports true) but Get-GSDRealPath still throws. This
+    #     Path reports true) but Get-AutoharnessRealPath still throws. This
     #     happens for a BROKEN symlink/reparse point -- one whose own
     #     recorded link target no longer exists. Test-Path on a reparse
     #     point reports the entry's own presence, not its target's, so a
@@ -283,7 +283,7 @@ function Resolve-GSDBestEffortRealPath {
     }
     if (Test-Path -LiteralPath $AbsolutePath) {
         try {
-            return Get-GSDRealPath (Resolve-Path -LiteralPath $AbsolutePath).Path
+            return Get-AutoharnessRealPath (Resolve-Path -LiteralPath $AbsolutePath).Path
         } catch {
             # Fall through to the broken-symlink-leaf recovery below.
         }
@@ -294,7 +294,7 @@ function Resolve-GSDBestEffortRealPath {
                 if (-not [System.IO.Path]::IsPathRooted($rawTarget)) {
                     $rawTarget = Join-Path (Split-Path -Parent $AbsolutePath) $rawTarget
                 }
-                return Resolve-GSDBestEffortRealPath -AbsolutePath $rawTarget -Depth ($Depth + 1)
+                return Resolve-AutoharnessBestEffortRealPath -AbsolutePath $rawTarget -Depth ($Depth + 1)
             }
         } catch {
             # Fall through to the lexical/parent-based recovery below.
@@ -318,13 +318,13 @@ function Resolve-GSDBestEffortRealPath {
     $lexicalParent = Split-Path -Parent $AbsolutePath
     $leafName = Split-Path -Leaf $AbsolutePath
     if ($lexicalParent -and (Test-Path -LiteralPath $lexicalParent -PathType Container)) {
-        $realParent = Get-GSDRealPath (Resolve-Path -LiteralPath $lexicalParent).Path
+        $realParent = Get-AutoharnessRealPath (Resolve-Path -LiteralPath $lexicalParent).Path
         return Join-Path $realParent $leafName
     }
     return $AbsolutePath
 }
 
-$targetPath = Resolve-GSDBestEffortRealPath -AbsolutePath $absolutePath
+$targetPath = Resolve-AutoharnessBestEffortRealPath -AbsolutePath $absolutePath
 
 $resolvedDir = Split-Path -Parent $targetPath
 $fileName = Split-Path -Leaf $targetPath
@@ -362,11 +362,11 @@ $suppliedToken = if ($Token) { $Token } elseif ($env:LOCK_TOKEN) { $env:LOCK_TOK
 $ownershipVerified = $false
 $tokenMalformed = $false
 if (-not $Force) {
-    if ($suppliedToken -and -not ($suppliedToken -cmatch $gsdTokenShapeRegex)) {
+    if ($suppliedToken -and -not ($suppliedToken -cmatch $autoharnessTokenShapeRegex)) {
         $tokenMalformed = $true
     }
     elseif ($recordedDigest -and $suppliedToken) {
-        $suppliedDigest = Get-GSDTokenDigest -Token $suppliedToken
+        $suppliedDigest = Get-AutoharnessTokenDigest -Token $suppliedToken
         if ($suppliedDigest.Equals($recordedDigest, [System.StringComparison]::OrdinalIgnoreCase)) {
             $ownershipVerified = $true
         }
@@ -377,21 +377,21 @@ if ($tokenMalformed) {
     # V-c2: fail closed before any digest is computed -- a wrong-length or
     # wrong-charset token is a distinct, named validation error, not merely
     # a digest mismatch.
-    Write-Error "gsd-file-lock: TOKEN_MALFORMED -- supplied token is not 64 lowercase hex characters; refusing to verify ownership without computing a digest. Supply the exact value returned at acquire time, or have the operator supply -Force."
+    Write-Error "autoharness-file-lock: TOKEN_MALFORMED -- supplied token is not 64 lowercase hex characters; refusing to verify ownership without computing a digest. Supply the exact value returned at acquire time, or have the operator supply -Force."
     exit 1
 }
 
 if (-not $ownershipVerified) {
-    $ageReport = Get-GSDLockAgeReport -RecordedTimestamp $recordedTimestamp
+    $ageReport = Get-AutoharnessLockAgeReport -RecordedTimestamp $recordedTimestamp
     $ownerReport = "lock=$lockFile, agent=$recordedAgent, pid=$recordedPid, timestamp=$recordedTimestamp, $ageReport"
     if (-not $Force) {
         # Decision (iii): a refusal is a non-zero exit -- exit 0 would make
         # the refusal indistinguishable from success.
-        $quotedPath = Get-GSDSingleQuoted -Value $FilePath
-        Write-Error "gsd-file-lock: refusing to release -- ownership could not be verified ($ownerReport). Supply -Token with the value returned at acquire time, or have the operator run: release_lock.ps1 $quotedPath -Force"
+        $quotedPath = Get-AutoharnessSingleQuoted -Value $FilePath
+        Write-Error "autoharness-file-lock: refusing to release -- ownership could not be verified ($ownerReport). Supply -Token with the value returned at acquire time, or have the operator run: release_lock.ps1 $quotedPath -Force"
         exit 1
     }
-    Write-Warning "gsd-file-lock: -Force supplied; breaking this lock without a verified token ($ownerReport). O3: this is an advisory lock, not an adversarial guarantee -- only the operator should do this."
+    Write-Warning "autoharness-file-lock: -Force supplied; breaking this lock without a verified token ($ownerReport). O3: this is an advisory lock, not an adversarial guarantee -- only the operator should do this."
 }
 
 if ($ownershipVerified) {
@@ -408,13 +408,13 @@ if ($ownershipVerified) {
     # eliminate) that race window. This mitigation only applies to the
     # token-verified path; -Force remains an unconditional operator
     # override per O3 and is not re-checked here.
-    if ($env:GSD_TEST_RELEASE_RACE_DELAY_MS) {
+    if ($env:AUTOHARNESS_TEST_RELEASE_RACE_DELAY_MS) {
         # TEST-ONLY HOOK: deterministically widens the TOCTOU window so an
         # automated test can inject a concurrent lock change between this
         # verification and the recheck below. Never set outside test runs;
         # when the environment variable is absent (the default), this is a
         # complete no-op with zero behavioural or timing impact.
-        if ($env:GSD_TEST_RELEASE_RACE_SIGNAL) {
+        if ($env:AUTOHARNESS_TEST_RELEASE_RACE_SIGNAL) {
             # TEST-ONLY HOOK: signals the harness that this process has
             # entered the widened race window, so the test can perform the
             # concurrent swap deterministically instead of guessing at
@@ -427,10 +427,10 @@ if ($ownershipVerified) {
             # Never set outside test runs.
             New-Item -ItemType File -Path "$lockFile.race-signal" -Force | Out-Null
         }
-        Start-Sleep -Milliseconds ([int]$env:GSD_TEST_RELEASE_RACE_DELAY_MS)
+        Start-Sleep -Milliseconds ([int]$env:AUTOHARNESS_TEST_RELEASE_RACE_DELAY_MS)
     }
     if (-not (Test-Path -LiteralPath $lockFile)) {
-        Write-Warning "gsd-file-lock: lock file disappeared before deletion could be confirmed (already released by another process): $lockFile"
+        Write-Warning "autoharness-file-lock: lock file disappeared before deletion could be confirmed (already released by another process): $lockFile"
         exit 0
     }
     $recheckContent = Get-Content -LiteralPath $lockFile -Raw
@@ -451,7 +451,7 @@ if ($ownershipVerified) {
         }
     }
     if (-not ($recheckDigest -and $recheckDigest.Equals($recordedDigest, [System.StringComparison]::OrdinalIgnoreCase))) {
-        Write-Error "gsd-file-lock: refusing to release -- the lock at '$lockFile' changed between verification and deletion (a different owner now holds it); this process's token no longer matches the current owner. Re-run release to re-verify against the new owner, or have the operator use -Force."
+        Write-Error "autoharness-file-lock: refusing to release -- the lock at '$lockFile' changed between verification and deletion (a different owner now holds it); this process's token no longer matches the current owner. Re-run release to re-verify against the new owner, or have the operator use -Force."
         exit 1
     }
 }

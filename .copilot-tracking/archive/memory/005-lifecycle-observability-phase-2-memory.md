@@ -16,8 +16,7 @@
 
 ## Key Decisions
 
-1. Added RollbackApplied to EventKind beyond the data-model.md spec - needed for US3 event ledger rollback recording; serializes as
-ollback_applied
+1. Added RollbackApplied to EventKind beyond the data-model.md spec - needed for US3 event ledger rollback recording; serializes as ollback_applied
 2. source_client is required (String, not Option<String>) per data-model.md - agents must always identify themselves
 3. previous_value/
 ew_value are Option<serde_json::Value> - None for creation/deletion events respectively
