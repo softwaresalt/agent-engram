@@ -34,7 +34,9 @@ merge_commit: "12232bf1c6705c6ac54a5316b0f1297c3f6eef48"
 * Close `176-S` through the single-artifact safe-close path. Do not run
   the destructive shipment cascade because `142-F` is shared across
   successor shipments.
-* Resume from the operator-authorized `checkpoint-20261120-205907.json`.
+* Resume only after the operator's explicit `Authorized` message. The
+  local recovery checkpoint remained uncommitted continuity state, and
+  this memory record is the branch-resolvable authorization evidence.
   Reset the `reconcile-shipped` circuit only after applying the canonical
   unbackticked `Delivery:` syntax and LF normalization.
 * Use `docs/closure/176-S-142-F-post-merge-closure.md` and
@@ -54,12 +56,11 @@ merge_commit: "12232bf1c6705c6ac54a5316b0f1297c3f6eef48"
 ## Handoff
 
 Post-mode reconciliation is recorded in
-`.backlogit/reconcile/176-S-post-20261120T212640Z.md`. Next, complete
-local review, commit, push, and open the closure PR. Stop at its P-014
-merge-approval gate and preserve a guarded Ship checkpoint for operator
-approval.
+`.backlogit/reconcile/176-S-post-20261120T212640Z.md`. Closure PR #488
+is open and must stop at its P-014 merge-approval gate with a guarded
+Ship checkpoint retained for operator approval.
 
-The prior Ship recovery checkpoint was resolved at
-`2026-11-20T21:23:42Z` after operator authorization. The resumed
-session preserves the canonical closure artifact as a byte-frozen
-reconciliation input.
+The operator-authorized recovery checkpoint was resolved locally at
+`2026-11-20T21:23:42Z`; its runtime file is intentionally excluded from
+the branch. The resumed session preserves the canonical closure
+artifact as a byte-frozen reconciliation input.
