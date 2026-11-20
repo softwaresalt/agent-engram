@@ -1806,6 +1806,10 @@ async fn real_indexed_fixture_generation_activates_and_resolves_f54_symbols() ->
     let query_obs =
         exercise_declared_surface(&query_desc, ToolSurface::DirectIpc, &mut fixture).await?;
     fixture.stop_daemon().await?;
+    assert!(
+        !fixture.workspace.join(".engram").join("cozo").exists(),
+        "{MARKER}: managed .engram/cozo index must remain absent after daemon shutdown"
+    );
 
     assert_slot20c_generation_read(MARKER, "get_workspace_statistics", &stats_obs);
     let stats_response = stats_obs.response.as_ref();
@@ -1864,6 +1868,11 @@ async fn real_indexed_fixture_generation_activates_and_resolves_f54_symbols() ->
             .and_then(Value::as_str),
         Some(fixture.f54_fixture_root_id.as_str()),
         "{MARKER}: query_graph /root must equal the indexed generation root ID"
+    );
+    let graph_nodes = extract_named_entries(query_obs.response.as_ref(), "/nodes");
+    assert!(
+        graph_nodes.contains(&F54_FIXTURE_CALLER),
+        "{MARKER}: query_graph /nodes must contain the fixture caller: {graph_nodes:?}"
     );
 
     Ok(())
