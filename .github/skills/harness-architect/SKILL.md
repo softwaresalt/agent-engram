@@ -1,7 +1,7 @@
 ---
 name: harness-architect
 description: "Scaffolds compilable but failing test harnesses for feature and chore tasks"
-argument-hint: "feature=001-F tasks=001.001-T"
+argument-hint: "feature=001-{SUFFIX_FEATURE} tasks=001.001-{SUFFIX_TASK}"
 input:
   properties:
     feature:

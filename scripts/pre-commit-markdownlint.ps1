@@ -28,7 +28,7 @@ if (-not (Get-Command markdownlint -ErrorAction SilentlyContinue)) {
 }
 
 Write-Host "Running markdownlint on staged Markdown files..."
-markdownlint @StagedMd
+& markdownlint --config .markdownlint.json -- @StagedMd
 $ExitCode = $LASTEXITCODE
 
 if ($ExitCode -ne 0) {

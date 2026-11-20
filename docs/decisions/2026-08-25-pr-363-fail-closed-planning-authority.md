@@ -88,5 +88,5 @@ Stage does not mutate the live PR title or body. A durable PR comment carries th
 - [Blocked implementation plan](../exec-plans/2026-08-24-44e573bc-otlp-api-drift-plan.md)
 - [Mandatory escalation evidence](../closure/2026-08-25-pr-363-mandatory-escalation-review.md)
 - `.backlogit/queue/131-F.md`
-- `.backlogit/queue/131.001-R-mandatory-adversarial-review-gate-for-pr-363-otlp-planning-s.md`
+- `.backlogit/queue/131.001-R-mandatory-adversarial-review-gate-for-pr-363-otlp-planning.md` (renamed from `...-otlp-planning-s.md` in GSD v1.6.0 migration hygiene)
 - `.backlogit/queue/125-S.md`

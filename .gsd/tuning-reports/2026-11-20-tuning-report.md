@@ -46,9 +46,9 @@ proposals:
     priority: "P1"
     category: "degrading"
     source: "schema-contract"
-    artifact: "start.ps1"
+    artifact: "start.ps1, start.sh"
     manual_review: true
-    status: "deferred"
+    status: "resolved"
   - id: "TUNE-007"
     key: "legacy-backlogit-storage-root-followup"
     priority: "P1"
@@ -93,7 +93,7 @@ proposals:
 ### Drift Summary
 
 * Breaking changes: 1 (auto-remediated — unguarded `create_checkpoint` registry + broken `gsd.backlog_root` Python import in `_ship.agent.md`)
-* Degrading changes: 5 (3 resolved; 1 `startup-script-ps1` contract proposal deferred for operator review; 1 legacy `.backlogit/` root migration follow-up surfaced as detect-and-report)
+* Degrading changes: 5 (4 resolved, including PA-2 `start.ps1`/`start.sh` preservation in post-tune hygiene; 1 legacy `.backlogit/` root migration follow-up surfaced as detect-and-report)
 * Growth opportunities: 4 (1 applied — workspace profile inventory & `kbdb` detection; 3 proposed for operator opt-in: `kbdb` capability-pack activation, `P-DYN-001` policy proposal, and `mcp-builder` community skill)
 * Cosmetic adjustments: 1 (advisory — 3 workspace-authored `preserved_artifacts` subagents retained untouched per 037-DL)
 
@@ -111,19 +111,19 @@ proposals:
 
 ### Checksum & Contract Scan
 
-* Manifest-tracked artifacts: 115
+* Manifest-tracked artifacts: 113 (after moving `start.ps1` and `start.sh` into `preserved_artifacts`, 10 preserved total)
 * Missing installed artifacts: 0
-* Unchanged managed artifacts: 114
-* User-modified artifacts: 1 (`start.ps1` — intentional contract-tested launcher with workspace-local `.bin/` sidecar wiring)
+* Unchanged managed artifacts: 113
+* User-modified artifacts: 0 (`start.ps1` and `start.sh` are tracked under `preserved_artifacts` for the 142-F PA-2 launcher contracts)
 * Ignored artifacts: 0
 * Schema contracts:
   * `harness-config`: `current` (`1.3.0`, `.gsd/config.yaml`)
   * `harness-manifest`: `current` (`1.1.0`, `.gsd/harness-manifest.yaml`)
   * `workspace-profile`: `current` (`1.1.0`, `.gsd/workspace-profile.yaml`)
-  * `carry-forward`: `valid` (`1.0.0`, `.gsd/carry-forward.yaml`)
+  * `carry-forward`: `valid` (`1.0.0`, `.gsd/carry-forward.yaml`, normalized to `files: [.gsd/config.yaml]`)
 * Startup-script contracts:
-  * `start.ps1`: `ambiguous` (`to_version: "1.1.0"`, `manual_review: true` — preserved untouched per contract test `140.001-T` and Phase 4.1 guardrails)
-  * `start.sh`: `current` (`1.1.0`)
+  * `start.ps1`: `preserved` (`preserved_artifacts` — PA-2 `Invoke-EngramPreflight` launcher restored from `main` with `.bin`/`.kbdb\bin`/`.gsd` `PATH` wiring; 12/12 PowerShell contract tests PASS)
+  * `start.sh`: `preserved` (`preserved_artifacts` — PA-2 `run_engram_preflight` launcher restored from `main`; 10/10 Unix contract tests PASS)
 
 ### Learning Signals
 
@@ -164,15 +164,14 @@ proposals:
 
 #### P1 — Degrading (Deferred / Operator Review Required)
 
-5. **[TUNE-006] `review-startup-script-ps1-contract`** (`source: schema-contract`, `status: ambiguous`, `to_version: "1.1.0"`, `manual_review: true`)
-   * **Artifact**: `start.ps1`
-   * **Evidence**: Matched current delegation marker `$enabledSidecars = @(` and default custom-section tail, with workspace-local `.bin/` sidecar paths and contract tests in `tests/contract/start_launcher_test.rs` (`140.001-T`).
-   * **Action**: Do not auto-apply. Review `start.ps1` manually if changing its startup-script contract.
+5. **[TUNE-006] `review-startup-script-ps1-contract`** (`source: schema-contract`, `status: resolved`, `manual_review: true`)
+   * **Artifacts**: `start.ps1`, `start.sh`, `.gsd/harness-manifest.yaml`
+   * **Resolution**: Restored `main`'s 142-F PA-2 fail-closed `engram preflight` launchers (`start.ps1` and `start.sh`), added safe conditional `.gsd`/`.kbdb\bin`/`.bin` `PATH` setup to `start.ps1`, moved both scripts into `preserved_artifacts` (`10` total), and verified all `22/22` launcher contract tests (`contract_start_launcher`, `contract_start_launcher_failure`, `contract_start_sh_launcher`).
 
 6. **[TUNE-007] Legacy `.backlogit/` storage root follow-up** (`source: structural-drift`, detect-and-report only)
    * **Artifact**: `.backlogit/`
    * **Issue**: Workspace uses legacy `.backlogit/` storage root (`.backlog/` absent).
-   * **Action**: When ready to migrate outside active shipment `176-S`, review `backlogit migrate --workspace-dir --dry-run`. Tune performs no directory rename or backlog mutation.
+   * **Action**: When ready to migrate outside queued shipment `176-S`, review `backlogit migrate --workspace-dir --dry-run`. Tune performs no directory rename or backlog mutation.
 
 #### P2 — Growth & Advisory Proposals (Operator Opt-In)
 
@@ -180,7 +179,7 @@ proposals:
    * Updated source/crate/test counts (`152` `src/` `.rs` files + `12` `crates/` `.rs` files across `engram-indexer` and `powerbi-tmdl-parser`; `284` test files: `contract/66`, `integration/152`, `unit/62`, `helpers/4`) and recorded `kbdb` detection markers (`.mcp.json`, `.kbdb/config/sources.yaml`, `.bin/kbdb.exe`, `C:\Tools\.kbdb\models\all-MiniLM-L6-v2`).
 
 8. **[TUNE-008] Enable `kbdb` capability pack in `.gsd/config.yaml`** (`source: structural-drift`, **Proposed**)
-   * **Rationale**: `.kbdb/` (4 SQLite GraphRAG DBs, 7 sources, 68,714 chunks), `.mcp.json` (`kbdb` server via `.copilot\kbdb-mcp-shim.cjs`), and `start.ps1` (`"kbdb"` sidecar) are active, while `.gsd/config.yaml` currently specifies `capability_packs: ["agent-engram", "backlogit"]`.
+   * **Rationale**: `.kbdb/` (4 SQLite GraphRAG DBs, 7 sources, 68,714 chunks) and `.mcp.json` (`kbdb` server via `.copilot\kbdb-mcp-shim.cjs`) are active, while `.gsd/config.yaml` currently specifies `capability_packs: ["agent-engram", "backlogit"]`.
    * **To adopt**: Add `"kbdb"` to `capability_packs` and `sidecars` in `.gsd/config.yaml`, then re-run `/tune-harness` to install `.github/instructions/kbdb.instructions.md` and weave `kbdb` into `capability-pack-enforcement.instructions.md`, `AGENTS.md`, `copilot-instructions.md`, and `constitution.instructions.md`.
 
 9. **[TUNE-009] Advisory review of workspace-authored subagents (`preserved_artifacts`)** (`source: route-drift`, **Proposed / Preserved per 037-DL**)
@@ -227,12 +226,12 @@ proposals:
 
 ### Auto-Remediation Summary
 
-* Findings auto-fixed: 10 consensus groups (covering 25 individual reviewer items)
-* Findings requiring manual review: 5 (`TUNE-006` `start.ps1` contract, `TUNE-007` `.backlogit/` root migration preview, `TUNE-008` `kbdb` pack opt-in, `TUNE-009` workspace-authored subagents, `TUNE-010` `P-DYN-001`)
+* Findings auto-fixed: 10 consensus groups (covering 25 individual reviewer items), plus `TUNE-006` PA-2 launcher preservation and post-v1.6.0 gate/hook hygiene
+* Findings remaining for operator opt-in/review: 4 (`TUNE-007` `.backlogit/` root migration preview, `TUNE-008` `kbdb` pack opt-in, `TUNE-009` workspace-authored subagents, `TUNE-010` `P-DYN-001`)
 * False positives dismissed: 1 (`.gsd/staging/` ephemeral scratch file flagged by Anchor Reviewer; installed `.github/instructions/capability-pack-enforcement.instructions.md` already omits `kbdb`)
 
 ### Verification Result: PASS WITH WARNINGS
 
 * `.\.bin\gsd.exe verify-workspace --workspace . --gsd-home .gsd/gsd-assets-v1.6.0.zip --json`: **EXIT 0** (`blockers: []`, `strict_schema_blockers: []`, `unresolved: []`, `targeted_checks`: 12/12 PASS; sole warning is informational `backlogit-engine-version-unverified` on debug build `v1.13.0-27-g76f7b144-debug`).
-* `cargo test --test integration_installer -- s064_fresh_install_creates_hook_files s075_templates_root_mcp_json`: **2/2 PASS**.
-* All backups saved to `.gsd/backups/2026-11-19/`. Changes remain uncommitted on feature branch `feat/176-s-142-f-slot-20c-142-089-t-f54c` per Phase 0c branch-safety policy (never commit or push tune output directly to `main`).
+* `cargo test --test contract_start_launcher --test contract_start_launcher_failure --test contract_start_sh_launcher --test integration_installer`: **56/56 PASS** (2 ignored).
+* Pre-update backups saved to gitignored `.gsd/backups/2026-11-19/`. Committed on dedicated branch `chore/gsd-v1.6.0-migration` targeting `main` via PR (preserving Phase 0c branch-safety policy: never commit or push directly to `main`).

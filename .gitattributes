@@ -1,3 +1,11 @@
 # Shell scripts must use LF so they run on Linux CI (ubuntu-latest).
 *.sh text eol=lf
 
+# GSD-managed harness artifacts record LF SHA-256 checksums in .gsd/harness-manifest.yaml;
+# keep them LF on Windows checkouts so `gsd harness resolve` and `gsd gate line-endings` match.
+.github/** text eol=lf
+.gsd/** text eol=lf
+scripts/** text eol=lf
+AGENTS.md text eol=lf
+.markdownlint.json text eol=lf
+

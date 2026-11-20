@@ -10,7 +10,7 @@
 set -uo pipefail
 
 # Run from repo root so repo-root-relative paths from git are valid
-cd "$(git rev-parse --show-toplevel)"
+cd "$(git rev-parse --show-toplevel)" || exit 1
 
 # Collect staged .md files using NUL delimiters (handles spaces in paths)
 STAGED_MD_FILES=()
@@ -30,7 +30,7 @@ if ! command -v markdownlint &>/dev/null; then
 fi
 
 echo "Running markdownlint on staged Markdown files..."
-markdownlint "${STAGED_MD_FILES[@]}" || {
+markdownlint --config .markdownlint.json -- "${STAGED_MD_FILES[@]}" || {
   echo "ERROR: markdownlint violations detected (P-008). Fix heading hierarchy issues before committing." >&2
   exit 1
 }

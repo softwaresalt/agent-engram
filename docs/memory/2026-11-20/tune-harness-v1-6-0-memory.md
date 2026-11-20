@@ -36,8 +36,10 @@ consensus auto-remediation) against `.gsd/gsd-assets-v1.6.0.zip`.
 
 ## Deferred / Operator-Review Items
 
-* `TUNE-006`: `start.ps1` startup-script contract (`ambiguous`, `manual_review: true`; preserved for `140.001-T` contract tests)
-* `TUNE-007`: Legacy `.backlogit/` root (`backlogit migrate --workspace-dir --dry-run` preview when outside active shipment `176-S`)
+* `TUNE-006` (resolved in post-tune hygiene): restored `main`'s PA-2
+  `engram preflight` `start.ps1` and `start.sh` launchers and moved both into
+  `preserved_artifacts` (`10` total; `22/22` launcher contract tests PASS)
+* `TUNE-007`: Legacy `.backlogit/` root (`backlogit migrate --workspace-dir --dry-run` preview when outside queued shipment `176-S`)
 * `TUNE-008`: Optional `kbdb` capability-pack enablement in `.gsd/config.yaml`
 * `TUNE-009`: Optional route/intercom refresh on 3 workspace-authored subagents (`preserved_artifacts`)
 * `TUNE-010`: `.gsd/policy-proposals/P-DYN-001.md` operator review

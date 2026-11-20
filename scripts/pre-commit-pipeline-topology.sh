@@ -19,9 +19,8 @@
 #
 # Behavior:
 #   * Absent 'gsd' -> warn+skip, never a hard failure.
-#   * Advisory-first by default (staged rollout): a gate failure warns but
-#     does NOT block the commit unless GSD_TOPOLOGY_GATE_BLOCKING=true
-#     is set in the environment.
+#   * Fail-closed by default: any nonzero gate result blocks the commit unless
+#     GSD_TOPOLOGY_GATE_BLOCKING=false is explicitly set in the environment.
 #   * Single deterministic pass — no retry loop.
 #
 # Install (opt-in — the harness never silently overwrites your .git/hooks):
@@ -43,19 +42,31 @@ set -uo pipefail
 # Run from repo root so repo-root-relative gate invocation is valid.
 cd "$(git rev-parse --show-toplevel)" || exit 1
 
-if ! command -v gsd >/dev/null 2>&1; then
+GSD_BIN=""
+if command -v gsd >/dev/null 2>&1; then
+  GSD_BIN="gsd"
+elif [ -x "./.gsd/gsd" ]; then
+  GSD_BIN="./.gsd/gsd"
+elif [ -x "./.gsd/gsd.exe" ]; then
+  GSD_BIN="./.gsd/gsd.exe"
+elif [ -x "./.bin/gsd" ]; then
+  GSD_BIN="./.bin/gsd"
+elif [ -x "./.bin/gsd.exe" ]; then
+  GSD_BIN="./.bin/gsd.exe"
+fi
+if [ -z "$GSD_BIN" ]; then
   echo "WARNING: 'gsd' not found — skipping pipeline-topology gate." >&2
   exit 0
 fi
 
 echo "[Pipeline-Topology] gsd gate pipeline-topology --mode manual --phase ambient"
-if ! gsd gate pipeline-topology --mode manual --phase ambient; then
-  if [ "${GSD_TOPOLOGY_GATE_BLOCKING:-false}" = "true" ]; then
+if ! "$GSD_BIN" gate pipeline-topology --mode manual --phase ambient; then
+  if [ "${GSD_TOPOLOGY_GATE_BLOCKING:-true}" != "false" ]; then
     echo "ERROR: pipeline-topology gate failed — commit blocked (P-001/P-016)." >&2
     exit 1
   fi
-  echo "WARNING: pipeline-topology gate failed (advisory) — commit not blocked." >&2
-  echo "  Set GSD_TOPOLOGY_GATE_BLOCKING=true to enforce, or commit --no-verify to bypass entirely." >&2
+  echo "WARNING: pipeline-topology gate failed (advisory override active) — commit not blocked." >&2
+  echo "  Clear GSD_TOPOLOGY_GATE_BLOCKING to restore fail-closed enforcement." >&2
 fi
 
 exit 0

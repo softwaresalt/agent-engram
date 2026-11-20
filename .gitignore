@@ -102,4 +102,5 @@ tmp/
 .gsd/runtime-manifest.json
 .gsd/activation-intent.json
 .gsd/runtime/
+.gsd/metrics/
 .gsd/worktree-baseline.json

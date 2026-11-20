@@ -18,9 +18,8 @@
 #
 # Behavior:
 #   * Absent 'gsd' -> warn+skip, never a hard failure.
-#   * Advisory-first by default (staged rollout): a gate failure warns but
-#     does NOT block the commit unless $env:GSD_TOPOLOGY_GATE_BLOCKING
-#     is 'true'.
+#   * Fail-closed by default: any nonzero gate result blocks the commit unless
+#     $env:GSD_TOPOLOGY_GATE_BLOCKING is explicitly set to 'false'.
 #   * Single deterministic pass — no retry loop.
 #
 # Install (opt-in — the harness never silently overwrites your .git/hooks):
@@ -43,20 +42,30 @@ $ErrorActionPreference = 'Continue'
 $RepoRoot = & git rev-parse --show-toplevel
 Set-Location $RepoRoot
 
-if (-not (Get-Command gsd -ErrorAction SilentlyContinue)) {
+$GsdCmd = Get-Command gsd -ErrorAction SilentlyContinue
+$GsdExe = if ($GsdCmd) {
+    $GsdCmd.Source
+} elseif (Test-Path -LiteralPath (Join-Path $RepoRoot ".gsd\gsd.exe") -PathType Leaf) {
+    Join-Path $RepoRoot ".gsd\gsd.exe"
+} elseif (Test-Path -LiteralPath (Join-Path $RepoRoot ".bin\gsd.exe") -PathType Leaf) {
+    Join-Path $RepoRoot ".bin\gsd.exe"
+} else {
+    $null
+}
+if (-not $GsdExe) {
     Write-Warning "'gsd' not found -- skipping pipeline-topology gate."
     exit 0
 }
 
 Write-Host "[Pipeline-Topology] gsd gate pipeline-topology --mode manual --phase ambient"
-gsd gate pipeline-topology --mode manual --phase ambient
+& $GsdExe gate pipeline-topology --mode manual --phase ambient
 if ($LASTEXITCODE -ne 0) {
-    if ($env:GSD_TOPOLOGY_GATE_BLOCKING -eq 'true') {
+    if ($env:GSD_TOPOLOGY_GATE_BLOCKING -ne 'false') {
         Write-Error "pipeline-topology gate failed -- commit blocked (P-001/P-016)."
         exit 1
     }
-    Write-Warning "pipeline-topology gate failed (advisory) -- commit not blocked."
-    Write-Warning "  Set `$env:GSD_TOPOLOGY_GATE_BLOCKING = 'true' to enforce, or commit --no-verify to bypass entirely."
+    Write-Warning "pipeline-topology gate failed (advisory override active) -- commit not blocked."
+    Write-Warning "  Clear `$env:GSD_TOPOLOGY_GATE_BLOCKING to restore fail-closed enforcement."
 }
 
 exit 0

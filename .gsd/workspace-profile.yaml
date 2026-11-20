@@ -46,7 +46,7 @@ build:
 test:
   runner: "cargo"
   command: "cargo dev-test"
-  directory: "tests/"
+  directory: "tests"
 
 lint:
   tool: "cargo"
@@ -81,7 +81,7 @@ ci:
     - "!docs/**"
     - "!.backlogit/**"
     - "!.gsd/**"
-  gsd_install_command: "pip install gsd"
+  gsd_install_command: ""
 
 local_gating:
   pre_push_enabled: true
@@ -249,7 +249,7 @@ conventions:
     merge_strategy: "merge commit only (squash and rebase merges are forbidden — P-009)"
     release_automation: "cargo-release with git-cliff changelog generation"
   documentation:
-    architecture: "docs/ARCHITECTURE.md"
+    architecture: "docs/architecture.md"
     adrs: "docs/adrs/"
     progressive_disclosure: true
 

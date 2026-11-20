@@ -26,22 +26,24 @@ workspace-authored custom artifacts and operator working-tree edits.
 
 ## Artifacts Updated and Preserved
 
-* Re-rendered all 20 existing GSD-managed pipeline agents and subagents, 23
-  existing GSD-managed skills, 2 prompts, and 12 workflow instructions to match
-  GSD v1.6.0 templates and the operator's `.gsd/config.yaml` model routing
+* Re-rendered all 20 existing GSD-managed pipeline agents and subagents, 28
+  existing GSD-managed skills, 4 prompts, and 31 workflow/coding instructions to
+  match GSD v1.6.0 templates and the operator's `.gsd/config.yaml` model routing
   (`tier2`/`ship`: `mai-code-2`, `tier3`/`orchestrator`/`stage`:
   `gemini-4-carbon`, `stage`/`ship` escalation: `gpt-6.2-sol`).
 * Registered global Copilot CLI agents and skills (`Auto-MergeInstall`,
   `Auto-Tune`, `install-harness`, `tune-harness`, `verify-harness`,
-  `workspace-discovery`) in `.copilot/` via `gsd.exe setup-copilot-cli`.
-* Backed up pre-update files to `.gsd/backups/2026-11-19/`.
-* Preserved all 8 `preserved_artifacts` (`rust-mcp-expert.agent.md`,
-  `mcp-protocol-reviewer.agent.md`, `rust-safety-reviewer.agent.md`,
-  `rust.instructions.md`, `rust-mcp-server.instructions.md`,
-  `file-first-content.instructions.md`, `cp-review-fix.prompt.md`,
-  `policy-proposal.md`), contract-tested `start.ps1` / `start.sh` /
-  `.github/copilot-instructions.md`, `AGENTS.md`, and operator edits in
-  `.gsd/config.yaml`.
+  `workspace-discovery`) in gitignored `.copilot/` via
+  `gsd.exe setup-copilot-cli`.
+* Backed up pre-update files to gitignored `.gsd/backups/2026-11-19/`.
+* Preserved all 10 `preserved_artifacts` (`start.ps1` and `start.sh` restored
+  from `main` to keep the 142-F PA-2 `engram preflight` launcher contracts, plus
+  `rust-mcp-expert.agent.md`, `mcp-protocol-reviewer.agent.md`,
+  `rust-safety-reviewer.agent.md`, `rust.instructions.md`,
+  `rust-mcp-server.instructions.md`, `file-first-content.instructions.md`,
+  `cp-review-fix.prompt.md`, and `policy-proposal.md`), `AGENTS.md`,
+  `.github/copilot-instructions.md`, normalized `.gsd/carry-forward.yaml`
+  (`files: [.gsd/config.yaml]`), and operator edits in `.gsd/config.yaml`.
 
 ## Verification
 

@@ -8,7 +8,7 @@ installed_at: "2026-05-11T00:00:00Z"
 tuned_at: "2026-11-20T01:40:00Z"
 gsd_version: "1.6.0"
 gsd_home: ".gsd/gsd-assets-v1.6.0.zip"
-profile_hash: "d80f700b318341d0f8274d4d07cdf79536431137ba8771c64f488ca0e95a5e48"
+profile_hash: "76c5e682b33347683c33d7d2556de2dced17a1268adae1719d495d5c0d6e67ea"
 config_hash: "6b4aaf5c553024a15822fc4c8257b71d5c749d8192b15e683a166c049106e07f"
 install_preset: "full"
 primary_stack_pack: "rust-mcp-daemon"
@@ -186,7 +186,7 @@ variables_used:
   FORMAT_COMMAND: "cargo fmt --all"
   FORMAT_FIX_COMMAND: "cargo fmt --all"
   FORMAT_TOOL: "cargo"
-  GRAPHTOR_BINARY_PATH: ".kbdb/bin/kbdb.exe"
+  GRAPHTOR_BINARY_PATH: ".bin/kbdb.exe"
   GRAPHTOR_SOURCES_PATH: ".kbdb/config/sources.yaml"
   HARNESS_ENFORCED_SUMMARY: "* Formatting and linting (`cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings -D clippy::pedantic`, markdownlint)\n* Commit/branch mechanics and merge-commit hygiene (conventional commits, P-009 merge-commit-only)\n* Test-first red-green gates (P-002 / P-004 with the `tests/` three-tier harness)\n* Merge/PR hygiene (local review readiness, required checks, PR automation protocol)\n* Backlog bookkeeping (backlogit registry, queue/shipment status transitions)\n* Role-boundary checks (two-agent Stage/Ship model, P-010)"
   HARNESS_MANIFEST_PATH: ".gsd/harness-manifest.yaml"
@@ -320,7 +320,7 @@ variables_used:
   SUFFIX_SUBTASK: "ST"
   SUFFIX_TASK: "T"
   TEST_COMMAND: "cargo dev-test"
-  TEST_DIR: "tests/"
+  TEST_DIR: "tests"
   TEST_RUNNER: "cargo test"
   TEST_STRUCTURE: "Three-tier test architecture: contract tests in tests/contract/ (66 MCP tool/launcher contract files), integration tests in tests/integration/ (152 end-to-end DB/IPC files), unit tests in tests/unit/ (62 isolated logic/proptest files)"
   TEST_TIER_DESCRIPTION: "Contract: MCP tool schema and error code verification (66 files). Integration: end-to-end flows with real DB/IPC (152 files). Unit: isolated logic and property-based tests via proptest (62 files). Helpers: shared test fixtures (4 files)."
@@ -748,8 +748,8 @@ artifacts:
   - path: ".github/skills/harness-architect/SKILL.md"
     artifact_type: "skill"
     primitive: 2
-    template: "templates/skills/harness-architect/SKILL.md.tmpl"
-    checksum: "832a5ca1d525fe41d33fa2f3f6cb392debfc3f2b81b45c14d1fb05b71e846d31"
+    template: "skills/harness-architect/SKILL.md.tmpl"
+    checksum: "939073208a4e3c1439731b916adce129145e0c32e775175a17509bfe00b0e71e"
   - path: ".github/skills/harness-doctor/SKILL.md"
     artifact_type: "skill"
     primitive: 7
@@ -864,32 +864,32 @@ artifacts:
     artifact_type: "script"
     primitive: 5
     template: "templates/scripts/pre-commit-markdownlint.ps1.tmpl"
-    checksum: "f6401a8f50996f07a78b8a282d0f233bf08b0611a105495cfa5d2e64511617d6"
+    checksum: "4f945912aaedabef804a1e98415ab30d659feab0ffcf7194cec224121ad7e10c"
   - path: "scripts/pre-commit-markdownlint.sh"
     artifact_type: "script"
     primitive: 5
     template: "templates/scripts/pre-commit-markdownlint.sh.tmpl"
-    checksum: "fa590415faf85f1c69139cbe93ac460754e1219c748de8d1260d424b72144922"
+    checksum: "2b9cfcc709d9483f8f1a0d9931485e3f143543562edc6d094a588c305df3970d"
   - path: "scripts/pre-commit-pipeline-topology.ps1"
     artifact_type: "script"
     primitive: 5
     template: "templates/scripts/pre-commit-pipeline-topology.ps1.tmpl"
-    checksum: "11b3513d0732a0d1685b00fcd9e46f8469a2a090e0fd6ce3f8dc5f6241f95c78"
+    checksum: "d530e7fdc5816433a6ad3927e0bd736ff3458515fb16e084dd49fe1ac7002b29"
   - path: "scripts/pre-commit-pipeline-topology.sh"
     artifact_type: "script"
     primitive: 5
     template: "templates/scripts/pre-commit-pipeline-topology.sh.tmpl"
-    checksum: "37dcb17567609598bb8a3cc492519cc9d5e7bc82d43fe59722050f98630326fa"
+    checksum: "d2e70fd00aa215c00ee708d35c08900316b98db30a1a6eab369a89ba3a794df9"
   - path: "scripts/pre-push-quality-gates.ps1"
     artifact_type: "script"
     primitive: 5
     template: "templates/scripts/pre-push-quality-gates.ps1.tmpl"
-    checksum: "1c3db078f3d31539045059adf03f6215c9448d42bad2e628a27427f4e2fb3fad"
+    checksum: "254928a0bdc6bc14505d2dd6eb83c4818f39f336c0080434b57df4a787a2bbbf"
   - path: "scripts/pre-push-quality-gates.sh"
     artifact_type: "script"
     primitive: 5
     template: "templates/scripts/pre-push-quality-gates.sh.tmpl"
-    checksum: "3d5a767fc416f9cbd8b49fe32d8ba091663c8704342400a5858462fce43fc7ee"
+    checksum: "66b1180b686822a472f5b46d01d131ff122b64359e37178e84596d144f01ed18"
   - path: "scripts/release_lock.ps1"
     artifact_type: "script"
     primitive: 5
@@ -939,7 +939,7 @@ tuning_history:
     profile_hash: "dbb4940a136c734c5d8816163a3b563dbee7296d63bc43dad81c465a0b849e28"
   - date: "2026-11-20T01:40:00Z"
     proposals_applied: 21
-    profile_hash: "d80f700b318341d0f8274d4d07cdf79536431137ba8771c64f488ca0e95a5e48"
+    profile_hash: "76c5e682b33347683c33d7d2556de2dced17a1268adae1719d495d5c0d6e67ea"
 
 upgrade_notes:
   from_version: "1.6.0"

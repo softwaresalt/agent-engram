@@ -63,7 +63,7 @@ if (-not [string]::IsNullOrWhiteSpace($env:AGENT_TEMP_DIR) -and $env:AGENT_TEMP_
     if ($candidate.StartsWith($repoPrefix, $pathCmp)) {
         $relCand = $candidate.Substring($repoPrefix.Length).TrimEnd('\', '/')
         $relSlash = $relCand.Replace('\', '/')
-        if ($relSlash -ne '.git' -and -not $relSlash.StartsWith('.git/', [StringComparison]::OrdinalIgnoreCase)) {
+        if (-not [string]::IsNullOrWhiteSpace($relCand) -and $relSlash -ne '.git' -and -not $relSlash.StartsWith('.git/', [StringComparison]::OrdinalIgnoreCase)) {
             $safeAncestors = $true
             $cur = $RepoRoot
             foreach ($seg in ($relCand -split '[/\\]')) {
@@ -233,20 +233,29 @@ if (Test-Path '.markdownlint.json') {
 # mismatched single active or two-or-more-active shipments still blocks
 # fail-closed regardless of the advisory toggle below.
 #
-# Advisory-first by default (staged rollout): a gate failure warns but
-# does NOT block the push unless $env:GSD_TOPOLOGY_GATE_BLOCKING
-# is 'true'. Single deterministic pass — no retry loop (circuit-breaker
-# compatible). Absent 'gsd' -> warn+skip, never a hard failure.
-if (Get-Command gsd -ErrorAction SilentlyContinue) {
+# Fail-closed by default: a gate failure blocks the push unless
+# $env:GSD_TOPOLOGY_GATE_BLOCKING is 'false'. Single deterministic pass —
+# no retry loop (circuit-breaker compatible). Absent 'gsd' -> warn+skip.
+$GsdPushCmd = Get-Command gsd -ErrorAction SilentlyContinue
+$GsdPushExe = if ($GsdPushCmd) {
+    $GsdPushCmd.Source
+} elseif (Test-Path -LiteralPath (Join-Path $RepoRoot ".gsd\gsd.exe") -PathType Leaf) {
+    Join-Path $RepoRoot ".gsd\gsd.exe"
+} elseif (Test-Path -LiteralPath (Join-Path $RepoRoot ".bin\gsd.exe") -PathType Leaf) {
+    Join-Path $RepoRoot ".bin\gsd.exe"
+} else {
+    $null
+}
+if ($GsdPushExe) {
     Write-Host "[Pipeline-Topology] gsd gate pipeline-topology --mode manual --phase ambient"
-    gsd gate pipeline-topology --mode manual --phase ambient
+    & $GsdPushExe gate pipeline-topology --mode manual --phase ambient
     if ($LASTEXITCODE -ne 0) {
-        if ($env:GSD_TOPOLOGY_GATE_BLOCKING -eq 'true') {
+        if ($env:GSD_TOPOLOGY_GATE_BLOCKING -ne 'false') {
             Write-Error "pipeline-topology gate failed -- push blocked (P-001/P-016)."
             $script:Failed = $true
         } else {
-            Write-Warning "pipeline-topology gate failed (advisory) -- push not blocked."
-            Write-Warning "  Set `$env:GSD_TOPOLOGY_GATE_BLOCKING = 'true' to enforce, or push --no-verify to bypass entirely."
+            Write-Warning "pipeline-topology gate failed (advisory override active) -- push not blocked."
+            Write-Warning "  Clear `$env:GSD_TOPOLOGY_GATE_BLOCKING to restore fail-closed enforcement."
         }
     }
 } else {

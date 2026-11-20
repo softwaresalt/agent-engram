@@ -87,7 +87,7 @@ validate_candidate_temp_dir() {
   esac
   rel="${cand#"$REPO_ROOT"/}"
   case "$rel" in
-    .git|.git/*) return 1 ;;
+    .[gG][iI][tT]|.[gG][iI][tT]/*) return 1 ;;
   esac
   cur="$REPO_ROOT"
   IFS="/" read -r -a _segs <<< "$rel"
@@ -271,20 +271,31 @@ fi
 # mismatched single active or two-or-more-active shipments still blocks
 # fail-closed regardless of the advisory toggle below.
 #
-# Advisory-first by default (staged rollout): a gate failure warns but
-# does NOT block the push unless GSD_TOPOLOGY_GATE_BLOCKING=true
-# is set in the environment. This is a single deterministic pass — no
-# retry loop — so the hook cannot spin (circuit-breaker compatible).
+# Fail-closed by default: a gate failure blocks the push unless
+# GSD_TOPOLOGY_GATE_BLOCKING=false is set in the environment. Single
+# deterministic pass — no retry loop (circuit-breaker compatible).
 # Absent 'gsd' -> warn+skip, never a hard failure.
+GSD_PUSH_BIN=""
 if command -v gsd >/dev/null 2>&1; then
+  GSD_PUSH_BIN="gsd"
+elif [ -x "./.gsd/gsd" ]; then
+  GSD_PUSH_BIN="./.gsd/gsd"
+elif [ -x "./.gsd/gsd.exe" ]; then
+  GSD_PUSH_BIN="./.gsd/gsd.exe"
+elif [ -x "./.bin/gsd" ]; then
+  GSD_PUSH_BIN="./.bin/gsd"
+elif [ -x "./.bin/gsd.exe" ]; then
+  GSD_PUSH_BIN="./.bin/gsd.exe"
+fi
+if [ -n "$GSD_PUSH_BIN" ]; then
   echo "[Pipeline-Topology] gsd gate pipeline-topology --mode manual --phase ambient"
-  if ! gsd gate pipeline-topology --mode manual --phase ambient; then
-    if [ "${GSD_TOPOLOGY_GATE_BLOCKING:-false}" = "true" ]; then
+  if ! "$GSD_PUSH_BIN" gate pipeline-topology --mode manual --phase ambient; then
+    if [ "${GSD_TOPOLOGY_GATE_BLOCKING:-true}" != "false" ]; then
       echo "ERROR: pipeline-topology gate failed — push blocked (P-001/P-016)." >&2
       FAILED=1
     else
-      echo "WARNING: pipeline-topology gate failed (advisory) — push not blocked." >&2
-      echo "  Set GSD_TOPOLOGY_GATE_BLOCKING=true to enforce, or push --no-verify to bypass entirely." >&2
+      echo "WARNING: pipeline-topology gate failed (advisory override active) — push not blocked." >&2
+      echo "  Clear GSD_TOPOLOGY_GATE_BLOCKING to restore fail-closed enforcement." >&2
     fi
   fi
 else
