@@ -910,19 +910,11 @@ artifacts:
     primitive: 5
     template: "templates/skills/skill-search/scripts/search.sh"
     checksum: "3d97a8e4acc2d9bb173297e8496a93935b54963a115d59161c4051663dc666f5"
-  - path: "start.ps1"
-    artifact_type: "script"
-    primitive: 6
-    template: "templates/scripts/start.ps1.tmpl"
-    checksum: "a6f5bb2d74013901c6b94b35805abe7f29cc5e36cab531ade2ed9dac04ad4df9"
-  - path: "start.sh"
-    artifact_type: "script"
-    primitive: 6
-    template: "templates/scripts/start.sh.tmpl"
-    checksum: "444af783999474495844a4267f6f63b97d917f67b943966afdcd5c14c25afaa6"
 
 # Workspace-authored artifacts preserved by merge-install/tune and NOT managed by gsd.
 preserved_artifacts:
+  - "start.ps1"
+  - "start.sh"
   - ".github/agents/subagents/rust-mcp-expert.agent.md"
   - ".github/agents/subagents/mcp-protocol-reviewer.agent.md"
   - ".github/agents/subagents/rust-safety-reviewer.agent.md"
