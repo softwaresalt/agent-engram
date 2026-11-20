@@ -1,0 +1,963 @@
+{
+  "captured_at": "2026-11-20T20:51:35.888979Z",
+  "classifier_verdict": "SAFE_CLOSE",
+  "engine_verdict": "UNVERIFIED",
+  "feature_id": "142-F",
+  "merge_commit_sha": "12232bf1c6705c6ac54a5316b0f1297c3f6eef48",
+  "phase": "pre_close",
+  "pre_close": {
+    "authorize_validity_seconds": 120,
+    "authorize_window_seconds": 180,
+    "captured_at": "2026-11-20T20:51:35.888979Z",
+    "classifier_verdict": "SAFE_CLOSE",
+    "close_path_selection": {
+      "classifier_verdict": "SAFE_CLOSE",
+      "engine_verdict": "UNVERIFIED",
+      "reason_code": "STANDARD_CLOSURE_SUFFICIENT",
+      "selected_close_path": "safe_close"
+    },
+    "deliberation_plan": {
+      "applied_count": 0,
+      "dry_run": true,
+      "entries": [],
+      "missing_count": 0,
+      "noop_count": 0,
+      "schema_version": "1.0.0",
+      "shipment_id": "176-S"
+    },
+    "engine_semantics": {
+      "commit": "76f7b144",
+      "engine_verdict": "UNVERIFIED",
+      "minor_line": "",
+      "probe_surface": "cli",
+      "reason_code": "ENGINE_SEMANTICS_UNVERIFIED",
+      "verified_minor_lines": [
+        "1.11",
+        "1.12",
+        "1.13"
+      ],
+      "version": "v1.13.0-27-g76f7b144-debug"
+    },
+    "engine_simulation": {
+      "archive_resident_done": [
+        "142.089-T"
+      ],
+      "expanded_children_checked": [],
+      "ignored_dependency_links": [
+        "142.089-T -\u003e 142.088-T"
+      ],
+      "inert_already_archived": [],
+      "inert_non_cascade_status": [],
+      "shipment_id": "176-S",
+      "would_mutate_items": [
+        "142.089-T"
+      ]
+    },
+    "linked_deliberation_disposition": {
+      "applied_count": 0,
+      "dry_run": true,
+      "entries": [],
+      "missing_count": 0,
+      "noop_count": 0,
+      "schema_version": "1.0.0",
+      "shipment_id": "176-S"
+    },
+    "manifest_members": [
+      {
+        "archived_status": null,
+        "item_id": "142.089-T",
+        "location": "archive",
+        "sha256": "f846946a01939186a55e6a164947055861a2d31d86bcc8d56e5948221a6a8f93",
+        "status": "done"
+      }
+    ],
+    "observation_set": [
+      {
+        "archived_status": null,
+        "item_id": "142-F",
+        "location": "queue",
+        "sha256": "84cdc9090a24860ce6bb972e7aa07b951744b827ee1c6ddc9a7a9fc383d5b26d",
+        "status": "active"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.001-T",
+        "location": "archive",
+        "sha256": "dcf162663408e842f3a6786647adb51c13cf9bb57bc531638dff301c70ff86f1",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.001.001-ST",
+        "location": "archive",
+        "sha256": "9435746ff5cc5014316a46b17fd8c0e2e2076fc6d420bae63b4aa57c57fa7aa4",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.001.002-ST",
+        "location": "archive",
+        "sha256": "17feb56f4ff0190ef445e55c5030921d069623d21037c38a31b7e0a73e06e9d6",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.001.003-ST",
+        "location": "archive",
+        "sha256": "9b294fc1ffd49987c824dec9cfd07d18cc56953f9af2d756fc7c7e2aade2832e",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.001.004-ST",
+        "location": "archive",
+        "sha256": "383050b43c8fc21082b5ee2cd5b997f5e3f3ae101b56a3dc0dc0fff5c2d8b9cb",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.001.005-ST",
+        "location": "archive",
+        "sha256": "d6bdaa84185e5bb7e6920999544120f5d2b26ae639ec7275ed88237d0a0d9a59",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.002-T",
+        "location": "archive",
+        "sha256": "b489e4d727b8c9b0de5eb2aa4269571fdf4a5571e63277d3ea0c87989d8d7127",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.003-T",
+        "location": "archive",
+        "sha256": "83d3a266e495638f8be8fb277c633e5d0ea7a951956a2b07523d3212bf9f8bf4",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.004-T",
+        "location": "archive",
+        "sha256": "5c2386817ee6087819176162ba89c013cea276ada9de26c9567b7d0edc159bd0",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.005-T",
+        "location": "archive",
+        "sha256": "99e5b49ae303221f4534286ad342c751123123e785c4a3c0f3a22c8951a248b9",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.005.001-ST",
+        "location": "archive",
+        "sha256": "f49d63b8854163552de29a68c1f43633265b9a532810ba88dfb9601804afec6e",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.005.002-ST",
+        "location": "archive",
+        "sha256": "78a09c26c03aa704e1d7f09e7567f603ab9a39b3c1a1c78a5e9d3b67cd8664b4",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.005.003-ST",
+        "location": "archive",
+        "sha256": "f96f59c388946bcac3f659d9359e72b75f0f250baa9330c91707397354fb00f2",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.006-T",
+        "location": "archive",
+        "sha256": "c2a64dfd35e72188297e30cbe0fc67e462beca73f7b5540ae5aba2047c140f96",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.007-T",
+        "location": "archive",
+        "sha256": "bb32bd8612f6ca57f54fb099a19518d4a15cc1617f2e741d53b1e537efddcc95",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.008-T",
+        "location": "archive",
+        "sha256": "ac1abc501aa06d5d181ff10232be9c1df214cc0438abb135d8d4d8df1f80bcbc",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.008.001-ST",
+        "location": "archive",
+        "sha256": "cf2f1cd3fd0bd0a8315853155444cb98e5c49e6a8b191da2265100ac46250569",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.008.002-ST",
+        "location": "archive",
+        "sha256": "e658132482423bdf93504f3bcb1f5bd6837154d1f904afb17165c17bc6d199fd",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.008.003-ST",
+        "location": "archive",
+        "sha256": "dac5bb4a97e177fee048e3e358d55513e0f3d246118612b6ad5b17044f967629",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.008.004-ST",
+        "location": "archive",
+        "sha256": "40636d7473ddf35dbd10f50fa29cc92108b9c0e30e8a72c4f84e5811e8b1cd02",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.009-T",
+        "location": "archive",
+        "sha256": "9cc06ee777752733844ef652b2258a0c4fd2b2225cb2ce66358526f19629ee5a",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.010-T",
+        "location": "archive",
+        "sha256": "8ef2cdbd44889a6166e34bdae5a298bd3b2d9e9a77afa0e70177a7ccf09f7335",
+        "status": "done"
+      },
+      {
+        "archived_status": "done",
+        "item_id": "142.011-T",
+        "location": "archive",
+        "sha256": "2fc915a69a9d20562edd2d8007b1d374eca51d880e780e0c8f612bbc882197aa",
+        "status": "archived"
+      },
+      {
+        "archived_status": "done",
+        "item_id": "142.012-T",
+        "location": "archive",
+        "sha256": "3345ea43c35c21387fdbb567aaee2ecfd29e7665e8a38e524e7d69344ec25c7c",
+        "status": "archived"
+      },
+      {
+        "archived_status": "done",
+        "item_id": "142.013-T",
+        "location": "archive",
+        "sha256": "476a694e912d74dec21a6e8787a84436a58dc051ae0419a4957116bc5532c8a7",
+        "status": "archived"
+      },
+      {
+        "archived_status": "done",
+        "item_id": "142.013.001-ST",
+        "location": "archive",
+        "sha256": "1ebf31d42782d6fbe568bbfd8649a70005d26b70ffe3838f1e662a8f4b6ddff2",
+        "status": "archived"
+      },
+      {
+        "archived_status": "done",
+        "item_id": "142.013.002-ST",
+        "location": "archive",
+        "sha256": "8b6eb4ff4efe06340aab4fbe79f51a5d16a26d8196d922bfbdf6feb71d0c2846",
+        "status": "archived"
+      },
+      {
+        "archived_status": "done",
+        "item_id": "142.013.003-ST",
+        "location": "archive",
+        "sha256": "dfa1b6c52d2e1ef05069e71a44a40f7aeb6fa46cccba6994b4eaa0080f67bc3c",
+        "status": "archived"
+      },
+      {
+        "archived_status": "done",
+        "item_id": "142.013.004-ST",
+        "location": "archive",
+        "sha256": "6d16cc49cc8128c3576962cc93c1857894e2f17bb8ea62344f39c9a8b5e66630",
+        "status": "archived"
+      },
+      {
+        "archived_status": "done",
+        "item_id": "142.014-T",
+        "location": "archive",
+        "sha256": "3377c2046620068116dec214cb42e99c27627de3310aaa58b3a5347625a71f1a",
+        "status": "archived"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.015-T",
+        "location": "archive",
+        "sha256": "ffc78929d547f8da50176423dd630a06ff69968a2bbd477d1502114f14e3ea1a",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.016-T",
+        "location": "archive",
+        "sha256": "c2d1a86c11913dbd59f1321f6df42a89ed82cf2f0aa87fef5c3aa7a425273c25",
+        "status": "done"
+      },
+      {
+        "archived_status": "done",
+        "item_id": "142.017-T",
+        "location": "archive",
+        "sha256": "470d0d4f38913fb261aea3ccbee5cbe077fc616b94aefa2a58fb4a232757fa1d",
+        "status": "archived"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.018-T",
+        "location": "archive",
+        "sha256": "06af25ea6527ad639387b0f723cc40eb5d9702bebb27ca2bdd2072f3e3431ff6",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.018.001-ST",
+        "location": "archive",
+        "sha256": "f7ebee6b6ed2ac87aa6be6ca5b4a5da3ae9736503534e6d7e5377881c38c5b85",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.018.002-ST",
+        "location": "archive",
+        "sha256": "83cc40e301597fbe620fdaedde71a621e04f729bdb11c833ea89bc6ef4c188b5",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.018.003-ST",
+        "location": "archive",
+        "sha256": "48a492c86507985c7c8049bbfcf6061f5371029b4ce68ba7dd001b9004e4fab3",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.018.004-ST",
+        "location": "archive",
+        "sha256": "dddcaa2b64473e2f4915b2a90e3900e4c99690452eb8d096158b8907e1867617",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.019-T",
+        "location": "archive",
+        "sha256": "5430fcf210f1094bd661126933ff609c3bfb3817aa0e09a24c1b64db7117bcdd",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.020-T",
+        "location": "archive",
+        "sha256": "bd574a88e5993832ec35b7644ba41553a4414bf43a17e86c0e82d8c13fa03350",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.021-T",
+        "location": "archive",
+        "sha256": "dde3df95053106469b6fa53bae5b3adde5c94c6c781ec2138d9379a6d3a68b48",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.022-T",
+        "location": "archive",
+        "sha256": "becd2aa074b3fa90ef572b174f899ce7388d857849bc9fa025eaf1db5ba1d705",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.023-T",
+        "location": "archive",
+        "sha256": "defa517d504cc1a8218a41771b57597b11b4c462817f4de734f6fdb87f89a2e1",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.024-T",
+        "location": "archive",
+        "sha256": "a6643010abb1a131780279c68fbba4f8811acb1bc8e43964970f8fd46f9a917f",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.025-T",
+        "location": "archive",
+        "sha256": "f68e38680c5c741174954f127c8a180edccd239d337417c6b9a4faddb3928489",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.026-T",
+        "location": "archive",
+        "sha256": "158ef1d71b890d410294f377062062fe84d8735cf7ab35f75bbdef6a031287ea",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.027-T",
+        "location": "archive",
+        "sha256": "45ceceac17f5d3c397375ac9da3dab69890f77a8649adfd5c26c1f596c103ac7",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.028-T",
+        "location": "archive",
+        "sha256": "26b605039168caed33f8e409705a3bfe2679153c35872412937eca3d44628d46",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.029-T",
+        "location": "archive",
+        "sha256": "a1b5f434ac27fde1dc4f3487043a70ead4a066673c0fdb4a87f77eafbdd56337",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.030-T",
+        "location": "archive",
+        "sha256": "db745dff24bb74f7b6f8b5d053c415af7d0da8fa0007ba661735840bf2b3953a",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.031-T",
+        "location": "archive",
+        "sha256": "385dd9a4e1f2f41dab2eb96f983976d630ede5e01d71bbb074d46fe93756b9d1",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.032-T",
+        "location": "archive",
+        "sha256": "c3a48e00116b2f2633525a6c30087a76e3fac9d7130fb27e3b37a20e90b4a3da",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.033-T",
+        "location": "archive",
+        "sha256": "391d106711a1724937c39bf63c22d66fb4e1f36dc9792524c5165b7910e032fc",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.033.001-ST",
+        "location": "archive",
+        "sha256": "c1a7d67c9bc42c110f90db625a41a577f2ee6890c9f498d647fd5cc7231bddae",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.033.002-ST",
+        "location": "archive",
+        "sha256": "c872d225cd3eb75426659f9d16ce45c9739645994bebcb29cfedc1bfdbefe8ba",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.034-T",
+        "location": "archive",
+        "sha256": "aff0a852bdf8f4e06c17d728a6a375baf8d89b840afad7a9b6756f0bbe90126d",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.035-T",
+        "location": "archive",
+        "sha256": "41e46daf60759b0c2d4d8ce50b2ba64ec9128407a833126f2f7aefdba3f1dcd3",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.036-T",
+        "location": "archive",
+        "sha256": "c633dd9e173bccaa9af6c408ed309940743a949169ba9287dab587714f8927ad",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.037-T",
+        "location": "archive",
+        "sha256": "777a98ac6758b0cb4030a74ab6072864bad2e5dbf891896010abc31000bfd17e",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.038-T",
+        "location": "archive",
+        "sha256": "83a8878284f514043fc592f46231696fddc972784696ac205af03a8322794af2",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.039-T",
+        "location": "archive",
+        "sha256": "7b4c178cc1de96c5b147270299d560b41eb10af650144a7af3c696ed7523cbb6",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.040-T",
+        "location": "archive",
+        "sha256": "3d57a081dd4c68428efea0171108701ba56ce07d55e23db6321ea938d91ddd59",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.041-T",
+        "location": "archive",
+        "sha256": "0fd11e00992ff8bc99807533541a1f159ebb55fa0d1dff8c12824fb63613c9a9",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.042-T",
+        "location": "archive",
+        "sha256": "54e3c93ee467ea0bc07844b8a9ffd6ac154d275114957fc00d21d3fcd28831aa",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.043-T",
+        "location": "archive",
+        "sha256": "123e29841dcfb564fd75fb1bfb39e25d220a89e07629ae667c14e7a8b715d5f7",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.044-T",
+        "location": "archive",
+        "sha256": "f9d06e6cd3f552f33143dcd5aedfc7a40edf76a5134d2104d95261c9615b594b",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.045-T",
+        "location": "archive",
+        "sha256": "4250939dcd17b84d36333bcefb4c41fc5fd709a4c0c4527304b9ddacc40feed3",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.046-T",
+        "location": "archive",
+        "sha256": "f8e66797ab9b3ef5207e53a1638270ad29d59e7a6dffe8613986c5c6764e8179",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.047-T",
+        "location": "archive",
+        "sha256": "e8c29cfcf0d9daedc54b0c5da099c4fbbe78c01a63b0cd35540a58ade439579e",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.048-T",
+        "location": "archive",
+        "sha256": "71d2cdb5f57499399cf8b9c6637075cf88c695ba1ee71ca7313b8ecf49f58f9b",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.049-T",
+        "location": "archive",
+        "sha256": "f38a86a282c474dc1db637b3b76201cc5899eafd5dd6ae7de840bd1f64e0b629",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.050-T",
+        "location": "archive",
+        "sha256": "9ce828bad5cb3d19e88316951bb1995b2da0f0b0331e69655df4b7c6c1c21359",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.051-T",
+        "location": "archive",
+        "sha256": "963bcf388c5b12e5dc8536ebde943b88e4bfcd33a3674ea139e6eecad7416c2a",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.052-T",
+        "location": "archive",
+        "sha256": "a9a6125f1b7a879fa6dd48e82109805f5286d8210decd9f497b65e256adfa15c",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.053-T",
+        "location": "archive",
+        "sha256": "5e8223b9f33970343ed4191457802d60342c712627d9d312944f933b698c169d",
+        "status": "done"
+      },
+      {
+        "archived_status": "done",
+        "item_id": "142.054-T",
+        "location": "archive",
+        "sha256": "45f72c9c8a1d55c6e750f5f1e0291b5def995af5e7bfc493f4a8ac4bab58fea0",
+        "status": "archived"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.054.001-ST",
+        "location": "archive",
+        "sha256": "e7642b3e3d1e69cf2850987f9724560ef984a6d34e8b720a4aed6e87f076e32c",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.054.002-ST",
+        "location": "archive",
+        "sha256": "a550d4ed72da80ed1b4cfc5cebd9324cf8d0cda8e88bb4d58903806d1a617f07",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.054.003-ST",
+        "location": "archive",
+        "sha256": "5a7e2fb624b287e0a5719b6ddc6093d41373dd85c83efd8447a314b8d383cbec",
+        "status": "done"
+      },
+      {
+        "archived_status": "done",
+        "item_id": "142.055-T",
+        "location": "archive",
+        "sha256": "c8380d55f65bc194912951df9ade50e67c1ea463db2a65755a8599de2fc20138",
+        "status": "archived"
+      },
+      {
+        "archived_status": "done",
+        "item_id": "142.056-T",
+        "location": "archive",
+        "sha256": "33d2a8e0e65a5d163f183ec18a7fe378b944c91e547694d3f5f88efc44474d12",
+        "status": "archived"
+      },
+      {
+        "archived_status": "done",
+        "item_id": "142.057-T",
+        "location": "archive",
+        "sha256": "4cb9252d34dfa86b835173a8872d3f3f635efb842c7c81f433c22f8f955b7a14",
+        "status": "archived"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.058-T",
+        "location": "queue",
+        "sha256": "057279022b71bf89565da545b911aeea616eb962025a5376a108eeb7934b02f3",
+        "status": "queued"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.058.001-ST",
+        "location": "archive",
+        "sha256": "38e2957c4d9c9ed685ac318600ed56f78fe91b1faf9052ce09f13e58f4a6150b",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.058.002-ST",
+        "location": "queue",
+        "sha256": "6dd0a1fd8d76873c084be7f5f07e2539e859c8b864117e8364e359edf550e2f1",
+        "status": "queued"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.058.003-ST",
+        "location": "queue",
+        "sha256": "53a9a4dfff95de15e15b0b6a15952c4fd6b9ab3c7eb03a2c2ccf7216d408f92a",
+        "status": "queued"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.059-T",
+        "location": "queue",
+        "sha256": "360f9e77a3185639b89ce4d474d1d7aefa429f5a538310091ca67363e1d3342c",
+        "status": "queued"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.060-T",
+        "location": "archive",
+        "sha256": "ca6a9a68b9b3ea7fd3e917ee36992e36a5f340d45ec89f22e5bd4aae09db1e56",
+        "status": "done"
+      },
+      {
+        "archived_status": "done",
+        "item_id": "142.061-T",
+        "location": "archive",
+        "sha256": "eea79766f7f8249ca9a0e454ce9c5ae50dfdbd7b09909ed1e8323d0c0df07b6d",
+        "status": "archived"
+      },
+      {
+        "archived_status": "done",
+        "item_id": "142.062-T",
+        "location": "archive",
+        "sha256": "f6dba551605bd26deed0b4a4db387aa03a7e4fdbb109f9a89e552967ed40532a",
+        "status": "archived"
+      },
+      {
+        "archived_status": "done",
+        "item_id": "142.063-T",
+        "location": "archive",
+        "sha256": "a82e50809fde5252362bfe45fa5641b2fdb72d8cd0ca917f29d4db0a516737cf",
+        "status": "archived"
+      },
+      {
+        "archived_status": "done",
+        "item_id": "142.064-T",
+        "location": "archive",
+        "sha256": "bc7ab88a756eaad52f486d50bfb8228cc85c6d586fd45ecec984ecab8afe7ecc",
+        "status": "archived"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.064.001-ST",
+        "location": "archive",
+        "sha256": "ff07ab3cf701bfa76a802058dadc62875d8d674b0cb9633f9e7d56d369043d09",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.064.002-ST",
+        "location": "archive",
+        "sha256": "ef228a3a246868d81294d2e7350e55e23f9a8c57f77e4a54dd36ac4088fe1f0b",
+        "status": "done"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.064.003-ST",
+        "location": "archive",
+        "sha256": "f8fb2c7a6001fd518452f49eef46f7e4a110629559bacc50f38665df9d15b602",
+        "status": "done"
+      },
+      {
+        "archived_status": "done",
+        "item_id": "142.065-T",
+        "location": "archive",
+        "sha256": "155fba963fdd94ea79821371c3d21ce66d941529934f49cdb989627a83d087fd",
+        "status": "archived"
+      },
+      {
+        "archived_status": "done",
+        "item_id": "142.066-T",
+        "location": "archive",
+        "sha256": "31c42e4fbd39a49e864a2f5010021dd3ac8e957e21d0ed555d2d7bd065730b32",
+        "status": "archived"
+      },
+      {
+        "archived_status": "done",
+        "item_id": "142.067-T",
+        "location": "archive",
+        "sha256": "162da498a3139d02d98fbab2d8eb725adc79256afb93c65b6deff5ff58cb9d85",
+        "status": "archived"
+      },
+      {
+        "archived_status": "done",
+        "item_id": "142.068-T",
+        "location": "archive",
+        "sha256": "4f9d7baf749ae2da4cb59d9e3f58108753df23a9edd2e0836d30e8d0041d08a4",
+        "status": "archived"
+      },
+      {
+        "archived_status": "done",
+        "item_id": "142.069-T",
+        "location": "archive",
+        "sha256": "31173754fd7ef4e7135a9595768b72cc0523481a468c3e099e8786f83e7eb86d",
+        "status": "archived"
+      },
+      {
+        "archived_status": "done",
+        "item_id": "142.070-T",
+        "location": "archive",
+        "sha256": "8321e414a8193e30edd62e4c8087f1c2f366b8a4987f7384c448ccddf3e65cd1",
+        "status": "archived"
+      },
+      {
+        "archived_status": "done",
+        "item_id": "142.071-T",
+        "location": "archive",
+        "sha256": "777ed1c0635b11a5e793249b10216f7084e9d862de5fe8244be221ae81793441",
+        "status": "archived"
+      },
+      {
+        "archived_status": "done",
+        "item_id": "142.072-T",
+        "location": "archive",
+        "sha256": "e6bc58bfc67bd19f8e4c828a6781ab8eeb07d502d1ced87708cd2a94adc5903d",
+        "status": "archived"
+      },
+      {
+        "archived_status": "done",
+        "item_id": "142.073-T",
+        "location": "archive",
+        "sha256": "3c0063f9437a37e19ad2669a979df19978c59a6a4945b5979110c4f538aabee2",
+        "status": "archived"
+      },
+      {
+        "archived_status": "done",
+        "item_id": "142.074-T",
+        "location": "archive",
+        "sha256": "67e7fd37d80b36001dbed19c607605069ff70d5a45b93d51a85c35db622087cc",
+        "status": "archived"
+      },
+      {
+        "archived_status": null,
+        "item_id": "142.075-T",
+        "location": "archive",
+        "sha256": "1f40b26e5e3b4a6858eba274c2e0d462aa6444b1afba383348cab27a2c500246",
+        "status": "done"
+      },
+      {
+        "archived_status": "done",
+        "item_id": "142.076-T",
+        "location": "archive",
+        "sha256": "a9447d9f5ba216a29b7d3acf08a40cbe8c52603af2d3b71b2b2d6db41f92ea6a",
+        "status": "archived"
+      },
+      {
+        "archived_status": "done",
+        "item_id": "142.077-T",
+        "location": "archive",
+        "sha256": "4ce9070fa9c60b275cff9f2f960a004b5451e3c51bff0609a9f3e906d7d3b0f5",
+        "status": "archived"
+      },
+      {
+        "archived_status": "done",
+        "item_id": "142.078-T",
+        "location": "archive",
+        "sha256": "2d63694ea67903eb6bd95735f9c561b5f2a89799827d77605a67ad23b7ef93a1",
+        "status": "archived"
+      },
+      {
+        "archived_status": "done",
+        "item_id": "142.079-T",
+        "location": "archive",
+        "sha256": "249b0a46ea4de72a37fe1ae4e9227a9ebcf69a659c5f73f6b79ea48d6482e5f4",
+        "status": "archived"
+      },
+      {
+        "archived_status": "done",
+        "item_id": "142.080-T",
+        "location": "archive",
+        "sha256": "0f9c8158a607794c08ae8f46a24059c56bbb2f9c69fbbe665609ada02c33b712",
+        "status": "archived"
+      },
+      {
+        "archived_status": "done",
+        "item_id": "142.081-T",
+        "location": "archive",
+        "sha256": "8ac642ee3834a13f0bf02d146f4b6e994a9bba5e910ed67b5ba3136635b6c209",
+        "status": "archived"
+      },
+      {
+        "archived_status": "done",
+        "item_id": "142.082-T",
+        "location": "archive",
+        "sha256": "517f125640283b1ece65729b784cd334432cc8bbc24c239a2939a1e99543978d",
+        "status": "archived"
+      },
+      {
+        "archived_status": "done",
+        "item_id": "142.083-T",
+        "location": "archive",
+        "sha256": "d64b276f30ddbf6d33af6eb459b4d2b0abeac244cb01b58b5d596567030664d0",
+        "status": "archived"
+      },
+      {
+        "archived_status": "done",
+        "item_id": "142.084-T",
+        "location": "archive",
+        "sha256": "66e787e158be7f640a1fecd69f04ab12eace42efef8c5f834fe88cad7d54a5b0",
+        "status": "archived"
+      },
+      {
+        "archived_status": "done",
+        "item_id": "142.085-T",
+        "location": "archive",
+        "sha256": "f715d9e8052261a88d315c58cf8befb3a89708efd801578a3050433a2e778133",
+        "status": "archived"
+      },
+      {
+        "archived_status": "done",
+        "item_id": "142.086-T",
+        "location": "archive",
+        "sha256": "22bce6f40e49eef303a4bfbea3548fe09c0472bb0ac685777428e8e088575bdd",
+        "status": "archived"
+      },
+      {
+        "archived_status": "done",
+        "item_id": "142.087-T",
+        "location": "archive",
+        "sha256": "8c1c3b1dea2fb1319f568060d9e44bac54c5614d72fbb714de68de937df33df1",
+        "status": "archived"
+      },
+      {
+        "archived_status": "done",
+        "item_id": "142.088-T",
+        "location": "archive",
+        "sha256": "b6ad3c07f30e946995ee7c98b5f081752e1e82c7e92ee03219f77b36cc5bd991",
+        "status": "archived"
+      }
+    ],
+    "out_of_manifest_descendants": [],
+    "pre_classification": {
+      "all_reason_codes": [
+        "STANDARD_CLOSURE_SUFFICIENT"
+      ],
+      "diagnostics": [],
+      "eligible_for_cascade_ship": false,
+      "linked_deliberation_ids": [],
+      "manifest_item_ids": [
+        "142.089-T"
+      ],
+      "members": [
+        {
+          "archived_status": null,
+          "artifact_type": "task",
+          "blocking_reasons": [],
+          "children": [],
+          "engine_inert": true,
+          "item_id": "142.089-T",
+          "location": "archive",
+          "parent_id": "142-F",
+          "status": "done"
+        }
+      ],
+      "out_of_manifest_descendant_ids": [],
+      "qualifying_feature_ids": [],
+      "reason_code": "STANDARD_CLOSURE_SUFFICIENT",
+      "recommended_closure_path": "standard_single_artifact_close",
+      "schema_version": "1.0.0",
+      "shipment_archived_status": null,
+      "shipment_id": "176-S",
+      "shipment_location": "queue",
+      "shipment_status": "active",
+      "summary": "Shipment 176-S does not require the P-015 cascade exception (status=\"active\", all_members_inert=true); use standard single-artifact closure.",
+      "unsafe_extra_live_children": []
+    },
+    "qualifying_feature_ids": [],
+    "recommended_timeout_budget": 1335
+  },
+  "run_id": "4cdaafc3e88aa042917f9c70ab180b0a",
+  "schema_version": 1,
+  "selected_close_path": "safe_close",
+  "shipment_id": "176-S",
+  "tool": {
+    "binary_path": "C:\\Source\\GitHub\\engram\\.bin\\backlogit.exe",
+    "binary_sha256": "982ed93ac1e0129ed0ce7542ef12e25d7c171f8b0f3250ceebc54c01ae2f504f"
+  }
+}
