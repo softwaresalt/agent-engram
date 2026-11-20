@@ -1,6 +1,6 @@
 ---
 description: "Developer-friendly entrypoint for the standard sequential Stage → Ship workflow"
-agent: Orchestrator
+agent: _Orchestrator
 argument-hint: "[optional note about the next feature or chore already captured in stash/backlog]"
 ---
 

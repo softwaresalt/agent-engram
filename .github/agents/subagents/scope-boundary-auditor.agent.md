@@ -4,7 +4,7 @@ description: "Reviews changes for scope creep, YAGNI violations, unnecessary com
 maturity: stable
 tools: read, search
 max_subagent_tier: 1
-reasoning_effort: "xhigh"
+reasoning_effort: "high"
 model_provider: "anthropic"
 model_family: "claude-haiku-5.5"
 context_tier: "long_context"

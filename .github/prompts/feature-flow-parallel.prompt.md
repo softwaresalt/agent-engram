@@ -1,6 +1,6 @@
 ---
 description: "Developer-friendly entrypoint for P-016-compliant Stage planning overlap while Ship executes"
-agent: Orchestrator
+agent: _Orchestrator
 argument-hint: "[optional note about the next feature or chore already captured in stash/backlog]"
 ---
 

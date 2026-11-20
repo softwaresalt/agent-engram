@@ -31,28 +31,39 @@ plan has already been reviewed or otherwise approved for decomposition.
 
 ## Workflow
 
+When the `backlogit` capability pack is installed, follow `.github/instructions/backlogit.instructions.md`: refresh the live workflow surface with `backlogit_get_metadata_catalog` and inspect type/template/WIT metadata (`backlogit_list_types`, `backlogit_list_templates`, `backlogit_get_wit_metadata`) before creating or mutating artifacts.
+
 ### Phase 1: Validate the reviewed plan
 
 1. Read `${input:plan}` in full.
 2. Confirm the file exists and represents an implementation plan.
-3. Locate the latest `## Plan Review` section and require literal machine-readable
-   markers: `dispatch_mode:` and `decision:`. Missing markers fail closed because
-   they may indicate reviewer dispatch was silently skipped.
-4. Interpret `decision:`:
-   * `decision: PASS` — proceed.
-   * `decision: ADVISORY` — proceed only with explicit authorization recorded in
-     the harvest invocation or plan review notes; otherwise halt and request the
-     operator decision.
-   * `decision: FAIL` or any other value — halt; the plan is not harvest-ready.
-5. Interpret `dispatch_mode:`. `multi-agent`, `single-agent-declared-degradation`,
-   and `same-model-declared-degradation` are acceptable only when the review section
+3. Resolve the plan's frontmatter `review_manifest` path (workspace-relative; it must
+   resolve inside the workspace root). Read that manifest through the review-manifest
+   normalizer contract (`ReadReviewManifest` / `NormalizeReviewManifest`, reference
+   implementation in `internal/ops`), which accepts attempt-roster, cycle-record,
+   pre-review and live frontmatter manifests. Never read a `decision:` marker from the
+   plan body: the manifest is the single review authority.
+4. Evaluate the gate against the plan's current frontmatter `revision`
+   (`EvaluateHarvestAdmission`) and report exactly one state:
+   * `HARVEST_ADMITTED` — the normalized manifest reports `verdict: PASS` at
+     `latest_attempt`, and that attempt reviewed the plan's current revision. Proceed.
+   * `HARVEST_REFUSED` — no `review_manifest` reference, manifest absent, no latest
+     attempt, a non-`PASS` verdict (including `ADVISORY` and `FAIL`), or a `PASS`
+     against a superseded or unrecorded plan revision. Halt; the plan is not
+     harvest-ready. Recommend `plan-review` (revise and re-review for `ADVISORY`).
+   * `MANIFEST_QUARANTINED` — the manifest could not be normalized (empty, truncated,
+     malformed, wrong types, unreadable, or outside the workspace). This is a fail
+     state, never absence: halt and report the quarantine reason.
+5. Interpret the latest attempt's `dispatch_mode` (roster entry, or the manifest's
+   `dispatch_mode` extra). `multi-agent`, `single-agent-declared-degradation`,
+   and `same-model-declared-degradation` are acceptable only when the review record
    states that every selected persona was covered. Missing, empty, or unavailable
    dispatch modes halt before backlog creation.
-6. Confirm the plan has already cleared the review gate or is explicitly marked ready
-   for harvesting according to the markers above.
-7. Halt if the plan is missing, unreadable, lacks review markers, has a FAIL decision,
-   has an unauthorized ADVISORY decision, or is clearly not ready for backlog
-   creation. Recommend running `plan-review` first when the review state is unclear.
+6. Confirm the plan has already cleared the review gate according to the admission
+   state above.
+7. Halt if the plan is missing, unreadable, is not `HARVEST_ADMITTED`, has an
+   unacceptable dispatch mode, or is clearly not ready for backlog creation.
+   Recommend running `plan-review` first when the review state is unclear.
 
 ### Phase 2: Parse the plan structure
 
@@ -146,6 +157,48 @@ is an extension of the existing P-003 granularity gate below, not a separate
 check — a task that fails size/complexity validation is exactly as unready
 for staging as one missing an acceptance criterion.
 
+**Sizing gate arming and fail-closed contract (SHIP-8; single
+`size_ruleset_version` identifier `ah-stage-sizing-v1`):** this contract turns
+the size/complexity rules above from advisory prose into an enforced
+decomposition gate. It rejects the one malformed task and reports it: it is a
+decomposition halt, never a session halt, and other independent items continue.
+It applies to newly harvested tasks only (enforce-on-new-only: no retroactive
+sweep of existing backlog items) and it never auto-splits a task; it halts and
+reports, and the operator or Stage decomposes.
+
+1. **Arming signal (sole authority)**: the advertised registry flag
+   `features.sizing` is the sole authoritative signal for whether the
+   fail-closed branch is armed. The mere presence of sizing parameters on an
+   operation (for example `size`, `size_source`, `size_ruleset_version`, or
+   `complexity` on an update operation) never arms the gate on its own and
+   must not be used as an alternative or fallback trigger: the registry is the
+   declared contract, whereas operation parameters vary by tool build.
+2. **Armed (`features.sizing: true`) — fail closed**: for every task, validate
+   both `size` and `complexity` against their enums before the create call, so
+   a rejection happens before any write. The gate rejects rather than coerces
+   or defaults: an out-of-enum, missing, or conflated value halts that task.
+   The split triggers are checked conditions, not advice: a `size` implying
+   more than 2 hours of human-equivalent effort forces a split regardless of
+   `complexity`, and `complexity: high` forces a split or an explicit
+   de-risking step regardless of `size`; a task tripping the size trigger
+   always halts, and a `complexity: high` task halts unless the explicit
+   de-risking step is recorded in its description.
+3. **Write sequence (for a registry with the backlogit seam shape, exactly
+   three calls; the registry's declared `params` stay authoritative)**: (1) create the task with no
+   sizing params; (2) one update call setting `size` together with
+   `size_source: agent` and a non-empty `size_ruleset_version`; (3) a separate
+   update call setting `complexity`. These seams are mutually exclusive and
+   are never combined. If a write fails partway, the halt message must name
+   the item ID and the exact remaining call so the state is recoverable and
+   can be completed idempotently.
+4. **Not armed (`features.sizing` absent or `false`) — degrade loudly**:
+   preserve both enum-validated values as clearly labeled prose in the task
+   description (still enum-validated before any write) and report the
+   degradation explicitly in the harvest report so operators know structured
+   provenance is unavailable. The degradation is never silently skipped, and
+   it applies even if the operation surface accepts sizing params, because
+   only the registry flag arms the gate (item 1). Degradation does not halt task creation.
+
 **Two-axis granularity gate (extends the 2-hour rule, P-003):** The 2-hour
 rule from shaping rule 1 above is evaluated on BOTH axes independently, never
 on size alone, regardless of backend:
@@ -202,6 +255,11 @@ If `${input:dry_run}` is `false`:
    `features.sizing` is absent or `false`, embed both values as prose in the
    description at creation time instead. Validate both values per the enum
    validation gate above before any write, structured or prose.
+   **Harness-surface declaration mandatory at task creation (P-004 / T1 resolver
+   contract)**: supply exactly one `harness-surface:*` label on the `create_task`
+   call's labels parameter (or in a dedicated labels-only `update_task` call during
+   repair), never inside the separate `size` or `complexity` `update_task` calls.
+   See the Guardrails section for the assignment rule.
 4. Create granular subtasks under each task.
 5. Wire dependencies when the backlog tool supports dependency operations
    (check the backlog registry for availability).
@@ -226,6 +284,22 @@ If `${input:dry_run}` is `false`:
 * Never combine `size` and `complexity` into one field or derive one axis from
   the other. This rule is fully stated above and does not require any external
   file to be present in the installed workspace.
+* **Harness-surface declaration (P-004 / T1 resolver contract)**: every task (`-T`)
+  MUST receive exactly one `harness-surface:*` label chosen from its file budget.
+  Declare `harness-surface:harness-architect` when any path in the file budget adds
+  or modifies production code (for example `internal/`, `cmd/`, `src/`, or the
+  target workspace's production source modules). Mixed-budget precedence: if any
+  path touches production code, the task MUST declare
+  `harness-surface:harness-architect` even when paired with test, fixture, or
+  documentation files. Declare `harness-surface:none` only when the file budget
+  touches nothing but templates, installed mirrors, documentation, registries or
+  manifests, `.gitattributes`, CI workflows, spike findings, or test and fixture
+  files. Feature items (`-F`) MUST NEVER carry any `harness-surface:*` label
+  (`FEATURE_DECLARES_SURFACE` is a fail-closed error in `gsd harness resolve`).
+  The resolver never defaults a missing declaration to `harness-surface:none`:
+  omitting the label makes Ship's T1 gate halt with `UNRESOLVED` /
+  `DECLARATION_MISSING`. Apply the label through the labels parameter only, never
+  combined with the mutually exclusive `size` or `complexity` update calls.
 * **Docs-route candidates (P-002 docs-only route)**: when a candidate task's file
   budget qualifies as docs-only (explicit owned paths, prose `.md` under the docs
   root only, no deny-list path), declare `harness-surface:none` on it and say in

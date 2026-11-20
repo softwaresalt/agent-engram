@@ -36,6 +36,8 @@ Thumbs.db
 .env.*
 *.env
 .copilot/
+tools/
+.bin/
 .mcp.json
 
 # Logs and temp files
@@ -79,10 +81,12 @@ tmp/
 .backlogit/backlogit.db-wal
 .backlogit/*.db-journal
 .backlogit/telemetry/
+.backlogit/runtime/
 .backlogit/telemetry.jsonl
 .backlogit/telemetry-sessions.jsonl
 .backlogit/.telemetry-checkpoint.json
 .backlogit/.locks/
+.backlogit/.stash.md
 
 # kbdb — managed by kbdb install
 .kbdb/

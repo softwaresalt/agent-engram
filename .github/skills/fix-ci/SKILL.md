@@ -11,7 +11,12 @@ Detect CI failures and code review comments on the current branch's PR, reproduc
 
 * Git repository with a remote tracked branch and an open PR
 * Access to CI pipeline status via `gh` CLI or equivalent tool
-* Local tools required by this skill must be available in PATH, including the configured quality gates `cargo fmt --all -- --check`–`cargo audit`; if formatting fixes are applied during remediation, `cargo fmt --all` must also be available
+* Local tools required by this skill must be available in PATH
+* The configured quality gate `cargo fmt --all -- --check` must be runnable
+* The configured quality gate `cargo clippy --all-targets -- -D warnings -D clippy::pedantic` must be runnable
+* The configured quality gate `cargo dev-test` must be runnable
+* The configured quality gate `cargo audit` must be runnable
+* If formatting fixes are applied during remediation, `cargo fmt --all` must also be available
 * Backlog tool configured when defect logging is enabled (circuit breaker halt path)
 
 ## Quick Start
@@ -119,7 +124,8 @@ comment lifecycle.
 
 Run the failing CI steps locally in order:
 
-1. `cargo fmt --all -- --check` → if fails, run `cargo fmt --all`
+1. `cargo fmt --all -- --check` → if fails, fix the formatting violations
+   * Auto-fix after `cargo fmt --all -- --check` fails: `cargo fmt --all`
 2. `cargo clippy --all-targets -- -D warnings -D clippy::pedantic` → fix violations
 3. `cargo dev-test` → fix failing tests
 

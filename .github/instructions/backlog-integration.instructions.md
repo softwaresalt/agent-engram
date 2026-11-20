@@ -56,7 +56,7 @@ Use these operations for all backlog interactions. The operation names are abstr
 | `archive_item` | `backlogit_archive_item` | `backlogit archive {{id}}` | archive item |
 | `claim_shipment` | `backlogit_claim_shipment` | `backlogit shipment claim {{id}}` | claim shipment |
 | `cleanup_checkpoints` | `backlogit_cleanup_checkpoints` | `backlogit checkpoint cleanup` | cleanup checkpoints |
-| `create_checkpoint` | `backlogit_create_checkpoint` | `backlogit checkpoint create --state-dump {{state_dump}}` | create checkpoint |
+| `create_checkpoint` | `` | `gsd checkpoint create --state-dump-file {{state_dump_file}}` | create checkpoint (guarded adapter) |
 | `create_shipment` | `backlogit_create_shipment` | `backlogit shipment create --title {{title}} --items {{items}}` | create shipment |
 | `deliberate` | `backlogit_deliberate` | `backlogit deliberate {{stash_id}}` | deliberate |
 | `doctor` | `backlogit_doctor` | `backlogit doctor` | doctor |

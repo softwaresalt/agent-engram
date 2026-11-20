@@ -3,7 +3,7 @@ name: plan-harden
 description: "Risk-triggered plan reinforcement that deepens verification, rollback, and guardrail detail before plan review"
 ---
 
-## Plan Hardening
+# Plan Hardening
 
 Strengthen an implementation plan before review when the work has elevated
 runtime, migration, security, or blast-radius risk. This is a narrow middle
@@ -39,7 +39,11 @@ When the `agent-engram` capability pack is installed, follow
 `.github/instructions/agent-engram.instructions.md`: prefer indexed search when
 retrieving related modules, prior closure artifacts, or implementation patterns.
 
-When the `strict-safety` capability pack is installed, also follow
+For runtime-affecting or deployment-sensitive plans, also follow
+`.github/instructions/release-observability.instructions.md` and map monitoring
+plans, observation windows, and rollback triggers into the hardening section.
+
+Follow
 `.github/instructions/strict-safety.instructions.md`: classify risky actions,
 approval boundaries, and expected rollback states explicitly rather than leaving
 them implicit.

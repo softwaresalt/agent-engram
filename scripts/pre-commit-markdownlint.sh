@@ -7,11 +7,10 @@
 #
 # Install: copy to .git/hooks/pre-commit (or register via .pre-commit-config.yaml)
 
-set -euo pipefail
+set -uo pipefail
 
 # Run from repo root so repo-root-relative paths from git are valid
-repo_root="$(git rev-parse --show-toplevel)" || { echo "ERROR: not inside a git repository" >&2; exit 1; }
-cd "$repo_root"
+cd "$(git rev-parse --show-toplevel)"
 
 # Collect staged .md files using NUL delimiters (handles spaces in paths)
 STAGED_MD_FILES=()

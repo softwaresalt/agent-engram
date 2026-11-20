@@ -3,7 +3,7 @@ name: observe
 description: "Capture recurring workflow observations into .gsd/continuous-learning/ without relying on environment-specific hooks"
 ---
 
-## Observe
+# Observe
 
 Capture a normalized observation about recurring agent or workflow behavior so it
 can later be clustered into reusable instincts.

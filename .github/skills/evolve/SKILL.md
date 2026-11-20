@@ -3,7 +3,7 @@ name: evolve
 description: "Promote mature instincts into reviewed learned instructions or skills while preserving evidence in .gsd/continuous-learning/"
 ---
 
-## Evolve
+# Evolve
 
 Promote a mature instinct into a discoverable learned artifact such as a
 `learned-*` instruction or skill draft.

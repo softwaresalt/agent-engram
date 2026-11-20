@@ -5,7 +5,7 @@
 # =============================================================================
 
 schema_version: "1.1.0"
-generated_at: "2026-10-24T19:45:00Z"
+generated_at: "2026-11-19T23:38:00Z"
 workspace_path: "C:\\Source\\GitHub\\engram"
 
 languages:
@@ -92,8 +92,8 @@ local_gating:
     - "build"
 
 structure:
-  source_layout: "src/ — lib.rs plus bin/engram.rs; 12 modules (bin, cli, config, daemon, db, errors, installer, models, server, services, shim, tools) across 149 .rs files"
-  test_layout: "tests/ — three tiers: contract/ (64), integration/ (140), unit/ (62), helpers/ (3)"
+  source_layout: "src/ — lib.rs plus bin/engram.rs; 12 modules (bin, cli, config, daemon, db, errors, installer, models, server, services, shim, tools) across 152 .rs files, plus workspace crates crates/engram-indexer and crates/powerbi-tmdl-parser (12 .rs files)"
+  test_layout: "tests/ — three tiers: contract/ (66), integration/ (152), unit/ (62), helpers/ (4)"
   doc_layout: "docs/ — architecture, adrs, closure, compound, decisions, exec-plans, memory, research, reviews, upstream"
 
 runtime_surfaces:
@@ -289,15 +289,28 @@ harness_recommendations:
       - item: "review"
         because: "Protocol, safety, and concurrency review personas are needed for daemon and MCP changes"
       - item: "overlays"
-        because: "Six capability packs are enabled and must be woven into the workflow artifacts"
+        because: "External capability packs (agent-engram, backlogit) are enabled and must be woven into the workflow artifacts"
 
 agent_engram:
   detected: true
   mcp_configured: true
   config_paths:
+    - ".mcp.json"
     - ".engram"
   instruction_markers:
     - ".github/instructions/agent-engram.instructions.md"
+    - "<!-- engram:start -->"
+  recommended: true
+
+kbdb:
+  detected: true
+  mcp_configured: true
+  config_paths:
+    - ".mcp.json"
+  sources_path: ".kbdb/config/sources.yaml"
+  binary_path: ".bin/kbdb.exe"
+  embed_model_dir: "C:\\Tools\\.kbdb\\models\\all-MiniLM-L6-v2"
+  instruction_markers: []
   recommended: true
 
 agent_native:
@@ -348,7 +361,7 @@ backlog_tool:
   tool_type: "both"
   mcp_registered: true
   cli_available: true
-  config_path: ".backlogit/config.yml"
+  config_path: ".backlogit/config.yaml"
   registry_path: ".gsd/backlog-registry.yaml"
   status_values:
     - "queued"

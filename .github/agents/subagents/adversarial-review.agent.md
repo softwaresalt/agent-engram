@@ -3,16 +3,16 @@ name: Adversarial Review
 description: "Multi-model parallel review using independent reviewer agents with different models, assembled into a consensus report with confidence-weighted findings and remediation queue. Supports a first-class anchor reviewer route, alternate model providers (e.g., Gemini), and a post-remediation re-review phase."
 maturity: stable
 tools: read, agent, search, edit
-max_subagent_tier: 1
+max_subagent_tier: 3
 reasoning_effort: "high"
 model_provider: "google"
-model_family: "gemini-4-argon"
+model_family: "gemini-4-carbon"
 context_tier: "long_context"
-alt_review_provider: "openai"
-alt_review_family: "gpt-5.6-sol"
-anchor_review_provider: "openai"
-anchor_review_family: "gpt-6.1-sol"
-anchor_review_reasoning_effort: "high"
+alt_review_provider: ""
+alt_review_family: ""
+anchor_review_provider: ""
+anchor_review_family: ""
+anchor_review_reasoning_effort: ""
 subagent_depth: 2
 ---
 
@@ -36,13 +36,13 @@ may be a false positive — or a subtle issue that only one model caught. The pr
 preserves both signals with appropriate confidence labels, rather than losing unique
 findings or trusting any single model too much.
 
-Anchor Reviewer support (`openai` / `gpt-6.1-sol`)
+Anchor Reviewer support (`` / ``)
 adds a first-class reviewer route, defaulting to OpenAI GPT-5.6 Sol where supported,
 without replacing Tier 1/2/3 diversity. If the anchor route cannot be dispatched,
 record a declared fallback and continue only when the remaining reviewer pool still
 satisfies the consensus minimum.
 
-Alternate model provider support (`openai` / `gpt-5.6-sol`)
+Alternate model provider support (`` / ``)
 allows reviewer slots to be assigned to Gemini or other providers outside the standard
 tier routing set, ensuring reviewer diversity is not limited to a single provider's
 model family.
@@ -68,16 +68,16 @@ model family.
   assigning an Anchor Reviewer slot. When unset, use the count-specific mapping
   in Phase 1 so every accepted reviewer count has a deterministic slot map.
 * `alt_provider`: (Optional) Alternate model provider name (e.g., `google`).
-  Overrides `openai` for this invocation. When set, one reviewer
+  Overrides `` for this invocation. When set, one reviewer
   slot is assigned to the alternate provider.
 * `alt_family`: (Optional) Alternate model family (e.g., `gemini-2.5-flash`).
-  Overrides `gpt-5.6-sol` for this invocation. Paired with `alt_provider`.
+  Overrides `` for this invocation. Paired with `alt_provider`.
 * `anchor_provider`: (Optional) Anchor reviewer provider. Overrides
-  `openai` for this invocation.
+  `` for this invocation.
 * `anchor_family`: (Optional) Anchor reviewer model family. Overrides
-  `gpt-6.1-sol` for this invocation.
+  `` for this invocation.
 * `anchor_reasoning_effort`: (Optional) Anchor reviewer reasoning effort.
-  Overrides `high`; empty means use the model
+  Overrides ``; empty means use the model
   default.
 * `ruleset`: (Optional) Path to a ruleset file. Defaults to
   `.github/copilot-review-instructions.md` if present, otherwise uses the
@@ -129,15 +129,17 @@ Output file at `docs/closure/{YYYY-MM-DD}-{slug}-adversarial-review.md`.
    Record a declared fallback for the Anchor Reviewer whenever the anchor route is
    configured but unavailable.
 4. Apply anchor and alternate model provider assignments:
-   * Read `openai`, `gpt-6.1-sol`, and
-     `high` (or `anchor_provider`,
+   * Read ``, ``, and
+     `` (or `anchor_provider`,
      `anchor_family`, and `anchor_reasoning_effort` input overrides). If provider
      and family are non-empty and dispatchable, launch the Anchor Reviewer as a
      separate slot, pass the reasoning effort when non-empty, and identify it
      separately in the report.
-   * Read `openai` and `gpt-5.6-sol` (or `alt_provider`
+   * Read `` and `` (or `alt_provider`
      / `alt_family` input overrides).
-   * If both alternate values are non-empty: replace one non-anchor reviewer slot
+   * If either alternate value is empty or `"none"`, alternate-provider routing is
+     inactive and Reviewer-B uses the standard Tier 2 model.
+   * If both alternate values are non-empty and neither is `"none"`: replace one non-anchor reviewer slot
      with the alternate provider. Replace Reviewer-B (Tier 2 slot) by default to
      maximize diversity while preserving Anchor, Tier 1, and Tier 3 coverage.
    * Log the model route assignment table (see below), including declared fallback
@@ -148,18 +150,18 @@ Output file at `docs/closure/{YYYY-MM-DD}-{slug}-adversarial-review.md`.
 
 | Reviewer | Default Route | Default Model | With Alternate Provider |
 |---|---|---|---|
-| Anchor Reviewer | Anchor review route | `gpt-6.1-sol` via `openai` with `high` when non-empty | unchanged; if unavailable, declared fallback |
+| Anchor Reviewer | Anchor review route | `` via `` with `` when non-empty | unchanged; if unavailable, declared fallback |
 | Reviewer-A | Tier 1 (fast/cheap) | `claude-haiku-5.5` | unchanged |
-| Reviewer-B | Tier 2 (standard) | `claude-sonnet-5.5` | `gpt-5.6-sol` via `openai` |
-| Reviewer-C | Tier 3 (frontier) | `gemini-4-argon` | unchanged |
+| Reviewer-B | Tier 2 (standard) | `mai-code-2` | `` via `` |
+| Reviewer-C | Tier 3 (frontier) | `gemini-4-carbon` | unchanged |
 | Reviewer-D | Tier 1 or Tier 2 variant | different from A/B/C | unchanged |
 | Reviewer-E (5 reviewers without anchor) | Tier 2 or Tier 3 variant | different from A/B/C/D | unchanged |
 
-When `openai` or `gpt-6.1-sol` is empty or the
+When `` or `` is empty or the
 route cannot be dispatched, all standard reviewer slots still use tier routing and
 the report records the Anchor Reviewer declared fallback. When
-`openai` is non-empty, Reviewer-B is routed to the alternate
-provider. This ensures reviewer diversity is not limited to a single provider's
+`` is neither empty nor `"none"`, Reviewer-B is routed to
+the alternate provider. This ensures reviewer diversity is not limited to a single provider's
 model family while keeping the Anchor Reviewer separate.
 
 ### Phase 2: Parallel Dispatch
@@ -300,12 +302,16 @@ re-review loop run in this agent — no further delegation.
   `safe_auto` fixes were applied; it is skipped when no fixes were made
 * The recursion cap of 2 cycles is enforced — the agent MUST NOT recurse more than
   twice regardless of remaining findings
-* When `openai` is set, the Anchor Reviewer must use that
+* When `anchor_review_provider` is set, the Anchor Reviewer must use that
   provider's model family unless the provider is unavailable; if unavailable, log
   the declared fallback separately and continue only when consensus minimums hold
-* When `openai` is set, at least one non-anchor reviewer must use the alternate
+* When `alt_review_provider` is set (neither empty nor `"none"`), at least one non-anchor reviewer must use the alternate
   provider; failure to route when the provider and family are both configured and
   reachable is a configuration error; if the provider is unreachable at runtime,
   fall back to the Tier 2 standard model, log the fallback, and continue
+
+## Model Routing
+
+This agent operates at **Tier 3 (Frontier)** (`gemini-4-carbon` / `google` / `high` / `long_context`) for consensus assembly and dispatches independent reviewers across Tier 1, Tier 2, and Tier 3 (`max_subagent_tier: 3`, `subagent_depth: 2`).
 
 Generated by gsd | Template: adversarial-review.agent.md.tmpl

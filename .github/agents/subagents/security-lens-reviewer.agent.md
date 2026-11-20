@@ -5,8 +5,8 @@ maturity: stable
 tools: read, search
 max_subagent_tier: 2
 reasoning_effort: "high"
-model_provider: "anthropic"
-model_family: "claude-sonnet-5.5"
+model_provider: "microsoft"
+model_family: "mai-code-2"
 context_tier: "long_context"
 subagent_depth: 0
 ---
