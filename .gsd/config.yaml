@@ -123,7 +123,7 @@ model_routing:
     escalation:
       model_family: "gpt-6.2-sol"
       model_provider: "openai"
-      reasoning_effort: "high"
+      reasoning_effort: "medium"
       context_tier: "long_context"   # Raw; empty inherits at resolution time
 
   routes: {}
