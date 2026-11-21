@@ -4,7 +4,7 @@ description: "Operator decision on stash C2A1DDEA (039-D) choosing Option 1: imp
 doc_type: decision
 date: 2026-11-21
 status: accepted
-source: "stash:C2A1DDEA (.backlogit/queue/039-D.md)"
+source: "stash:C2A1DDEA (.backlogit/archive/039-D.md)"
 deliberation_id: "039-D"
 feature_id: "142-F"
 stash_id: "C2A1DDEA"
@@ -34,7 +34,7 @@ Because `142.058-T` owns only `tests/contract/read_server_cli_mcp_parity_test.rs
 * **Stash entry**: `C2A1DDEA` (captured as `DEFERRED SCOPE EXPANSION`, provisional `kind: bug`, `priority: medium`, reprioritized by Stage to `critical` because it blocks `177-S`)
 * **Originating work items**: `task=142.058-T`, `feature=142-F`, `shipment=177-S`
 * **Originating PR / review thread**: `PR=N/A`, `review-thread=N/A` (discovered pre-PR during local `177-S` contract matrix verification)
-* **Backlogit deliberation artifact**: `039-D` (`.backlogit/queue/039-D.md`)
+* **Backlogit deliberation artifact**: `039-D` (`.backlogit/archive/039-D.md`)
 
 ### Unconditional Duplicate Scan (Obligation A)
 
