@@ -1,4 +1,7 @@
 ---
+title: "Plan review: 142-F doctor --smoke CLI surface"
+source: "docs/exec-plans/2026-11-21-142-f-doctor-smoke-cli-surface-plan.md"
+doc_type: review
 attempts:
     - artifact: docs/reviews/2026-11-21-142-f-doctor-smoke-cli-surface-plan-review.md
       attempt: 1
