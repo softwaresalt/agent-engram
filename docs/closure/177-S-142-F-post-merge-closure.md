@@ -133,7 +133,7 @@ Owner: `softwaresalt`. No production deployment or publish occurred.
 | Failure signal | False generation provenance, daemon-scoped side effects, or CLI/MCP divergence | softwaresalt |
 | Monitoring plan | Observe the next main CI and downstream `178-S` execution | softwaresalt |
 | Rollback trigger | A confirmed parity, provenance, or side-effect regression after merge | softwaresalt |
-| Rollback procedure | Revert the feature merge with a reviewed two-parent merge-commit revert | softwaresalt |
+| Rollback procedure | Revert only the contract-test code change from the feature merge; preserve shipped backlog records and closure evidence; require a reviewed rollback | softwaresalt |
 | Validation window | Next main CI and the immediate `178-S` execution | softwaresalt |
 
 Pre-deploy audit is complete. No migration, schema, access, release
