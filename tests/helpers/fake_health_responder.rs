@@ -33,6 +33,8 @@ const REBIND_RELEASE_WINDOW: std::time::Duration = std::time::Duration::from_mil
 pub enum HealthScript {
     /// Version-compatible, `status == "ready"`.
     Ready,
+    /// Return ready for `_health` and hold non-health requests open.
+    ReadyThenHangNonHealth,
     /// Version-compatible, caller-chosen non-ready status string.
     NotReady { status: String },
     /// Wrong `protocol_version`.
@@ -284,6 +286,10 @@ async fn handle_connection(
             }
             let _ = send.write_all(resp_line.as_bytes()).await;
             let _ = send.flush().await;
+            return;
+        }
+        if matches!(script, HealthScript::ReadyThenHangNonHealth) {
+            let _ = reader.read_u8().await;
         }
     }
 }
@@ -308,7 +314,7 @@ fn resolve_script(script: &HealthScript, probe_index: usize) -> &HealthScript {
 
 fn build_response(id: &Value, script: &HealthScript) -> Value {
     match script {
-        HealthScript::Ready => json!({
+        HealthScript::Ready | HealthScript::ReadyThenHangNonHealth => json!({
             "jsonrpc": "2.0",
             "id": id,
             "result": {

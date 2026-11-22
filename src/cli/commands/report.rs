@@ -41,7 +41,8 @@ pub async fn run_doctor_smoke(
     };
     let id = flags.id_value();
 
-    match crate::tools::doctor::run_smoke_test(&workspace).await {
+    match crate::tools::doctor::run_smoke_test_with_timeout(&workspace, flags.ipc_timeout(10)).await
+    {
         Ok(result) if result.passed => match serde_json::to_value(&result) {
             Ok(value) => formatter.success(id, value),
             Err(err) => formatter.tool_error(

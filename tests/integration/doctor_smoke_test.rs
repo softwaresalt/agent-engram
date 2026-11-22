@@ -19,7 +19,7 @@ use engram::errors::{EngramError, IpcError};
 use engram::shim::pidfile::PidFile;
 use engram::shim::version::ENGRAM_PROTOCOL_VERSION;
 use engram::shim::{ipc_client::send_request, lifecycle::check_health};
-use engram::tools::doctor::run_smoke_test;
+use engram::tools::doctor::{run_smoke_test, run_smoke_test_with_timeout};
 use serde_json::Value;
 
 #[path = "../helpers/fake_health_responder.rs"]
@@ -149,6 +149,108 @@ async fn doctor_smoke_does_not_replace_live_pid_with_unreachable_endpoint() -> C
     assert!(
         PidFile::read(&canonical_workspace).is_some_and(|published| published == pid_file),
         "doctor smoke replaced or removed the pre-existing daemon PID metadata"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn doctor_smoke_waits_for_live_pid_daemon_to_become_ready() -> CliTestResult {
+    let workspace = tempfile::tempdir()?;
+    fs::create_dir(workspace.path().join(".git"))?;
+    let canonical_workspace = workspace.path().canonicalize()?;
+    let endpoint = ipc_endpoint(&canonical_workspace)?;
+    let child = engram_command()
+        .arg("daemon")
+        .arg("--workspace")
+        .arg(&canonical_workspace)
+        .env("ENGRAM_IDLE_TIMEOUT_MS", "0")
+        .env("ENGRAM_TEST_STARTUP_DELAY_MS", "500")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let _child_guard = ChildGuard(child);
+    assert_endpoint_reachable(&endpoint).await?;
+
+    let result = run_smoke_test_with_timeout(&canonical_workspace, Duration::from_secs(10)).await?;
+
+    assert!(
+        result.passed,
+        "doctor smoke did not wait for the existing live daemon: {}",
+        result.message
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn doctor_smoke_waits_for_reachable_daemon_without_pid_metadata() -> CliTestResult {
+    let workspace = tempfile::tempdir()?;
+    fs::create_dir(workspace.path().join(".git"))?;
+    let canonical_workspace = workspace.path().canonicalize()?;
+    let endpoint = ipc_endpoint(&canonical_workspace)?;
+    let child = engram_command()
+        .arg("daemon")
+        .arg("--workspace")
+        .arg(&canonical_workspace)
+        .env("ENGRAM_IDLE_TIMEOUT_MS", "0")
+        .env("ENGRAM_TEST_STARTUP_DELAY_MS", "500")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let _child_guard = ChildGuard(child);
+    assert_endpoint_reachable(&endpoint).await?;
+    let pid_path = PidFile::path(&canonical_workspace);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !pid_path.exists() {
+        if Instant::now() >= deadline {
+            return Err(io::Error::other("daemon did not publish PID metadata").into());
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    fs::remove_file(&pid_path)?;
+
+    let result = run_smoke_test_with_timeout(&canonical_workspace, Duration::from_secs(10)).await?;
+
+    assert!(
+        result.passed,
+        "doctor smoke did not wait for the reachable existing daemon: {}",
+        result.message
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn cli_doctor_smoke_honors_global_ipc_timeout() -> CliTestResult {
+    let workspace = tempfile::tempdir()?;
+    fs::create_dir(workspace.path().join(".git"))?;
+    let canonical_workspace = workspace.path().canonicalize()?;
+    let endpoint = ipc_endpoint(&canonical_workspace)?;
+    let _fake = FakeHealthResponder::spawn(&endpoint, HealthScript::ReadyThenHangNonHealth);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let started = Instant::now();
+    let output = engram_tokio_command()
+        .arg("--workspace")
+        .arg(&canonical_workspace)
+        .args(["--timeout", "1", "--json", "doctor", "--smoke"])
+        .output()
+        .await?;
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "doctor smoke ignored the configured one-second IPC timeout"
+    );
+    let envelope: Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(
+        envelope["error"]["engram_name"],
+        Value::from("IpcTimeout"),
+        "unexpected doctor smoke error: {envelope}"
+    );
+    assert_eq!(
+        envelope["error"]["engram_details"]["timeout_ms"],
+        Value::from(1_000_u64),
+        "doctor smoke did not propagate GlobalFlags::ipc_timeout: {envelope}"
     );
 
     Ok(())
@@ -321,6 +423,16 @@ fn engram_command() -> Command {
     command
 }
 
+fn engram_tokio_command() -> tokio::process::Command {
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_engram"));
+    command
+        .env_remove("ENGRAM_DATA_DIR")
+        .env_remove("ENGRAM_WORKSPACE")
+        .env_remove("ENGRAM_DIRECT")
+        .stdin(Stdio::null());
+    command
+}
+
 fn snapshot_workspace(root: &Path) -> io::Result<BTreeMap<PathBuf, (u64, SystemTime)>> {
     fn visit(
         root: &Path,
@@ -359,6 +471,24 @@ async fn assert_daemon_ready(endpoint: &str) -> io::Result<()> {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     Ok(())
+}
+
+async fn assert_endpoint_reachable(endpoint: &str) -> io::Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if engram::shim::ipc_client::probe(endpoint, Duration::from_millis(100))
+            .await
+            .is_ok()
+        {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(io::Error::other(
+                "daemon endpoint did not become reachable within 10 seconds",
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
 }
 
 /// `engram doctor --smoke` must probe a live `ReadServer` without provenance or side effects.

@@ -185,4 +185,9 @@ fn read_server_smoke_workflow_is_non_destructive() {
             .any(|method| *method == "set_workspace" || *method == "_shutdown"),
         "read-server smoke workflow must not bind, repair, sync, or shut down the daemon"
     );
+    assert_eq!(
+        doctor::smoke_request_methods_for_run(DaemonMode::ReadServer, false),
+        vec!["get_workspace_status"],
+        "a reused ReadServer must still receive workspace-status readiness validation"
+    );
 }

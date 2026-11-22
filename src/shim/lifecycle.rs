@@ -432,10 +432,11 @@ async fn ensure_daemon_running_inner(
             {
                 Ok(()) => {
                     if existing_policy == ExistingDaemonPolicy::Preserve {
-                        return Err(existing_daemon_unavailable(
-                            &endpoint,
-                            "published IPC endpoint did not satisfy the daemon health contract",
-                        ));
+                        info!(
+                            pid = pid_file.pid,
+                            "waiting for reachable existing daemon to become ready"
+                        );
+                        return poll_until_ready(workspace, &endpoint, None).await;
                     }
                     info!(
                         pid = pid_file.pid,
@@ -476,10 +477,8 @@ async fn ensure_daemon_running_inner(
             .await
             .is_ok()
     {
-        return Err(existing_daemon_unavailable(
-            &endpoint,
-            "published IPC endpoint did not satisfy the daemon health contract",
-        ));
+        info!("waiting for reachable existing daemon endpoint to become ready");
+        return poll_until_ready(workspace, &endpoint, None).await;
     }
 
     let mut child = spawn_daemon(workspace)?;

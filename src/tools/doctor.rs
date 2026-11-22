@@ -283,18 +283,42 @@ pub fn smoke_request_methods_for_mode(mode: DaemonMode) -> Vec<&'static str> {
     }
 }
 
+#[doc(hidden)]
+/// Return the smoke methods that remain after the initial daemon-status probe.
+pub fn smoke_request_methods_for_run(mode: DaemonMode, daemon_started: bool) -> Vec<&'static str> {
+    match (mode, daemon_started) {
+        (DaemonMode::Managed, true) => vec!["set_workspace", "_shutdown"],
+        (DaemonMode::Managed, false) => Vec::new(),
+        (DaemonMode::ReadServer, _) => vec!["get_workspace_status"],
+    }
+}
+
 /// Run a full shim→daemon handshake round-trip for the `doctor --smoke` CLI flag.
 ///
 /// Spawns or reuses the daemon, then connects as a shim and exchanges the
-/// version handshake via `get_daemon_status`. A reused daemon is probe-only:
-/// doctor never binds its workspace or shuts it down. Only a daemon started by
-/// this invocation continues through the mode-appropriate managed sequence.
+/// version handshake via `get_daemon_status`. Doctor never binds or shuts down
+/// a reused daemon. Reused `ReadServer` daemons still receive the read-only
+/// `get_workspace_status` readiness probe.
 /// The daemon mode is read from the live response rather than on-disk
 /// configuration. Returns a [`SmokeResult`] indicating pass or fail with
 /// latency measurement.
 pub async fn run_smoke_test(workspace: &Path) -> Result<SmokeResult, EngramError> {
-    use std::time::Duration;
+    run_smoke_test_with_timeout(workspace, std::time::Duration::from_secs(10)).await
+}
 
+/// Run the doctor smoke workflow with the caller-selected IPC request timeout.
+///
+/// The timeout applies to smoke IPC requests after daemon lifecycle readiness
+/// is established. Daemon startup retains its independent ready-wait budget.
+///
+/// # Errors
+///
+/// Returns the lifecycle or IPC error encountered while running the smoke
+/// workflow.
+pub async fn run_smoke_test_with_timeout(
+    workspace: &Path,
+    ipc_timeout: std::time::Duration,
+) -> Result<SmokeResult, EngramError> {
     use serde_json::{Value, json};
 
     use crate::daemon::ipc_server::ipc_endpoint;
@@ -345,7 +369,7 @@ pub async fn run_smoke_test(workspace: &Path) -> Result<SmokeResult, EngramError
         method: "get_daemon_status".to_owned(),
         params: None,
     };
-    let status_response = send_request(&endpoint, &status_request, Duration::from_secs(10)).await?;
+    let status_response = send_request(&endpoint, &status_request, ipc_timeout).await?;
     if let Some(err) = &status_response.error {
         let latency_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
         return Ok(SmokeResult {
@@ -370,14 +394,11 @@ pub async fn run_smoke_test(workspace: &Path) -> Result<SmokeResult, EngramError
         })
     })?;
 
-    // Step 3: only an invocation-started daemon is owned strongly enough for
-    // the remaining lifecycle sequence. A reused daemon receives the status
-    // probe above and is otherwise left untouched.
-    let methods = smoke_request_methods_for_mode(mode);
-    let remaining_methods: &[&str] = match ownership {
-        DaemonOwnership::Started => &methods[1..],
-        DaemonOwnership::Reused => &[],
-    };
+    // Step 3: reused Managed daemons stop after the status probe. ReadServer
+    // always receives its read-only workspace-status readiness probe, while
+    // invocation-started Managed daemons also receive bind and shutdown.
+    let remaining_methods =
+        smoke_request_methods_for_run(mode, ownership == DaemonOwnership::Started);
     for (offset, method) in remaining_methods.iter().enumerate() {
         let index = offset + 2;
         let request = match *method {
@@ -402,7 +423,7 @@ pub async fn run_smoke_test(workspace: &Path) -> Result<SmokeResult, EngramError
             other => unreachable!("unexpected smoke workflow method: {other}"),
         };
 
-        let response = send_request(&endpoint, &request, Duration::from_secs(10)).await?;
+        let response = send_request(&endpoint, &request, ipc_timeout).await?;
         if let Some(err) = &response.error {
             let latency_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
             return Ok(SmokeResult {
@@ -415,8 +436,12 @@ pub async fn run_smoke_test(workspace: &Path) -> Result<SmokeResult, EngramError
 
     let latency_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
     let message = match (ownership, mode) {
-        (DaemonOwnership::Reused, _) => {
+        (DaemonOwnership::Reused, DaemonMode::Managed) => {
             "Smoke test passed: version exchange succeeded and the reused daemon was left untouched"
+                .to_owned()
+        }
+        (DaemonOwnership::Reused, DaemonMode::ReadServer) => {
+            "Smoke test passed: version exchange and workspace-status readiness succeeded and the reused daemon was left untouched"
                 .to_owned()
         }
         (DaemonOwnership::Started, DaemonMode::Managed) => {
