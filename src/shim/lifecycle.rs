@@ -290,11 +290,26 @@ pub(crate) enum DaemonOwnership {
     Reused,
     /// This lifecycle call spawned or respawned the ready daemon.
     Started {
-        /// Exact child handle retained for bounded doctor cleanup.
+        /// Exact child handle retained until the lifecycle result is returned.
+        ///
+        /// `kill_on_drop` is disabled so dropping this handle detaches the
+        /// daemon into the normal lifecycle.
         child: Box<tokio::process::Child>,
         /// Process identity published by the exact spawned daemon.
         pid_file: PidFile,
     },
+}
+
+impl DaemonOwnership {
+    pub(crate) fn detach_ready(self) {
+        if let Self::Started { child, pid_file } = self {
+            debug!(
+                pid = pid_file.pid,
+                "detaching ready daemon child into the normal lifecycle"
+            );
+            drop(child);
+        }
+    }
 }
 
 /// Controls whether lifecycle validation may replace an existing daemon.
@@ -486,7 +501,7 @@ async fn ensure_daemon_running_inner(
         return poll_until_ready(workspace, &endpoint, None).await;
     }
 
-    let child = spawn_daemon(workspace, existing_policy)?;
+    let child = spawn_daemon(workspace)?;
     let endpoint = ipc_endpoint(workspace)?;
     poll_until_ready(workspace, &endpoint, Some(child)).await
 }
@@ -588,10 +603,7 @@ fn open_test_autospawn_trace_files(
 }
 
 /// Spawn the daemon as a detached child process for the given workspace.
-fn spawn_daemon(
-    workspace: &Path,
-    existing_policy: ExistingDaemonPolicy,
-) -> Result<tokio::process::Child, EngramError> {
+fn spawn_daemon(workspace: &Path) -> Result<tokio::process::Child, EngramError> {
     let workspace_str = workspace.to_str().ok_or_else(|| {
         EngramError::Daemon(DaemonError::SpawnFailed {
             reason: "workspace path contains non-UTF-8 characters".to_owned(),
@@ -619,8 +631,8 @@ fn spawn_daemon(
     command
         .args(["daemon", "--workspace", workspace_str])
         .stdin(std::process::Stdio::null())
-        .env_remove("ENGRAM_DATA_DIR");
-    configure_spawned_child_cleanup(&mut command, existing_policy);
+        .env_remove("ENGRAM_DATA_DIR")
+        .kill_on_drop(false);
 
     #[cfg(debug_assertions)]
     if std::env::var_os("ENGRAM_TEST_CAPTURE_AUTOSPAWN_TRACE").is_some_and(|value| value == "1") {
@@ -644,16 +656,6 @@ fn spawn_daemon(
     })
 }
 
-fn configure_spawned_child_cleanup(
-    command: &mut tokio::process::Command,
-    existing_policy: ExistingDaemonPolicy,
-) {
-    // Tokio configures kill-on-drop on the command before the child exists.
-    if existing_policy == ExistingDaemonPolicy::Preserve {
-        command.kill_on_drop(true);
-    }
-}
-
 async fn respawn_daemon(
     workspace: &Path,
     endpoint: &str,
@@ -661,7 +663,7 @@ async fn respawn_daemon(
 ) -> Result<DaemonOwnership, EngramError> {
     request_shutdown(endpoint).await;
     wait_for_daemon_exit(endpoint, pid_hint).await?;
-    let child = spawn_daemon(workspace, ExistingDaemonPolicy::Respawn)?;
+    let child = spawn_daemon(workspace)?;
     let endpoint = ipc_endpoint(workspace)?;
     poll_until_ready(workspace, &endpoint, Some(child)).await
 }
@@ -936,37 +938,6 @@ async fn cleanup_spawned_child(child: &mut tokio::process::Child) -> Result<(), 
     }
 }
 
-pub(crate) async fn cleanup_owned_daemon(
-    pid_file: &PidFile,
-    child: &mut tokio::process::Child,
-) -> Result<(), EngramError> {
-    let pid = child.id();
-    if child
-        .try_wait()
-        .map_err(|error| {
-            cleanup_error(
-                pid,
-                format!("failed to inspect exact child before cleanup: {error}"),
-            )
-        })?
-        .is_some()
-    {
-        return Ok(());
-    }
-
-    if pid != Some(pid_file.pid) {
-        return Err(cleanup_error(
-            pid,
-            format!(
-                "exact-child ownership token {} did not match child process {pid:?}",
-                pid_file.pid
-            ),
-        ));
-    }
-
-    cleanup_spawned_child(child).await
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PollOutcome {
     Reused,
@@ -1085,7 +1056,7 @@ mod tests {
     use sysinfo::{Pid, System};
 
     const CLEANUP_CHILD_FIXTURE_ENV: &str = "ENGRAM_LIFECYCLE_CLEANUP_CHILD_FIXTURE";
-    const KILL_ON_DROP_CHILD_FIXTURE_ENV: &str = "ENGRAM_LIFECYCLE_KILL_ON_DROP_CHILD_FIXTURE";
+    const DETACHED_CHILD_FIXTURE_ENV: &str = "ENGRAM_LIFECYCLE_DETACHED_CHILD_FIXTURE";
 
     fn create_capture_workspace() -> tempfile::TempDir {
         let workspace = tempfile::tempdir().expect("workspace tempdir");
@@ -1095,90 +1066,60 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn daemon_ownership_kill_on_drop_is_opt_in() {
-        if std::env::var_os(KILL_ON_DROP_CHILD_FIXTURE_ENV).is_some() {
+    async fn daemon_ownership_does_not_kill_spawned_child_on_drop() {
+        if std::env::var_os(DETACHED_CHILD_FIXTURE_ENV).is_some() {
             tokio::time::sleep(Duration::from_secs(30)).await;
             return;
         }
 
-        let spawn_fixture = |existing_policy| {
-            let mut command = tokio::process::Command::new(
-                std::env::current_exe().expect("test executable path"),
-            );
-            command
-                .args([
-                    "--exact",
-                    "shim::lifecycle::tests::daemon_ownership_kill_on_drop_is_opt_in",
-                    "--nocapture",
-                ])
-                .env(KILL_ON_DROP_CHILD_FIXTURE_ENV, "1")
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null());
-            configure_spawned_child_cleanup(&mut command, existing_policy);
-            command.spawn().expect("spawn ownership fixture child")
-        };
-
-        let armed_child = spawn_fixture(ExistingDaemonPolicy::Preserve);
-        let armed_pid = armed_child.id().expect("armed fixture PID");
-        let armed = DaemonOwnership::Started {
-            child: Box::new(armed_child),
+        let mut command =
+            tokio::process::Command::new(std::env::current_exe().expect("test executable path"));
+        command
+            .args([
+                "--exact",
+                "shim::lifecycle::tests::daemon_ownership_does_not_kill_spawned_child_on_drop",
+                "--nocapture",
+            ])
+            .env(DETACHED_CHILD_FIXTURE_ENV, "1")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(false);
+        let child = command.spawn().expect("spawn ownership fixture child");
+        let pid = child.id().expect("fixture PID");
+        let ownership = DaemonOwnership::Started {
+            child: Box::new(child),
             pid_file: PidFile {
-                pid: armed_pid,
+                pid,
                 start_time_unix: 1,
             },
         };
-        drop(armed);
-
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            let mut system = System::new();
-            if !system.refresh_process(Pid::from_u32(armed_pid)) {
-                break;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "dropping doctor-owned child did not terminate PID {armed_pid}"
-            );
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-
-        let normal_child = spawn_fixture(ExistingDaemonPolicy::Respawn);
-        let normal_pid = normal_child.id().expect("normal fixture PID");
-        let normal = DaemonOwnership::Started {
-            child: Box::new(normal_child),
-            pid_file: PidFile {
-                pid: normal_pid,
-                start_time_unix: 1,
-            },
-        };
-        drop(normal);
+        drop(ownership);
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         let mut system = System::new();
         assert!(
-            system.refresh_process(Pid::from_u32(normal_pid)),
-            "normal daemon ownership killed PID {normal_pid} on drop"
+            system.refresh_process(Pid::from_u32(pid)),
+            "detached daemon ownership killed PID {pid} on drop"
         );
         let killed = system
-            .process(Pid::from_u32(normal_pid))
+            .process(Pid::from_u32(pid))
             .is_some_and(sysinfo::Process::kill);
-        assert!(killed, "failed to clean up normal fixture PID {normal_pid}");
+        assert!(killed, "failed to clean up fixture PID {pid}");
     }
 
     #[tokio::test]
-    async fn cleanup_owned_daemon_reaps_exact_started_child_after_failure() {
+    async fn startup_failure_cleanup_reaps_exact_spawned_child() {
         if std::env::var_os(CLEANUP_CHILD_FIXTURE_ENV).is_some() {
             tokio::time::sleep(Duration::from_secs(30)).await;
             return;
         }
 
-        let workspace = create_capture_workspace();
         let current_exe = std::env::current_exe().expect("test executable path");
         let mut child = tokio::process::Command::new(current_exe)
             .args([
                 "--exact",
-                "shim::lifecycle::tests::cleanup_owned_daemon_reaps_exact_started_child_after_failure",
+                "shim::lifecycle::tests::startup_failure_cleanup_reaps_exact_spawned_child",
                 "--nocapture",
             ])
             .env(CLEANUP_CHILD_FIXTURE_ENV, "1")
@@ -1188,24 +1129,11 @@ mod tests {
             .spawn()
             .expect("spawn cleanup fixture child");
         let pid = child.id().expect("cleanup fixture child PID");
-        let pid_file = PidFile {
-            pid,
-            start_time_unix: 1,
-        };
-        pid_file
-            .atomic_write(&workspace.path().join(".engram").join("run"))
-            .expect("publish cleanup fixture PID");
 
-        cleanup_owned_daemon(&pid_file, &mut child)
+        cleanup_spawned_child(&mut child)
             .await
             .expect("owned child cleanup should succeed");
 
-        assert!(
-            !pid_file
-                .verify_alive()
-                .expect("verify cleanup fixture liveness"),
-            "cleanup left owned child {pid} alive"
-        );
         assert!(
             child.try_wait().expect("inspect cleanup fixture").is_some(),
             "cleanup killed but did not reap owned child {pid}"

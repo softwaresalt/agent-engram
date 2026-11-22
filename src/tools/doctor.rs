@@ -296,8 +296,8 @@ pub fn smoke_request_methods_after_status(mode: DaemonMode) -> Vec<&'static str>
 ///
 /// Spawns or reuses the daemon, then probes readiness via read-only requests.
 /// Managed daemons receive `get_daemon_status` only. `ReadServer` daemons also
-/// receive `get_workspace_status`. Invocation-started children are cleaned
-/// through their exact child ownership token, never through IPC mutation.
+/// receive `get_workspace_status`. An invocation-started daemon remains
+/// detached after readiness and continues through the normal daemon lifecycle.
 /// The daemon mode is read from the live response rather than on-disk
 /// configuration. Returns a [`SmokeResult`] indicating pass or fail with
 /// latency measurement.
@@ -323,28 +323,28 @@ pub async fn run_smoke_test_with_timeout(
     use crate::daemon::ipc_server::ipc_endpoint;
     use crate::daemon::protocol::IpcRequest;
     use crate::shim::ipc_client::send_request;
-    use crate::shim::lifecycle::{
-        DaemonOwnership, cleanup_owned_daemon, combine_cleanup_error,
-        ensure_daemon_running_for_doctor,
-    };
+    use crate::shim::lifecycle::{DaemonOwnership, ensure_daemon_running_for_doctor};
 
     let start = std::time::Instant::now();
 
     // Step 1: Spawn or reuse the daemon.
-    let mut ownership = ensure_daemon_running_for_doctor(workspace)
-        .await
-        .map_err(|error| match error {
-            refused @ crate::errors::EngramError::Ipc(
-                crate::errors::IpcError::VersionMismatch { .. }
-                | crate::errors::IpcError::ConnectionFailed { .. },
-            ) => refused,
-            cleanup @ crate::errors::EngramError::Daemon(
-                crate::errors::DaemonError::CleanupFailed { .. },
-            ) => cleanup,
-            error => crate::errors::EngramError::Daemon(crate::errors::DaemonError::SpawnFailed {
-                reason: format!("smoke test: daemon start failed: {error}"),
-            }),
-        })?;
+    let ownership =
+        ensure_daemon_running_for_doctor(workspace)
+            .await
+            .map_err(|error| match error {
+                refused @ crate::errors::EngramError::Ipc(
+                    crate::errors::IpcError::VersionMismatch { .. }
+                    | crate::errors::IpcError::ConnectionFailed { .. },
+                ) => refused,
+                cleanup @ crate::errors::EngramError::Daemon(
+                    crate::errors::DaemonError::CleanupFailed { .. },
+                ) => cleanup,
+                error => {
+                    crate::errors::EngramError::Daemon(crate::errors::DaemonError::SpawnFailed {
+                        reason: format!("smoke test: daemon start failed: {error}"),
+                    })
+                }
+            })?;
 
     let endpoint = ipc_endpoint(workspace)?;
     let smoke_outcome = async {
@@ -421,11 +421,11 @@ pub async fn run_smoke_test_with_timeout(
                     .to_owned()
             }
             (DaemonOwnership::Started { .. }, DaemonMode::Managed) => {
-                "Smoke test passed: daemon-status probe succeeded; the invocation-started child was cleaned by exact process ownership"
+                "Smoke test passed: daemon-status probe succeeded; the invocation-started daemon was left running for the normal daemon lifecycle"
                     .to_owned()
             }
             (DaemonOwnership::Started { .. }, DaemonMode::ReadServer) => {
-                "Smoke test passed: daemon-status and workspace-status probes succeeded; the invocation-started child was cleaned by exact process ownership"
+                "Smoke test passed: daemon-status and workspace-status probes succeeded; the invocation-started daemon was left running for the normal daemon lifecycle"
                     .to_owned()
             }
         };
@@ -437,16 +437,6 @@ pub async fn run_smoke_test_with_timeout(
     }
     .await;
 
-    let cleanup_outcome = match &mut ownership {
-        DaemonOwnership::Started { child, pid_file } => cleanup_owned_daemon(pid_file, child).await,
-        DaemonOwnership::Reused => Ok(()),
-    };
-
-    match (smoke_outcome, cleanup_outcome) {
-        (Ok(result), Ok(())) => Ok(result),
-        (Err(original_error), Err(cleanup_error)) => {
-            Err(combine_cleanup_error(original_error, cleanup_error))
-        }
-        (Ok(_), Err(cleanup_error)) | (Err(cleanup_error), Ok(())) => Err(cleanup_error),
-    }
+    ownership.detach_ready();
+    smoke_outcome
 }

@@ -21,6 +21,7 @@ use engram::shim::version::ENGRAM_PROTOCOL_VERSION;
 use engram::shim::{ipc_client::send_request, lifecycle::check_health};
 use engram::tools::doctor::{run_smoke_test, run_smoke_test_with_timeout};
 use serde_json::Value;
+use sysinfo::{Pid, System};
 
 #[path = "../helpers/fake_health_responder.rs"]
 #[allow(dead_code)]
@@ -33,9 +34,9 @@ use fake_health_responder::{FakeHealthResponder, HealthScript};
 ///
 /// Daemon spawns, readiness probes succeed, result.passed == true.
 #[tokio::test]
-async fn doctor_smoke_exercises_full_handshake() {
-    let workspace = tempfile::tempdir().expect("workspace tempdir");
-    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+async fn doctor_smoke_exercises_full_handshake() -> CliTestResult {
+    let workspace = tempfile::tempdir()?;
+    fs::create_dir(workspace.path().join(".git"))?;
 
     let result = run_smoke_test(workspace.path())
         .await
@@ -52,19 +53,31 @@ async fn doctor_smoke_exercises_full_handshake() {
         result.message
     );
     assert!(
-        result.message.contains("exact process ownership"),
-        "smoke result did not describe exact-child cleanup: {}",
+        result
+            .message
+            .contains("left running for the normal daemon lifecycle"),
+        "smoke result did not preserve the invocation-started daemon: {}",
         result.message
     );
+    let pid_file = PidFile::read(workspace.path())
+        .ok_or_else(|| io::Error::other("started Managed daemon omitted PID metadata"))?;
+    assert!(
+        pid_file.verify_alive()?,
+        "doctor smoke terminated its invocation-started Managed daemon: {}",
+        pid_file.pid
+    );
+
+    shutdown_daemon(workspace.path()).await?;
+    Ok(())
 }
 
 /// Smoke result latency field is present when the test completes.
 ///
 /// Red phase: panics at `todo!()` before reaching this assertion.
 #[tokio::test]
-async fn doctor_smoke_result_includes_latency() {
-    let workspace = tempfile::tempdir().expect("workspace tempdir");
-    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+async fn doctor_smoke_result_includes_latency() -> CliTestResult {
+    let workspace = tempfile::tempdir()?;
+    fs::create_dir(workspace.path().join(".git"))?;
 
     let result = run_smoke_test(workspace.path())
         .await
@@ -74,6 +87,8 @@ async fn doctor_smoke_result_includes_latency() {
         result.latency_ms.is_some(),
         "smoke result should include latency measurement"
     );
+    shutdown_daemon(workspace.path()).await?;
+    Ok(())
 }
 
 #[tokio::test]
@@ -106,7 +121,8 @@ async fn doctor_smoke_reaps_child_when_startup_readiness_times_out() -> CliTestR
 }
 
 #[tokio::test]
-async fn doctor_smoke_reaps_invocation_started_read_server_after_success() -> CliTestResult {
+async fn doctor_smoke_leaves_invocation_started_read_server_running_after_success() -> CliTestResult
+{
     let workspace = tempfile::tempdir()?;
     fs::create_dir(workspace.path().join(".git"))?;
     fs::create_dir(workspace.path().join(".engram"))?;
@@ -115,29 +131,33 @@ async fn doctor_smoke_reaps_invocation_started_read_server_after_success() -> Cl
         "mode = \"read_server\"\n",
     )?;
     let canonical_workspace = workspace.path().canonicalize()?;
+    let stdout_path = workspace.path().join("doctor.stdout.json");
+    let stderr_path = workspace.path().join("doctor.stderr.log");
 
-    let output = engram_command()
+    let status = engram_command()
         .arg("--workspace")
         .arg(&canonical_workspace)
         .args(["--json", "doctor", "--smoke"])
         .env("ENGRAM_IDLE_TIMEOUT_MS", "0")
-        .output()?;
-
+        .stdout(fs::File::create(&stdout_path)?)
+        .stderr(fs::File::create(&stderr_path)?)
+        .status()?;
     assert!(
-        output.status.success(),
-        "doctor smoke failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+        status.success(),
+        "read-server doctor smoke failed: {}",
+        fs::read_to_string(&stderr_path)?
     );
-    let envelope: Value = serde_json::from_slice(&output.stdout)?;
+    let envelope: Value = serde_json::from_slice(&fs::read(&stdout_path)?)?;
     assert_eq!(envelope["result"]["passed"], Value::Bool(true));
     let pid_file = PidFile::read(&canonical_workspace)
         .ok_or_else(|| io::Error::other("started ReadServer omitted PID metadata"))?;
     assert!(
-        !pid_file.verify_alive()?,
-        "doctor smoke left its invocation-started ReadServer alive: {}",
+        pid_file.verify_alive()?,
+        "doctor smoke terminated its invocation-started ReadServer: {}",
         pid_file.pid
     );
 
+    terminate_started_daemon(&pid_file).await?;
     Ok(())
 }
 
@@ -541,6 +561,51 @@ async fn assert_daemon_ready(endpoint: &str) -> io::Result<()> {
             ));
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    Ok(())
+}
+
+async fn shutdown_daemon(workspace: &Path) -> Result<(), Box<dyn Error>> {
+    let endpoint = ipc_endpoint(workspace)?;
+    let request = IpcRequest {
+        jsonrpc: "2.0".to_owned(),
+        id: Some(serde_json::json!(998)),
+        method: "_shutdown".to_owned(),
+        params: None,
+    };
+    let response = send_request(&endpoint, &request, Duration::from_secs(10)).await?;
+    assert!(
+        response.error.is_none(),
+        "test daemon shutdown failed: {:?}",
+        response.error
+    );
+    Ok(())
+}
+
+async fn terminate_started_daemon(pid_file: &PidFile) -> Result<(), Box<dyn Error>> {
+    let pid = Pid::from_u32(pid_file.pid);
+    let mut system = System::new();
+    assert!(
+        system.refresh_process(pid),
+        "started daemon PID {} disappeared before test cleanup",
+        pid_file.pid
+    );
+    assert!(
+        system.process(pid).is_some_and(sysinfo::Process::kill),
+        "failed to terminate started daemon PID {} during test cleanup",
+        pid_file.pid
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while pid_file.verify_alive()? {
+        if Instant::now() >= deadline {
+            return Err(io::Error::other(format!(
+                "started daemon PID {} did not exit during test cleanup",
+                pid_file.pid
+            ))
+            .into());
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
     }
     Ok(())
 }

@@ -187,7 +187,7 @@ fn doctor_smoke_workflows_are_probe_only() {
     );
     assert!(
         doctor::smoke_request_methods_after_status(DaemonMode::Managed).is_empty(),
-        "an invocation-started Managed daemon must be cleaned by child ownership, not IPC"
+        "an invocation-started Managed daemon must be left detached after readiness"
     );
 
     let read_server_methods = doctor::smoke_request_methods_for_mode(DaemonMode::ReadServer);
