@@ -4,7 +4,7 @@ date: 2026-11-22
 shipment: 177-S
 task: 142.058-T
 feature: 142-F
-last_code_affecting_head: "36775aa107e3d7e215fe54480684aa8677f4ec2c"
+last_code_affecting_head: "0c4f9d454fae43333df0910a44ca8235c9f9ccb4"
 status: pre_pr_review
 ---
 
@@ -32,7 +32,7 @@ behavior:
 * `53.540s`
 
 After the in-scope binding-side-effect review fix, the final candidate repeated
-the same contract at `10/10` in `41.86s`, `36.62s`, and `36.75s`.
+the same contract at `10/10` in `39.00s`, `36.09s`, and `35.64s`.
 
 Every PRE-3F settle-barrier line was `Active`. Feature-matrix parity, consumer
 suites, Clippy, formatting, and `cargo build --all-targets` passed as recorded

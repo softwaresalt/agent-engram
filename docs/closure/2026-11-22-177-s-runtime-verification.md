@@ -12,7 +12,7 @@ verification_status: PASS_WITH_FOLLOW_UP
 closure_status: READY_WITH_CONDITIONS
 compaction_status: pending
 owner: softwaresalt
-last_code_affecting_head: "36775aa107e3d7e215fe54480684aa8677f4ec2c"
+last_code_affecting_head: "0c4f9d454fae43333df0910a44ca8235c9f9ccb4"
 follow_up_stash:
   - "FF1FC372"
 conditions:
@@ -32,13 +32,22 @@ conditions:
     attestation_evidence: "gsd gate copilot-review reports PASS with no open findings"
     escalation_path: "Hold merge until all threads and review-body findings are dispositioned"
     backlog_item_id: "N/A"
+  - condition: "P-014 merge approval applies to the bounded 177-S scope"
+    satisfied: true
+    evidence: "The operator-supplied P-017 activation pre-authorizes merge for 177-S after all P-014/P-018/CI/P-009/P-016 checks pass"
+    owner: softwaresalt
+    due_utc: "2026-11-23T23:59:59Z"
+    attestation_evidence: "Bounded P-017 activation records merge_approval_pre_authorized: true for 177-S"
+    escalation_path: "Wait for explicit operator approval if the bounded activation no longer applies"
+    backlog_item_id: "N/A"
 ---
 
 ## Scope and immutable evidence
 
 Shipment `177-S` completes the F54d read-provenance and CLI/MCP equivalence
 contract for task `142.058-T`. The last code-affecting revision is
-`38b570acae5521088741b8f51724565abece8560`.
+`0c4f9d454fae43333df0910a44ca8235c9f9ccb4`. The original implementation
+commit remains `38b570acae5521088741b8f51724565abece8560`.
 
 The implementation remains confined to
 `tests/contract/read_server_cli_mcp_parity_test.rs`. It adds
@@ -53,9 +62,9 @@ and verifies CLI and stdio MCP equivalence.
 | M12 run 1 | PASS: 10/10, 96.312s, all settle-barrier lines `Active` |
 | M12 run 2 | PASS: 10/10, 51.491s, all settle-barrier lines `Active` |
 | M12 run 3 | PASS: 10/10, 53.540s, all settle-barrier lines `Active` |
-| Post-review M12 run 1 | PASS: 10/10, 41.86s, all settle-barrier lines `Active` |
-| Post-review M12 run 2 | PASS: 10/10, 36.62s, all settle-barrier lines `Active` |
-| Post-review M12 run 3 | PASS: 10/10, 36.75s, all settle-barrier lines `Active` |
+| Final post-review M12 run 1 | PASS: 10/10, 39.00s, all settle-barrier lines `Active` |
+| Final post-review M12 run 2 | PASS: 10/10, 36.09s, all settle-barrier lines `Active` |
+| Final post-review M12 run 3 | PASS: 10/10, 35.64s, all settle-barrier lines `Active` |
 | Default feature matrix | PASS |
 | CI feature matrix | PASS |
 | Consumer suites | PASS |
@@ -71,11 +80,11 @@ within the `400`-line limit.
 
 ## Drift and history preservation
 
-The R9.9 ledger over `f6f3171f..38b570ac` contains
+The R9.9 ledger over `f6f3171f..0c4f9d45` contains
 `a13c4245` and `b8721d67` on `src/tools/capabilities.rs`. The parked T0 history,
 the `7bd9e504` and `6d216d19` records, and B0 at
-`docs/memory/2026-10-04-ship-142-f-a0-b0.md` remain historical evidence rather
-than replacement evidence.
+`0f2cca20:docs/memory/2026-10-04-ship-142-f-a0-b0.md` remain historical
+evidence rather than replacement evidence.
 
 Backlogit upgraded from `1.12.0` to `v1.13.0` at `76f7b144` and began enforcing
 `blocking_children`. The completed task therefore closed its two verified child
@@ -134,11 +143,14 @@ No ancestry walk or cascade operation is permitted.
 The contract is `PASS_WITH_FOLLOW_UP`. Pre-merge releasability is
 `READY_WITH_CONDITIONS` until final-head CI and Copilot review conditions are
 satisfied. The external-temp migration rollback failure remains deferred in
-`FF1FC372`; no out-of-scope test or fixture change was made.
+`FF1FC372`; no out-of-scope test or fixture change was made. The
+`last_code_affecting_head` is the historical reviewed code revision; mutable
+current-HEAD readiness is recorded only in the feature PR body.
 
 ## Documentation consistency audit
 
-Verdict: `AUDIT_FOLLOWUPS`. The in-scope binding-state and evidence
+Verdict: `AUDIT_FINDINGS_RESOLVED`. The in-scope binding-state and evidence
 contradictions are fixed in the final candidate. Out-of-scope findings remain
 captured in `FF1FC372`. T0/B0 location qualification and any broader
-historical propagation remain Stage-owned follow-up scope.
+historical propagation remain resolved for this shipment by the explicit
+T0-qualified locator.
