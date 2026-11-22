@@ -297,13 +297,6 @@ pub(crate) enum DaemonOwnership {
     },
 }
 
-impl DaemonOwnership {
-    #[must_use]
-    pub(crate) const fn is_started(&self) -> bool {
-        matches!(self, Self::Started { .. })
-    }
-}
-
 /// Controls whether lifecycle validation may replace an existing daemon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExistingDaemonPolicy {
@@ -944,35 +937,34 @@ async fn cleanup_spawned_child(child: &mut tokio::process::Child) -> Result<(), 
 }
 
 pub(crate) async fn cleanup_owned_daemon(
-    workspace: &Path,
-    endpoint: &str,
     pid_file: &PidFile,
     child: &mut tokio::process::Child,
 ) -> Result<(), EngramError> {
     let pid = child.id();
-    let pid_is_still_owned = PidFile::read(workspace).is_some_and(|published| {
-        published == *pid_file
-            && Some(pid_file.pid) == child.id()
-            && pid_file.verify_alive().is_ok_and(|alive| alive)
-    });
-
-    if pid_is_still_owned {
-        request_shutdown(endpoint).await;
-    }
-
-    match tokio::time::timeout(
-        Duration::from_millis(SHUTDOWN_WAIT_TIMEOUT_MS),
-        child.wait(),
-    )
-    .await
+    if child
+        .try_wait()
+        .map_err(|error| {
+            cleanup_error(
+                pid,
+                format!("failed to inspect exact child before cleanup: {error}"),
+            )
+        })?
+        .is_some()
     {
-        Ok(Ok(_)) => Ok(()),
-        Ok(Err(error)) => Err(cleanup_error(
-            pid,
-            format!("failed to wait for exact child after graceful shutdown: {error}"),
-        )),
-        Err(_) => cleanup_spawned_child(child).await,
+        return Ok(());
     }
+
+    if pid != Some(pid_file.pid) {
+        return Err(cleanup_error(
+            pid,
+            format!(
+                "exact-child ownership token {} did not match child process {pid:?}",
+                pid_file.pid
+            ),
+        ));
+    }
+
+    cleanup_spawned_child(child).await
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1203,9 +1195,8 @@ mod tests {
         pid_file
             .atomic_write(&workspace.path().join(".engram").join("run"))
             .expect("publish cleanup fixture PID");
-        let endpoint = ipc_endpoint(workspace.path()).expect("test IPC endpoint");
 
-        cleanup_owned_daemon(workspace.path(), &endpoint, &pid_file, &mut child)
+        cleanup_owned_daemon(&pid_file, &mut child)
             .await
             .expect("owned child cleanup should succeed");
 

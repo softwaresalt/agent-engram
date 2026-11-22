@@ -2,7 +2,7 @@
 //!
 //! Provides [`get_health_report_for_daemon`] (returns a structured
 //! [`HealthReport`] covering all eight 029-F failure modes) and
-//! [`run_smoke_test`] (runs a full shim→daemon handshake round-trip
+//! [`run_smoke_test`] (runs the probe-only daemon readiness workflow
 //! for the `doctor --smoke` CLI subcommand).
 
 use std::path::Path;
@@ -278,27 +278,26 @@ pub async fn get_health_report_for_daemon(state: &AppState) -> Result<HealthRepo
 #[doc(hidden)]
 pub fn smoke_request_methods_for_mode(mode: DaemonMode) -> Vec<&'static str> {
     match mode {
-        DaemonMode::Managed => vec!["get_daemon_status", "set_workspace", "_shutdown"],
+        DaemonMode::Managed => vec!["get_daemon_status"],
         DaemonMode::ReadServer => vec!["get_daemon_status", "get_workspace_status"],
     }
 }
 
 #[doc(hidden)]
 /// Return the smoke methods that remain after the initial daemon-status probe.
-pub fn smoke_request_methods_for_run(mode: DaemonMode, daemon_started: bool) -> Vec<&'static str> {
-    match (mode, daemon_started) {
-        (DaemonMode::Managed, true) => vec!["set_workspace", "_shutdown"],
-        (DaemonMode::Managed, false) => Vec::new(),
-        (DaemonMode::ReadServer, _) => vec!["get_workspace_status"],
+pub fn smoke_request_methods_after_status(mode: DaemonMode) -> Vec<&'static str> {
+    match mode {
+        DaemonMode::Managed => Vec::new(),
+        DaemonMode::ReadServer => vec!["get_workspace_status"],
     }
 }
 
-/// Run a full shim→daemon handshake round-trip for the `doctor --smoke` CLI flag.
+/// Run the probe-only daemon readiness workflow for the `doctor --smoke` CLI flag.
 ///
-/// Spawns or reuses the daemon, then connects as a shim and exchanges the
-/// version handshake via `get_daemon_status`. Doctor never binds or shuts down
-/// a reused daemon. Reused `ReadServer` daemons still receive the read-only
-/// `get_workspace_status` readiness probe.
+/// Spawns or reuses the daemon, then probes readiness via read-only requests.
+/// Managed daemons receive `get_daemon_status` only. `ReadServer` daemons also
+/// receive `get_workspace_status`. Invocation-started children are cleaned
+/// through their exact child ownership token, never through IPC mutation.
 /// The daemon mode is read from the live response rather than on-disk
 /// configuration. Returns a [`SmokeResult`] indicating pass or fail with
 /// latency measurement.
@@ -319,7 +318,7 @@ pub async fn run_smoke_test_with_timeout(
     workspace: &Path,
     ipc_timeout: std::time::Duration,
 ) -> Result<SmokeResult, EngramError> {
-    use serde_json::{Value, json};
+    use serde_json::Value;
 
     use crate::daemon::ipc_server::ipc_endpoint;
     use crate::daemon::protocol::IpcRequest;
@@ -349,23 +348,12 @@ pub async fn run_smoke_test_with_timeout(
 
     let endpoint = ipc_endpoint(workspace)?;
     let smoke_outcome = async {
-        let workspace_str = workspace
-            .to_str()
-            .ok_or_else(|| {
-                crate::errors::EngramError::Daemon(crate::errors::DaemonError::SpawnFailed {
-                    reason: "workspace path contains non-UTF-8 characters".to_owned(),
-                })
-            })?
-            .to_owned();
-
         // Step 2: always probe get_daemon_status first and read the *actual live
         // daemon's* reported mode from its response, rather than trusting
         // on-disk configuration via `resolve_daemon_mode`. `ensure_daemon_running`
         // may have reused an already-running daemon whose mode was fixed at its
-        // own startup; if configuration changed on disk afterward, selecting the
-        // remaining smoke sequence from stale on-disk config could send a
-        // write-capable `set_workspace` + `_shutdown` sequence to a live
-        // ReadServer daemon, violating its non-destructive smoke contract.
+        // own startup; if configuration changed on disk afterward, the observed
+        // mode is still required to select the read-only readiness probes.
         let status_request = IpcRequest {
             jsonrpc: "2.0".to_owned(),
             id: Some(Value::Number(serde_json::Number::from(1))),
@@ -396,10 +384,9 @@ pub async fn run_smoke_test_with_timeout(
                 reason: format!("smoke test: daemon reported unrecognized mode: {e}"),
             })
         })?;
-        // Step 3: reused Managed daemons stop after the status probe. ReadServer
-        // always receives its read-only workspace-status readiness probe, while
-        // invocation-started Managed daemons also receive bind and shutdown.
-        let remaining_methods = smoke_request_methods_for_run(mode, ownership.is_started());
+        // Step 3: Managed daemons stop after the status probe. ReadServer
+        // always receives its read-only workspace-status readiness probe.
+        let remaining_methods = smoke_request_methods_after_status(mode);
         for (offset, method) in remaining_methods.iter().enumerate() {
             let index = offset + 2;
             let request = match *method {
@@ -407,18 +394,6 @@ pub async fn run_smoke_test_with_timeout(
                     jsonrpc: "2.0".to_owned(),
                     id: Some(Value::Number(serde_json::Number::from(index))),
                     method: "get_workspace_status".to_owned(),
-                    params: None,
-                },
-                "set_workspace" => IpcRequest {
-                    jsonrpc: "2.0".to_owned(),
-                    id: Some(Value::Number(serde_json::Number::from(index))),
-                    method: "set_workspace".to_owned(),
-                    params: Some(json!({ "path": workspace_str })),
-                },
-                "_shutdown" => IpcRequest {
-                    jsonrpc: "2.0".to_owned(),
-                    id: Some(Value::Number(serde_json::Number::from(index))),
-                    method: "_shutdown".to_owned(),
                     params: None,
                 },
                 other => unreachable!("unexpected smoke workflow method: {other}"),
@@ -438,19 +413,19 @@ pub async fn run_smoke_test_with_timeout(
         let latency_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
         let message = match (&ownership, mode) {
             (DaemonOwnership::Reused, DaemonMode::Managed) => {
-                "Smoke test passed: version exchange succeeded and the reused daemon was left untouched"
+                "Smoke test passed: daemon-status probe succeeded and the reused daemon was left untouched"
                     .to_owned()
             }
             (DaemonOwnership::Reused, DaemonMode::ReadServer) => {
-                "Smoke test passed: version exchange and workspace-status readiness succeeded and the reused daemon was left untouched"
+                "Smoke test passed: daemon-status and workspace-status probes succeeded and the reused daemon was left untouched"
                     .to_owned()
             }
             (DaemonOwnership::Started { .. }, DaemonMode::Managed) => {
-                "Smoke test passed: version exchange, workspace bind, and shutdown all succeeded"
+                "Smoke test passed: daemon-status probe succeeded; the invocation-started child was cleaned by exact process ownership"
                     .to_owned()
             }
             (DaemonOwnership::Started { .. }, DaemonMode::ReadServer) => {
-                "Smoke test passed: version exchange and workspace-status readiness succeeded without write or shutdown"
+                "Smoke test passed: daemon-status and workspace-status probes succeeded; the invocation-started child was cleaned by exact process ownership"
                     .to_owned()
             }
         };
@@ -463,9 +438,7 @@ pub async fn run_smoke_test_with_timeout(
     .await;
 
     let cleanup_outcome = match &mut ownership {
-        DaemonOwnership::Started { child, pid_file } => {
-            cleanup_owned_daemon(workspace, &endpoint, pid_file, child).await
-        }
+        DaemonOwnership::Started { child, pid_file } => cleanup_owned_daemon(pid_file, child).await,
         DaemonOwnership::Reused => Ok(()),
     };
 

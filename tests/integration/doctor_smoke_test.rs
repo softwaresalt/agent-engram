@@ -1,4 +1,4 @@
-//! Integration test for the `doctor --smoke` full-handshake round-trip.
+//! Integration tests for the `doctor --smoke` probe-only readiness workflow.
 //!
 //! Exercises [`engram::tools::doctor::run_smoke_test`] end-to-end.
 //! A regression here means the daemon IPC handshake or smoke-test logic broke.
@@ -28,10 +28,10 @@ mod fake_health_responder;
 
 use fake_health_responder::{FakeHealthResponder, HealthScript};
 
-/// A full shim→daemon handshake smoke test must pass cleanly for a valid
+/// A probe-only daemon smoke test must pass cleanly for a valid
 /// git-backed workspace.
 ///
-/// Daemon spawns, handshake succeeds, result.passed == true.
+/// Daemon spawns, readiness probes succeed, result.passed == true.
 #[tokio::test]
 async fn doctor_smoke_exercises_full_handshake() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
@@ -44,6 +44,16 @@ async fn doctor_smoke_exercises_full_handshake() {
     assert!(
         result.passed,
         "smoke test reported failure: {}",
+        result.message
+    );
+    assert!(
+        result.message.contains("daemon-status probe succeeded"),
+        "smoke result did not report the read-only Managed probe: {}",
+        result.message
+    );
+    assert!(
+        result.message.contains("exact process ownership"),
+        "smoke result did not describe exact-child cleanup: {}",
         result.message
     );
 }
@@ -328,13 +338,11 @@ async fn cli_doctor_smoke_honors_global_ipc_timeout() -> CliTestResult {
 /// This exercises the full live-mode branch end-to-end: a real daemon
 /// process is spawned in `read_server` mode (via `.engram/config.toml`'s
 /// persisted `mode` setting), `run_smoke_test` is run against it, and then a
-/// direct follow-up IPC call proves the daemon is still alive -- which would
-/// fail if `run_smoke_test` had sent `_shutdown` (the `managed`-mode
-/// behavior). A regression that silently re-selected the `managed` smoke
-/// sequence for a `read_server` daemon (e.g. by reverting to on-disk config
-/// instead of the daemon's own observed live mode) would either corrupt the
-/// live daemon's active workspace via an unwanted `set_workspace`, or shut
-/// the daemon down -- either of which this test would catch.
+/// direct follow-up IPC call proves the daemon is still alive. A regression
+/// that silently changed the read-server probe sequence (for example, by
+/// reverting to on-disk config instead of the daemon's observed live mode)
+/// would corrupt the workspace or shut down the daemon, either of which this
+/// test would catch.
 #[tokio::test]
 async fn doctor_smoke_leaves_read_server_daemon_running_without_binding_workspace() -> CliTestResult
 {
@@ -365,9 +373,8 @@ async fn doctor_smoke_leaves_read_server_daemon_running_without_binding_workspac
         result.message
     );
 
-    // Prove the daemon was left running (not shut down) by sending a direct
-    // follow-up get_daemon_status call. A `managed`-mode-style `_shutdown`
-    // call during the smoke run would make this connection fail.
+    // Prove the daemon was left running by sending a direct follow-up
+    // get_daemon_status call. An unwanted `_shutdown` would make it fail.
     let follow_up = IpcRequest {
         jsonrpc: "2.0".to_owned(),
         id: Some(Value::Number(serde_json::Number::from(99))),
