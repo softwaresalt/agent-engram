@@ -176,13 +176,34 @@ async fn doctor_health_report_stays_on_the_old_snapshot_after_publication() {
 }
 
 #[test]
-fn read_server_smoke_workflow_is_non_destructive() {
-    let methods = doctor::smoke_request_methods_for_mode(DaemonMode::ReadServer);
-    assert_eq!(methods, vec!["get_daemon_status", "get_workspace_status"]);
+fn doctor_smoke_workflows_are_probe_only() {
+    let managed_methods = doctor::smoke_request_methods_for_mode(DaemonMode::Managed);
+    assert_eq!(managed_methods, vec!["get_daemon_status"]);
     assert!(
-        !methods
+        !managed_methods
+            .iter()
+            .any(|method| *method == "set_workspace" || *method == "_shutdown"),
+        "managed smoke workflow must not bind or shut down the daemon"
+    );
+    assert!(
+        doctor::smoke_request_methods_after_status(DaemonMode::Managed).is_empty(),
+        "an invocation-started Managed daemon must be left detached after readiness"
+    );
+
+    let read_server_methods = doctor::smoke_request_methods_for_mode(DaemonMode::ReadServer);
+    assert_eq!(
+        read_server_methods,
+        vec!["get_daemon_status", "get_workspace_status"]
+    );
+    assert!(
+        !read_server_methods
             .iter()
             .any(|method| *method == "set_workspace" || *method == "_shutdown"),
         "read-server smoke workflow must not bind, repair, sync, or shut down the daemon"
+    );
+    assert_eq!(
+        doctor::smoke_request_methods_after_status(DaemonMode::ReadServer),
+        vec!["get_workspace_status"],
+        "ReadServer must still receive workspace-status readiness validation"
     );
 }

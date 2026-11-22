@@ -1,25 +1,42 @@
-//! Integration test for the `doctor --smoke` full-handshake round-trip.
+//! Integration tests for the `doctor --smoke` probe-only readiness workflow.
 //!
 //! Exercises [`engram::tools::doctor::run_smoke_test`] end-to-end.
 //! A regression here means the daemon IPC handshake or smoke-test logic broke.
 
+#![forbid(unsafe_code)]
+
+use std::collections::BTreeMap;
+use std::error::Error;
 use std::fs;
-use std::time::Duration;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant, SystemTime};
 
 use engram::daemon::ipc_server::ipc_endpoint;
 use engram::daemon::protocol::IpcRequest;
-use engram::shim::ipc_client::send_request;
-use engram::tools::doctor::run_smoke_test;
+use engram::errors::{EngramError, IpcError};
+use engram::shim::pidfile::PidFile;
+use engram::shim::version::ENGRAM_PROTOCOL_VERSION;
+use engram::shim::{ipc_client::send_request, lifecycle::check_health};
+use engram::tools::doctor::{run_smoke_test, run_smoke_test_with_timeout};
 use serde_json::Value;
+use sysinfo::{Pid, System};
 
-/// A full shim→daemon handshake smoke test must pass cleanly for a valid
+#[path = "../helpers/fake_health_responder.rs"]
+#[allow(dead_code)]
+mod fake_health_responder;
+
+use fake_health_responder::{FakeHealthResponder, HealthScript};
+
+/// A probe-only daemon smoke test must pass cleanly for a valid
 /// git-backed workspace.
 ///
-/// Daemon spawns, handshake succeeds, result.passed == true.
+/// Daemon spawns, readiness probes succeed, result.passed == true.
 #[tokio::test]
-async fn doctor_smoke_exercises_full_handshake() {
-    let workspace = tempfile::tempdir().expect("workspace tempdir");
-    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+async fn doctor_smoke_exercises_full_handshake() -> CliTestResult {
+    let workspace = tempfile::tempdir()?;
+    fs::create_dir(workspace.path().join(".git"))?;
 
     let result = run_smoke_test(workspace.path())
         .await
@@ -30,15 +47,37 @@ async fn doctor_smoke_exercises_full_handshake() {
         "smoke test reported failure: {}",
         result.message
     );
+    assert!(
+        result.message.contains("daemon-status probe succeeded"),
+        "smoke result did not report the read-only Managed probe: {}",
+        result.message
+    );
+    assert!(
+        result
+            .message
+            .contains("left running for the normal daemon lifecycle"),
+        "smoke result did not preserve the invocation-started daemon: {}",
+        result.message
+    );
+    let pid_file = PidFile::read(workspace.path())
+        .ok_or_else(|| io::Error::other("started Managed daemon omitted PID metadata"))?;
+    assert!(
+        pid_file.verify_alive()?,
+        "doctor smoke terminated its invocation-started Managed daemon: {}",
+        pid_file.pid
+    );
+
+    shutdown_daemon(workspace.path()).await?;
+    Ok(())
 }
 
 /// Smoke result latency field is present when the test completes.
 ///
 /// Red phase: panics at `todo!()` before reaching this assertion.
 #[tokio::test]
-async fn doctor_smoke_result_includes_latency() {
-    let workspace = tempfile::tempdir().expect("workspace tempdir");
-    fs::create_dir(workspace.path().join(".git")).expect("create .git");
+async fn doctor_smoke_result_includes_latency() -> CliTestResult {
+    let workspace = tempfile::tempdir()?;
+    fs::create_dir(workspace.path().join(".git"))?;
 
     let result = run_smoke_test(workspace.path())
         .await
@@ -48,6 +87,268 @@ async fn doctor_smoke_result_includes_latency() {
         result.latency_ms.is_some(),
         "smoke result should include latency measurement"
     );
+    shutdown_daemon(workspace.path()).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn doctor_smoke_reaps_child_when_startup_readiness_times_out() -> CliTestResult {
+    let workspace = tempfile::tempdir()?;
+    fs::create_dir(workspace.path().join(".git"))?;
+    let canonical_workspace = workspace.path().canonicalize()?;
+
+    let output = engram_command()
+        .arg("--workspace")
+        .arg(&canonical_workspace)
+        .args(["--json", "doctor", "--smoke"])
+        .env("ENGRAM_READY_TIMEOUT_MS", "750")
+        .env("ENGRAM_TEST_STARTUP_DELAY_MS", "5000")
+        .output()?;
+
+    assert!(
+        !output.status.success(),
+        "doctor smoke unexpectedly passed while daemon startup was delayed"
+    );
+    let pid_file = PidFile::read(&canonical_workspace)
+        .ok_or_else(|| io::Error::other("timed-out doctor spawn omitted PID metadata"))?;
+    assert!(
+        !pid_file.verify_alive()?,
+        "doctor smoke left its exact delayed startup child alive: {}",
+        pid_file.pid
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn doctor_smoke_leaves_invocation_started_read_server_running_after_success() -> CliTestResult
+{
+    let workspace = tempfile::tempdir()?;
+    fs::create_dir(workspace.path().join(".git"))?;
+    fs::create_dir(workspace.path().join(".engram"))?;
+    fs::write(
+        workspace.path().join(".engram").join("config.toml"),
+        "mode = \"read_server\"\n",
+    )?;
+    let canonical_workspace = workspace.path().canonicalize()?;
+    let stdout_path = workspace.path().join("doctor.stdout.json");
+    let stderr_path = workspace.path().join("doctor.stderr.log");
+
+    let status = engram_command()
+        .arg("--workspace")
+        .arg(&canonical_workspace)
+        .args(["--json", "doctor", "--smoke"])
+        .env("ENGRAM_IDLE_TIMEOUT_MS", "0")
+        .stdout(fs::File::create(&stdout_path)?)
+        .stderr(fs::File::create(&stderr_path)?)
+        .status()?;
+    assert!(
+        status.success(),
+        "read-server doctor smoke failed: {}",
+        fs::read_to_string(&stderr_path)?
+    );
+    let envelope: Value = serde_json::from_slice(&fs::read(&stdout_path)?)?;
+    assert_eq!(envelope["result"]["passed"], Value::Bool(true));
+    let pid_file = PidFile::read(&canonical_workspace)
+        .ok_or_else(|| io::Error::other("started ReadServer omitted PID metadata"))?;
+    assert!(
+        pid_file.verify_alive()?,
+        "doctor smoke terminated its invocation-started ReadServer: {}",
+        pid_file.pid
+    );
+
+    terminate_started_daemon(&pid_file).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn doctor_smoke_does_not_replace_protocol_mismatched_daemon() -> CliTestResult {
+    let workspace = tempfile::tempdir()?;
+    fs::create_dir(workspace.path().join(".git"))?;
+    let canonical_workspace = workspace.path().canonicalize()?;
+    let endpoint = ipc_endpoint(&canonical_workspace)?;
+    let stale_version = ENGRAM_PROTOCOL_VERSION.saturating_add(1);
+    let fake = FakeHealthResponder::spawn(
+        &endpoint,
+        HealthScript::VersionMismatch {
+            version: stale_version,
+        },
+    );
+
+    let error = run_smoke_test(&canonical_workspace)
+        .await
+        .expect_err("doctor smoke must refuse to replace a protocol-mismatched daemon");
+
+    assert!(
+        matches!(
+            error,
+            EngramError::Ipc(IpcError::VersionMismatch { expected, actual })
+                if expected == ENGRAM_PROTOCOL_VERSION && actual == stale_version
+        ),
+        "unexpected doctor lifecycle error: {error}"
+    );
+    assert!(
+        fake.count() > 0,
+        "the pre-existing daemon should have received the diagnostic probe"
+    );
+
+    let health_request = IpcRequest {
+        jsonrpc: "2.0".to_owned(),
+        id: Some(serde_json::json!(100)),
+        method: "_health".to_owned(),
+        params: None,
+    };
+    let response = send_request(&endpoint, &health_request, Duration::from_secs(2)).await?;
+    assert!(
+        response.error.is_none(),
+        "pre-existing daemon stopped serving after doctor smoke: {:?}",
+        response.error
+    );
+    assert_eq!(
+        response
+            .result
+            .as_ref()
+            .and_then(|result| result.get("protocol_version"))
+            .and_then(Value::as_u64),
+        Some(u64::from(stale_version)),
+        "doctor smoke replaced the original protocol-mismatched daemon"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn doctor_smoke_does_not_replace_live_pid_with_unreachable_endpoint() -> CliTestResult {
+    let workspace = tempfile::tempdir()?;
+    fs::create_dir(workspace.path().join(".git"))?;
+    let canonical_workspace = workspace.path().canonicalize()?;
+    let pid_file = PidFile::current();
+    let pid_dir = PidFile::path(&canonical_workspace)
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| io::Error::other("PID path omitted its run directory"))?;
+    pid_file.atomic_write(&pid_dir)?;
+
+    let error = run_smoke_test(&canonical_workspace)
+        .await
+        .expect_err("doctor smoke must refuse to replace a live daemon with an unreachable pipe");
+
+    assert!(
+        matches!(
+            &error,
+            EngramError::Ipc(IpcError::ConnectionFailed { reason, .. })
+                if reason.contains("doctor refused to replace") && reason.contains("live daemon PID")
+        ),
+        "unexpected doctor lifecycle error: {error}"
+    );
+    assert!(
+        PidFile::read(&canonical_workspace).is_some_and(|published| published == pid_file),
+        "doctor smoke replaced or removed the pre-existing daemon PID metadata"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn doctor_smoke_waits_for_live_pid_daemon_to_become_ready() -> CliTestResult {
+    let workspace = tempfile::tempdir()?;
+    fs::create_dir(workspace.path().join(".git"))?;
+    let canonical_workspace = workspace.path().canonicalize()?;
+    let endpoint = ipc_endpoint(&canonical_workspace)?;
+    let child = engram_command()
+        .arg("daemon")
+        .arg("--workspace")
+        .arg(&canonical_workspace)
+        .env("ENGRAM_IDLE_TIMEOUT_MS", "0")
+        .env("ENGRAM_TEST_STARTUP_DELAY_MS", "500")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let _child_guard = ChildGuard(child);
+    assert_endpoint_reachable(&endpoint).await?;
+
+    let result = run_smoke_test_with_timeout(&canonical_workspace, Duration::from_secs(10)).await?;
+
+    assert!(
+        result.passed,
+        "doctor smoke did not wait for the existing live daemon: {}",
+        result.message
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn doctor_smoke_waits_for_reachable_daemon_without_pid_metadata() -> CliTestResult {
+    let workspace = tempfile::tempdir()?;
+    fs::create_dir(workspace.path().join(".git"))?;
+    let canonical_workspace = workspace.path().canonicalize()?;
+    let endpoint = ipc_endpoint(&canonical_workspace)?;
+    let child = engram_command()
+        .arg("daemon")
+        .arg("--workspace")
+        .arg(&canonical_workspace)
+        .env("ENGRAM_IDLE_TIMEOUT_MS", "0")
+        .env("ENGRAM_TEST_STARTUP_DELAY_MS", "500")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let _child_guard = ChildGuard(child);
+    assert_endpoint_reachable(&endpoint).await?;
+    let pid_path = PidFile::path(&canonical_workspace);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !pid_path.exists() {
+        if Instant::now() >= deadline {
+            return Err(io::Error::other("daemon did not publish PID metadata").into());
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    fs::remove_file(&pid_path)?;
+
+    let result = run_smoke_test_with_timeout(&canonical_workspace, Duration::from_secs(10)).await?;
+
+    assert!(
+        result.passed,
+        "doctor smoke did not wait for the reachable existing daemon: {}",
+        result.message
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn cli_doctor_smoke_honors_global_ipc_timeout() -> CliTestResult {
+    let workspace = tempfile::tempdir()?;
+    fs::create_dir(workspace.path().join(".git"))?;
+    let canonical_workspace = workspace.path().canonicalize()?;
+    let endpoint = ipc_endpoint(&canonical_workspace)?;
+    let _fake = FakeHealthResponder::spawn(&endpoint, HealthScript::ReadyThenHangNonHealth);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let started = Instant::now();
+    let output = engram_tokio_command()
+        .arg("--workspace")
+        .arg(&canonical_workspace)
+        .args(["--timeout", "1", "--json", "doctor", "--smoke"])
+        .output()
+        .await?;
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "doctor smoke ignored the configured one-second IPC timeout"
+    );
+    let envelope: Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(
+        envelope["error"]["engram_name"],
+        Value::from("IpcTimeout"),
+        "unexpected doctor smoke error: {envelope}"
+    );
+    assert_eq!(
+        envelope["error"]["engram_details"]["timeout_ms"],
+        Value::from(1_000_u64),
+        "doctor smoke did not propagate GlobalFlags::ipc_timeout: {envelope}"
+    );
+
+    Ok(())
 }
 
 /// A `read_server`-mode daemon's smoke run must parse the live status
@@ -57,15 +358,14 @@ async fn doctor_smoke_result_includes_latency() {
 /// This exercises the full live-mode branch end-to-end: a real daemon
 /// process is spawned in `read_server` mode (via `.engram/config.toml`'s
 /// persisted `mode` setting), `run_smoke_test` is run against it, and then a
-/// direct follow-up IPC call proves the daemon is still alive -- which would
-/// fail if `run_smoke_test` had sent `_shutdown` (the `managed`-mode
-/// behavior). A regression that silently re-selected the `managed` smoke
-/// sequence for a `read_server` daemon (e.g. by reverting to on-disk config
-/// instead of the daemon's own observed live mode) would either corrupt the
-/// live daemon's active workspace via an unwanted `set_workspace`, or shut
-/// the daemon down -- either of which this test would catch.
+/// direct follow-up IPC call proves the daemon is still alive. A regression
+/// that silently changed the read-server probe sequence (for example, by
+/// reverting to on-disk config instead of the daemon's observed live mode)
+/// would corrupt the workspace or shut down the daemon, either of which this
+/// test would catch.
 #[tokio::test]
-async fn doctor_smoke_leaves_read_server_daemon_running_without_binding_workspace() {
+async fn doctor_smoke_leaves_read_server_daemon_running_without_binding_workspace() -> CliTestResult
+{
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
     let engram_dir = workspace.path().join(".engram");
@@ -73,19 +373,28 @@ async fn doctor_smoke_leaves_read_server_daemon_running_without_binding_workspac
     fs::write(engram_dir.join("config.toml"), "mode = \"read_server\"\n")
         .expect("write read_server config.toml");
 
-    let result = run_smoke_test(workspace.path())
-        .await
-        .expect("read_server smoke test should succeed without errors");
+    let canonical_workspace = workspace.path().canonicalize()?;
+    let endpoint = ipc_endpoint(&canonical_workspace)?;
+    let child = engram_command()
+        .arg("daemon")
+        .arg("--workspace")
+        .arg(&canonical_workspace)
+        .env("ENGRAM_IDLE_TIMEOUT_MS", "0")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let _child_guard = ChildGuard(child);
+    assert_daemon_ready(&endpoint).await?;
+
+    let result = run_smoke_test(&canonical_workspace).await?;
     assert!(
         result.passed,
         "read_server smoke test reported failure: {}",
         result.message
     );
 
-    // Prove the daemon was left running (not shut down) by sending a direct
-    // follow-up get_daemon_status call. A `managed`-mode-style `_shutdown`
-    // call during the smoke run would make this connection fail.
-    let endpoint = ipc_endpoint(workspace.path()).expect("resolve ipc endpoint");
+    // Prove the daemon was left running by sending a direct follow-up
+    // get_daemon_status call. An unwanted `_shutdown` would make it fail.
     let follow_up = IpcRequest {
         jsonrpc: "2.0".to_owned(),
         id: Some(Value::Number(serde_json::Number::from(99))),
@@ -110,14 +419,378 @@ async fn doctor_smoke_leaves_read_server_daemon_running_without_binding_workspac
         Some("read_server"),
         "daemon must still be running in read_server mode after the smoke run"
     );
+    Ok(())
+}
 
-    // Clean up: explicitly shut down the daemon this test spawned, since a
-    // read_server smoke run intentionally never does so itself.
-    let shutdown = IpcRequest {
+/// A pre-existing managed daemon is owned by its original caller. Doctor smoke
+/// may probe it for readiness, but must not bind its workspace or shut it down.
+#[tokio::test]
+async fn doctor_smoke_leaves_preexisting_managed_daemon_untouched_and_running() -> CliTestResult {
+    let workspace = tempfile::tempdir()?;
+    fs::create_dir(workspace.path().join(".git"))?;
+    let canonical_workspace = workspace.path().canonicalize()?;
+    let endpoint = ipc_endpoint(&canonical_workspace)?;
+    let child = engram_command()
+        .arg("daemon")
+        .arg("--workspace")
+        .arg(&canonical_workspace)
+        .env("ENGRAM_IDLE_TIMEOUT_MS", "0")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let _child_guard = ChildGuard(child);
+    assert_daemon_ready(&endpoint).await?;
+
+    let result = run_smoke_test(&canonical_workspace).await?;
+    assert!(
+        result.passed,
+        "smoke test reported failure: {}",
+        result.message
+    );
+    assert!(
+        result.message.contains("reused daemon was left untouched"),
+        "smoke did not take the reused-daemon ownership path: {}",
+        result.message
+    );
+
+    let status_request = IpcRequest {
         jsonrpc: "2.0".to_owned(),
-        id: Some(Value::Number(serde_json::Number::from(100))),
+        id: Some(Value::Number(serde_json::Number::from(98))),
+        method: "get_daemon_status".to_owned(),
+        params: None,
+    };
+    let status_response = send_request(&endpoint, &status_request, Duration::from_secs(10)).await?;
+    assert!(
+        status_response.error.is_none(),
+        "pre-existing managed daemon did not survive doctor smoke: {:?}",
+        status_response.error
+    );
+
+    let workspace_request = IpcRequest {
+        jsonrpc: "2.0".to_owned(),
+        id: Some(Value::Number(serde_json::Number::from(99))),
+        method: "get_workspace_status".to_owned(),
+        params: None,
+    };
+    let workspace_response =
+        send_request(&endpoint, &workspace_request, Duration::from_secs(10)).await?;
+    assert!(
+        workspace_response.error.is_none(),
+        "pre-existing managed daemon lost its workspace: {:?}",
+        workspace_response.error
+    );
+    let reported_workspace = workspace_response
+        .result
+        .as_ref()
+        .and_then(|result| result.get("path"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| io::Error::other("workspace status omitted path"))?;
+    assert_eq!(
+        fs::canonicalize(reported_workspace)?,
+        canonical_workspace,
+        "doctor smoke changed the pre-existing managed daemon binding"
+    );
+
+    Ok(())
+}
+
+struct ChildGuard(Child);
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+type CliTestResult = Result<(), Box<dyn Error>>;
+
+fn engram_command() -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_engram"));
+    command
+        .env_remove("ENGRAM_DATA_DIR")
+        .env_remove("ENGRAM_WORKSPACE")
+        .env_remove("ENGRAM_DIRECT")
+        .stdin(Stdio::null());
+    command
+}
+
+fn engram_tokio_command() -> tokio::process::Command {
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_engram"));
+    command
+        .env_remove("ENGRAM_DATA_DIR")
+        .env_remove("ENGRAM_WORKSPACE")
+        .env_remove("ENGRAM_DIRECT")
+        .stdin(Stdio::null());
+    command
+}
+
+fn snapshot_workspace(root: &Path) -> io::Result<BTreeMap<PathBuf, (u64, SystemTime)>> {
+    fn visit(
+        root: &Path,
+        directory: &Path,
+        snapshot: &mut BTreeMap<PathBuf, (u64, SystemTime)>,
+    ) -> io::Result<()> {
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+            let path = entry.path();
+            let relative = path
+                .strip_prefix(root)
+                .map_err(io::Error::other)?
+                .to_path_buf();
+            let metadata = fs::symlink_metadata(&path)?;
+            snapshot.insert(relative, (metadata.len(), metadata.modified()?));
+            if metadata.is_dir() {
+                visit(root, &path, snapshot)?;
+            }
+        }
+        Ok(())
+    }
+
+    let mut snapshot = BTreeMap::new();
+    visit(root, root, &mut snapshot)?;
+    Ok(snapshot)
+}
+
+async fn assert_daemon_ready(endpoint: &str) -> io::Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !check_health(endpoint).await {
+        if Instant::now() >= deadline {
+            return Err(io::Error::other(
+                "daemon did not become ready within 10 seconds",
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    Ok(())
+}
+
+async fn shutdown_daemon(workspace: &Path) -> Result<(), Box<dyn Error>> {
+    let endpoint = ipc_endpoint(workspace)?;
+    let request = IpcRequest {
+        jsonrpc: "2.0".to_owned(),
+        id: Some(serde_json::json!(998)),
         method: "_shutdown".to_owned(),
         params: None,
     };
-    let _ = send_request(&endpoint, &shutdown, Duration::from_secs(10)).await;
+    let response = send_request(&endpoint, &request, Duration::from_secs(10)).await?;
+    assert!(
+        response.error.is_none(),
+        "test daemon shutdown failed: {:?}",
+        response.error
+    );
+    Ok(())
+}
+
+async fn terminate_started_daemon(pid_file: &PidFile) -> Result<(), Box<dyn Error>> {
+    let pid = Pid::from_u32(pid_file.pid);
+    let mut system = System::new();
+    assert!(
+        system.refresh_process(pid),
+        "started daemon PID {} disappeared before test cleanup",
+        pid_file.pid
+    );
+    assert!(
+        system.process(pid).is_some_and(sysinfo::Process::kill),
+        "failed to terminate started daemon PID {} during test cleanup",
+        pid_file.pid
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while pid_file.verify_alive()? {
+        if Instant::now() >= deadline {
+            return Err(io::Error::other(format!(
+                "started daemon PID {} did not exit during test cleanup",
+                pid_file.pid
+            ))
+            .into());
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    Ok(())
+}
+
+async fn assert_endpoint_reachable(endpoint: &str) -> io::Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if engram::shim::ipc_client::probe(endpoint, Duration::from_millis(100))
+            .await
+            .is_ok()
+        {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(io::Error::other(
+                "daemon endpoint did not become reachable within 10 seconds",
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// `engram doctor --smoke` must probe a live `ReadServer` without provenance or side effects.
+#[tokio::test]
+async fn cli_doctor_smoke_read_server_succeeds_without_provenance_or_side_effects() -> CliTestResult
+{
+    let workspace = tempfile::tempdir()?;
+    fs::create_dir(workspace.path().join(".git"))?;
+    fs::write(
+        workspace.path().join(".git").join("HEAD"),
+        "ref: refs/heads/main\n",
+    )?;
+    fs::create_dir(workspace.path().join(".engram"))?;
+    fs::write(
+        workspace.path().join(".engram").join("config.toml"),
+        "mode = \"read_server\"\n",
+    )?;
+    let canonical_workspace = workspace.path().canonicalize()?;
+    let endpoint = ipc_endpoint(&canonical_workspace)?;
+
+    let child = engram_command()
+        .arg("daemon")
+        .arg("--workspace")
+        .arg(&canonical_workspace)
+        .env("ENGRAM_IDLE_TIMEOUT_MS", "0")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let _child_guard = ChildGuard(child);
+
+    assert_daemon_ready(&endpoint).await?;
+    let before = snapshot_workspace(&canonical_workspace)?;
+
+    let output = engram_command()
+        .arg("--workspace")
+        .arg(&canonical_workspace)
+        .args(["--json", "doctor", "--smoke"])
+        .env("ENGRAM_IDLE_TIMEOUT_MS", "5000")
+        .env("ENGRAM_READY_TIMEOUT_MS", "10000")
+        .output()?;
+    assert!(
+        output.status.success(),
+        "doctor --smoke failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let envelope: Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(envelope["jsonrpc"], Value::String("2.0".to_owned()));
+    assert_eq!(
+        envelope["result"]["passed"],
+        Value::Bool(true),
+        "doctor --smoke did not pass: {envelope}"
+    );
+    let result = envelope
+        .get("result")
+        .ok_or_else(|| io::Error::other("doctor --smoke response omitted result"))?;
+    assert!(
+        result.get("provenance").is_none(),
+        "CLI readiness must not report generation provenance"
+    );
+
+    let after = snapshot_workspace(&canonical_workspace)?;
+    assert_eq!(
+        before, after,
+        "doctor --smoke changed the workspace recursively"
+    );
+    assert!(
+        after.keys().all(|path| !path.starts_with(".engram/cozo")),
+        "doctor --smoke created managed `.engram/cozo` state"
+    );
+
+    let request = IpcRequest {
+        jsonrpc: "2.0".to_owned(),
+        id: Some(Value::Number(serde_json::Number::from(99_u8))),
+        method: "get_daemon_status".to_owned(),
+        params: None,
+    };
+    let response = send_request(&endpoint, &request, Duration::from_secs(10)).await?;
+    assert!(
+        response.error.is_none(),
+        "follow-up get_daemon_status returned an error: {:?}",
+        response.error
+    );
+    let reported_mode = response
+        .result
+        .as_ref()
+        .and_then(|status| status.get("mode"))
+        .and_then(Value::as_str);
+    assert_eq!(reported_mode, Some("read_server"));
+
+    Ok(())
+}
+
+/// Hidden `doctor` requires `--smoke` and remains absent from public command help.
+#[test]
+fn cli_doctor_without_smoke_flag_exits_two_requiring_smoke() -> CliTestResult {
+    let output = engram_command()
+        .arg("doctor")
+        .env("ENGRAM_IDLE_TIMEOUT_MS", "2000")
+        .output()?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "unexpected stderr: {stderr}");
+    assert!(
+        stderr.contains("--smoke"),
+        "missing --smoke error was not reported: {stderr}"
+    );
+
+    let help = engram_command().arg("--help").output()?;
+    assert!(
+        help.status.success(),
+        "engram --help failed: {}",
+        String::from_utf8_lossy(&help.stderr)
+    );
+    let help = String::from_utf8(help.stdout)?;
+    let (_, after_heading) = help
+        .split_once("Commands:")
+        .ok_or_else(|| io::Error::other("engram --help omitted Commands: section"))?;
+    let commands_section = after_heading
+        .split_once("\nOptions:")
+        .map_or(after_heading, |(commands, _)| commands);
+    let command_names: Vec<&str> = commands_section
+        .lines()
+        .filter_map(|line| {
+            line.strip_prefix("  ")
+                .and_then(|command| command.split_whitespace().next())
+        })
+        .collect();
+    assert!(
+        !command_names.contains(&"doctor"),
+        "hidden doctor command leaked into --help: {help}"
+    );
+
+    Ok(())
+}
+
+/// A non-git workspace produces a structured `DaemonSpawnFailed` error, not a panic.
+#[tokio::test]
+async fn cli_doctor_smoke_non_git_workspace_returns_structured_error() -> CliTestResult {
+    let workspace = tempfile::tempdir()?;
+    let canonical_workspace = workspace.path().canonicalize()?;
+    let output = engram_command()
+        .arg("--workspace")
+        .arg(&canonical_workspace)
+        .args(["--json", "doctor", "--smoke"])
+        .env("ENGRAM_IDLE_TIMEOUT_MS", "2000")
+        .env("ENGRAM_READY_TIMEOUT_MS", "3000")
+        .output()?;
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("panicked at"),
+        "doctor --smoke panicked: {stderr}"
+    );
+    let envelope: Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(envelope["jsonrpc"], Value::String("2.0".to_owned()));
+    assert!(
+        envelope["error"].is_object(),
+        "doctor --smoke omitted a JSON-RPC error object: {envelope}"
+    );
+    assert_eq!(envelope["error"]["engram_code"], Value::from(8005_u64));
+    assert_eq!(
+        envelope["error"]["engram_name"],
+        Value::String("DaemonSpawnFailed".to_owned())
+    );
+
+    Ok(())
 }

@@ -283,6 +283,38 @@ async fn daemon_ready(endpoint: &str) -> Result<bool, EngramError> {
 
 // ── Daemon lifecycle ──────────────────────────────────────────────────────────
 
+/// Whether a lifecycle call started the ready daemon or reused an existing one.
+#[derive(Debug)]
+pub(crate) enum DaemonOwnership {
+    /// The daemon was already running before this lifecycle call.
+    Reused,
+    /// This lifecycle call spawned or respawned the ready daemon.
+    Started {
+        /// Process identity published by the exact spawned daemon.
+        pid_file: PidFile,
+    },
+}
+
+impl DaemonOwnership {
+    pub(crate) fn detach_ready(self) {
+        if let Self::Started { pid_file } = self {
+            debug!(
+                pid = pid_file.pid,
+                "detaching ready daemon child into the normal lifecycle"
+            );
+        }
+    }
+}
+
+/// Controls whether lifecycle validation may replace an existing daemon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExistingDaemonPolicy {
+    /// Preserve the normal shim behavior of respawning incompatible daemons.
+    Respawn,
+    /// Refuse to replace an existing daemon after a failed health contract.
+    Preserve,
+}
+
 /// Ensure the daemon is running for `workspace`.
 ///
 /// Steps:
@@ -299,10 +331,40 @@ async fn daemon_ready(endpoint: &str) -> Result<bool, EngramError> {
 /// - The daemon does not become healthy within the configured timeout ms.
 #[instrument(fields(workspace = %workspace.display()))]
 pub async fn ensure_daemon_running(workspace: &Path) -> Result<(), EngramError> {
+    ensure_daemon_running_with_ownership(workspace)
+        .await
+        .map(|_| ())
+}
+
+/// Ensure the daemon is running and report whether this invocation owns it.
+#[doc(hidden)]
+pub(crate) async fn ensure_daemon_running_with_ownership(
+    workspace: &Path,
+) -> Result<DaemonOwnership, EngramError> {
     let canonical = normalize_canonical(canonicalize_workspace(&workspace.to_string_lossy())?);
     let endpoint = ipc_endpoint(&canonical)?;
 
-    ensure_daemon_running_inner(&canonical, endpoint, MAX_RESPAWN_ATTEMPTS).await
+    ensure_daemon_running_inner(
+        &canonical,
+        endpoint,
+        MAX_RESPAWN_ATTEMPTS,
+        ExistingDaemonPolicy::Respawn,
+    )
+    .await
+}
+
+/// Ensure the daemon is running without replacing an existing published daemon.
+///
+/// Doctor smoke may start a daemon only when no live or reachable daemon is
+/// already published for the workspace. A failed health contract on an
+/// existing daemon is returned to the caller without sending shutdown.
+pub(crate) async fn ensure_daemon_running_for_doctor(
+    workspace: &Path,
+) -> Result<DaemonOwnership, EngramError> {
+    let canonical = normalize_canonical(canonicalize_workspace(&workspace.to_string_lossy())?);
+    let endpoint = ipc_endpoint(&canonical)?;
+
+    ensure_daemon_running_inner(&canonical, endpoint, 0, ExistingDaemonPolicy::Preserve).await
 }
 
 /// Ensure the daemon is running for `workspace`, starting from a specific
@@ -320,21 +382,32 @@ pub async fn ensure_daemon_running_with_endpoint(
     endpoint: String,
 ) -> Result<(), EngramError> {
     let canonical = normalize_canonical(canonicalize_workspace(&workspace.to_string_lossy())?);
-    ensure_daemon_running_inner(&canonical, endpoint, MAX_RESPAWN_ATTEMPTS).await
+    ensure_daemon_running_inner(
+        &canonical,
+        endpoint,
+        MAX_RESPAWN_ATTEMPTS,
+        ExistingDaemonPolicy::Respawn,
+    )
+    .await
+    .map(|_| ())
 }
 
 async fn ensure_daemon_running_inner(
     workspace: &Path,
     endpoint: String,
     respawns_remaining: u8,
-) -> Result<(), EngramError> {
+    existing_policy: ExistingDaemonPolicy,
+) -> Result<DaemonOwnership, EngramError> {
     match daemon_ready(&endpoint).await {
         Ok(true) => {
             info!("daemon already running and healthy");
-            return Ok(());
+            return Ok(DaemonOwnership::Reused);
         }
         Ok(false) => {}
         Err(e @ EngramError::Ipc(IpcError::VersionMismatch { .. })) => {
+            if existing_policy == ExistingDaemonPolicy::Preserve {
+                return Err(e);
+            }
             if respawns_remaining == 0 {
                 return Err(e);
             }
@@ -345,13 +418,7 @@ async fn ensure_daemon_running_inner(
                 error = %e,
                 "version mismatch detected — respawning daemon"
             );
-            let next_endpoint = respawn_daemon(workspace, &endpoint, pid_hint).await?;
-            return Box::pin(ensure_daemon_running_inner(
-                workspace,
-                next_endpoint,
-                respawns_remaining - 1,
-            ))
-            .await;
+            return respawn_daemon(workspace, &endpoint, pid_hint).await;
         }
         Err(e) => {
             if respawns_remaining > 0 {
@@ -361,14 +428,7 @@ async fn ensure_daemon_running_inner(
                         error = %e,
                         "health probe failed against live daemon — respawning"
                     );
-                    let next_endpoint =
-                        respawn_daemon(workspace, &endpoint, Some(pid_hint)).await?;
-                    return Box::pin(ensure_daemon_running_inner(
-                        workspace,
-                        next_endpoint,
-                        respawns_remaining - 1,
-                    ))
-                    .await;
+                    return respawn_daemon(workspace, &endpoint, Some(pid_hint)).await;
                 }
             }
 
@@ -385,11 +445,27 @@ async fn ensure_daemon_running_inner(
             .await
             {
                 Ok(()) => {
+                    if existing_policy == ExistingDaemonPolicy::Preserve {
+                        info!(
+                            pid = pid_file.pid,
+                            "waiting for reachable existing daemon to become ready"
+                        );
+                        return poll_until_ready(workspace, &endpoint, None).await;
+                    }
                     info!(
                         pid = pid_file.pid,
                         "reusing reachable daemon from PID metadata"
                     );
                     return poll_until_ready(workspace, &endpoint, None).await;
+                }
+                Err(e) if existing_policy == ExistingDaemonPolicy::Preserve => {
+                    return Err(existing_daemon_unavailable(
+                        &endpoint,
+                        &format!(
+                            "live daemon PID {} has an unreachable IPC endpoint: {e}",
+                            pid_file.pid
+                        ),
+                    ));
                 }
                 Err(e) if respawns_remaining > 0 => {
                     info!(
@@ -397,14 +473,7 @@ async fn ensure_daemon_running_inner(
                         error = %e,
                         "live daemon PID has unreachable pipe — respawning"
                     );
-                    let next_endpoint =
-                        respawn_daemon(workspace, &endpoint, Some(pid_file)).await?;
-                    return Box::pin(ensure_daemon_running_inner(
-                        workspace,
-                        next_endpoint,
-                        respawns_remaining - 1,
-                    ))
-                    .await;
+                    return respawn_daemon(workspace, &endpoint, Some(pid_file)).await;
                 }
                 Err(e) => {
                     debug!(
@@ -417,9 +486,24 @@ async fn ensure_daemon_running_inner(
         }
     }
 
-    let mut child = spawn_daemon(workspace)?;
-    let endpoint = ipc_endpoint(workspace)?;
-    poll_until_ready(workspace, &endpoint, Some(&mut child)).await
+    if existing_policy == ExistingDaemonPolicy::Preserve
+        && crate::shim::ipc_client::probe(&endpoint, Duration::from_millis(PIPE_PROBE_TIMEOUT_MS))
+            .await
+            .is_ok()
+    {
+        info!("waiting for reachable existing daemon endpoint to become ready");
+        return poll_until_ready(workspace, &endpoint, None).await;
+    }
+
+    let child = spawn_daemon(workspace)?;
+    poll_spawned_daemon(workspace, child).await
+}
+
+fn existing_daemon_unavailable(endpoint: &str, reason: &str) -> EngramError {
+    EngramError::Ipc(IpcError::ConnectionFailed {
+        address: endpoint.to_owned(),
+        reason: format!("doctor refused to replace an existing daemon: {reason}"),
+    })
 }
 
 /// Build a daemon-spawn error for the debug-only capture seam.
@@ -564,17 +648,72 @@ fn spawn_daemon(workspace: &Path) -> Result<tokio::process::Child, EngramError> 
     })
 }
 
+#[cfg(any(debug_assertions, test))]
+const TEST_ENDPOINT_RECOMPUTE_FAILURE_ENV: &str = "ENGRAM_TEST_FAIL_ENDPOINT_RECOMPUTE_AFTER_SPAWN";
+
+struct SpawnedDaemonChild {
+    child: tokio::process::Child,
+    armed: bool,
+}
+
+impl SpawnedDaemonChild {
+    fn new(child: tokio::process::Child) -> Self {
+        Self { child, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for SpawnedDaemonChild {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = self.child.start_kill();
+        }
+    }
+}
+
+fn recompute_spawned_endpoint(workspace: &Path) -> Result<String, EngramError> {
+    #[cfg(any(debug_assertions, test))]
+    if std::env::var_os(TEST_ENDPOINT_RECOMPUTE_FAILURE_ENV).is_some() {
+        return Err(EngramError::Ipc(IpcError::ConnectionFailed {
+            address: workspace.display().to_string(),
+            reason: "forced endpoint recomputation failure".to_owned(),
+        }));
+    }
+
+    ipc_endpoint(workspace)
+}
+
+async fn poll_spawned_daemon(
+    workspace: &Path,
+    child: tokio::process::Child,
+) -> Result<DaemonOwnership, EngramError> {
+    let mut guard = SpawnedDaemonChild::new(child);
+    let endpoint = match recompute_spawned_endpoint(workspace) {
+        Ok(endpoint) => endpoint,
+        Err(error) => {
+            if let Err(cleanup_error) = cleanup_spawned_child(&mut guard.child).await {
+                return Err(combine_cleanup_error(error, cleanup_error));
+            }
+            guard.disarm();
+            return Err(error);
+        }
+    };
+
+    poll_until_ready(workspace, &endpoint, Some(guard)).await
+}
+
 async fn respawn_daemon(
     workspace: &Path,
     endpoint: &str,
     pid_hint: Option<PidFile>,
-) -> Result<String, EngramError> {
+) -> Result<DaemonOwnership, EngramError> {
     request_shutdown(endpoint).await;
     wait_for_daemon_exit(endpoint, pid_hint).await?;
-    let mut child = spawn_daemon(workspace)?;
-    let endpoint = ipc_endpoint(workspace)?;
-    poll_until_ready(workspace, &endpoint, Some(&mut child)).await?;
-    Ok(endpoint)
+    let child = spawn_daemon(workspace)?;
+    poll_spawned_daemon(workspace, child).await
 }
 
 fn daemon_executable() -> Result<std::path::PathBuf, EngramError> {
@@ -747,8 +886,118 @@ async fn resolve_spawned_child_exit(
 async fn poll_until_ready(
     workspace: &Path,
     endpoint: &str,
+    mut spawned_child: Option<SpawnedDaemonChild>,
+) -> Result<DaemonOwnership, EngramError> {
+    let child_ref = spawned_child.as_mut().map(|guard| &mut guard.child);
+    let outcome = poll_until_ready_inner(workspace, endpoint, child_ref).await;
+
+    match outcome {
+        Ok(PollOutcome::Started(pid_file)) => {
+            let mut child = spawned_child.ok_or_else(|| {
+                EngramError::Daemon(DaemonError::SpawnFailed {
+                    reason: "ready ownership omitted the spawned child handle".to_owned(),
+                })
+            })?;
+            child.disarm();
+            Ok(DaemonOwnership::Started { pid_file })
+        }
+        Ok(PollOutcome::Reused) => {
+            if let Some(guard) = spawned_child.as_mut() {
+                cleanup_spawned_child(&mut guard.child).await?;
+                guard.disarm();
+            }
+            Ok(DaemonOwnership::Reused)
+        }
+        Err(error) => {
+            if let Some(guard) = spawned_child.as_mut() {
+                if let Err(cleanup_error) = cleanup_spawned_child(&mut guard.child).await {
+                    return Err(combine_cleanup_error(error, cleanup_error));
+                }
+                guard.disarm();
+            }
+            Err(error)
+        }
+    }
+}
+
+fn cleanup_error(pid: Option<u32>, reason: impl Into<String>) -> EngramError {
+    EngramError::Daemon(DaemonError::CleanupFailed {
+        pid,
+        reason: reason.into(),
+    })
+}
+
+pub(crate) fn combine_cleanup_error(
+    original_error: EngramError,
+    cleanup_failure: EngramError,
+) -> EngramError {
+    let pid = match &cleanup_failure {
+        EngramError::Daemon(DaemonError::CleanupFailed { pid, .. }) => *pid,
+        _ => None,
+    };
+    cleanup_error_with_original(original_error, cleanup_failure, pid)
+}
+
+fn cleanup_error_with_original(
+    original_error: EngramError,
+    cleanup_failure: EngramError,
+    pid: Option<u32>,
+) -> EngramError {
+    cleanup_error(
+        pid,
+        format!("original failure: {original_error}; cleanup failure: {cleanup_failure}"),
+    )
+}
+
+async fn cleanup_spawned_child(child: &mut tokio::process::Child) -> Result<(), EngramError> {
+    let pid = child.id();
+    match child.try_wait() {
+        Ok(Some(_)) => return Ok(()),
+        Ok(None) => {}
+        Err(error) => {
+            return Err(cleanup_error(
+                pid,
+                format!("failed to inspect exact child before kill: {error}"),
+            ));
+        }
+    }
+
+    if let Err(error) = child.start_kill() {
+        return Err(cleanup_error(
+            pid,
+            format!("failed to kill exact child: {error}"),
+        ));
+    }
+
+    match tokio::time::timeout(
+        Duration::from_millis(SHUTDOWN_WAIT_TIMEOUT_MS),
+        child.wait(),
+    )
+    .await
+    {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(error)) => Err(cleanup_error(
+            pid,
+            format!("failed to reap exact child: {error}"),
+        )),
+        Err(_) => Err(cleanup_error(
+            pid,
+            format!("timed out reaping exact child after {SHUTDOWN_WAIT_TIMEOUT_MS}ms"),
+        )),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PollOutcome {
+    Reused,
+    Started(PidFile),
+}
+
+async fn poll_until_ready_inner(
+    workspace: &Path,
+    endpoint: &str,
     mut spawned_child: Option<&mut tokio::process::Child>,
-) -> Result<(), EngramError> {
+) -> Result<PollOutcome, EngramError> {
     let timeout_ms = ready_timeout_ms();
     let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
     let mut delay_ms = INITIAL_BACKOFF_MS;
@@ -761,7 +1010,25 @@ async fn poll_until_ready(
 
         if daemon_ready(endpoint).await? {
             info!(attempt, "daemon reached ready state");
-            return Ok(());
+            let Some(child) = spawned_child.as_deref_mut() else {
+                return Ok(PollOutcome::Reused);
+            };
+            let spawned_pid = child.id();
+            let exit_status = child.try_wait().map_err(|error| {
+                EngramError::Daemon(DaemonError::SpawnFailed {
+                    reason: format!("failed to inspect spawned daemon status: {error}"),
+                })
+            })?;
+            if let Some(status) = exit_status {
+                resolve_spawned_child_exit(workspace, endpoint, spawned_pid, status).await?;
+                return Ok(PollOutcome::Reused);
+            }
+            return match live_daemon_pid(workspace)? {
+                Some(pid_file) if Some(pid_file.pid) == spawned_pid => {
+                    Ok(PollOutcome::Started(pid_file))
+                }
+                _ => Ok(PollOutcome::Reused),
+            };
         }
 
         if let Some(child) = spawned_child.as_deref_mut() {
@@ -782,7 +1049,7 @@ async fn poll_until_ready(
                             %status,
                             "spawned daemon exited after a concurrent daemon became ready"
                         );
-                        return Ok(());
+                        return Ok(PollOutcome::Reused);
                     }
                     ConcurrentWinner::PidPublished => {
                         info!(
@@ -804,7 +1071,26 @@ async fn poll_until_ready(
     // Final check: a concurrent shim may have raced and won the spawn.
     if daemon_ready(endpoint).await? {
         info!("daemon ready (concurrent shim won the spawn race)");
-        return Ok(());
+        if let Some(child) = spawned_child {
+            let still_running = child
+                .try_wait()
+                .map_err(|error| {
+                    EngramError::Daemon(DaemonError::SpawnFailed {
+                        reason: format!("failed to inspect spawned daemon status: {error}"),
+                    })
+                })?
+                .is_none();
+            if still_running {
+                let spawned_pid = child.id();
+                return match live_daemon_pid(workspace)? {
+                    Some(pid_file) if Some(pid_file.pid) == spawned_pid => {
+                        Ok(PollOutcome::Started(pid_file))
+                    }
+                    _ => Ok(PollOutcome::Reused),
+                };
+            }
+        }
+        return Ok(PollOutcome::Reused);
     }
 
     Err(EngramError::Daemon(DaemonError::NotReady { timeout_ms }))
@@ -816,12 +1102,221 @@ async fn poll_until_ready(
 mod tests {
     use super::*;
     use std::io::Write as _;
+    use sysinfo::{Pid, System};
+
+    const CLEANUP_CHILD_FIXTURE_ENV: &str = "ENGRAM_LIFECYCLE_CLEANUP_CHILD_FIXTURE";
+    const DETACHED_CHILD_FIXTURE_ENV: &str = "ENGRAM_LIFECYCLE_DETACHED_CHILD_FIXTURE";
+    const GUARDED_CHILD_FIXTURE_ENV: &str = "ENGRAM_LIFECYCLE_GUARDED_CHILD_FIXTURE";
+    const ENDPOINT_FAILURE_FIXTURE_ENV: &str = "ENGRAM_LIFECYCLE_ENDPOINT_FAILURE_CHILD_FIXTURE";
 
     fn create_capture_workspace() -> tempfile::TempDir {
         let workspace = tempfile::tempdir().expect("workspace tempdir");
         std::fs::create_dir(workspace.path().join(".git")).expect("create git metadata");
         std::fs::create_dir(workspace.path().join(".engram")).expect("create .engram");
         workspace
+    }
+
+    #[tokio::test]
+    async fn daemon_ownership_does_not_kill_spawned_child_on_drop() {
+        if std::env::var_os(DETACHED_CHILD_FIXTURE_ENV).is_some() {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            return;
+        }
+
+        let mut command =
+            tokio::process::Command::new(std::env::current_exe().expect("test executable path"));
+        command
+            .args([
+                "--exact",
+                "shim::lifecycle::tests::daemon_ownership_does_not_kill_spawned_child_on_drop",
+                "--nocapture",
+            ])
+            .env(DETACHED_CHILD_FIXTURE_ENV, "1")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        let child = command.spawn().expect("spawn ownership fixture child");
+        let pid = child.id().expect("fixture PID");
+        let mut guard = SpawnedDaemonChild::new(child);
+        guard.disarm();
+        let ownership = DaemonOwnership::Started {
+            pid_file: PidFile {
+                pid,
+                start_time_unix: 1,
+            },
+        };
+        ownership.detach_ready();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let mut system = System::new();
+        assert!(
+            system.refresh_process(Pid::from_u32(pid)),
+            "detached daemon ownership killed PID {pid} on drop"
+        );
+        let killed = system
+            .process(Pid::from_u32(pid))
+            .is_some_and(sysinfo::Process::kill);
+        assert!(killed, "failed to clean up fixture PID {pid}");
+    }
+
+    #[tokio::test]
+    async fn startup_failure_cleanup_reaps_exact_spawned_child() {
+        if std::env::var_os(CLEANUP_CHILD_FIXTURE_ENV).is_some() {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            return;
+        }
+
+        let current_exe = std::env::current_exe().expect("test executable path");
+        let mut child = tokio::process::Command::new(current_exe)
+            .args([
+                "--exact",
+                "shim::lifecycle::tests::startup_failure_cleanup_reaps_exact_spawned_child",
+                "--nocapture",
+            ])
+            .env(CLEANUP_CHILD_FIXTURE_ENV, "1")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn cleanup fixture child");
+        let pid = child.id().expect("cleanup fixture child PID");
+
+        cleanup_spawned_child(&mut child)
+            .await
+            .expect("owned child cleanup should succeed");
+
+        assert!(
+            child.try_wait().expect("inspect cleanup fixture").is_some(),
+            "cleanup killed but did not reap owned child {pid}"
+        );
+    }
+
+    #[tokio::test]
+    async fn spawned_child_guard_cancel_kills_exact_child() {
+        if std::env::var_os(GUARDED_CHILD_FIXTURE_ENV).is_some() {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            return;
+        }
+
+        let current_exe = std::env::current_exe().expect("test executable path");
+        let mut command = tokio::process::Command::new(current_exe);
+        command
+            .args([
+                "--exact",
+                "shim::lifecycle::tests::spawned_child_guard_cancel_kills_exact_child",
+                "--nocapture",
+            ])
+            .env(GUARDED_CHILD_FIXTURE_ENV, "1")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        let child = command.spawn().expect("spawn guarded fixture child");
+        let pid = child.id().expect("guarded fixture child PID");
+
+        let task = tokio::spawn(async move {
+            let _guard = SpawnedDaemonChild::new(child);
+            std::future::pending::<()>().await;
+        });
+        tokio::task::yield_now().await;
+        task.abort();
+        assert!(
+            task.await
+                .expect_err("guard task should be cancelled")
+                .is_cancelled(),
+            "guard task did not observe cancellation"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let mut system = System::new();
+        assert!(
+            !system.refresh_process(Pid::from_u32(pid)),
+            "dropping the armed guard left PID {pid} alive"
+        );
+    }
+
+    #[tokio::test]
+    async fn endpoint_recomputation_failure_reaps_exact_spawned_child() {
+        if std::env::var_os(ENDPOINT_FAILURE_FIXTURE_ENV).as_deref()
+            == Some(std::ffi::OsStr::new("fixture"))
+        {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            return;
+        }
+        if std::env::var_os(ENDPOINT_FAILURE_FIXTURE_ENV).as_deref()
+            == Some(std::ffi::OsStr::new("assert"))
+        {
+            let workspace = create_capture_workspace();
+            let current_exe = std::env::current_exe().expect("test executable path");
+            let mut command = tokio::process::Command::new(current_exe);
+            command
+                .args([
+                    "--exact",
+                    "shim::lifecycle::tests::endpoint_recomputation_failure_reaps_exact_spawned_child",
+                    "--nocapture",
+                ])
+                .env(ENDPOINT_FAILURE_FIXTURE_ENV, "fixture")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            let child = command
+                .spawn()
+                .expect("spawn endpoint failure fixture child");
+            let pid = child.id().expect("endpoint failure fixture child PID");
+
+            let result = poll_spawned_daemon(workspace.path(), child).await;
+            let error = result.expect_err("forced endpoint recomputation must fail");
+            assert!(
+                error
+                    .to_string()
+                    .contains("forced endpoint recomputation failure"),
+                "unexpected endpoint recomputation error: {error}"
+            );
+
+            let mut system = System::new();
+            let gone_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+            loop {
+                if !system.refresh_process(Pid::from_u32(pid)) {
+                    break;
+                }
+                assert!(
+                    tokio::time::Instant::now() < gone_deadline,
+                    "endpoint failure left PID {pid} alive"
+                );
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            return;
+        }
+
+        let status = std::process::Command::new(std::env::current_exe().expect("test path"))
+            .args([
+                "--exact",
+                "shim::lifecycle::tests::endpoint_recomputation_failure_reaps_exact_spawned_child",
+                "--nocapture",
+            ])
+            .env(ENDPOINT_FAILURE_FIXTURE_ENV, "assert")
+            .env(TEST_ENDPOINT_RECOMPUTE_FAILURE_ENV, "1")
+            .status()
+            .expect("run endpoint failure assertion subprocess");
+        assert!(
+            status.success(),
+            "endpoint failure assertion failed: {status}"
+        );
+    }
+
+    #[test]
+    fn cleanup_failure_combines_original_startup_error() {
+        let original = EngramError::Daemon(DaemonError::NotReady { timeout_ms: 750 });
+        let cleanup = cleanup_error(Some(42), "timed out reaping exact child after 5000ms");
+
+        let combined = combine_cleanup_error(original, cleanup);
+
+        let EngramError::Daemon(DaemonError::CleanupFailed { pid, reason }) = combined else {
+            panic!("combined cleanup failure must retain a structured daemon error");
+        };
+        assert_eq!(pid, Some(42));
+        assert!(reason.contains("original failure"));
+        assert!(reason.contains("Daemon failed to reach Ready state"));
+        assert!(reason.contains("timed out reaping exact child"));
     }
 
     /// Default timeout is 30 000 ms when no env var value is provided.
