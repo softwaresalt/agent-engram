@@ -493,7 +493,7 @@ async fn ensure_daemon_running_inner(
         return poll_until_ready(workspace, &endpoint, None).await;
     }
 
-    let child = spawn_daemon(workspace)?;
+    let child = spawn_daemon(workspace, existing_policy)?;
     let endpoint = ipc_endpoint(workspace)?;
     poll_until_ready(workspace, &endpoint, Some(child)).await
 }
@@ -595,7 +595,10 @@ fn open_test_autospawn_trace_files(
 }
 
 /// Spawn the daemon as a detached child process for the given workspace.
-fn spawn_daemon(workspace: &Path) -> Result<tokio::process::Child, EngramError> {
+fn spawn_daemon(
+    workspace: &Path,
+    existing_policy: ExistingDaemonPolicy,
+) -> Result<tokio::process::Child, EngramError> {
     let workspace_str = workspace.to_str().ok_or_else(|| {
         EngramError::Daemon(DaemonError::SpawnFailed {
             reason: "workspace path contains non-UTF-8 characters".to_owned(),
@@ -624,6 +627,7 @@ fn spawn_daemon(workspace: &Path) -> Result<tokio::process::Child, EngramError> 
         .args(["daemon", "--workspace", workspace_str])
         .stdin(std::process::Stdio::null())
         .env_remove("ENGRAM_DATA_DIR");
+    configure_spawned_child_cleanup(&mut command, existing_policy);
 
     #[cfg(debug_assertions)]
     if std::env::var_os("ENGRAM_TEST_CAPTURE_AUTOSPAWN_TRACE").is_some_and(|value| value == "1") {
@@ -647,6 +651,16 @@ fn spawn_daemon(workspace: &Path) -> Result<tokio::process::Child, EngramError> 
     })
 }
 
+fn configure_spawned_child_cleanup(
+    command: &mut tokio::process::Command,
+    existing_policy: ExistingDaemonPolicy,
+) {
+    // Tokio configures kill-on-drop on the command before the child exists.
+    if existing_policy == ExistingDaemonPolicy::Preserve {
+        command.kill_on_drop(true);
+    }
+}
+
 async fn respawn_daemon(
     workspace: &Path,
     endpoint: &str,
@@ -654,7 +668,7 @@ async fn respawn_daemon(
 ) -> Result<DaemonOwnership, EngramError> {
     request_shutdown(endpoint).await;
     wait_for_daemon_exit(endpoint, pid_hint).await?;
-    let child = spawn_daemon(workspace)?;
+    let child = spawn_daemon(workspace, ExistingDaemonPolicy::Respawn)?;
     let endpoint = ipc_endpoint(workspace)?;
     poll_until_ready(workspace, &endpoint, Some(child)).await
 }
@@ -1076,14 +1090,88 @@ async fn poll_until_ready_inner(
 mod tests {
     use super::*;
     use std::io::Write as _;
+    use sysinfo::{Pid, System};
 
     const CLEANUP_CHILD_FIXTURE_ENV: &str = "ENGRAM_LIFECYCLE_CLEANUP_CHILD_FIXTURE";
+    const KILL_ON_DROP_CHILD_FIXTURE_ENV: &str = "ENGRAM_LIFECYCLE_KILL_ON_DROP_CHILD_FIXTURE";
 
     fn create_capture_workspace() -> tempfile::TempDir {
         let workspace = tempfile::tempdir().expect("workspace tempdir");
         std::fs::create_dir(workspace.path().join(".git")).expect("create git metadata");
         std::fs::create_dir(workspace.path().join(".engram")).expect("create .engram");
         workspace
+    }
+
+    #[tokio::test]
+    async fn daemon_ownership_kill_on_drop_is_opt_in() {
+        if std::env::var_os(KILL_ON_DROP_CHILD_FIXTURE_ENV).is_some() {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            return;
+        }
+
+        let spawn_fixture = |existing_policy| {
+            let mut command = tokio::process::Command::new(
+                std::env::current_exe().expect("test executable path"),
+            );
+            command
+                .args([
+                    "--exact",
+                    "shim::lifecycle::tests::daemon_ownership_kill_on_drop_is_opt_in",
+                    "--nocapture",
+                ])
+                .env(KILL_ON_DROP_CHILD_FIXTURE_ENV, "1")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            configure_spawned_child_cleanup(&mut command, existing_policy);
+            command.spawn().expect("spawn ownership fixture child")
+        };
+
+        let armed_child = spawn_fixture(ExistingDaemonPolicy::Preserve);
+        let armed_pid = armed_child.id().expect("armed fixture PID");
+        let armed = DaemonOwnership::Started {
+            child: Box::new(armed_child),
+            pid_file: PidFile {
+                pid: armed_pid,
+                start_time_unix: 1,
+            },
+        };
+        drop(armed);
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let mut system = System::new();
+            if !system.refresh_process(Pid::from_u32(armed_pid)) {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "dropping doctor-owned child did not terminate PID {armed_pid}"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+
+        let normal_child = spawn_fixture(ExistingDaemonPolicy::Respawn);
+        let normal_pid = normal_child.id().expect("normal fixture PID");
+        let normal = DaemonOwnership::Started {
+            child: Box::new(normal_child),
+            pid_file: PidFile {
+                pid: normal_pid,
+                start_time_unix: 1,
+            },
+        };
+        drop(normal);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let mut system = System::new();
+        assert!(
+            system.refresh_process(Pid::from_u32(normal_pid)),
+            "normal daemon ownership killed PID {normal_pid} on drop"
+        );
+        let killed = system
+            .process(Pid::from_u32(normal_pid))
+            .is_some_and(sysinfo::Process::kill);
+        assert!(killed, "failed to clean up normal fixture PID {normal_pid}");
     }
 
     #[tokio::test]
