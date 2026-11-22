@@ -12,9 +12,22 @@ verification_status: PASS_WITH_FOLLOW_UP
 closure_status: READY_WITH_CONDITIONS
 compaction_status: pending
 owner: softwaresalt
-last_code_affecting_head: "cb47e7865f48c96a38d5fb44d58e18cfa45de1aa"
+last_code_affecting_head: "ffa93278e5cc23a8e89291e74e39b25fe9573d8d"
 follow_up_stash:
+  - "A8C1F6D5"
+  - "A8ECECB2"
+  - "B7886A16"
+  - "7FB49791"
+  - "663DFB04"
+  - "7998F677"
+  - "FB9F34F2"
+  - "22F070FD"
+  - "E39E7B68"
   - "773841E3"
+  - "8C21E5DA"
+  - "28DE8213"
+  - "FC4AEE3B"
+  - "5214C10D"
 conditions:
   - condition: "GitHub Actions CI is green on the PR's final head"
     satisfied: false
@@ -38,7 +51,7 @@ conditions:
 
 Shipment `179-S` adds a hidden `engram doctor --smoke` CLI readiness
 workflow for task `142.090-T`. The last code-affecting revision observed is
-`cb47e7865f48c96a38d5fb44d58e18cfa45de1aa`.
+`ffa93278e5cc23a8e89291e74e39b25fe9573d8d`.
 
 | Evidence | Outcome |
 |---|---|
@@ -53,12 +66,18 @@ workflow for task `142.090-T`. The last code-affecting revision observed is
 | Clippy | PASS for default and `cozo-backend,embeddings` feature sets |
 | Full target build | PASS: `cargo build --all-targets` |
 | Line endings | PASS: zero CRLF, BOM, lone-CR, mixed-newline, or EOF findings |
+| Local adversarial review | P0=0 and P1=0 after in-scope daemon teardown fix; follow-ups retained |
+| Documentation audit | `AUDIT_FOLLOWUPS` with deferred Stage-owned and lifecycle hardening findings |
 
 The full `cargo dev-test --no-fail-fast` attempt reached unrelated Windows-host
 failures in the launcher contracts and a pre-existing daemon TTL test stall.
 The daemon startup class is already captured in deferred entry `773841E3`.
-Focused in-scope tests and all production build, format, and Clippy gates are
-green.
+The launcher class is captured in `5214C10D`. Focused in-scope tests and all
+production build, format, and Clippy gates are green.
+
+The local `cargo audit` run completed and found 19 dependency vulnerabilities
+plus 22 allowed warnings. Dependency remediation is outside the authorized
+surface and remains tracked in `8C21E5DA`.
 
 ## Validator evidence
 
@@ -104,4 +123,15 @@ green.
 The CLI contract is `PASS_WITH_FOLLOW_UP`. Pre-merge releasability is
 `READY_WITH_CONDITIONS`; CI and Copilot review for the final feature head remain
 open automated conditions. Deferred full-suite instability remains tracked in
-`773841E3`.
+`773841E3`, `5214C10D`, and the dependency-audit follow-up `8C21E5DA`.
+
+## Documentation consistency audit
+
+Verdict: `AUDIT_FOLLOWUPS`.
+
+The audit examined the candidate's backlog, closure, memory, task, plan, and
+runtime evidence against the ten checkable categories. The in-scope
+read-server test teardown defect was fixed and re-verified. Stage-owned
+lifecycle and case-reference inconsistencies, existing shipment intake items,
+and doctor lifecycle hardening remain captured in the `follow_up_stash` IDs
+above. Final mutable-surface review readiness remains in the feature PR body.
