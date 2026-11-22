@@ -342,10 +342,15 @@ impl ReadServerFixture {
             .map_err(|error| error.to_string())
     }
 
-    async fn workspace_binding_fingerprint(&self) -> Option<Value> {
-        let response = self.send_ipc("get_workspace_status", None).await.ok()?;
-        let result = response.result?;
-        Some(json!({
+    async fn workspace_binding_fingerprint(&self) -> Result<Value, String> {
+        let response = self
+            .send_ipc("get_workspace_status", None)
+            .await
+            .map_err(|error| format!("cannot observe isolated workspace binding: {error}"))?;
+        let result = response
+            .result
+            .ok_or_else(|| "workspace binding observation returned no result".to_owned())?;
+        Ok(json!({
             "path": result.get("path"),
             "branch": result.get("branch"),
             "db_path": result.get("db_path"),
@@ -696,10 +701,7 @@ async fn exercise_declared_surface(
         fixture.verify_daemon_marker()?;
     }
 
-    let binding_before = fixture
-        .workspace_binding_fingerprint()
-        .await
-        .ok_or_else(|| "cannot observe the isolated workspace binding before probe".to_owned())?;
+    let binding_before = fixture.workspace_binding_fingerprint().await?;
     let files_before = fixture.filesystem_snapshot()?;
 
     let raw = match surface {
@@ -729,12 +731,9 @@ async fn exercise_declared_surface(
     }
 
     let files_after = fixture.filesystem_snapshot()?;
-    let binding_after = fixture.workspace_binding_fingerprint().await;
+    let binding_after = fixture.workspace_binding_fingerprint().await?;
     let filesystem_changes = changed_entry_count(&files_before, &files_after);
-    let state_changes = match binding_after {
-        Some(after) => usize::from(binding_before != after),
-        None => 1,
-    };
+    let state_changes = usize::from(binding_before != binding_after);
     let side_effect_count = filesystem_changes.saturating_add(state_changes);
     let generation = raw
         .response
@@ -1822,19 +1821,13 @@ async fn exercise_unknown_method(
         ));
     }
     fixture.ensure_daemon().await?;
-    let binding_before = fixture
-        .workspace_binding_fingerprint()
-        .await
-        .ok_or_else(|| "cannot observe workspace binding before unknown-method probe".to_owned())?;
+    let binding_before = fixture.workspace_binding_fingerprint().await?;
     let files_before = fixture.filesystem_snapshot()?;
     let raw = invoke_direct_ipc(method, None, fixture).await?;
     let files_after = fixture.filesystem_snapshot()?;
-    let binding_after = fixture.workspace_binding_fingerprint().await;
-    let effects =
-        changed_entry_count(&files_before, &files_after).saturating_add(match binding_after {
-            Some(binding) => usize::from(binding_before != binding),
-            None => 1,
-        });
+    let binding_after = fixture.workspace_binding_fingerprint().await?;
+    let effects = changed_entry_count(&files_before, &files_after)
+        .saturating_add(usize::from(binding_before != binding_after));
 
     Ok(Observation {
         accepted: raw.accepted,
