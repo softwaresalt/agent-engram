@@ -34,7 +34,7 @@ conditions:
     backlog_item_id: "N/A"
   - condition: "P-014 merge approval applies to the bounded 177-S scope"
     satisfied: true
-    evidence: "The operator-supplied P-017 activation pre-authorizes merge for 177-S after all P-014/P-018/CI/P-009/P-016 checks pass"
+    evidence: "The operator's 2026-11-22 activation explicitly pre-authorizes merge for scope [179-S, 177-S] after all P-014/P-018/CI/P-009/P-016 checks pass"
     owner: softwaresalt
     due_utc: "2026-11-23T23:59:59Z"
     attestation_evidence: "Bounded P-017 activation records merge_approval_pre_authorized: true for 177-S"
@@ -62,9 +62,9 @@ and verifies CLI and stdio MCP equivalence.
 | M12 run 1 | PASS: 10/10, 96.312s, all settle-barrier lines `Active` |
 | M12 run 2 | PASS: 10/10, 51.491s, all settle-barrier lines `Active` |
 | M12 run 3 | PASS: 10/10, 53.540s, all settle-barrier lines `Active` |
-| Final post-review M12 run 1 | PASS: 10/10, 39.00s, all settle-barrier lines `Active` |
-| Final post-review M12 run 2 | PASS: 10/10, 36.09s, all settle-barrier lines `Active` |
-| Final post-review M12 run 3 | PASS: 10/10, 35.64s, all settle-barrier lines `Active` |
+| Committed-final M12 run 1 | PASS: 10/10, 39.15s, all settle-barrier lines `Active` |
+| Committed-final M12 run 2 | PASS: 10/10, 36.79s, all settle-barrier lines `Active` |
+| Committed-final M12 run 3 | PASS: 10/10, 35.34s, all settle-barrier lines `Active` |
 | Default feature matrix | PASS |
 | CI feature matrix | PASS |
 | Consumer suites | PASS |
@@ -130,12 +130,13 @@ queued as appropriate.
 
 ## Safe-close boundary
 
-The 177-S manifest closes only `142.058-T` and the `177-S` shipment record.
+The intended 177-S close scope is only `142.058-T` and the `177-S` shipment record.
 The already-archived `142.058.002-ST` and `142.058.003-ST` records,
 `.backlogit/queue/142-F.md`, `.backlogit/queue/178-S.md`, and
 `.backlogit/queue/142.059-T.md` are protected baseline observations for
-P-015 INV-1/INV-7/INV-10. They must remain byte-identical through pre-mode
-classification, single-artifact SAFE_CLOSE, and post-mode reconciliation.
+P-015 INV-1/INV-7/INV-10 against the post-feature-merge baseline. They must
+remain byte-identical through pre-mode classification, single-artifact
+SAFE_CLOSE, and post-mode reconciliation.
 No ancestry walk or cascade operation is permitted.
 
 ## Releasability
@@ -149,8 +150,8 @@ current-HEAD readiness is recorded only in the feature PR body.
 
 ## Documentation consistency audit
 
-Verdict: `AUDIT_FINDINGS_RESOLVED`. The in-scope binding-state and evidence
+Verdict: `AUDIT_FOLLOWUPS`. The in-scope binding-state and evidence
 contradictions are fixed in the final candidate. Out-of-scope findings remain
 captured in `FF1FC372`. T0/B0 location qualification and any broader
 historical propagation remain resolved for this shipment by the explicit
-T0-qualified locator.
+T0-qualified locator. Final mutable-HEAD PR readiness remains in the PR body.

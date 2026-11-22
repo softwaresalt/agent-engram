@@ -32,7 +32,7 @@ behavior:
 * `53.540s`
 
 After the in-scope binding-side-effect review fix, the final candidate repeated
-the same contract at `10/10` in `39.00s`, `36.09s`, and `35.64s`.
+the same committed contract at `10/10` in `39.15s`, `36.79s`, and `35.34s`.
 
 Every PRE-3F settle-barrier line was `Active`. Feature-matrix parity, consumer
 suites, Clippy, formatting, and `cargo build --all-targets` passed as recorded
@@ -70,5 +70,6 @@ deliberation.
 Runtime evidence is recorded at
 `docs/closure/2026-11-22-177-s-runtime-verification.md`.
 
-The next actions are the multi-persona review, documentation consistency
-audit, feature PR creation, Copilot review, required CI, and merge readiness.
+The multi-persona review and documentation consistency audit are complete with
+`AUDIT_FOLLOWUPS`. The next actions are feature PR creation, Copilot review,
+required CI, and merge readiness.
