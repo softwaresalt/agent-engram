@@ -300,18 +300,25 @@ pub async fn run_smoke_test(workspace: &Path) -> Result<SmokeResult, EngramError
     use crate::daemon::ipc_server::ipc_endpoint;
     use crate::daemon::protocol::IpcRequest;
     use crate::shim::ipc_client::send_request;
-    use crate::shim::lifecycle::{DaemonOwnership, ensure_daemon_running_with_ownership};
+    use crate::shim::lifecycle::{DaemonOwnership, ensure_daemon_running_for_doctor};
 
     let start = std::time::Instant::now();
 
     // Step 1: Spawn or reuse the daemon.
-    let ownership = ensure_daemon_running_with_ownership(workspace)
-        .await
-        .map_err(|e| {
-            crate::errors::EngramError::Daemon(crate::errors::DaemonError::SpawnFailed {
-                reason: format!("smoke test: daemon start failed: {e}"),
-            })
-        })?;
+    let ownership =
+        ensure_daemon_running_for_doctor(workspace)
+            .await
+            .map_err(|error| match error {
+                refused @ crate::errors::EngramError::Ipc(
+                    crate::errors::IpcError::VersionMismatch { .. }
+                    | crate::errors::IpcError::ConnectionFailed { .. },
+                ) => refused,
+                error => {
+                    crate::errors::EngramError::Daemon(crate::errors::DaemonError::SpawnFailed {
+                        reason: format!("smoke test: daemon start failed: {error}"),
+                    })
+                }
+            })?;
 
     let endpoint = ipc_endpoint(workspace)?;
 

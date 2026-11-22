@@ -15,9 +15,18 @@ use std::time::{Duration, Instant, SystemTime};
 
 use engram::daemon::ipc_server::ipc_endpoint;
 use engram::daemon::protocol::IpcRequest;
+use engram::errors::{EngramError, IpcError};
+use engram::shim::pidfile::PidFile;
+use engram::shim::version::ENGRAM_PROTOCOL_VERSION;
 use engram::shim::{ipc_client::send_request, lifecycle::check_health};
 use engram::tools::doctor::run_smoke_test;
 use serde_json::Value;
+
+#[path = "../helpers/fake_health_responder.rs"]
+#[allow(dead_code)]
+mod fake_health_responder;
+
+use fake_health_responder::{FakeHealthResponder, HealthScript};
 
 /// A full shim→daemon handshake smoke test must pass cleanly for a valid
 /// git-backed workspace.
@@ -55,6 +64,94 @@ async fn doctor_smoke_result_includes_latency() {
         result.latency_ms.is_some(),
         "smoke result should include latency measurement"
     );
+}
+
+#[tokio::test]
+async fn doctor_smoke_does_not_replace_protocol_mismatched_daemon() -> CliTestResult {
+    let workspace = tempfile::tempdir()?;
+    fs::create_dir(workspace.path().join(".git"))?;
+    let canonical_workspace = workspace.path().canonicalize()?;
+    let endpoint = ipc_endpoint(&canonical_workspace)?;
+    let stale_version = ENGRAM_PROTOCOL_VERSION.saturating_add(1);
+    let fake = FakeHealthResponder::spawn(
+        &endpoint,
+        HealthScript::VersionMismatch {
+            version: stale_version,
+        },
+    );
+
+    let error = run_smoke_test(&canonical_workspace)
+        .await
+        .expect_err("doctor smoke must refuse to replace a protocol-mismatched daemon");
+
+    assert!(
+        matches!(
+            error,
+            EngramError::Ipc(IpcError::VersionMismatch { expected, actual })
+                if expected == ENGRAM_PROTOCOL_VERSION && actual == stale_version
+        ),
+        "unexpected doctor lifecycle error: {error}"
+    );
+    assert!(
+        fake.count() > 0,
+        "the pre-existing daemon should have received the diagnostic probe"
+    );
+
+    let health_request = IpcRequest {
+        jsonrpc: "2.0".to_owned(),
+        id: Some(serde_json::json!(100)),
+        method: "_health".to_owned(),
+        params: None,
+    };
+    let response = send_request(&endpoint, &health_request, Duration::from_secs(2)).await?;
+    assert!(
+        response.error.is_none(),
+        "pre-existing daemon stopped serving after doctor smoke: {:?}",
+        response.error
+    );
+    assert_eq!(
+        response
+            .result
+            .as_ref()
+            .and_then(|result| result.get("protocol_version"))
+            .and_then(Value::as_u64),
+        Some(u64::from(stale_version)),
+        "doctor smoke replaced the original protocol-mismatched daemon"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn doctor_smoke_does_not_replace_live_pid_with_unreachable_endpoint() -> CliTestResult {
+    let workspace = tempfile::tempdir()?;
+    fs::create_dir(workspace.path().join(".git"))?;
+    let canonical_workspace = workspace.path().canonicalize()?;
+    let pid_file = PidFile::current();
+    let pid_dir = PidFile::path(&canonical_workspace)
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| io::Error::other("PID path omitted its run directory"))?;
+    pid_file.atomic_write(&pid_dir)?;
+
+    let error = run_smoke_test(&canonical_workspace)
+        .await
+        .expect_err("doctor smoke must refuse to replace a live daemon with an unreachable pipe");
+
+    assert!(
+        matches!(
+            &error,
+            EngramError::Ipc(IpcError::ConnectionFailed { reason, .. })
+                if reason.contains("doctor refused to replace") && reason.contains("live daemon PID")
+        ),
+        "unexpected doctor lifecycle error: {error}"
+    );
+    assert!(
+        PidFile::read(&canonical_workspace).is_some_and(|published| published == pid_file),
+        "doctor smoke replaced or removed the pre-existing daemon PID metadata"
+    );
+
+    Ok(())
 }
 
 /// A `read_server`-mode daemon's smoke run must parse the live status

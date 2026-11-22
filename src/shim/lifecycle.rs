@@ -292,6 +292,15 @@ pub(crate) enum DaemonOwnership {
     Started,
 }
 
+/// Controls whether lifecycle validation may replace an existing daemon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExistingDaemonPolicy {
+    /// Preserve the normal shim behavior of respawning incompatible daemons.
+    Respawn,
+    /// Refuse to replace an existing daemon after a failed health contract.
+    Preserve,
+}
+
 /// Ensure the daemon is running for `workspace`.
 ///
 /// Steps:
@@ -321,7 +330,27 @@ pub(crate) async fn ensure_daemon_running_with_ownership(
     let canonical = normalize_canonical(canonicalize_workspace(&workspace.to_string_lossy())?);
     let endpoint = ipc_endpoint(&canonical)?;
 
-    ensure_daemon_running_inner(&canonical, endpoint, MAX_RESPAWN_ATTEMPTS).await
+    ensure_daemon_running_inner(
+        &canonical,
+        endpoint,
+        MAX_RESPAWN_ATTEMPTS,
+        ExistingDaemonPolicy::Respawn,
+    )
+    .await
+}
+
+/// Ensure the daemon is running without replacing an existing published daemon.
+///
+/// Doctor smoke may start a daemon only when no live or reachable daemon is
+/// already published for the workspace. A failed health contract on an
+/// existing daemon is returned to the caller without sending shutdown.
+pub(crate) async fn ensure_daemon_running_for_doctor(
+    workspace: &Path,
+) -> Result<DaemonOwnership, EngramError> {
+    let canonical = normalize_canonical(canonicalize_workspace(&workspace.to_string_lossy())?);
+    let endpoint = ipc_endpoint(&canonical)?;
+
+    ensure_daemon_running_inner(&canonical, endpoint, 0, ExistingDaemonPolicy::Preserve).await
 }
 
 /// Ensure the daemon is running for `workspace`, starting from a specific
@@ -339,15 +368,21 @@ pub async fn ensure_daemon_running_with_endpoint(
     endpoint: String,
 ) -> Result<(), EngramError> {
     let canonical = normalize_canonical(canonicalize_workspace(&workspace.to_string_lossy())?);
-    ensure_daemon_running_inner(&canonical, endpoint, MAX_RESPAWN_ATTEMPTS)
-        .await
-        .map(|_| ())
+    ensure_daemon_running_inner(
+        &canonical,
+        endpoint,
+        MAX_RESPAWN_ATTEMPTS,
+        ExistingDaemonPolicy::Respawn,
+    )
+    .await
+    .map(|_| ())
 }
 
 async fn ensure_daemon_running_inner(
     workspace: &Path,
     endpoint: String,
     respawns_remaining: u8,
+    existing_policy: ExistingDaemonPolicy,
 ) -> Result<DaemonOwnership, EngramError> {
     match daemon_ready(&endpoint).await {
         Ok(true) => {
@@ -356,6 +391,9 @@ async fn ensure_daemon_running_inner(
         }
         Ok(false) => {}
         Err(e @ EngramError::Ipc(IpcError::VersionMismatch { .. })) => {
+            if existing_policy == ExistingDaemonPolicy::Preserve {
+                return Err(e);
+            }
             if respawns_remaining == 0 {
                 return Err(e);
             }
@@ -393,11 +431,26 @@ async fn ensure_daemon_running_inner(
             .await
             {
                 Ok(()) => {
+                    if existing_policy == ExistingDaemonPolicy::Preserve {
+                        return Err(existing_daemon_unavailable(
+                            &endpoint,
+                            "published IPC endpoint did not satisfy the daemon health contract",
+                        ));
+                    }
                     info!(
                         pid = pid_file.pid,
                         "reusing reachable daemon from PID metadata"
                     );
                     return poll_until_ready(workspace, &endpoint, None).await;
+                }
+                Err(e) if existing_policy == ExistingDaemonPolicy::Preserve => {
+                    return Err(existing_daemon_unavailable(
+                        &endpoint,
+                        &format!(
+                            "live daemon PID {} has an unreachable IPC endpoint: {e}",
+                            pid_file.pid
+                        ),
+                    ));
                 }
                 Err(e) if respawns_remaining > 0 => {
                     info!(
@@ -418,9 +471,27 @@ async fn ensure_daemon_running_inner(
         }
     }
 
+    if existing_policy == ExistingDaemonPolicy::Preserve
+        && crate::shim::ipc_client::probe(&endpoint, Duration::from_millis(PIPE_PROBE_TIMEOUT_MS))
+            .await
+            .is_ok()
+    {
+        return Err(existing_daemon_unavailable(
+            &endpoint,
+            "published IPC endpoint did not satisfy the daemon health contract",
+        ));
+    }
+
     let mut child = spawn_daemon(workspace)?;
     let endpoint = ipc_endpoint(workspace)?;
     poll_until_ready(workspace, &endpoint, Some(&mut child)).await
+}
+
+fn existing_daemon_unavailable(endpoint: &str, reason: &str) -> EngramError {
+    EngramError::Ipc(IpcError::ConnectionFailed {
+        address: endpoint.to_owned(),
+        reason: format!("doctor refused to replace an existing daemon: {reason}"),
+    })
 }
 
 /// Build a daemon-spawn error for the debug-only capture seam.
