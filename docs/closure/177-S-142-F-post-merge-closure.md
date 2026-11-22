@@ -46,6 +46,13 @@ successor shipment `178-S` and task `142.059-T` remain queued.
 | Documentation audit | `AUDIT_FOLLOWUPS`; FF1FC372 retained |
 | Last-mile authorization | Bounded P-017 approval; P-009, P-014, P-016, and P-018 verified |
 
+The P-017 scope is exactly `["179-S", "177-S"]`. Shipment `179-S` was the
+predecessor cursor; `177-S` is the completed cursor; `178-S` is excluded and
+remains unclaimed. `merge_approval_pre_authorized: true` applies to the
+feature and closure PRs after all gates pass.
+`admin_fallback_pre_authorized: false` and
+`destructive_cascade_close_pre_authorized: false`; neither path was used.
+
 R-A6 records 125 loaded lines and at least 44 authored or adapted lines in
 the final candidate, below the 400-line bound. R9.9 records
 `a13c4245` and `b8721d67`. T0, B0, `7bd9e504`, and `6d216d19` remain
@@ -73,10 +80,37 @@ byte-identical:
 * `.backlogit/archive/142.058.003-ST.md`
 
 The generic `move 177-S --status shipped` transition was refused because
-backlogit v1.13.0 requires its governed shipment envelope. Ship did not
-substitute the destructive cascade. The shipment was archived as its own
-artifact and the governed `reconcile-shipped` transaction is the required
-post-compaction reconciliation step.
+backlogit v1.13.0 requires its governed shipment envelope. The operator's
+authoritative 177-S disposition explicitly selected the
+`reconcile-shipped` path after P-020 compaction, and the installed 1.13.0
+tool exposes that governed two-phase transaction. Ship did not substitute
+the destructive cascade: it archived only the shipment record, completed
+P-020, then reconciled its immutable archived envelope to
+`archived_status: shipped`.
+
+Independent post-merge baseline fingerprints were captured and rechecked:
+
+| Protected record | Pre/post SHA-256 |
+|---|---|
+| `.backlogit/queue/142-F.md` | `84CDC9090A24860CE6BB972E7AA07B951744B827EE1C6DDC9A7A9FC383D5B26D` |
+| `.backlogit/queue/178-S.md` | `E20F951C636BC3E84391C69C842C9D273AF8FC288072EC779120ABFA71F6146A` |
+| `.backlogit/queue/142.059-T.md` | `360F9E77A3185639B89CE4D474D1D7AEFA429F5A538310091CA67363E1D3342C` |
+| `.backlogit/archive/142.058.002-ST.md` | `EB2704A67720A81DA22DDB27B0988A2D133C97B478C221A15A7A3B1D0661AC92` |
+| `.backlogit/archive/142.058.003-ST.md` | `F8B38E1E7D20461F865C97236C481EEABFB27C6D5DC1C01283C255C9FE83C223` |
+
+`docs/closure/evidence/177-S-142-F-close-evidence.json` is the classifier's
+immutable pre-close record. Its observation set is supplemented above by
+the explicit `178-S` baseline, which is a successor-shipment invariant not
+listed by the classifier.
+
+The governed `reconcile-shipped` event attests closure-content hash
+`f053ae15d77cee02115db29d4d453d8b9a65a38527c535dc2b1345dca5ac2124`,
+recorded before the final authorization-clarity and evidence-table edits.
+The subsequently committed closure candidate
+`4623564c1fe7455bfa3d6963664674b1209b44e1` had SHA-256
+`31c74a8af8f7d172d764438a9c3e0453888ba8f2ea60c86b4f7121691957ec10`.
+These are historical attestation facts, not a claim that later explanatory
+edits reproduce the attested hash.
 
 ## Source artifact cleanup
 
@@ -114,6 +148,9 @@ Local multi-persona review and post-fix delta checks completed with P0=0
 and P1=0. Residual P2/P3 concerns did not block readiness. The hosted
 Copilot review completed for the feature head with zero findings.
 `FF1FC372` is retained as the only deferred follow-up.
+
+Closure-branch review and its current-HEAD readiness record are carried in
+the closure PR body; the feature-PR approval does not transfer to it.
 
 ## Documentation consistency audit
 
