@@ -1223,6 +1223,11 @@ fn expected_outcome(descriptor: &ToolDescriptor) -> ExpectedOutcome {
         && descriptor.read_server_available
     {
         ExpectedOutcome::SuccessfulWorkflow
+    } else if generation_read(descriptor) && !descriptor.generation_backed {
+        panic!(
+            "Worker: 142.058-T: classify daemon-scoped read {}",
+            descriptor.name
+        );
     } else if generation_read(descriptor) {
         ExpectedOutcome::GenerationBackedRead
     } else {
@@ -1399,6 +1404,133 @@ fn generated_matrix_structurally_matches_f19_descriptors_and_declared_surfaces()
             descriptor.name
         );
     }
+}
+
+#[tokio::test]
+async fn generated_matrix_exercises_only_declared_surfaces_and_checks_real_behavior() {
+    let mut fixture = ReadServerFixture::new().await;
+    fixture
+        .ensure_daemon()
+        .await
+        .unwrap_or_else(|error| panic!("{F54_BLOCK_MARKER}: {error}"));
+
+    let descriptors = all_descriptors();
+    let matrix = descriptor_parity_matrix(&descriptors);
+
+    let expected_count = matrix.iter().map(|row| row.surfaces.len()).sum::<usize>();
+    let mut cases = matrix
+        .iter()
+        .flat_map(|row| {
+            row.surfaces
+                .iter()
+                .copied()
+                .map(move |expectation| (row.descriptor, expectation))
+        })
+        .collect::<Vec<_>>();
+    // A live `_shutdown` request must be last because an incorrect acceptance
+    // would stop this marker-recorded test daemon.
+    cases.sort_by_key(|(descriptor, _)| descriptor.name == "_shutdown");
+
+    let mut failures = Vec::new();
+    let mut exercised = 0;
+    for (descriptor, expectation) in cases {
+        let observation = exercise_declared_surface(descriptor, expectation.surface, &mut fixture)
+            .await
+            .unwrap_or_else(|error| {
+                panic!(
+                    "{F54_BLOCK_MARKER}: cannot exercise {} via {}: {error}",
+                    descriptor.name, expectation.surface
+                )
+            });
+        exercised += 1;
+        record_matrix_failures(descriptor, expectation, &observation, &mut failures);
+    }
+
+    assert_eq!(
+        exercised, expected_count,
+        "{F54_RED_MARKER}: every descriptor surface declaration must be exercised"
+    );
+    fixture
+        .stop_daemon()
+        .await
+        .unwrap_or_else(|error| panic!("{F54_BLOCK_MARKER}: safe daemon cleanup failed: {error}"));
+    assert!(
+        failures.is_empty(),
+        "{F54_RED_MARKER}: descriptor-driven read-server parity failures:\n{}",
+        failures.join("\n")
+    );
+}
+
+fn normalize_parity_result(result: &Value) -> Value {
+    let mut normalized = result.clone();
+    if let Some(object) = normalized.as_object_mut() {
+        object.remove("connection_count");
+    }
+    normalized
+}
+
+#[tokio::test]
+async fn cli_and_stdio_mcp_return_equivalent_results_for_the_same_declared_read() {
+    let mut fixture = ReadServerFixture::new().await;
+    fixture
+        .ensure_daemon()
+        .await
+        .unwrap_or_else(|error| panic!("{F54_BLOCK_MARKER}: {error}"));
+    let read_descriptor = descriptor("get_workspace_status").unwrap_or_else(|| {
+        panic!("{F54_RED_MARKER}: get_workspace_status must be declared in F19")
+    });
+    if !read_descriptor.supports(ToolSurface::Cli)
+        || !read_descriptor.supports(ToolSurface::StdioMcp)
+    {
+        panic!(
+            "{F54_RED_MARKER}: parity fixture requires declared CLI and MCP surfaces, got {:?}",
+            read_descriptor.surfaces
+        );
+    }
+
+    let cli = exercise_declared_surface(&read_descriptor, ToolSurface::Cli, &mut fixture)
+        .await
+        .unwrap_or_else(|error| panic!("{F54_BLOCK_MARKER}: CLI read failed to run: {error}"));
+    let mcp = exercise_declared_surface(&read_descriptor, ToolSurface::StdioMcp, &mut fixture)
+        .await
+        .unwrap_or_else(|error| panic!("{F54_BLOCK_MARKER}: MCP read failed to run: {error}"));
+    fixture
+        .stop_daemon()
+        .await
+        .unwrap_or_else(|error| panic!("{F54_BLOCK_MARKER}: safe daemon cleanup failed: {error}"));
+
+    let mut failures = Vec::new();
+    if !cli.accepted || !mcp.accepted {
+        failures.push(format!(
+            "both shipped read surfaces must accept get_workspace_status; CLI={cli:?}; MCP={mcp:?}"
+        ));
+    }
+    if cli.generation.as_deref() != Some(EXPECTED_GENERATION) {
+        failures.push(format!(
+            "CLI must report serving-generation provenance; observed {:?}",
+            cli.generation
+        ));
+    }
+    if mcp.generation.as_deref() != Some(EXPECTED_GENERATION) {
+        failures.push(format!(
+            "MCP must report serving-generation provenance; observed {:?}",
+            mcp.generation
+        ));
+    }
+    if cli.response.as_ref().map(normalize_parity_result)
+        != mcp.response.as_ref().map(normalize_parity_result)
+    {
+        failures.push(format!(
+            "CLI and stdio MCP read results differ; CLI={:?}; MCP={:?}",
+            cli.response.as_ref().map(normalize_parity_result),
+            mcp.response.as_ref().map(normalize_parity_result)
+        ));
+    }
+    assert!(
+        failures.is_empty(),
+        "{F54_RED_MARKER}: CLI/MCP read parity failures: {}",
+        failures.join("; ")
+    );
 }
 
 // Route (c): build-feature replaces this task-owned assertion boundary.
