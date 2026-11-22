@@ -71,6 +71,7 @@ enum ExpectedOutcome {
     ReadyHealth,
     SuccessfulWorkflow,
     GenerationBackedRead,
+    DaemonScopedRead,
     Refusal { code: u16 },
 }
 
@@ -341,10 +342,15 @@ impl ReadServerFixture {
             .map_err(|error| error.to_string())
     }
 
-    async fn workspace_binding_fingerprint(&self) -> Option<Value> {
-        let response = self.send_ipc("get_workspace_status", None).await.ok()?;
-        let result = response.result?;
-        Some(json!({
+    async fn workspace_binding_fingerprint(&self) -> Result<Value, String> {
+        let response = self
+            .send_ipc("get_workspace_status", None)
+            .await
+            .map_err(|error| format!("cannot observe isolated workspace binding: {error}"))?;
+        let result = response
+            .result
+            .ok_or_else(|| "workspace binding observation returned no result".to_owned())?;
+        Ok(json!({
             "path": result.get("path"),
             "branch": result.get("branch"),
             "db_path": result.get("db_path"),
@@ -695,22 +701,7 @@ async fn exercise_declared_surface(
         fixture.verify_daemon_marker()?;
     }
 
-    let expect_refusal = matches!(
-        expected_outcome(descriptor),
-        ExpectedOutcome::Refusal { .. }
-    );
-    let binding_before = if expect_refusal {
-        Some(
-            fixture
-                .workspace_binding_fingerprint()
-                .await
-                .ok_or_else(|| {
-                    "cannot observe the isolated workspace binding before refusal probe".to_owned()
-                })?,
-        )
-    } else {
-        None
-    };
+    let binding_before = fixture.workspace_binding_fingerprint().await?;
     let files_before = fixture.filesystem_snapshot()?;
 
     let raw = match surface {
@@ -740,17 +731,9 @@ async fn exercise_declared_surface(
     }
 
     let files_after = fixture.filesystem_snapshot()?;
-    let binding_after = if expect_refusal {
-        fixture.workspace_binding_fingerprint().await
-    } else {
-        None
-    };
+    let binding_after = fixture.workspace_binding_fingerprint().await?;
     let filesystem_changes = changed_entry_count(&files_before, &files_after);
-    let state_changes = match (binding_before, binding_after) {
-        (Some(before), Some(after)) => usize::from(before != after),
-        (Some(_), None) => 1,
-        _ => 0,
-    };
+    let state_changes = usize::from(binding_before != binding_after);
     let side_effect_count = filesystem_changes.saturating_add(state_changes);
     let generation = raw
         .response
@@ -1199,6 +1182,7 @@ fn generation_read(descriptor: &ToolDescriptor) -> bool {
     descriptor.capability == CapabilityClass::Read
         && descriptor.read_server_available
         && descriptor.input_ownership == InputOwnership::DaemonHandler
+        && descriptor.generation_backed
 }
 
 fn expected_refusal_code(descriptor: &ToolDescriptor) -> u16 {
@@ -1225,6 +1209,11 @@ fn expected_outcome(descriptor: &ToolDescriptor) -> ExpectedOutcome {
         ExpectedOutcome::SuccessfulWorkflow
     } else if generation_read(descriptor) {
         ExpectedOutcome::GenerationBackedRead
+    } else if descriptor.capability == CapabilityClass::Read
+        && descriptor.read_server_available
+        && descriptor.input_ownership == InputOwnership::DaemonHandler
+    {
+        ExpectedOutcome::DaemonScopedRead
     } else {
         ExpectedOutcome::Refusal {
             code: expected_refusal_code(descriptor),
@@ -1270,6 +1259,38 @@ fn describe_failure(
         observation.response,
         observation.raw_response
     )
+}
+
+fn record_daemon_scoped_read_failures(
+    descriptor: &ToolDescriptor,
+    surface: ToolSurface,
+    observation: &Observation,
+    failures: &mut Vec<String>,
+) {
+    if !observation.accepted {
+        failures.push(describe_failure(
+            descriptor,
+            surface,
+            observation,
+            "an accepted daemon-scoped read result",
+        ));
+    }
+    if observation.generation.is_some() {
+        failures.push(describe_failure(
+            descriptor,
+            surface,
+            observation,
+            "no generation provenance for a daemon-scoped read",
+        ));
+    }
+    if observation.side_effect_count != 0 {
+        failures.push(describe_failure(
+            descriptor,
+            surface,
+            observation,
+            "zero filesystem and workspace-binding side effects",
+        ));
+    }
 }
 
 fn record_matrix_failures(
@@ -1340,6 +1361,9 @@ fn record_matrix_failures(
                 ));
             }
         }
+        ExpectedOutcome::DaemonScopedRead => {
+            record_daemon_scoped_read_failures(descriptor, surface, observation, failures);
+        }
         ExpectedOutcome::Refusal { code } => {
             if observation.accepted {
                 failures.push(describe_failure(
@@ -1399,6 +1423,133 @@ fn generated_matrix_structurally_matches_f19_descriptors_and_declared_surfaces()
             descriptor.name
         );
     }
+}
+
+#[tokio::test]
+async fn generated_matrix_exercises_only_declared_surfaces_and_checks_real_behavior() {
+    let mut fixture = ReadServerFixture::new().await;
+    fixture
+        .ensure_daemon()
+        .await
+        .unwrap_or_else(|error| panic!("{F54_BLOCK_MARKER}: {error}"));
+
+    let descriptors = all_descriptors();
+    let matrix = descriptor_parity_matrix(&descriptors);
+
+    let expected_count = matrix.iter().map(|row| row.surfaces.len()).sum::<usize>();
+    let mut cases = matrix
+        .iter()
+        .flat_map(|row| {
+            row.surfaces
+                .iter()
+                .copied()
+                .map(move |expectation| (row.descriptor, expectation))
+        })
+        .collect::<Vec<_>>();
+    // A live `_shutdown` request must be last because an incorrect acceptance
+    // would stop this marker-recorded test daemon.
+    cases.sort_by_key(|(descriptor, _)| descriptor.name == "_shutdown");
+
+    let mut failures = Vec::new();
+    let mut exercised = 0;
+    for (descriptor, expectation) in cases {
+        let observation = exercise_declared_surface(descriptor, expectation.surface, &mut fixture)
+            .await
+            .unwrap_or_else(|error| {
+                panic!(
+                    "{F54_BLOCK_MARKER}: cannot exercise {} via {}: {error}",
+                    descriptor.name, expectation.surface
+                )
+            });
+        exercised += 1;
+        record_matrix_failures(descriptor, expectation, &observation, &mut failures);
+    }
+
+    assert_eq!(
+        exercised, expected_count,
+        "{F54_RED_MARKER}: every descriptor surface declaration must be exercised"
+    );
+    fixture
+        .stop_daemon()
+        .await
+        .unwrap_or_else(|error| panic!("{F54_BLOCK_MARKER}: safe daemon cleanup failed: {error}"));
+    assert!(
+        failures.is_empty(),
+        "{F54_RED_MARKER}: descriptor-driven read-server parity failures:\n{}",
+        failures.join("\n")
+    );
+}
+
+fn normalize_parity_result(result: &Value) -> Value {
+    let mut normalized = result.clone();
+    if let Some(object) = normalized.as_object_mut() {
+        object.remove("connection_count");
+    }
+    normalized
+}
+
+#[tokio::test]
+async fn cli_and_stdio_mcp_return_equivalent_results_for_the_same_declared_read() {
+    let mut fixture = ReadServerFixture::new().await;
+    fixture
+        .ensure_daemon()
+        .await
+        .unwrap_or_else(|error| panic!("{F54_BLOCK_MARKER}: {error}"));
+    let read_descriptor = descriptor("get_workspace_status").unwrap_or_else(|| {
+        panic!("{F54_RED_MARKER}: get_workspace_status must be declared in F19")
+    });
+    if !read_descriptor.supports(ToolSurface::Cli)
+        || !read_descriptor.supports(ToolSurface::StdioMcp)
+    {
+        panic!(
+            "{F54_RED_MARKER}: parity fixture requires declared CLI and MCP surfaces, got {:?}",
+            read_descriptor.surfaces
+        );
+    }
+
+    let cli = exercise_declared_surface(&read_descriptor, ToolSurface::Cli, &mut fixture)
+        .await
+        .unwrap_or_else(|error| panic!("{F54_BLOCK_MARKER}: CLI read failed to run: {error}"));
+    let mcp = exercise_declared_surface(&read_descriptor, ToolSurface::StdioMcp, &mut fixture)
+        .await
+        .unwrap_or_else(|error| panic!("{F54_BLOCK_MARKER}: MCP read failed to run: {error}"));
+    fixture
+        .stop_daemon()
+        .await
+        .unwrap_or_else(|error| panic!("{F54_BLOCK_MARKER}: safe daemon cleanup failed: {error}"));
+
+    let mut failures = Vec::new();
+    if !cli.accepted || !mcp.accepted {
+        failures.push(format!(
+            "both shipped read surfaces must accept get_workspace_status; CLI={cli:?}; MCP={mcp:?}"
+        ));
+    }
+    if cli.generation.as_deref() != Some(EXPECTED_GENERATION) {
+        failures.push(format!(
+            "CLI must report serving-generation provenance; observed {:?}",
+            cli.generation
+        ));
+    }
+    if mcp.generation.as_deref() != Some(EXPECTED_GENERATION) {
+        failures.push(format!(
+            "MCP must report serving-generation provenance; observed {:?}",
+            mcp.generation
+        ));
+    }
+    if cli.response.as_ref().map(normalize_parity_result)
+        != mcp.response.as_ref().map(normalize_parity_result)
+    {
+        failures.push(format!(
+            "CLI and stdio MCP read results differ; CLI={:?}; MCP={:?}",
+            cli.response.as_ref().map(normalize_parity_result),
+            mcp.response.as_ref().map(normalize_parity_result)
+        ));
+    }
+    assert!(
+        failures.is_empty(),
+        "{F54_RED_MARKER}: CLI/MCP read parity failures: {}",
+        failures.join("; ")
+    );
 }
 
 // Route (c): build-feature replaces this task-owned assertion boundary.
@@ -1670,19 +1821,13 @@ async fn exercise_unknown_method(
         ));
     }
     fixture.ensure_daemon().await?;
-    let binding_before = fixture
-        .workspace_binding_fingerprint()
-        .await
-        .ok_or_else(|| "cannot observe workspace binding before unknown-method probe".to_owned())?;
+    let binding_before = fixture.workspace_binding_fingerprint().await?;
     let files_before = fixture.filesystem_snapshot()?;
     let raw = invoke_direct_ipc(method, None, fixture).await?;
     let files_after = fixture.filesystem_snapshot()?;
-    let binding_after = fixture.workspace_binding_fingerprint().await;
-    let effects =
-        changed_entry_count(&files_before, &files_after).saturating_add(match binding_after {
-            Some(binding) => usize::from(binding_before != binding),
-            None => 1,
-        });
+    let binding_after = fixture.workspace_binding_fingerprint().await?;
+    let effects = changed_entry_count(&files_before, &files_after)
+        .saturating_add(usize::from(binding_before != binding_after));
 
     Ok(Observation {
         accepted: raw.accepted,
