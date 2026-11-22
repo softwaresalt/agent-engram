@@ -4,7 +4,7 @@ date: 2026-11-21
 shipment: 179-S
 task: 142.090-T
 feature: 142-F
-last_code_affecting_head: "ffa93278e5cc23a8e89291e74e39b25fe9573d8d"
+last_code_affecting_head: "7c20d3856455f64d06c5ba8b3ba3f7c56edaa575"
 status: ready_with_followups
 ---
 
@@ -22,8 +22,8 @@ workflow for `142.090-T`.
 
 ## Verified evidence
 
-The reviewed review-fix head is `ffa93278e5cc23a8e89291e74e39b25fe9573d8d`.
-The focused doctor integration suite is green at 6/6. DAX CLI parity, CLI tool
+The reviewed review-fix head is `7c20d3856455f64d06c5ba8b3ba3f7c56edaa575`.
+The focused doctor integration suite is green at 14/14. DAX CLI parity, CLI tool
 catalog parity, binary unit tests, read-server parity, format, pedantic Clippy
 for both feature sets, all-target build, and line-ending checks pass.
 
