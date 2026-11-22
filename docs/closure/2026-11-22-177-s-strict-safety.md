@@ -35,11 +35,14 @@ the historical transaction digest.
 
 ## Protected observation representation
 
-The classifier evidence records 121 observation-set hashes for the Windows
-working-tree capture. At final verification, all 121 committed observations
-match the recorded SHA-256 values as LF bytes. The capture therefore remains
-replayable from the committed tree without hand-editing the immutable
-pre-close record.
+The classifier evidence records 121 observation-set hashes for the mixed
+Windows working-tree capture. At final verification, 117 observations match
+CRLF bytes and four match LF bytes. The LF records are `142-F`,
+`142.059-T`, `142.085-T`, and `142.089-T`.
+
+Replay from committed LF blobs therefore converts 117 records to CRLF and
+leaves the four named records as LF. This reproduces all 121 recorded
+SHA-256 values without hand-editing the immutable pre-close JSON.
 
 ## Shipment artifact relocation
 
