@@ -14,9 +14,20 @@ pull_request: 491
 > This record governs strict-safety interpretation for the two archive
 > actions below. It supersedes the historical `moderate` combined row in
 > the attested canonical closure for the `179-S` queue deletion only. The
-> canonical file remains byte-identical to the
-> `closure_content_hash` stored by `reconcile-shipped`; it is not rewritten
-> after attestation.
+> canonical content is not rewritten after attestation; the captured CRLF
+> representation is reproduced from the committed LF blob below.
+
+## Closure attestation representation
+
+The committed canonical closure is stored as LF. Its committed-blob
+SHA-256 is
+`2d96707cfd66088a59c43610511858de8012b7a449e4a7b9c39b77cf05eb1e01`.
+The governed `reconcile-shipped` capture occurred on the Windows working
+tree with CRLF bytes; normalizing the committed LF blob to CRLF reproduces
+the recorded `closure_content_hash`
+`ab3f32403460c30084345f062466988746d248e770f2a81aa1b7a6238b667a30`.
+The historical hash is preserved rather than replaced, and this procedure
+reproduces its captured byte representation from the committed tree.
 
 | Field | Value |
 |---|---|

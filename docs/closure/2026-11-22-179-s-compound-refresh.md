@@ -31,10 +31,10 @@ PR #490 merged at
 
 | Entry | Classification | Evidence and rationale |
 |---|---|---|
-| `docs/compound/workflow-issues/linked-worktree-shared-startup-deadline-exact-cleanup-2026-08-19.md` | keep | PR #490 independently confirms exact-child cleanup before readiness and detachment after successful startup. The entry's linked-worktree and outer-deadline scope remains distinct from doctor ownership, so widening it would dilute the learning |
+| `docs/compound/workflow-issues/linked-worktree-shared-startup-deadline-exact-cleanup-2026-08-19.md` | update | Its risk and exact-child principles remain valid, but any direct restoration procedure must be marked historical-only until it explicitly follows current `shipment-reconcile` capture, halt, fresh-approval, and revalidation safeguards |
 | `docs/compound/test-probe-resets-idle-ttl-livelock-2026-09-04.md` | keep | Doctor smoke still performs a real readiness connection, so probes must not be misdescribed as having no interaction at all. The closure evidence is narrower: no workspace delta, bind, replacement, shutdown, or control RPC. The existing warning about probes affecting idle state remains accurate and important |
-| `docs/compound/workflow-issues/backlogit-shipment-ship-force-releases-covering-feature-2026-04-22.md` | keep | 179-S's manifest-scoped safe close left the active covering feature and successor records unchanged, consistent with this entry's risk statement. PR #490 did not change or disprove backlogit cascade behavior |
-| `docs/compound/workflow-issues/backlogit-shipment-ship-non-terminating-large-covering-feature-2026-09-06.md` | keep | 179-S selected `SAFE_CLOSE` for a task-only manifest and recorded the reason, protected observation set, and byte-identical outcomes. It corroborates the existing safe-close response without proving or contradicting the entry's unresolved non-termination root cause |
+| `docs/compound/workflow-issues/backlogit-shipment-ship-force-releases-covering-feature-2026-04-22.md` | update | The risk statement remains valid, but any direct cascade procedure is historical-only; current closure requires the machine-classified close path, verified engine semantics, and explicit safe-close or approved cascade routing |
+| `docs/compound/workflow-issues/backlogit-shipment-ship-non-terminating-large-covering-feature-2026-09-06.md` | update | The root-cause observation remains useful, but the response text needs current `shipment-reconcile` safeguards. 179-S selected `SAFE_CLOSE` and verified the protected set rather than relying on a direct cascade |
 | `docs/compound/workflow-issues/shipment-done-status-post-merge-closure-repair-2026-08-15.md` | keep | This entry addresses a shipment incorrectly moved to generic `done`. 179-S used a different governed closure path, so it is neither duplicated nor superseded |
 | `docs/compound/destructive-reconciliation-needs-a-materialized-snapshot-2026-08-08.md` | keep | The 179-S close evidence materialized a 121-path protected observation set and verified it remained byte-identical. That supports the generic fail-closed snapshot principle without requiring a closure-specific rewrite |
 
@@ -85,15 +85,24 @@ None meets the threshold for promotion to a new instruction or skill.
 
 ## Maintenance decision
 
-No compound document is stale or contradicted by final PR #490 evidence. A
-compound edit is not conclusively required:
+Three entries retain valid risk evidence but contain procedures that should be
+marked historical-only under current `shipment-reconcile` safeguards:
 
-* existing guidance remains accurate
+* the linked-worktree recovery and overship restore sequence needs the
+  capture, halt, fresh-approval, and revalidation contract
+* direct cascade guidance needs the classifier and engine-semantics gate
+* the proposed updates remain outside this post-merge closure's mutation
+  scope, so this report records them without rewriting the compound entries
+
+The following guidance remains accurate:
+
+* the exact-child and materialized-snapshot risk principles remain valid
 * the new doctor-specific behavior is already captured in durable code,
   tests, runtime verification, and post-merge closure evidence
 * the safe-close response is already institutionalized in workflow learnings
 
-No compound file was changed. The report is intentionally in propose mode.
+No compound file was changed. The report is intentionally in propose mode
+and records three required historical-only updates for follow-up.
 
 ## Follow-up
 
