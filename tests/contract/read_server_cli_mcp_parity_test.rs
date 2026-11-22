@@ -71,6 +71,7 @@ enum ExpectedOutcome {
     ReadyHealth,
     SuccessfulWorkflow,
     GenerationBackedRead,
+    DaemonScopedRead,
     Refusal { code: u16 },
 }
 
@@ -1199,6 +1200,7 @@ fn generation_read(descriptor: &ToolDescriptor) -> bool {
     descriptor.capability == CapabilityClass::Read
         && descriptor.read_server_available
         && descriptor.input_ownership == InputOwnership::DaemonHandler
+        && descriptor.generation_backed
 }
 
 fn expected_refusal_code(descriptor: &ToolDescriptor) -> u16 {
@@ -1223,13 +1225,13 @@ fn expected_outcome(descriptor: &ToolDescriptor) -> ExpectedOutcome {
         && descriptor.read_server_available
     {
         ExpectedOutcome::SuccessfulWorkflow
-    } else if generation_read(descriptor) && !descriptor.generation_backed {
-        panic!(
-            "Worker: 142.058-T: classify daemon-scoped read {}",
-            descriptor.name
-        );
     } else if generation_read(descriptor) {
         ExpectedOutcome::GenerationBackedRead
+    } else if descriptor.capability == CapabilityClass::Read
+        && descriptor.read_server_available
+        && descriptor.input_ownership == InputOwnership::DaemonHandler
+    {
+        ExpectedOutcome::DaemonScopedRead
     } else {
         ExpectedOutcome::Refusal {
             code: expected_refusal_code(descriptor),
@@ -1275,6 +1277,38 @@ fn describe_failure(
         observation.response,
         observation.raw_response
     )
+}
+
+fn record_daemon_scoped_read_failures(
+    descriptor: &ToolDescriptor,
+    surface: ToolSurface,
+    observation: &Observation,
+    failures: &mut Vec<String>,
+) {
+    if !observation.accepted {
+        failures.push(describe_failure(
+            descriptor,
+            surface,
+            observation,
+            "an accepted daemon-scoped read result",
+        ));
+    }
+    if observation.generation.is_some() {
+        failures.push(describe_failure(
+            descriptor,
+            surface,
+            observation,
+            "no generation provenance for a daemon-scoped read",
+        ));
+    }
+    if observation.side_effect_count != 0 {
+        failures.push(describe_failure(
+            descriptor,
+            surface,
+            observation,
+            "zero filesystem and workspace-binding side effects",
+        ));
+    }
 }
 
 fn record_matrix_failures(
@@ -1344,6 +1378,9 @@ fn record_matrix_failures(
                     "serving-generation provenance",
                 ));
             }
+        }
+        ExpectedOutcome::DaemonScopedRead => {
+            record_daemon_scoped_read_failures(descriptor, surface, observation, failures);
         }
         ExpectedOutcome::Refusal { code } => {
             if observation.accepted {
