@@ -10,7 +10,7 @@ mode: pre-merge
 surface: cli
 verification_status: PASS_WITH_FOLLOW_UP
 closure_status: READY_WITH_CONDITIONS
-compaction_status: pending
+compaction_status: done
 owner: softwaresalt
 last_code_affecting_head: "7c20d3856455f64d06c5ba8b3ba3f7c56edaa575"
 follow_up_stash:
@@ -30,16 +30,16 @@ follow_up_stash:
   - "5214C10D"
 conditions:
   - condition: "GitHub Actions CI is green on the PR's final head"
-    satisfied: false
-    evidence: "The feature PR and its final-head CI result are not yet available"
+    satisfied: true
+    evidence: "PR #490 final head 1708c75f passed build and start-launcher-windows"
     owner: softwaresalt
     due_utc: "2026-11-22T23:59:59Z"
     attestation_evidence: "Required build and start-launcher-windows checks pass on the final head"
     escalation_path: "Hold merge and invoke fix-ci within scope; hand off at the circuit breaker"
     backlog_item_id: "N/A"
   - condition: "Copilot review is satisfied for the final head"
-    satisfied: false
-    evidence: "The feature PR has not yet been reviewed"
+    satisfied: true
+    evidence: "gsd gate copilot-review returned PASS for PR #490 final head 1708c75f with zero unresolved findings"
     owner: softwaresalt
     due_utc: "2026-11-22T23:59:59Z"
     attestation_evidence: "gsd gate copilot-review reports PASS for the final head"
@@ -121,15 +121,17 @@ surface and remains tracked in `8C21E5DA`.
 | Proposed action | ActionRisk | Approval and containment | ActionResult |
 |---|---|---|---|
 | Add a hidden CLI readiness subcommand | moderate | Authorized by `142.090-T`; scoped CLI implementation plus in-scope review fixes to doctor and shim lifecycle ownership | applied and verified |
-| Merge the feature PR | high | Bounded P-017 approval applies only after local readiness, CI, P-018, P-009, and P-016 pass | pending |
+| Merge the feature PR | high | Bounded P-017 approval followed local readiness, CI, P-018, P-009, and P-016 verification | applied as PR #490 merge `a2677cf9d4d682e7703f14aa9f98c6545a7deebf` |
 | Deploy or publish a binary | high | Separate operator approval required | not started |
 
 ## Releasability
 
-The CLI contract is `PASS_WITH_FOLLOW_UP`. Pre-merge releasability is
-`READY_WITH_CONDITIONS`; CI and Copilot review for the final feature head remain
-open automated conditions. Deferred full-suite instability remains tracked in
-`773841E3`, `5214C10D`, and the dependency-audit follow-up `8C21E5DA`.
+The CLI contract is `PASS_WITH_FOLLOW_UP`. Pre-merge releasability remains
+recorded as `READY_WITH_CONDITIONS` for the final attestation history; both CI
+and Copilot conditions were satisfied for final feature head
+`1708c75f414b0bc678b3c4a931b53de358e1136c`. Deferred full-suite instability
+remains tracked in `773841E3`, `5214C10D`, and the dependency-audit follow-up
+`8C21E5DA`.
 
 ## Documentation consistency audit
 

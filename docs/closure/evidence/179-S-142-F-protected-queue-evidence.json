@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "shipment_id": "179-S",
+  "feature_id": "142-F",
+  "base_ref": "main",
+  "observed_revision": "65f5fdbe",
+  "verification": "git rev-parse main:<path> equals git rev-parse observed_revision:<path>",
+  "paths": [
+    {
+      "path": ".backlogit/queue/142-F.md",
+      "base_blob": "bcf4e24304bf28ea1c7af9bc7fcde82d70e69276",
+      "observed_blob": "bcf4e24304bf28ea1c7af9bc7fcde82d70e69276",
+      "byte_identical": true
+    },
+    {
+      "path": ".backlogit/queue/177-S.md",
+      "base_blob": "27f221ba75a588e53a4764a0d86e61e7c786f0c4",
+      "observed_blob": "27f221ba75a588e53a4764a0d86e61e7c786f0c4",
+      "byte_identical": true
+    },
+    {
+      "path": ".backlogit/queue/142.058-T.md",
+      "base_blob": "4c44c9c9a2d7da0694a73ea30d3bac692c3dae53",
+      "observed_blob": "4c44c9c9a2d7da0694a73ea30d3bac692c3dae53",
+      "byte_identical": true
+    },
+    {
+      "path": ".backlogit/queue/178-S.md",
+      "base_blob": "f2ba30cd17d78ef3f08ccb32f7fcf5cde8b7cd51",
+      "observed_blob": "f2ba30cd17d78ef3f08ccb32f7fcf5cde8b7cd51",
+      "byte_identical": true
+    },
+    {
+      "path": ".backlogit/queue/142.059-T.md",
+      "base_blob": "4bf48159a2039a975d2be913033946f5e23ffd1b",
+      "observed_blob": "4bf48159a2039a975d2be913033946f5e23ffd1b",
+      "byte_identical": true
+    },
+    {
+      "path": ".backlogit/queue/142.058.002-ST.md",
+      "base_blob": "a7070490436e1ee2e9b2329e3bc9f794e4170be7",
+      "observed_blob": "a7070490436e1ee2e9b2329e3bc9f794e4170be7",
+      "byte_identical": true
+    },
+    {
+      "path": ".backlogit/queue/142.058.003-ST.md",
+      "base_blob": "6bdc6930bbbfb4aecf96d622e05d612597962904",
+      "observed_blob": "6bdc6930bbbfb4aecf96d622e05d612597962904",
+      "byte_identical": true
+    }
+  ]
+}
