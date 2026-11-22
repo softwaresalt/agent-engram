@@ -283,6 +283,15 @@ async fn daemon_ready(endpoint: &str) -> Result<bool, EngramError> {
 
 // ── Daemon lifecycle ──────────────────────────────────────────────────────────
 
+/// Whether a lifecycle call started the ready daemon or reused an existing one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DaemonOwnership {
+    /// The daemon was already running before this lifecycle call.
+    Reused,
+    /// This lifecycle call spawned or respawned the ready daemon.
+    Started,
+}
+
 /// Ensure the daemon is running for `workspace`.
 ///
 /// Steps:
@@ -299,6 +308,16 @@ async fn daemon_ready(endpoint: &str) -> Result<bool, EngramError> {
 /// - The daemon does not become healthy within the configured timeout ms.
 #[instrument(fields(workspace = %workspace.display()))]
 pub async fn ensure_daemon_running(workspace: &Path) -> Result<(), EngramError> {
+    ensure_daemon_running_with_ownership(workspace)
+        .await
+        .map(|_| ())
+}
+
+/// Ensure the daemon is running and report whether this invocation owns it.
+#[doc(hidden)]
+pub(crate) async fn ensure_daemon_running_with_ownership(
+    workspace: &Path,
+) -> Result<DaemonOwnership, EngramError> {
     let canonical = normalize_canonical(canonicalize_workspace(&workspace.to_string_lossy())?);
     let endpoint = ipc_endpoint(&canonical)?;
 
@@ -320,18 +339,20 @@ pub async fn ensure_daemon_running_with_endpoint(
     endpoint: String,
 ) -> Result<(), EngramError> {
     let canonical = normalize_canonical(canonicalize_workspace(&workspace.to_string_lossy())?);
-    ensure_daemon_running_inner(&canonical, endpoint, MAX_RESPAWN_ATTEMPTS).await
+    ensure_daemon_running_inner(&canonical, endpoint, MAX_RESPAWN_ATTEMPTS)
+        .await
+        .map(|_| ())
 }
 
 async fn ensure_daemon_running_inner(
     workspace: &Path,
     endpoint: String,
     respawns_remaining: u8,
-) -> Result<(), EngramError> {
+) -> Result<DaemonOwnership, EngramError> {
     match daemon_ready(&endpoint).await {
         Ok(true) => {
             info!("daemon already running and healthy");
-            return Ok(());
+            return Ok(DaemonOwnership::Reused);
         }
         Ok(false) => {}
         Err(e @ EngramError::Ipc(IpcError::VersionMismatch { .. })) => {
@@ -345,13 +366,7 @@ async fn ensure_daemon_running_inner(
                 error = %e,
                 "version mismatch detected — respawning daemon"
             );
-            let next_endpoint = respawn_daemon(workspace, &endpoint, pid_hint).await?;
-            return Box::pin(ensure_daemon_running_inner(
-                workspace,
-                next_endpoint,
-                respawns_remaining - 1,
-            ))
-            .await;
+            return respawn_daemon(workspace, &endpoint, pid_hint).await;
         }
         Err(e) => {
             if respawns_remaining > 0 {
@@ -361,14 +376,7 @@ async fn ensure_daemon_running_inner(
                         error = %e,
                         "health probe failed against live daemon — respawning"
                     );
-                    let next_endpoint =
-                        respawn_daemon(workspace, &endpoint, Some(pid_hint)).await?;
-                    return Box::pin(ensure_daemon_running_inner(
-                        workspace,
-                        next_endpoint,
-                        respawns_remaining - 1,
-                    ))
-                    .await;
+                    return respawn_daemon(workspace, &endpoint, Some(pid_hint)).await;
                 }
             }
 
@@ -397,14 +405,7 @@ async fn ensure_daemon_running_inner(
                         error = %e,
                         "live daemon PID has unreachable pipe — respawning"
                     );
-                    let next_endpoint =
-                        respawn_daemon(workspace, &endpoint, Some(pid_file)).await?;
-                    return Box::pin(ensure_daemon_running_inner(
-                        workspace,
-                        next_endpoint,
-                        respawns_remaining - 1,
-                    ))
-                    .await;
+                    return respawn_daemon(workspace, &endpoint, Some(pid_file)).await;
                 }
                 Err(e) => {
                     debug!(
@@ -568,13 +569,12 @@ async fn respawn_daemon(
     workspace: &Path,
     endpoint: &str,
     pid_hint: Option<PidFile>,
-) -> Result<String, EngramError> {
+) -> Result<DaemonOwnership, EngramError> {
     request_shutdown(endpoint).await;
     wait_for_daemon_exit(endpoint, pid_hint).await?;
     let mut child = spawn_daemon(workspace)?;
     let endpoint = ipc_endpoint(workspace)?;
-    poll_until_ready(workspace, &endpoint, Some(&mut child)).await?;
-    Ok(endpoint)
+    poll_until_ready(workspace, &endpoint, Some(&mut child)).await
 }
 
 fn daemon_executable() -> Result<std::path::PathBuf, EngramError> {
@@ -748,7 +748,7 @@ async fn poll_until_ready(
     workspace: &Path,
     endpoint: &str,
     mut spawned_child: Option<&mut tokio::process::Child>,
-) -> Result<(), EngramError> {
+) -> Result<DaemonOwnership, EngramError> {
     let timeout_ms = ready_timeout_ms();
     let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
     let mut delay_ms = INITIAL_BACKOFF_MS;
@@ -761,7 +761,26 @@ async fn poll_until_ready(
 
         if daemon_ready(endpoint).await? {
             info!(attempt, "daemon reached ready state");
-            return Ok(());
+            let Some(child) = spawned_child.as_deref_mut() else {
+                return Ok(DaemonOwnership::Reused);
+            };
+            let spawned_pid = child.id();
+            let exit_status = child.try_wait().map_err(|error| {
+                EngramError::Daemon(DaemonError::SpawnFailed {
+                    reason: format!("failed to inspect spawned daemon status: {error}"),
+                })
+            })?;
+            if let Some(status) = exit_status {
+                resolve_spawned_child_exit(workspace, endpoint, spawned_pid, status).await?;
+                return Ok(DaemonOwnership::Reused);
+            }
+            let owns_ready_endpoint = live_daemon_pid(workspace)?
+                .is_some_and(|pid_file| Some(pid_file.pid) == spawned_pid);
+            return Ok(if owns_ready_endpoint {
+                DaemonOwnership::Started
+            } else {
+                DaemonOwnership::Reused
+            });
         }
 
         if let Some(child) = spawned_child.as_deref_mut() {
@@ -782,7 +801,7 @@ async fn poll_until_ready(
                             %status,
                             "spawned daemon exited after a concurrent daemon became ready"
                         );
-                        return Ok(());
+                        return Ok(DaemonOwnership::Reused);
                     }
                     ConcurrentWinner::PidPublished => {
                         info!(
@@ -804,7 +823,27 @@ async fn poll_until_ready(
     // Final check: a concurrent shim may have raced and won the spawn.
     if daemon_ready(endpoint).await? {
         info!("daemon ready (concurrent shim won the spawn race)");
-        return Ok(());
+        if let Some(child) = spawned_child {
+            let still_running = child
+                .try_wait()
+                .map_err(|error| {
+                    EngramError::Daemon(DaemonError::SpawnFailed {
+                        reason: format!("failed to inspect spawned daemon status: {error}"),
+                    })
+                })?
+                .is_none();
+            if still_running {
+                let spawned_pid = child.id();
+                let owns_ready_endpoint = live_daemon_pid(workspace)?
+                    .is_some_and(|pid_file| Some(pid_file.pid) == spawned_pid);
+                return Ok(if owns_ready_endpoint {
+                    DaemonOwnership::Started
+                } else {
+                    DaemonOwnership::Reused
+                });
+            }
+        }
+        return Ok(DaemonOwnership::Reused);
     }
 
     Err(EngramError::Daemon(DaemonError::NotReady { timeout_ms }))

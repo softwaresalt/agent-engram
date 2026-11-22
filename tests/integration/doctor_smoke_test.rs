@@ -131,6 +131,78 @@ async fn doctor_smoke_leaves_read_server_daemon_running_without_binding_workspac
     Ok(())
 }
 
+/// A pre-existing managed daemon is owned by its original caller. Doctor smoke
+/// may probe it for readiness, but must not bind its workspace or shut it down.
+#[tokio::test]
+async fn doctor_smoke_leaves_preexisting_managed_daemon_untouched_and_running() -> CliTestResult {
+    let workspace = tempfile::tempdir()?;
+    fs::create_dir(workspace.path().join(".git"))?;
+    let canonical_workspace = workspace.path().canonicalize()?;
+    let endpoint = ipc_endpoint(&canonical_workspace)?;
+    let child = engram_command()
+        .arg("daemon")
+        .arg("--workspace")
+        .arg(&canonical_workspace)
+        .env("ENGRAM_IDLE_TIMEOUT_MS", "0")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let _child_guard = ChildGuard(child);
+    assert_daemon_ready(&endpoint).await?;
+
+    let result = run_smoke_test(&canonical_workspace).await?;
+    assert!(
+        result.passed,
+        "smoke test reported failure: {}",
+        result.message
+    );
+    assert!(
+        result.message.contains("reused daemon was left untouched"),
+        "smoke did not take the reused-daemon ownership path: {}",
+        result.message
+    );
+
+    let status_request = IpcRequest {
+        jsonrpc: "2.0".to_owned(),
+        id: Some(Value::Number(serde_json::Number::from(98))),
+        method: "get_daemon_status".to_owned(),
+        params: None,
+    };
+    let status_response = send_request(&endpoint, &status_request, Duration::from_secs(10)).await?;
+    assert!(
+        status_response.error.is_none(),
+        "pre-existing managed daemon did not survive doctor smoke: {:?}",
+        status_response.error
+    );
+
+    let workspace_request = IpcRequest {
+        jsonrpc: "2.0".to_owned(),
+        id: Some(Value::Number(serde_json::Number::from(99))),
+        method: "get_workspace_status".to_owned(),
+        params: None,
+    };
+    let workspace_response =
+        send_request(&endpoint, &workspace_request, Duration::from_secs(10)).await?;
+    assert!(
+        workspace_response.error.is_none(),
+        "pre-existing managed daemon lost its workspace: {:?}",
+        workspace_response.error
+    );
+    let reported_workspace = workspace_response
+        .result
+        .as_ref()
+        .and_then(|result| result.get("path"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| io::Error::other("workspace status omitted path"))?;
+    assert_eq!(
+        fs::canonicalize(reported_workspace)?,
+        canonical_workspace,
+        "doctor smoke changed the pre-existing managed daemon binding"
+    );
+
+    Ok(())
+}
+
 struct ChildGuard(Child);
 
 impl Drop for ChildGuard {
