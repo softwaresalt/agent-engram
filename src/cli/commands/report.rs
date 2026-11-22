@@ -16,6 +16,50 @@ pub async fn run_health(flags: &GlobalFlags, formatter: &OutputFormatter) -> i32
     run_tool("get_health_report", None, flags, formatter).await
 }
 
+/// Run the hidden `engram doctor --smoke` workflow selected in decision 039-D.
+///
+/// Future consolidation under `engram health` remains subject to evaluation
+/// tracked in stash A8C1F6D5.
+pub async fn run_doctor_smoke(
+    smoke: bool,
+    flags: &GlobalFlags,
+    formatter: &OutputFormatter,
+) -> i32 {
+    if !smoke {
+        return formatter.cli_error("--smoke is required");
+    }
+
+    let raw_workspace = match flags.resolve_workspace() {
+        Ok(path) => path,
+        Err(err) => return formatter.cli_error(&err),
+    };
+    let workspace = match std::fs::canonicalize(&raw_workspace) {
+        Ok(path) => crate::db::workspace::normalize_canonical(path),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => raw_workspace,
+        Err(err) => return formatter.cli_error(&format!("workspace path error: {err}")),
+    };
+    let id = flags.id_value();
+
+    match crate::tools::doctor::run_smoke_test(&workspace).await {
+        Ok(result) if result.passed => match serde_json::to_value(&result) {
+            Ok(value) => formatter.success(id, value),
+            Err(err) => formatter.tool_error(
+                id,
+                -32_603,
+                &format!("failed to serialize smoke result: {err}"),
+                None,
+            ),
+        },
+        Ok(result) => formatter.tool_error(
+            id,
+            -32_603,
+            &result.message,
+            serde_json::to_value(&result).ok(),
+        ),
+        Err(err) => formatter.tool_error_response(id, &err.to_response()),
+    }
+}
+
 /// `engram branch-metrics [--branch B] [--compare C]` → `get_branch_metrics`
 pub async fn run_branch_metrics(
     branch_name: Option<String>,

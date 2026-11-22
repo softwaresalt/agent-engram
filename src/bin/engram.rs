@@ -329,6 +329,14 @@ enum Command {
     /// efficiency).
     Eval,
 
+    /// Run the internal non-destructive daemon readiness smoke check.
+    #[command(hide = true)]
+    Doctor {
+        /// Execute the readiness smoke check.
+        #[arg(long, required = true)]
+        smoke: bool,
+    },
+
     /// Dev-launcher-only readiness probe relayed to the `engram-indexer` sibling.
     ///
     /// Ignores the global `--workspace`, `--timeout`, `--json`, `--format`, and
@@ -604,6 +612,11 @@ async fn main() -> Result<()> {
         Command::Health => {
             let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref(), flags.quiet);
             let code = report::run_health(&flags, &fmt).await;
+            std::process::exit(code);
+        }
+        Command::Doctor { smoke } => {
+            let fmt = OutputFormatter::from_flags(flags.json, flags.format.as_deref(), flags.quiet);
+            let code = report::run_doctor_smoke(smoke, &flags, &fmt).await;
             std::process::exit(code);
         }
         Command::BranchMetrics { branch, compare } => {

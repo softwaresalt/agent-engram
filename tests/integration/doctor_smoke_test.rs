@@ -159,7 +159,10 @@ fn snapshot_workspace(root: &Path) -> io::Result<BTreeMap<PathBuf, (u64, SystemT
         for entry in fs::read_dir(directory)? {
             let entry = entry?;
             let path = entry.path();
-            let relative = path.strip_prefix(root).map_err(io::Error::other)?.to_path_buf();
+            let relative = path
+                .strip_prefix(root)
+                .map_err(io::Error::other)?
+                .to_path_buf();
             let metadata = fs::symlink_metadata(&path)?;
             snapshot.insert(relative, (metadata.len(), metadata.modified()?));
             if metadata.is_dir() {
@@ -178,7 +181,9 @@ async fn assert_daemon_ready(endpoint: &str) -> io::Result<()> {
     let deadline = Instant::now() + Duration::from_secs(10);
     while !check_health(endpoint).await {
         if Instant::now() >= deadline {
-            return Err(io::Error::other("daemon did not become ready within 10 seconds"));
+            return Err(io::Error::other(
+                "daemon did not become ready within 10 seconds",
+            ));
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -187,8 +192,8 @@ async fn assert_daemon_ready(endpoint: &str) -> io::Result<()> {
 
 /// `engram doctor --smoke` must probe a live `ReadServer` without provenance or side effects.
 #[tokio::test]
-async fn cli_doctor_smoke_read_server_succeeds_without_provenance_or_side_effects(
-) -> CliTestResult {
+async fn cli_doctor_smoke_read_server_succeeds_without_provenance_or_side_effects() -> CliTestResult
+{
     let workspace = tempfile::tempdir()?;
     fs::create_dir(workspace.path().join(".git"))?;
     fs::write(
