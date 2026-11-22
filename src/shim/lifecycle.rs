@@ -284,12 +284,24 @@ async fn daemon_ready(endpoint: &str) -> Result<bool, EngramError> {
 // ── Daemon lifecycle ──────────────────────────────────────────────────────────
 
 /// Whether a lifecycle call started the ready daemon or reused an existing one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) enum DaemonOwnership {
     /// The daemon was already running before this lifecycle call.
     Reused,
     /// This lifecycle call spawned or respawned the ready daemon.
-    Started,
+    Started {
+        /// Exact child handle retained for bounded doctor cleanup.
+        child: Box<tokio::process::Child>,
+        /// Process identity published by the exact spawned daemon.
+        pid_file: PidFile,
+    },
+}
+
+impl DaemonOwnership {
+    #[must_use]
+    pub(crate) const fn is_started(&self) -> bool {
+        matches!(self, Self::Started { .. })
+    }
 }
 
 /// Controls whether lifecycle validation may replace an existing daemon.
@@ -481,9 +493,9 @@ async fn ensure_daemon_running_inner(
         return poll_until_ready(workspace, &endpoint, None).await;
     }
 
-    let mut child = spawn_daemon(workspace)?;
+    let child = spawn_daemon(workspace)?;
     let endpoint = ipc_endpoint(workspace)?;
-    poll_until_ready(workspace, &endpoint, Some(&mut child)).await
+    poll_until_ready(workspace, &endpoint, Some(child)).await
 }
 
 fn existing_daemon_unavailable(endpoint: &str, reason: &str) -> EngramError {
@@ -642,9 +654,9 @@ async fn respawn_daemon(
 ) -> Result<DaemonOwnership, EngramError> {
     request_shutdown(endpoint).await;
     wait_for_daemon_exit(endpoint, pid_hint).await?;
-    let mut child = spawn_daemon(workspace)?;
+    let child = spawn_daemon(workspace)?;
     let endpoint = ipc_endpoint(workspace)?;
-    poll_until_ready(workspace, &endpoint, Some(&mut child)).await
+    poll_until_ready(workspace, &endpoint, Some(child)).await
 }
 
 fn daemon_executable() -> Result<std::path::PathBuf, EngramError> {
@@ -817,8 +829,101 @@ async fn resolve_spawned_child_exit(
 async fn poll_until_ready(
     workspace: &Path,
     endpoint: &str,
-    mut spawned_child: Option<&mut tokio::process::Child>,
+    mut spawned_child: Option<tokio::process::Child>,
 ) -> Result<DaemonOwnership, EngramError> {
+    let outcome = poll_until_ready_inner(workspace, endpoint, spawned_child.as_mut()).await;
+
+    match outcome {
+        Ok(PollOutcome::Started(pid_file)) => {
+            let child = spawned_child.ok_or_else(|| {
+                EngramError::Daemon(DaemonError::SpawnFailed {
+                    reason: "ready ownership omitted the spawned child handle".to_owned(),
+                })
+            })?;
+            Ok(DaemonOwnership::Started {
+                child: Box::new(child),
+                pid_file,
+            })
+        }
+        Ok(PollOutcome::Reused) => {
+            if let Some(child) = spawned_child.as_mut() {
+                cleanup_spawned_child(child).await;
+            }
+            Ok(DaemonOwnership::Reused)
+        }
+        Err(error) => {
+            if let Some(child) = spawned_child.as_mut() {
+                cleanup_spawned_child(child).await;
+            }
+            Err(error)
+        }
+    }
+}
+
+async fn cleanup_spawned_child(child: &mut tokio::process::Child) {
+    if child.try_wait().is_ok_and(|status| status.is_some()) {
+        return;
+    }
+
+    if let Err(error) = child.start_kill() {
+        debug!(%error, "failed to kill spawned daemon during lifecycle cleanup");
+    }
+
+    match tokio::time::timeout(
+        Duration::from_millis(SHUTDOWN_WAIT_TIMEOUT_MS),
+        child.wait(),
+    )
+    .await
+    {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => {
+            debug!(%error, "failed to reap spawned daemon during lifecycle cleanup");
+        }
+        Err(_) => {
+            debug!("timed out reaping spawned daemon during lifecycle cleanup");
+        }
+    }
+}
+
+pub(crate) async fn cleanup_owned_daemon(
+    workspace: &Path,
+    endpoint: &str,
+    pid_file: &PidFile,
+    child: &mut tokio::process::Child,
+) {
+    let pid_is_still_owned = PidFile::read(workspace).is_some_and(|published| {
+        published == *pid_file
+            && Some(pid_file.pid) == child.id()
+            && pid_file.verify_alive().is_ok_and(|alive| alive)
+    });
+
+    if pid_is_still_owned {
+        request_shutdown(endpoint).await;
+    }
+
+    let child_exited = tokio::time::timeout(
+        Duration::from_millis(SHUTDOWN_WAIT_TIMEOUT_MS),
+        child.wait(),
+    )
+    .await
+    .is_ok_and(|result| result.is_ok());
+
+    if !child_exited {
+        cleanup_spawned_child(child).await;
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PollOutcome {
+    Reused,
+    Started(PidFile),
+}
+
+async fn poll_until_ready_inner(
+    workspace: &Path,
+    endpoint: &str,
+    mut spawned_child: Option<&mut tokio::process::Child>,
+) -> Result<PollOutcome, EngramError> {
     let timeout_ms = ready_timeout_ms();
     let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
     let mut delay_ms = INITIAL_BACKOFF_MS;
@@ -832,7 +937,7 @@ async fn poll_until_ready(
         if daemon_ready(endpoint).await? {
             info!(attempt, "daemon reached ready state");
             let Some(child) = spawned_child.as_deref_mut() else {
-                return Ok(DaemonOwnership::Reused);
+                return Ok(PollOutcome::Reused);
             };
             let spawned_pid = child.id();
             let exit_status = child.try_wait().map_err(|error| {
@@ -842,15 +947,14 @@ async fn poll_until_ready(
             })?;
             if let Some(status) = exit_status {
                 resolve_spawned_child_exit(workspace, endpoint, spawned_pid, status).await?;
-                return Ok(DaemonOwnership::Reused);
+                return Ok(PollOutcome::Reused);
             }
-            let owns_ready_endpoint = live_daemon_pid(workspace)?
-                .is_some_and(|pid_file| Some(pid_file.pid) == spawned_pid);
-            return Ok(if owns_ready_endpoint {
-                DaemonOwnership::Started
-            } else {
-                DaemonOwnership::Reused
-            });
+            return match live_daemon_pid(workspace)? {
+                Some(pid_file) if Some(pid_file.pid) == spawned_pid => {
+                    Ok(PollOutcome::Started(pid_file))
+                }
+                _ => Ok(PollOutcome::Reused),
+            };
         }
 
         if let Some(child) = spawned_child.as_deref_mut() {
@@ -871,7 +975,7 @@ async fn poll_until_ready(
                             %status,
                             "spawned daemon exited after a concurrent daemon became ready"
                         );
-                        return Ok(DaemonOwnership::Reused);
+                        return Ok(PollOutcome::Reused);
                     }
                     ConcurrentWinner::PidPublished => {
                         info!(
@@ -904,16 +1008,15 @@ async fn poll_until_ready(
                 .is_none();
             if still_running {
                 let spawned_pid = child.id();
-                let owns_ready_endpoint = live_daemon_pid(workspace)?
-                    .is_some_and(|pid_file| Some(pid_file.pid) == spawned_pid);
-                return Ok(if owns_ready_endpoint {
-                    DaemonOwnership::Started
-                } else {
-                    DaemonOwnership::Reused
-                });
+                return match live_daemon_pid(workspace)? {
+                    Some(pid_file) if Some(pid_file.pid) == spawned_pid => {
+                        Ok(PollOutcome::Started(pid_file))
+                    }
+                    _ => Ok(PollOutcome::Reused),
+                };
             }
         }
-        return Ok(DaemonOwnership::Reused);
+        return Ok(PollOutcome::Reused);
     }
 
     Err(EngramError::Daemon(DaemonError::NotReady { timeout_ms }))
@@ -926,11 +1029,58 @@ mod tests {
     use super::*;
     use std::io::Write as _;
 
+    const CLEANUP_CHILD_FIXTURE_ENV: &str = "ENGRAM_LIFECYCLE_CLEANUP_CHILD_FIXTURE";
+
     fn create_capture_workspace() -> tempfile::TempDir {
         let workspace = tempfile::tempdir().expect("workspace tempdir");
         std::fs::create_dir(workspace.path().join(".git")).expect("create git metadata");
         std::fs::create_dir(workspace.path().join(".engram")).expect("create .engram");
         workspace
+    }
+
+    #[tokio::test]
+    async fn cleanup_owned_daemon_reaps_exact_started_child_after_failure() {
+        if std::env::var_os(CLEANUP_CHILD_FIXTURE_ENV).is_some() {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            return;
+        }
+
+        let workspace = create_capture_workspace();
+        let current_exe = std::env::current_exe().expect("test executable path");
+        let mut child = tokio::process::Command::new(current_exe)
+            .args([
+                "--exact",
+                "shim::lifecycle::tests::cleanup_owned_daemon_reaps_exact_started_child_after_failure",
+                "--nocapture",
+            ])
+            .env(CLEANUP_CHILD_FIXTURE_ENV, "1")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn cleanup fixture child");
+        let pid = child.id().expect("cleanup fixture child PID");
+        let pid_file = PidFile {
+            pid,
+            start_time_unix: 1,
+        };
+        pid_file
+            .atomic_write(&workspace.path().join(".engram").join("run"))
+            .expect("publish cleanup fixture PID");
+        let endpoint = ipc_endpoint(workspace.path()).expect("test IPC endpoint");
+
+        cleanup_owned_daemon(workspace.path(), &endpoint, &pid_file, &mut child).await;
+
+        assert!(
+            !pid_file
+                .verify_alive()
+                .expect("verify cleanup fixture liveness"),
+            "cleanup left owned child {pid} alive"
+        );
+        assert!(
+            child.try_wait().expect("inspect cleanup fixture").is_some(),
+            "cleanup killed but did not reap owned child {pid}"
+        );
     }
 
     /// Default timeout is 30 000 ms when no env var value is provided.

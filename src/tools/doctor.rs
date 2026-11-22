@@ -321,141 +321,152 @@ pub async fn run_smoke_test_with_timeout(
 ) -> Result<SmokeResult, EngramError> {
     use serde_json::{Value, json};
 
-    use crate::daemon::ipc_server::ipc_endpoint;
+    use crate::daemon::ipc_server::{ipc_endpoint, resolve_daemon_mode};
     use crate::daemon::protocol::IpcRequest;
     use crate::shim::ipc_client::send_request;
-    use crate::shim::lifecycle::{DaemonOwnership, ensure_daemon_running_for_doctor};
+    use crate::shim::lifecycle::{
+        DaemonOwnership, cleanup_owned_daemon, ensure_daemon_running_for_doctor,
+    };
 
     let start = std::time::Instant::now();
+    let startup_mode = resolve_daemon_mode(workspace).ok();
 
     // Step 1: Spawn or reuse the daemon.
-    let ownership =
-        ensure_daemon_running_for_doctor(workspace)
-            .await
-            .map_err(|error| match error {
-                refused @ crate::errors::EngramError::Ipc(
-                    crate::errors::IpcError::VersionMismatch { .. }
-                    | crate::errors::IpcError::ConnectionFailed { .. },
-                ) => refused,
-                error => {
-                    crate::errors::EngramError::Daemon(crate::errors::DaemonError::SpawnFailed {
-                        reason: format!("smoke test: daemon start failed: {error}"),
-                    })
-                }
-            })?;
+    let mut ownership = ensure_daemon_running_for_doctor(workspace)
+        .await
+        .map_err(|error| match error {
+            refused @ crate::errors::EngramError::Ipc(
+                crate::errors::IpcError::VersionMismatch { .. }
+                | crate::errors::IpcError::ConnectionFailed { .. },
+            ) => refused,
+            error => crate::errors::EngramError::Daemon(crate::errors::DaemonError::SpawnFailed {
+                reason: format!("smoke test: daemon start failed: {error}"),
+            }),
+        })?;
 
     let endpoint = ipc_endpoint(workspace)?;
+    let mut effective_mode = startup_mode;
+    let smoke_outcome = async {
+        let workspace_str = workspace
+            .to_str()
+            .ok_or_else(|| {
+                crate::errors::EngramError::Daemon(crate::errors::DaemonError::SpawnFailed {
+                    reason: "workspace path contains non-UTF-8 characters".to_owned(),
+                })
+            })?
+            .to_owned();
 
-    let workspace_str = workspace
-        .to_str()
-        .ok_or_else(|| {
-            crate::errors::EngramError::Daemon(crate::errors::DaemonError::SpawnFailed {
-                reason: "workspace path contains non-UTF-8 characters".to_owned(),
-            })
-        })?
-        .to_owned();
-
-    // Step 2: always probe get_daemon_status first and read the *actual live
-    // daemon's* reported mode from its response, rather than trusting
-    // on-disk configuration via `resolve_daemon_mode`. `ensure_daemon_running`
-    // may have reused an already-running daemon whose mode was fixed at its
-    // own startup; if configuration changed on disk afterward, selecting the
-    // remaining smoke sequence from stale on-disk config could send a
-    // write-capable `set_workspace` + `_shutdown` sequence to a live
-    // ReadServer daemon, violating its non-destructive smoke contract.
-    let status_request = IpcRequest {
-        jsonrpc: "2.0".to_owned(),
-        id: Some(Value::Number(serde_json::Number::from(1))),
-        method: "get_daemon_status".to_owned(),
-        params: None,
-    };
-    let status_response = send_request(&endpoint, &status_request, ipc_timeout).await?;
-    if let Some(err) = &status_response.error {
-        let latency_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-        return Ok(SmokeResult {
-            passed: false,
-            message: format!("get_daemon_status failed: {}", err.message),
-            latency_ms: Some(latency_ms),
-        });
-    }
-    let observed_mode_str = status_response
-        .result
-        .as_ref()
-        .and_then(|result| result.get("mode"))
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            crate::errors::EngramError::Daemon(crate::errors::DaemonError::SpawnFailed {
-                reason: "smoke test: get_daemon_status response missing mode field".to_owned(),
-            })
-        })?;
-    let mode = DaemonMode::resolve(Some(observed_mode_str)).map_err(|e| {
-        crate::errors::EngramError::Daemon(crate::errors::DaemonError::SpawnFailed {
-            reason: format!("smoke test: daemon reported unrecognized mode: {e}"),
-        })
-    })?;
-
-    // Step 3: reused Managed daemons stop after the status probe. ReadServer
-    // always receives its read-only workspace-status readiness probe, while
-    // invocation-started Managed daemons also receive bind and shutdown.
-    let remaining_methods =
-        smoke_request_methods_for_run(mode, ownership == DaemonOwnership::Started);
-    for (offset, method) in remaining_methods.iter().enumerate() {
-        let index = offset + 2;
-        let request = match *method {
-            "get_workspace_status" => IpcRequest {
-                jsonrpc: "2.0".to_owned(),
-                id: Some(Value::Number(serde_json::Number::from(index))),
-                method: "get_workspace_status".to_owned(),
-                params: None,
-            },
-            "set_workspace" => IpcRequest {
-                jsonrpc: "2.0".to_owned(),
-                id: Some(Value::Number(serde_json::Number::from(index))),
-                method: "set_workspace".to_owned(),
-                params: Some(json!({ "path": workspace_str })),
-            },
-            "_shutdown" => IpcRequest {
-                jsonrpc: "2.0".to_owned(),
-                id: Some(Value::Number(serde_json::Number::from(index))),
-                method: "_shutdown".to_owned(),
-                params: None,
-            },
-            other => unreachable!("unexpected smoke workflow method: {other}"),
+        // Step 2: always probe get_daemon_status first and read the *actual live
+        // daemon's* reported mode from its response, rather than trusting
+        // on-disk configuration via `resolve_daemon_mode`. `ensure_daemon_running`
+        // may have reused an already-running daemon whose mode was fixed at its
+        // own startup; if configuration changed on disk afterward, selecting the
+        // remaining smoke sequence from stale on-disk config could send a
+        // write-capable `set_workspace` + `_shutdown` sequence to a live
+        // ReadServer daemon, violating its non-destructive smoke contract.
+        let status_request = IpcRequest {
+            jsonrpc: "2.0".to_owned(),
+            id: Some(Value::Number(serde_json::Number::from(1))),
+            method: "get_daemon_status".to_owned(),
+            params: None,
         };
-
-        let response = send_request(&endpoint, &request, ipc_timeout).await?;
-        if let Some(err) = &response.error {
+        let status_response = send_request(&endpoint, &status_request, ipc_timeout).await?;
+        if let Some(err) = &status_response.error {
             let latency_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
             return Ok(SmokeResult {
                 passed: false,
-                message: format!("{method} failed: {}", err.message),
+                message: format!("get_daemon_status failed: {}", err.message),
                 latency_ms: Some(latency_ms),
             });
         }
+        let observed_mode_str = status_response
+            .result
+            .as_ref()
+            .and_then(|result| result.get("mode"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                crate::errors::EngramError::Daemon(crate::errors::DaemonError::SpawnFailed {
+                    reason: "smoke test: get_daemon_status response missing mode field".to_owned(),
+                })
+            })?;
+        let mode = DaemonMode::resolve(Some(observed_mode_str)).map_err(|e| {
+            crate::errors::EngramError::Daemon(crate::errors::DaemonError::SpawnFailed {
+                reason: format!("smoke test: daemon reported unrecognized mode: {e}"),
+            })
+        })?;
+        effective_mode = Some(mode);
+
+        // Step 3: reused Managed daemons stop after the status probe. ReadServer
+        // always receives its read-only workspace-status readiness probe, while
+        // invocation-started Managed daemons also receive bind and shutdown.
+        let remaining_methods = smoke_request_methods_for_run(mode, ownership.is_started());
+        for (offset, method) in remaining_methods.iter().enumerate() {
+            let index = offset + 2;
+            let request = match *method {
+                "get_workspace_status" => IpcRequest {
+                    jsonrpc: "2.0".to_owned(),
+                    id: Some(Value::Number(serde_json::Number::from(index))),
+                    method: "get_workspace_status".to_owned(),
+                    params: None,
+                },
+                "set_workspace" => IpcRequest {
+                    jsonrpc: "2.0".to_owned(),
+                    id: Some(Value::Number(serde_json::Number::from(index))),
+                    method: "set_workspace".to_owned(),
+                    params: Some(json!({ "path": workspace_str })),
+                },
+                "_shutdown" => IpcRequest {
+                    jsonrpc: "2.0".to_owned(),
+                    id: Some(Value::Number(serde_json::Number::from(index))),
+                    method: "_shutdown".to_owned(),
+                    params: None,
+                },
+                other => unreachable!("unexpected smoke workflow method: {other}"),
+            };
+
+            let response = send_request(&endpoint, &request, ipc_timeout).await?;
+            if let Some(err) = &response.error {
+                let latency_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+                return Ok(SmokeResult {
+                    passed: false,
+                    message: format!("{method} failed: {}", err.message),
+                    latency_ms: Some(latency_ms),
+                });
+            }
+        }
+
+        let latency_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let message = match (&ownership, mode) {
+            (DaemonOwnership::Reused, DaemonMode::Managed) => {
+                "Smoke test passed: version exchange succeeded and the reused daemon was left untouched"
+                    .to_owned()
+            }
+            (DaemonOwnership::Reused, DaemonMode::ReadServer) => {
+                "Smoke test passed: version exchange and workspace-status readiness succeeded and the reused daemon was left untouched"
+                    .to_owned()
+            }
+            (DaemonOwnership::Started { .. }, DaemonMode::Managed) => {
+                "Smoke test passed: version exchange, workspace bind, and shutdown all succeeded"
+                    .to_owned()
+            }
+            (DaemonOwnership::Started { .. }, DaemonMode::ReadServer) => {
+                "Smoke test passed: version exchange and workspace-status readiness succeeded without write or shutdown"
+                    .to_owned()
+            }
+        };
+        Ok(SmokeResult {
+            passed: true,
+            message,
+            latency_ms: Some(latency_ms),
+        })
+    }
+    .await;
+
+    if effective_mode == Some(DaemonMode::Managed)
+        && let DaemonOwnership::Started { child, pid_file } = &mut ownership
+    {
+        cleanup_owned_daemon(workspace, &endpoint, pid_file, child).await;
     }
 
-    let latency_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-    let message = match (ownership, mode) {
-        (DaemonOwnership::Reused, DaemonMode::Managed) => {
-            "Smoke test passed: version exchange succeeded and the reused daemon was left untouched"
-                .to_owned()
-        }
-        (DaemonOwnership::Reused, DaemonMode::ReadServer) => {
-            "Smoke test passed: version exchange and workspace-status readiness succeeded and the reused daemon was left untouched"
-                .to_owned()
-        }
-        (DaemonOwnership::Started, DaemonMode::Managed) => {
-            "Smoke test passed: version exchange, workspace bind, and shutdown all succeeded"
-                .to_owned()
-        }
-        (DaemonOwnership::Started, DaemonMode::ReadServer) => {
-            "Smoke test passed: version exchange and workspace-status readiness succeeded without write or shutdown"
-                .to_owned()
-        }
-    };
-    Ok(SmokeResult {
-        passed: true,
-        message,
-        latency_ms: Some(latency_ms),
-    })
+    smoke_outcome
 }

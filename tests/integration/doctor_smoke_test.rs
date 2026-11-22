@@ -67,6 +67,35 @@ async fn doctor_smoke_result_includes_latency() {
 }
 
 #[tokio::test]
+async fn doctor_smoke_reaps_child_when_startup_readiness_times_out() -> CliTestResult {
+    let workspace = tempfile::tempdir()?;
+    fs::create_dir(workspace.path().join(".git"))?;
+    let canonical_workspace = workspace.path().canonicalize()?;
+
+    let output = engram_command()
+        .arg("--workspace")
+        .arg(&canonical_workspace)
+        .args(["--json", "doctor", "--smoke"])
+        .env("ENGRAM_READY_TIMEOUT_MS", "750")
+        .env("ENGRAM_TEST_STARTUP_DELAY_MS", "5000")
+        .output()?;
+
+    assert!(
+        !output.status.success(),
+        "doctor smoke unexpectedly passed while daemon startup was delayed"
+    );
+    let pid_file = PidFile::read(&canonical_workspace)
+        .ok_or_else(|| io::Error::other("timed-out doctor spawn omitted PID metadata"))?;
+    assert!(
+        !pid_file.verify_alive()?,
+        "doctor smoke left its exact delayed startup child alive: {}",
+        pid_file.pid
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn doctor_smoke_does_not_replace_protocol_mismatched_daemon() -> CliTestResult {
     let workspace = tempfile::tempdir()?;
     fs::create_dir(workspace.path().join(".git"))?;
