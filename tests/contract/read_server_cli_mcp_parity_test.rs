@@ -696,22 +696,10 @@ async fn exercise_declared_surface(
         fixture.verify_daemon_marker()?;
     }
 
-    let expect_refusal = matches!(
-        expected_outcome(descriptor),
-        ExpectedOutcome::Refusal { .. }
-    );
-    let binding_before = if expect_refusal {
-        Some(
-            fixture
-                .workspace_binding_fingerprint()
-                .await
-                .ok_or_else(|| {
-                    "cannot observe the isolated workspace binding before refusal probe".to_owned()
-                })?,
-        )
-    } else {
-        None
-    };
+    let binding_before = fixture
+        .workspace_binding_fingerprint()
+        .await
+        .ok_or_else(|| "cannot observe the isolated workspace binding before probe".to_owned())?;
     let files_before = fixture.filesystem_snapshot()?;
 
     let raw = match surface {
@@ -741,16 +729,11 @@ async fn exercise_declared_surface(
     }
 
     let files_after = fixture.filesystem_snapshot()?;
-    let binding_after = if expect_refusal {
-        fixture.workspace_binding_fingerprint().await
-    } else {
-        None
-    };
+    let binding_after = fixture.workspace_binding_fingerprint().await;
     let filesystem_changes = changed_entry_count(&files_before, &files_after);
-    let state_changes = match (binding_before, binding_after) {
-        (Some(before), Some(after)) => usize::from(before != after),
-        (Some(_), None) => 1,
-        _ => 0,
+    let state_changes = match binding_after {
+        Some(after) => usize::from(binding_before != after),
+        None => 1,
     };
     let side_effect_count = filesystem_changes.saturating_add(state_changes);
     let generation = raw
