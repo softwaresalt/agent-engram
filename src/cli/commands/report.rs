@@ -1,4 +1,5 @@
-//! Report and diagnostics subcommands: stats, health, branch-metrics, and 3 report children.
+//! Report and diagnostics subcommands: stats, health, doctor smoke, branch metrics,
+//! and 3 report children.
 
 use serde_json::{Value, json};
 

@@ -72,7 +72,8 @@ async fn doctor_smoke_result_includes_latency() {
 /// live daemon's active workspace via an unwanted `set_workspace`, or shut
 /// the daemon down -- either of which this test would catch.
 #[tokio::test]
-async fn doctor_smoke_leaves_read_server_daemon_running_without_binding_workspace() {
+async fn doctor_smoke_leaves_read_server_daemon_running_without_binding_workspace() -> CliTestResult
+{
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     fs::create_dir(workspace.path().join(".git")).expect("create .git");
     let engram_dir = workspace.path().join(".engram");
@@ -80,9 +81,20 @@ async fn doctor_smoke_leaves_read_server_daemon_running_without_binding_workspac
     fs::write(engram_dir.join("config.toml"), "mode = \"read_server\"\n")
         .expect("write read_server config.toml");
 
-    let result = run_smoke_test(workspace.path())
-        .await
-        .expect("read_server smoke test should succeed without errors");
+    let canonical_workspace = workspace.path().canonicalize()?;
+    let endpoint = ipc_endpoint(&canonical_workspace)?;
+    let child = engram_command()
+        .arg("daemon")
+        .arg("--workspace")
+        .arg(&canonical_workspace)
+        .env("ENGRAM_IDLE_TIMEOUT_MS", "0")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let _child_guard = ChildGuard(child);
+    assert_daemon_ready(&endpoint).await?;
+
+    let result = run_smoke_test(&canonical_workspace).await?;
     assert!(
         result.passed,
         "read_server smoke test reported failure: {}",
@@ -92,7 +104,6 @@ async fn doctor_smoke_leaves_read_server_daemon_running_without_binding_workspac
     // Prove the daemon was left running (not shut down) by sending a direct
     // follow-up get_daemon_status call. A `managed`-mode-style `_shutdown`
     // call during the smoke run would make this connection fail.
-    let endpoint = ipc_endpoint(workspace.path()).expect("resolve ipc endpoint");
     let follow_up = IpcRequest {
         jsonrpc: "2.0".to_owned(),
         id: Some(Value::Number(serde_json::Number::from(99))),
@@ -117,16 +128,7 @@ async fn doctor_smoke_leaves_read_server_daemon_running_without_binding_workspac
         Some("read_server"),
         "daemon must still be running in read_server mode after the smoke run"
     );
-
-    // Clean up: explicitly shut down the daemon this test spawned, since a
-    // read_server smoke run intentionally never does so itself.
-    let shutdown = IpcRequest {
-        jsonrpc: "2.0".to_owned(),
-        id: Some(Value::Number(serde_json::Number::from(100))),
-        method: "_shutdown".to_owned(),
-        params: None,
-    };
-    let _ = send_request(&endpoint, &shutdown, Duration::from_secs(10)).await;
+    Ok(())
 }
 
 struct ChildGuard(Child);
