@@ -321,15 +321,15 @@ pub async fn run_smoke_test_with_timeout(
 ) -> Result<SmokeResult, EngramError> {
     use serde_json::{Value, json};
 
-    use crate::daemon::ipc_server::{ipc_endpoint, resolve_daemon_mode};
+    use crate::daemon::ipc_server::ipc_endpoint;
     use crate::daemon::protocol::IpcRequest;
     use crate::shim::ipc_client::send_request;
     use crate::shim::lifecycle::{
-        DaemonOwnership, cleanup_owned_daemon, ensure_daemon_running_for_doctor,
+        DaemonOwnership, cleanup_owned_daemon, combine_cleanup_error,
+        ensure_daemon_running_for_doctor,
     };
 
     let start = std::time::Instant::now();
-    let startup_mode = resolve_daemon_mode(workspace).ok();
 
     // Step 1: Spawn or reuse the daemon.
     let mut ownership = ensure_daemon_running_for_doctor(workspace)
@@ -339,13 +339,15 @@ pub async fn run_smoke_test_with_timeout(
                 crate::errors::IpcError::VersionMismatch { .. }
                 | crate::errors::IpcError::ConnectionFailed { .. },
             ) => refused,
+            cleanup @ crate::errors::EngramError::Daemon(
+                crate::errors::DaemonError::CleanupFailed { .. },
+            ) => cleanup,
             error => crate::errors::EngramError::Daemon(crate::errors::DaemonError::SpawnFailed {
                 reason: format!("smoke test: daemon start failed: {error}"),
             }),
         })?;
 
     let endpoint = ipc_endpoint(workspace)?;
-    let mut effective_mode = startup_mode;
     let smoke_outcome = async {
         let workspace_str = workspace
             .to_str()
@@ -394,8 +396,6 @@ pub async fn run_smoke_test_with_timeout(
                 reason: format!("smoke test: daemon reported unrecognized mode: {e}"),
             })
         })?;
-        effective_mode = Some(mode);
-
         // Step 3: reused Managed daemons stop after the status probe. ReadServer
         // always receives its read-only workspace-status readiness probe, while
         // invocation-started Managed daemons also receive bind and shutdown.
@@ -462,11 +462,18 @@ pub async fn run_smoke_test_with_timeout(
     }
     .await;
 
-    if effective_mode == Some(DaemonMode::Managed)
-        && let DaemonOwnership::Started { child, pid_file } = &mut ownership
-    {
-        cleanup_owned_daemon(workspace, &endpoint, pid_file, child).await;
-    }
+    let cleanup_outcome = match &mut ownership {
+        DaemonOwnership::Started { child, pid_file } => {
+            cleanup_owned_daemon(workspace, &endpoint, pid_file, child).await
+        }
+        DaemonOwnership::Reused => Ok(()),
+    };
 
-    smoke_outcome
+    match (smoke_outcome, cleanup_outcome) {
+        (Ok(result), Ok(())) => Ok(result),
+        (Err(original_error), Err(cleanup_error)) => {
+            Err(combine_cleanup_error(original_error, cleanup_error))
+        }
+        (Ok(_), Err(cleanup_error)) | (Err(cleanup_error), Ok(())) => Err(cleanup_error),
+    }
 }

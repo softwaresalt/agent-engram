@@ -96,6 +96,42 @@ async fn doctor_smoke_reaps_child_when_startup_readiness_times_out() -> CliTestR
 }
 
 #[tokio::test]
+async fn doctor_smoke_reaps_invocation_started_read_server_after_success() -> CliTestResult {
+    let workspace = tempfile::tempdir()?;
+    fs::create_dir(workspace.path().join(".git"))?;
+    fs::create_dir(workspace.path().join(".engram"))?;
+    fs::write(
+        workspace.path().join(".engram").join("config.toml"),
+        "mode = \"read_server\"\n",
+    )?;
+    let canonical_workspace = workspace.path().canonicalize()?;
+
+    let output = engram_command()
+        .arg("--workspace")
+        .arg(&canonical_workspace)
+        .args(["--json", "doctor", "--smoke"])
+        .env("ENGRAM_IDLE_TIMEOUT_MS", "0")
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "doctor smoke failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let envelope: Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(envelope["result"]["passed"], Value::Bool(true));
+    let pid_file = PidFile::read(&canonical_workspace)
+        .ok_or_else(|| io::Error::other("started ReadServer omitted PID metadata"))?;
+    assert!(
+        !pid_file.verify_alive()?,
+        "doctor smoke left its invocation-started ReadServer alive: {}",
+        pid_file.pid
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn doctor_smoke_does_not_replace_protocol_mismatched_daemon() -> CliTestResult {
     let workspace = tempfile::tempdir()?;
     fs::create_dir(workspace.path().join(".git"))?;

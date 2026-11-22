@@ -847,26 +847,68 @@ async fn poll_until_ready(
         }
         Ok(PollOutcome::Reused) => {
             if let Some(child) = spawned_child.as_mut() {
-                cleanup_spawned_child(child).await;
+                cleanup_spawned_child(child).await?;
             }
             Ok(DaemonOwnership::Reused)
         }
         Err(error) => {
             if let Some(child) = spawned_child.as_mut() {
-                cleanup_spawned_child(child).await;
+                if let Err(cleanup_error) = cleanup_spawned_child(child).await {
+                    return Err(combine_cleanup_error(error, cleanup_error));
+                }
             }
             Err(error)
         }
     }
 }
 
-async fn cleanup_spawned_child(child: &mut tokio::process::Child) {
-    if child.try_wait().is_ok_and(|status| status.is_some()) {
-        return;
+fn cleanup_error(pid: Option<u32>, reason: impl Into<String>) -> EngramError {
+    EngramError::Daemon(DaemonError::CleanupFailed {
+        pid,
+        reason: reason.into(),
+    })
+}
+
+pub(crate) fn combine_cleanup_error(
+    original_error: EngramError,
+    cleanup_failure: EngramError,
+) -> EngramError {
+    let pid = match &cleanup_failure {
+        EngramError::Daemon(DaemonError::CleanupFailed { pid, .. }) => *pid,
+        _ => None,
+    };
+    cleanup_error_with_original(original_error, cleanup_failure, pid)
+}
+
+fn cleanup_error_with_original(
+    original_error: EngramError,
+    cleanup_failure: EngramError,
+    pid: Option<u32>,
+) -> EngramError {
+    cleanup_error(
+        pid,
+        format!("original failure: {original_error}; cleanup failure: {cleanup_failure}"),
+    )
+}
+
+async fn cleanup_spawned_child(child: &mut tokio::process::Child) -> Result<(), EngramError> {
+    let pid = child.id();
+    match child.try_wait() {
+        Ok(Some(_)) => return Ok(()),
+        Ok(None) => {}
+        Err(error) => {
+            return Err(cleanup_error(
+                pid,
+                format!("failed to inspect exact child before kill: {error}"),
+            ));
+        }
     }
 
     if let Err(error) = child.start_kill() {
-        debug!(%error, "failed to kill spawned daemon during lifecycle cleanup");
+        return Err(cleanup_error(
+            pid,
+            format!("failed to kill exact child: {error}"),
+        ));
     }
 
     match tokio::time::timeout(
@@ -875,13 +917,15 @@ async fn cleanup_spawned_child(child: &mut tokio::process::Child) {
     )
     .await
     {
-        Ok(Ok(_)) => {}
-        Ok(Err(error)) => {
-            debug!(%error, "failed to reap spawned daemon during lifecycle cleanup");
-        }
-        Err(_) => {
-            debug!("timed out reaping spawned daemon during lifecycle cleanup");
-        }
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(error)) => Err(cleanup_error(
+            pid,
+            format!("failed to reap exact child: {error}"),
+        )),
+        Err(_) => Err(cleanup_error(
+            pid,
+            format!("timed out reaping exact child after {SHUTDOWN_WAIT_TIMEOUT_MS}ms"),
+        )),
     }
 }
 
@@ -890,7 +934,8 @@ pub(crate) async fn cleanup_owned_daemon(
     endpoint: &str,
     pid_file: &PidFile,
     child: &mut tokio::process::Child,
-) {
+) -> Result<(), EngramError> {
+    let pid = child.id();
     let pid_is_still_owned = PidFile::read(workspace).is_some_and(|published| {
         published == *pid_file
             && Some(pid_file.pid) == child.id()
@@ -901,15 +946,18 @@ pub(crate) async fn cleanup_owned_daemon(
         request_shutdown(endpoint).await;
     }
 
-    let child_exited = tokio::time::timeout(
+    match tokio::time::timeout(
         Duration::from_millis(SHUTDOWN_WAIT_TIMEOUT_MS),
         child.wait(),
     )
     .await
-    .is_ok_and(|result| result.is_ok());
-
-    if !child_exited {
-        cleanup_spawned_child(child).await;
+    {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(error)) => Err(cleanup_error(
+            pid,
+            format!("failed to wait for exact child after graceful shutdown: {error}"),
+        )),
+        Err(_) => cleanup_spawned_child(child).await,
     }
 }
 
@@ -1069,7 +1117,9 @@ mod tests {
             .expect("publish cleanup fixture PID");
         let endpoint = ipc_endpoint(workspace.path()).expect("test IPC endpoint");
 
-        cleanup_owned_daemon(workspace.path(), &endpoint, &pid_file, &mut child).await;
+        cleanup_owned_daemon(workspace.path(), &endpoint, &pid_file, &mut child)
+            .await
+            .expect("owned child cleanup should succeed");
 
         assert!(
             !pid_file
@@ -1081,6 +1131,22 @@ mod tests {
             child.try_wait().expect("inspect cleanup fixture").is_some(),
             "cleanup killed but did not reap owned child {pid}"
         );
+    }
+
+    #[test]
+    fn cleanup_failure_combines_original_startup_error() {
+        let original = EngramError::Daemon(DaemonError::NotReady { timeout_ms: 750 });
+        let cleanup = cleanup_error(Some(42), "timed out reaping exact child after 5000ms");
+
+        let combined = combine_cleanup_error(original, cleanup);
+
+        let EngramError::Daemon(DaemonError::CleanupFailed { pid, reason }) = combined else {
+            panic!("combined cleanup failure must retain a structured daemon error");
+        };
+        assert_eq!(pid, Some(42));
+        assert!(reason.contains("original failure"));
+        assert!(reason.contains("Daemon failed to reach Ready state"));
+        assert!(reason.contains("timed out reaping exact child"));
     }
 
     /// Default timeout is 30 000 ms when no env var value is provided.

@@ -226,6 +226,15 @@ fn error_response_codes_are_consistent() {
             14_002,
             "PolicyConfigInvalid",
         ),
+        (
+            DaemonError::CleanupFailed {
+                pid: Some(42),
+                reason: "failed to reap exact child".into(),
+            }
+            .into(),
+            8011,
+            "DaemonCleanupFailed",
+        ),
     ];
 
     for (err, expected_code, expected_name) in cases {

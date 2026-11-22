@@ -161,6 +161,8 @@ pub enum IpcError {
 pub enum DaemonError {
     #[error("Failed to spawn daemon process: {reason}")]
     SpawnFailed { reason: String },
+    #[error("Failed to clean up spawned daemon process PID {pid:?}: {reason}")]
+    CleanupFailed { pid: Option<u32>, reason: String },
     #[error(
         "Daemon failed to reach Ready state within {timeout_ms}ms. If the engram daemon process has exited, run 'engram index --direct' (or set ENGRAM_DIRECT=1) to index without the daemon. If a daemon process is still running, --direct will fail while it holds the workspace lock — wait and retry if it is still starting up, or stop that engram process if it appears stuck."
     )]
@@ -732,6 +734,12 @@ impl EngramError {
                     "DaemonSpawnFailed",
                     inner.to_string(),
                     Some(json!({ "reason": reason })),
+                ),
+                DaemonError::CleanupFailed { pid, reason } => (
+                    DAEMON_CLEANUP_FAILED,
+                    "DaemonCleanupFailed",
+                    inner.to_string(),
+                    Some(json!({ "pid": pid, "reason": reason })),
                 ),
                 DaemonError::NotReady { timeout_ms } => (
                     DAEMON_NOT_READY,
