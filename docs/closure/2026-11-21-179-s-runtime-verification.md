@@ -10,7 +10,7 @@ mode: pre-merge
 surface: cli
 verification_status: PASS_WITH_FOLLOW_UP
 closure_status: READY_WITH_CONDITIONS
-compaction_status: pending
+compaction_status: done
 owner: softwaresalt
 last_code_affecting_head: "7c20d3856455f64d06c5ba8b3ba3f7c56edaa575"
 follow_up_stash:
@@ -30,16 +30,16 @@ follow_up_stash:
   - "5214C10D"
 conditions:
   - condition: "GitHub Actions CI is green on the PR's final head"
-    satisfied: false
-    evidence: "The feature PR and its final-head CI result are not yet available"
+    satisfied: true
+    evidence: "PR #490 final head 1708c75f passed build and start-launcher-windows"
     owner: softwaresalt
     due_utc: "2026-11-22T23:59:59Z"
     attestation_evidence: "Required build and start-launcher-windows checks pass on the final head"
     escalation_path: "Hold merge and invoke fix-ci within scope; hand off at the circuit breaker"
     backlog_item_id: "N/A"
   - condition: "Copilot review is satisfied for the final head"
-    satisfied: false
-    evidence: "The feature PR has not yet been reviewed"
+    satisfied: true
+    evidence: "gsd gate copilot-review returned PASS for PR #490 final head 1708c75f with zero unresolved findings"
     owner: softwaresalt
     due_utc: "2026-11-22T23:59:59Z"
     attestation_evidence: "gsd gate copilot-review reports PASS for the final head"
