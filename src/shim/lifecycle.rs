@@ -624,8 +624,7 @@ fn spawn_daemon(workspace: &Path) -> Result<tokio::process::Child, EngramError> 
     command
         .args(["daemon", "--workspace", workspace_str])
         .stdin(std::process::Stdio::null())
-        .env_remove("ENGRAM_DATA_DIR")
-        .kill_on_drop(true);
+        .env_remove("ENGRAM_DATA_DIR");
 
     #[cfg(debug_assertions)]
     if std::env::var_os("ENGRAM_TEST_CAPTURE_AUTOSPAWN_TRACE").is_some_and(|value| value == "1") {
@@ -654,18 +653,24 @@ const TEST_ENDPOINT_RECOMPUTE_FAILURE_ENV: &str = "ENGRAM_TEST_FAIL_ENDPOINT_REC
 
 struct SpawnedDaemonChild {
     child: tokio::process::Child,
+    armed: bool,
 }
 
 impl SpawnedDaemonChild {
     fn new(child: tokio::process::Child) -> Self {
-        Self { child }
+        Self { child, armed: true }
     }
 
-    fn disarm(self) {
-        // Tokio exposes no child-level `kill_on_drop` disarm operation.
-        // Forgetting the ready child intentionally transfers it to the
-        // daemon lifecycle without triggering Tokio's armed drop guard.
-        std::mem::forget(self);
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for SpawnedDaemonChild {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = self.child.start_kill();
+        }
     }
 }
 
@@ -692,6 +697,7 @@ async fn poll_spawned_daemon(
             if let Err(cleanup_error) = cleanup_spawned_child(&mut guard.child).await {
                 return Err(combine_cleanup_error(error, cleanup_error));
             }
+            guard.disarm();
             return Err(error);
         }
     };
@@ -887,7 +893,7 @@ async fn poll_until_ready(
 
     match outcome {
         Ok(PollOutcome::Started(pid_file)) => {
-            let child = spawned_child.ok_or_else(|| {
+            let mut child = spawned_child.ok_or_else(|| {
                 EngramError::Daemon(DaemonError::SpawnFailed {
                     reason: "ready ownership omitted the spawned child handle".to_owned(),
                 })
@@ -896,16 +902,18 @@ async fn poll_until_ready(
             Ok(DaemonOwnership::Started { pid_file })
         }
         Ok(PollOutcome::Reused) => {
-            if let Some(child) = spawned_child.as_mut().map(|guard| &mut guard.child) {
-                cleanup_spawned_child(child).await?;
+            if let Some(guard) = spawned_child.as_mut() {
+                cleanup_spawned_child(&mut guard.child).await?;
+                guard.disarm();
             }
             Ok(DaemonOwnership::Reused)
         }
         Err(error) => {
-            if let Some(child) = spawned_child.as_mut().map(|guard| &mut guard.child) {
-                if let Err(cleanup_error) = cleanup_spawned_child(child).await {
+            if let Some(guard) = spawned_child.as_mut() {
+                if let Err(cleanup_error) = cleanup_spawned_child(&mut guard.child).await {
                     return Err(combine_cleanup_error(error, cleanup_error));
                 }
+                guard.disarm();
             }
             Err(error)
         }
@@ -1126,11 +1134,10 @@ mod tests {
             .env(DETACHED_CHILD_FIXTURE_ENV, "1")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .kill_on_drop(true);
+            .stderr(std::process::Stdio::null());
         let child = command.spawn().expect("spawn ownership fixture child");
         let pid = child.id().expect("fixture PID");
-        let guard = SpawnedDaemonChild::new(child);
+        let mut guard = SpawnedDaemonChild::new(child);
         guard.disarm();
         let ownership = DaemonOwnership::Started {
             pid_file: PidFile {
@@ -1202,8 +1209,7 @@ mod tests {
             .env(GUARDED_CHILD_FIXTURE_ENV, "1")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .kill_on_drop(true);
+            .stderr(std::process::Stdio::null());
         let child = command.spawn().expect("spawn guarded fixture child");
         let pid = child.id().expect("guarded fixture child PID");
 
@@ -1251,8 +1257,7 @@ mod tests {
                 .env(ENDPOINT_FAILURE_FIXTURE_ENV, "fixture")
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .kill_on_drop(true);
+                .stderr(std::process::Stdio::null());
             let child = command
                 .spawn()
                 .expect("spawn endpoint failure fixture child");
