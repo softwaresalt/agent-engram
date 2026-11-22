@@ -121,15 +121,17 @@ surface and remains tracked in `8C21E5DA`.
 | Proposed action | ActionRisk | Approval and containment | ActionResult |
 |---|---|---|---|
 | Add a hidden CLI readiness subcommand | moderate | Authorized by `142.090-T`; scoped CLI implementation plus in-scope review fixes to doctor and shim lifecycle ownership | applied and verified |
-| Merge the feature PR | high | Bounded P-017 approval applies only after local readiness, CI, P-018, P-009, and P-016 pass | pending |
+| Merge the feature PR | high | Bounded P-017 approval followed local readiness, CI, P-018, P-009, and P-016 verification | applied as PR #490 merge `a2677cf9d4d682e7703f14aa9f98c6545a7deebf` |
 | Deploy or publish a binary | high | Separate operator approval required | not started |
 
 ## Releasability
 
-The CLI contract is `PASS_WITH_FOLLOW_UP`. Pre-merge releasability is
-`READY_WITH_CONDITIONS`; CI and Copilot review for the final feature head remain
-open automated conditions. Deferred full-suite instability remains tracked in
-`773841E3`, `5214C10D`, and the dependency-audit follow-up `8C21E5DA`.
+The CLI contract is `PASS_WITH_FOLLOW_UP`. Pre-merge releasability remains
+recorded as `READY_WITH_CONDITIONS` for the final attestation history; both CI
+and Copilot conditions were satisfied for final feature head
+`1708c75f414b0bc678b3c4a931b53de358e1136c`. Deferred full-suite instability
+remains tracked in `773841E3`, `5214C10D`, and the dependency-audit follow-up
+`8C21E5DA`.
 
 ## Documentation consistency audit
 
