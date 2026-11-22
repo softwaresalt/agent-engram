@@ -80,13 +80,11 @@ byte-identical:
 * `.backlogit/archive/142.058.003-ST.md`
 
 The generic `move 177-S --status shipped` transition was refused because
-backlogit v1.13.0 requires its governed shipment envelope. The operator's
-authoritative 177-S disposition explicitly selected the
-`reconcile-shipped` path after P-020 compaction, and the installed 1.13.0
-tool exposes that governed two-phase transaction. Ship did not substitute
-the destructive cascade: it archived only the shipment record, completed
-P-020, then reconciled its immutable archived envelope to
-`archived_status: shipped`.
+backlogit v1.13.0 requires its governed shipment envelope. The installed
+1.13.0 tool exposes `reconcile-shipped` as its governed two-phase repair
+transaction. Ship did not substitute the destructive cascade: it archived
+only the shipment record, completed P-020, then reconciled its immutable
+archived envelope to `archived_status: shipped`.
 
 Independent post-merge baseline fingerprints were captured and rechecked:
 
@@ -103,7 +101,7 @@ immutable pre-close record. Its observation set is supplemented above by
 the explicit `178-S` baseline, which is a successor-shipment invariant not
 listed by the classifier.
 
-The governed `reconcile-shipped` event attests closure-content hash
+The executed `reconcile-shipped` event attests closure-content hash
 `f053ae15d77cee02115db29d4d453d8b9a65a38527c535dc2b1345dca5ac2124`,
 recorded before the final authorization-clarity and evidence-table edits.
 The subsequently committed closure candidate
