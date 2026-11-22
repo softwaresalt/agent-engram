@@ -290,11 +290,6 @@ pub(crate) enum DaemonOwnership {
     Reused,
     /// This lifecycle call spawned or respawned the ready daemon.
     Started {
-        /// Exact child handle retained until the lifecycle result is returned.
-        ///
-        /// `kill_on_drop` is disabled so dropping this handle detaches the
-        /// daemon into the normal lifecycle.
-        child: Box<tokio::process::Child>,
         /// Process identity published by the exact spawned daemon.
         pid_file: PidFile,
     },
@@ -302,12 +297,11 @@ pub(crate) enum DaemonOwnership {
 
 impl DaemonOwnership {
     pub(crate) fn detach_ready(self) {
-        if let Self::Started { child, pid_file } = self {
+        if let Self::Started { pid_file } = self {
             debug!(
                 pid = pid_file.pid,
                 "detaching ready daemon child into the normal lifecycle"
             );
-            drop(child);
         }
     }
 }
@@ -502,8 +496,7 @@ async fn ensure_daemon_running_inner(
     }
 
     let child = spawn_daemon(workspace)?;
-    let endpoint = ipc_endpoint(workspace)?;
-    poll_until_ready(workspace, &endpoint, Some(child)).await
+    poll_spawned_daemon(workspace, child).await
 }
 
 fn existing_daemon_unavailable(endpoint: &str, reason: &str) -> EngramError {
@@ -632,7 +625,7 @@ fn spawn_daemon(workspace: &Path) -> Result<tokio::process::Child, EngramError> 
         .args(["daemon", "--workspace", workspace_str])
         .stdin(std::process::Stdio::null())
         .env_remove("ENGRAM_DATA_DIR")
-        .kill_on_drop(false);
+        .kill_on_drop(true);
 
     #[cfg(debug_assertions)]
     if std::env::var_os("ENGRAM_TEST_CAPTURE_AUTOSPAWN_TRACE").is_some_and(|value| value == "1") {
@@ -656,6 +649,56 @@ fn spawn_daemon(workspace: &Path) -> Result<tokio::process::Child, EngramError> 
     })
 }
 
+#[cfg(any(debug_assertions, test))]
+const TEST_ENDPOINT_RECOMPUTE_FAILURE_ENV: &str = "ENGRAM_TEST_FAIL_ENDPOINT_RECOMPUTE_AFTER_SPAWN";
+
+struct SpawnedDaemonChild {
+    child: tokio::process::Child,
+}
+
+impl SpawnedDaemonChild {
+    fn new(child: tokio::process::Child) -> Self {
+        Self { child }
+    }
+
+    fn disarm(self) {
+        // Tokio exposes no child-level `kill_on_drop` disarm operation.
+        // Forgetting the ready child intentionally transfers it to the
+        // daemon lifecycle without triggering Tokio's armed drop guard.
+        std::mem::forget(self);
+    }
+}
+
+fn recompute_spawned_endpoint(workspace: &Path) -> Result<String, EngramError> {
+    #[cfg(any(debug_assertions, test))]
+    if std::env::var_os(TEST_ENDPOINT_RECOMPUTE_FAILURE_ENV).is_some() {
+        return Err(EngramError::Ipc(IpcError::ConnectionFailed {
+            address: workspace.display().to_string(),
+            reason: "forced endpoint recomputation failure".to_owned(),
+        }));
+    }
+
+    ipc_endpoint(workspace)
+}
+
+async fn poll_spawned_daemon(
+    workspace: &Path,
+    child: tokio::process::Child,
+) -> Result<DaemonOwnership, EngramError> {
+    let mut guard = SpawnedDaemonChild::new(child);
+    let endpoint = match recompute_spawned_endpoint(workspace) {
+        Ok(endpoint) => endpoint,
+        Err(error) => {
+            if let Err(cleanup_error) = cleanup_spawned_child(&mut guard.child).await {
+                return Err(combine_cleanup_error(error, cleanup_error));
+            }
+            return Err(error);
+        }
+    };
+
+    poll_until_ready(workspace, &endpoint, Some(guard)).await
+}
+
 async fn respawn_daemon(
     workspace: &Path,
     endpoint: &str,
@@ -664,8 +707,7 @@ async fn respawn_daemon(
     request_shutdown(endpoint).await;
     wait_for_daemon_exit(endpoint, pid_hint).await?;
     let child = spawn_daemon(workspace)?;
-    let endpoint = ipc_endpoint(workspace)?;
-    poll_until_ready(workspace, &endpoint, Some(child)).await
+    poll_spawned_daemon(workspace, child).await
 }
 
 fn daemon_executable() -> Result<std::path::PathBuf, EngramError> {
@@ -838,9 +880,10 @@ async fn resolve_spawned_child_exit(
 async fn poll_until_ready(
     workspace: &Path,
     endpoint: &str,
-    mut spawned_child: Option<tokio::process::Child>,
+    mut spawned_child: Option<SpawnedDaemonChild>,
 ) -> Result<DaemonOwnership, EngramError> {
-    let outcome = poll_until_ready_inner(workspace, endpoint, spawned_child.as_mut()).await;
+    let child_ref = spawned_child.as_mut().map(|guard| &mut guard.child);
+    let outcome = poll_until_ready_inner(workspace, endpoint, child_ref).await;
 
     match outcome {
         Ok(PollOutcome::Started(pid_file)) => {
@@ -849,19 +892,17 @@ async fn poll_until_ready(
                     reason: "ready ownership omitted the spawned child handle".to_owned(),
                 })
             })?;
-            Ok(DaemonOwnership::Started {
-                child: Box::new(child),
-                pid_file,
-            })
+            child.disarm();
+            Ok(DaemonOwnership::Started { pid_file })
         }
         Ok(PollOutcome::Reused) => {
-            if let Some(child) = spawned_child.as_mut() {
+            if let Some(child) = spawned_child.as_mut().map(|guard| &mut guard.child) {
                 cleanup_spawned_child(child).await?;
             }
             Ok(DaemonOwnership::Reused)
         }
         Err(error) => {
-            if let Some(child) = spawned_child.as_mut() {
+            if let Some(child) = spawned_child.as_mut().map(|guard| &mut guard.child) {
                 if let Err(cleanup_error) = cleanup_spawned_child(child).await {
                     return Err(combine_cleanup_error(error, cleanup_error));
                 }
@@ -1057,6 +1098,8 @@ mod tests {
 
     const CLEANUP_CHILD_FIXTURE_ENV: &str = "ENGRAM_LIFECYCLE_CLEANUP_CHILD_FIXTURE";
     const DETACHED_CHILD_FIXTURE_ENV: &str = "ENGRAM_LIFECYCLE_DETACHED_CHILD_FIXTURE";
+    const GUARDED_CHILD_FIXTURE_ENV: &str = "ENGRAM_LIFECYCLE_GUARDED_CHILD_FIXTURE";
+    const ENDPOINT_FAILURE_FIXTURE_ENV: &str = "ENGRAM_LIFECYCLE_ENDPOINT_FAILURE_CHILD_FIXTURE";
 
     fn create_capture_workspace() -> tempfile::TempDir {
         let workspace = tempfile::tempdir().expect("workspace tempdir");
@@ -1084,17 +1127,18 @@ mod tests {
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .kill_on_drop(false);
+            .kill_on_drop(true);
         let child = command.spawn().expect("spawn ownership fixture child");
         let pid = child.id().expect("fixture PID");
+        let guard = SpawnedDaemonChild::new(child);
+        guard.disarm();
         let ownership = DaemonOwnership::Started {
-            child: Box::new(child),
             pid_file: PidFile {
                 pid,
                 start_time_unix: 1,
             },
         };
-        drop(ownership);
+        ownership.detach_ready();
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         let mut system = System::new();
@@ -1137,6 +1181,120 @@ mod tests {
         assert!(
             child.try_wait().expect("inspect cleanup fixture").is_some(),
             "cleanup killed but did not reap owned child {pid}"
+        );
+    }
+
+    #[tokio::test]
+    async fn spawned_child_guard_cancel_kills_exact_child() {
+        if std::env::var_os(GUARDED_CHILD_FIXTURE_ENV).is_some() {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            return;
+        }
+
+        let current_exe = std::env::current_exe().expect("test executable path");
+        let mut command = tokio::process::Command::new(current_exe);
+        command
+            .args([
+                "--exact",
+                "shim::lifecycle::tests::spawned_child_guard_cancel_kills_exact_child",
+                "--nocapture",
+            ])
+            .env(GUARDED_CHILD_FIXTURE_ENV, "1")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true);
+        let child = command.spawn().expect("spawn guarded fixture child");
+        let pid = child.id().expect("guarded fixture child PID");
+
+        let task = tokio::spawn(async move {
+            let _guard = SpawnedDaemonChild::new(child);
+            std::future::pending::<()>().await;
+        });
+        tokio::task::yield_now().await;
+        task.abort();
+        assert!(
+            task.await
+                .expect_err("guard task should be cancelled")
+                .is_cancelled(),
+            "guard task did not observe cancellation"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let mut system = System::new();
+        assert!(
+            !system.refresh_process(Pid::from_u32(pid)),
+            "dropping the armed guard left PID {pid} alive"
+        );
+    }
+
+    #[tokio::test]
+    async fn endpoint_recomputation_failure_reaps_exact_spawned_child() {
+        if std::env::var_os(ENDPOINT_FAILURE_FIXTURE_ENV).as_deref()
+            == Some(std::ffi::OsStr::new("fixture"))
+        {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            return;
+        }
+        if std::env::var_os(ENDPOINT_FAILURE_FIXTURE_ENV).as_deref()
+            == Some(std::ffi::OsStr::new("assert"))
+        {
+            let workspace = create_capture_workspace();
+            let current_exe = std::env::current_exe().expect("test executable path");
+            let mut command = tokio::process::Command::new(current_exe);
+            command
+                .args([
+                    "--exact",
+                    "shim::lifecycle::tests::endpoint_recomputation_failure_reaps_exact_spawned_child",
+                    "--nocapture",
+                ])
+                .env(ENDPOINT_FAILURE_FIXTURE_ENV, "fixture")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .kill_on_drop(true);
+            let child = command
+                .spawn()
+                .expect("spawn endpoint failure fixture child");
+            let pid = child.id().expect("endpoint failure fixture child PID");
+
+            let result = poll_spawned_daemon(workspace.path(), child).await;
+            let error = result.expect_err("forced endpoint recomputation must fail");
+            assert!(
+                error
+                    .to_string()
+                    .contains("forced endpoint recomputation failure"),
+                "unexpected endpoint recomputation error: {error}"
+            );
+
+            let mut system = System::new();
+            let gone_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+            loop {
+                if !system.refresh_process(Pid::from_u32(pid)) {
+                    break;
+                }
+                assert!(
+                    tokio::time::Instant::now() < gone_deadline,
+                    "endpoint failure left PID {pid} alive"
+                );
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            return;
+        }
+
+        let status = std::process::Command::new(std::env::current_exe().expect("test path"))
+            .args([
+                "--exact",
+                "shim::lifecycle::tests::endpoint_recomputation_failure_reaps_exact_spawned_child",
+                "--nocapture",
+            ])
+            .env(ENDPOINT_FAILURE_FIXTURE_ENV, "assert")
+            .env(TEST_ENDPOINT_RECOMPUTE_FAILURE_ENV, "1")
+            .status()
+            .expect("run endpoint failure assertion subprocess");
+        assert!(
+            status.success(),
+            "endpoint failure assertion failed: {status}"
         );
     }
 
